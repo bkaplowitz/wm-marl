@@ -32,6 +32,34 @@ The important pins are:
 - `jax==0.4.36`
 - `jaxlib==0.4.36`
 
+### CUDA / A100 Setup
+
+On a Linux CUDA 12 machine, such as an A100 partition, install the CUDA-enabled
+JAX extra:
+
+```bash
+uv sync --python 3.11 --extra dev --extra cuda12
+```
+
+For shared or MIG-style GPU slices, it is usually safer to avoid aggressive JAX
+memory preallocation:
+
+```bash
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+# or, if preallocation is preferred:
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.60
+```
+
+Verify that JAX sees the GPU before launching a long run:
+
+```bash
+uv run world-marl-verify-install --require-gpu --observation-size 44
+```
+
+Melting Pot/dmlab2d environment stepping remains Python-side. The A100 speeds up
+JAX/Flax policy inference and PPO updates, especially with larger rollouts and
+higher-resolution observations.
+
 ## Level A: Integration Pass
 
 ```bash
@@ -62,6 +90,27 @@ uv run world-marl-train-e2e \
 
 This is useful for iteration, but the full validation command below is the
 stronger acceptance test.
+
+For an A100-backed run, start with a larger but still practical single-seed
+validation:
+
+```bash
+uv run world-marl-train-e2e \
+  --substrate coins \
+  --num-envs 8 \
+  --rollout-steps 128 \
+  --total-env-steps 200000 \
+  --eval-episodes 50 \
+  --num-runs 1 \
+  --max-cycles 200 \
+  --observation-size 44 \
+  --learning-rate 0.00025 \
+  --update-epochs 4 \
+  --num-minibatches 8 \
+  --ent-coef 0.02 \
+  --negative-control freeze-policy \
+  --min-improvement 0.2
+```
 
 ```bash
 uv run world-marl-train-e2e \

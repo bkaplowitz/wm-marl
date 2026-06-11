@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 
 import jax
@@ -13,12 +14,32 @@ from world_marl.logging import dependency_versions, to_jsonable
 from world_marl.training import collect_rollout
 
 
+def parse_args() -> argparse.Namespace:
+  parser = argparse.ArgumentParser(description=__doc__)
+  parser.add_argument("--substrate", default="coins")
+  parser.add_argument("--num-envs", type=int, default=1)
+  parser.add_argument("--max-cycles", type=int, default=1000)
+  parser.add_argument("--observation-size", type=int, default=22)
+  parser.add_argument(
+    "--require-gpu",
+    action="store_true",
+    help="Exit nonzero unless JAX exposes at least one GPU device.",
+  )
+  return parser.parse_args()
+
+
 def main() -> None:
+  args = parse_args()
+  devices = jax.devices()
+  gpu_devices = [device for device in devices if device.platform == "gpu"]
+  if args.require_gpu and not gpu_devices:
+    raise SystemExit(f"JAX did not expose a GPU. Devices: {devices}")
+
   adapter = MeltingPotVectorAdapter(
-    substrate="coins",
-    num_envs=1,
-    max_cycles=1000,
-    observation_size=22,
+    substrate=args.substrate,
+    num_envs=args.num_envs,
+    max_cycles=args.max_cycles,
+    observation_size=args.observation_size,
   )
   try:
     observations = adapter.reset()
@@ -59,6 +80,9 @@ def main() -> None:
     payload = {
       "status": "ok",
       "versions": dependency_versions(),
+      "jax_default_backend": jax.default_backend(),
+      "jax_devices": [str(device) for device in devices],
+      "jax_gpu_devices": [str(device) for device in gpu_devices],
       "substrate": adapter.substrate,
       "num_envs": adapter.num_envs,
       "num_agents": adapter.num_agents,

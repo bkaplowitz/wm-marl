@@ -26,6 +26,9 @@ dependencies = [
 dev = [
   "pytest>=8",
 ]
+cuda12 = [
+  "jax[cuda12]==0.4.36",
+]
 
 [project.scripts]
 world-marl-verify-install = "world_marl.scripts.verify_install:main"
