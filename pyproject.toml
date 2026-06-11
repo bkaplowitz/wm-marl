@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "world-marl"
+version = "0.1.0"
+description = "JaxMARL-style IPPO validation on Melting Pot substrates through Shimmy."
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "jax==0.4.36",
+  "jaxlib==0.4.36",
+  "jaxmarl[algs]==0.1.0",
+  "dm-meltingpot==2.4.0",
+  "dmlab2d==1.0.0",
+  "shimmy[meltingpot]==2.0.1",
+  "flax",
+  "distrax",
+  "optax",
+  "numpy",
+  "matplotlib",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+]
+
+[project.scripts]
+world-marl-verify-install = "world_marl.scripts.verify_install:main"
+world-marl-train-e2e = "world_marl.scripts.train_e2e:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "integration: tests requiring installed Melting Pot/dmlab2d runtime",
+]
