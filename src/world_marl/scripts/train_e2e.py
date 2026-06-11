@@ -16,12 +16,31 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from world_marl.algs.ippo import IPPOConfig, create_train_state, ppo_update
+from world_marl.algs.ippo import (
+  IPPOConfig,
+  create_train_state as create_ippo_train_state,
+  ppo_update,
+)
+from world_marl.algs.mappo import (
+  MAPPOConfig,
+  create_train_state as create_mappo_train_state,
+  mappo_update,
+)
 from world_marl.checkpointing import load_metadata, load_params, save_checkpoint
 from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
-from world_marl.evaluation import evaluate_policy, random_policy, train_state_policy
+from world_marl.evaluation import (
+  evaluate_policy,
+  mappo_train_state_policy,
+  random_policy,
+  train_state_policy,
+)
 from world_marl.logging import RunLogger, dependency_versions, timestamp, to_jsonable
-from world_marl.training import collect_rollout, training_window_means
+from world_marl.training import (
+  central_observation_shape,
+  collect_mappo_rollout,
+  collect_rollout,
+  training_window_means,
+)
 
 
 @dataclass(frozen=True)
@@ -45,6 +64,7 @@ class RunOutcome:
 
 def parse_args() -> argparse.Namespace:
   parser = argparse.ArgumentParser(description=__doc__)
+  parser.add_argument("--algorithm", choices=("ippo", "mappo"), default="ippo")
   parser.add_argument("--substrate", default="coins")
   parser.add_argument("--num-envs", type=int, default=4)
   parser.add_argument("--rollout-steps", type=int, default=128)
@@ -97,8 +117,12 @@ def parse_args() -> argparse.Namespace:
   return parser.parse_args()
 
 
-def ippo_config_from_args(args: argparse.Namespace, control: str | None = None) -> IPPOConfig:
-  config = IPPOConfig(
+def algorithm_config_from_args(
+  args: argparse.Namespace,
+  control: str | None = None,
+) -> IPPOConfig | MAPPOConfig:
+  config_cls = MAPPOConfig if args.algorithm == "mappo" else IPPOConfig
+  config = config_cls(
     learning_rate=args.learning_rate,
     gamma=args.gamma,
     gae_lambda=args.gae_lambda,
@@ -117,9 +141,50 @@ def ippo_config_from_args(args: argparse.Namespace, control: str | None = None) 
   return config
 
 
+def create_algorithm_train_state(
+  algorithm: str,
+  rng: jax.Array,
+  adapter: MeltingPotVectorAdapter,
+  config: IPPOConfig | MAPPOConfig,
+):
+  if algorithm == "mappo":
+    return create_mappo_train_state(
+      rng,
+      adapter.observation_shape,
+      central_observation_shape(adapter.observation_shape, adapter.num_agents),
+      adapter.action_dim,
+      config,
+    )
+  return create_ippo_train_state(
+    rng,
+    adapter.observation_shape,
+    adapter.action_dim,
+    config,
+  )
+
+
+def policy_from_train_state(
+  algorithm: str,
+  train_state,
+  *,
+  adapter: MeltingPotVectorAdapter,
+  deterministic: bool,
+  seed: int,
+):
+  policy_fn = mappo_train_state_policy if algorithm == "mappo" else train_state_policy
+  return policy_fn(
+    train_state,
+    num_envs=adapter.num_envs,
+    num_agents=adapter.num_agents,
+    deterministic=deterministic,
+    seed=seed,
+  )
+
+
 def evaluate_checkpoint_mode(args: argparse.Namespace) -> None:
   checkpoint_dir = Path(args.eval_checkpoint)
   metadata = load_metadata(checkpoint_dir)
+  algorithm = metadata.get("algorithm", "ippo")
   substrate = args.substrate or metadata["substrate"]
   adapter = MeltingPotVectorAdapter(
     substrate=substrate,
@@ -137,21 +202,24 @@ def evaluate_checkpoint_mode(args: argparse.Namespace) -> None:
     ),
   )
   try:
-    config = IPPOConfig(**metadata["ippo_config"])
-    train_state = create_train_state(
+    config_payload = metadata.get("algorithm_config", metadata.get("ippo_config"))
+    if config_payload is None:
+      raise KeyError("checkpoint metadata missing algorithm_config")
+    config = MAPPOConfig(**config_payload) if algorithm == "mappo" else IPPOConfig(**config_payload)
+    train_state = create_algorithm_train_state(
+      algorithm,
       jax.random.PRNGKey(0),
-      adapter.observation_shape,
-      adapter.action_dim,
+      adapter,
       config,
     )
     params = load_params(checkpoint_dir / "checkpoint.msgpack", train_state.params)
     train_state = train_state.replace(params=params)
     result = evaluate_policy(
       adapter,
-      train_state_policy(
+      policy_from_train_state(
+        algorithm,
         train_state,
-        num_envs=adapter.num_envs,
-        num_agents=adapter.num_agents,
+        adapter=adapter,
         deterministic=not args.stochastic_eval,
         seed=args.seed,
       ),
@@ -234,7 +302,7 @@ def run_training(
   logger = RunLogger(run_dir)
   seed = args.seed + run_index * 10_000 + (5_000 if control else 0)
   rng = jax.random.PRNGKey(seed)
-  config = ippo_config_from_args(args, control)
+  config = algorithm_config_from_args(args, control)
   freeze_policy = control == "freeze-policy"
 
   logger.write_json(
@@ -244,7 +312,8 @@ def run_training(
       "run_index": run_index,
       "control": control,
       "seed": seed,
-      "ippo_config": dataclasses.asdict(config),
+      "algorithm": args.algorithm,
+      "algorithm_config": dataclasses.asdict(config),
     },
   )
   logger.write_json("versions.json", dependency_versions())
@@ -263,18 +332,18 @@ def run_training(
   try:
     observations = adapter.reset()
     rng, init_key = jax.random.split(rng)
-    train_state = create_train_state(
+    train_state = create_algorithm_train_state(
+      args.algorithm,
       init_key,
-      adapter.observation_shape,
-      adapter.action_dim,
+      adapter,
       config,
     )
     initial_result = evaluate_policy(
       adapter,
-      train_state_policy(
+      policy_from_train_state(
+        args.algorithm,
         train_state,
-        num_envs=adapter.num_envs,
-        num_agents=adapter.num_agents,
+        adapter=adapter,
         deterministic=not args.stochastic_eval,
         seed=seed + 2,
       ),
@@ -284,19 +353,30 @@ def run_training(
     logger.write_json("initial_policy_evaluation.json", initial_result)
     observations = adapter.reset()
 
-    update_fn = jax.jit(lambda state, batch, last_values, update_rng: ppo_update(
-      state,
-      batch,
-      last_values,
-      update_rng,
-      config,
-    ))
+    if args.algorithm == "mappo":
+      update_fn = jax.jit(lambda state, batch, last_values, update_rng: mappo_update(
+        state,
+        batch,
+        last_values,
+        update_rng,
+        config,
+      ))
+      collect_fn = collect_mappo_rollout
+    else:
+      update_fn = jax.jit(lambda state, batch, last_values, update_rng: ppo_update(
+        state,
+        batch,
+        last_values,
+        update_rng,
+        config,
+      ))
+      collect_fn = collect_rollout
 
     updates = max(1, args.total_env_steps // (args.num_envs * args.rollout_steps))
     env_steps = 0
     for update in range(1, updates + 1):
       rng, rollout_key, update_key = jax.random.split(rng, 3)
-      rollout = collect_rollout(
+      rollout = collect_fn(
         adapter,
         train_state,
         observations,
@@ -340,8 +420,17 @@ def run_training(
         "raw_observation_shape": adapter.raw_observation_shape,
         "observation_size": adapter.observation_size,
         "append_agent_id": adapter.append_agent_id,
+        "algorithm": args.algorithm,
+        "central_observation_shape": (
+          central_observation_shape(adapter.observation_shape, adapter.num_agents)
+          if args.algorithm == "mappo"
+          else None
+        ),
         "action_dim": adapter.action_dim,
-        "ippo_config": dataclasses.asdict(config),
+        "algorithm_config": dataclasses.asdict(config),
+        "ippo_config": (
+          dataclasses.asdict(config) if args.algorithm == "ippo" else None
+        ),
         "seed": seed,
         "control": control,
       },

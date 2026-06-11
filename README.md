@@ -12,7 +12,7 @@ the local baseline for future work.
 - Shimmy: PettingZoo-style compatibility wrapper.
 - `world_marl.envs.MeltingPotVectorAdapter`: batching, RGB normalization, reset,
   step, auto-reset, and rollout-friendly tensors.
-- JAX / Flax / Distrax / Optax: actor-critic policy, GAE, and PPO updates.
+- JAX / Flax / Distrax / Optax: IPPO and MAPPO policies, GAE, and PPO updates.
 
 The first milestone targets macOS arm64 with Python 3.11 and the `coins`
 substrate.
@@ -53,7 +53,11 @@ export XLA_PYTHON_CLIENT_MEM_FRACTION=0.60
 Verify that JAX sees the GPU before launching a long run:
 
 ```bash
-uv run world-marl-verify-install --require-gpu --observation-size 44 --append-agent-id
+uv run world-marl-verify-install \
+  --require-gpu \
+  --algorithm mappo \
+  --observation-size 44 \
+  --append-agent-id
 ```
 
 Melting Pot/dmlab2d environment stepping remains Python-side. The A100 speeds up
@@ -76,6 +80,7 @@ shorten episodes:
 
 ```bash
 uv run world-marl-train-e2e \
+  --algorithm ippo \
   --substrate coins \
   --num-envs 4 \
   --rollout-steps 64 \
@@ -91,11 +96,14 @@ uv run world-marl-train-e2e \
 This is useful for iteration, but the full validation command below is the
 stronger acceptance test.
 
-For an A100-backed run, start with a larger but still practical single-seed
-validation:
+For an A100-backed MAPPO run, start with a larger but still practical single-seed
+validation. MAPPO uses each agent's local observation for the actor and a
+centralized critic observation built from all agents' observations plus a
+target-agent identity channel:
 
 ```bash
 uv run world-marl-train-e2e \
+  --algorithm mappo \
   --substrate coins \
   --num-envs 8 \
   --rollout-steps 128 \
@@ -116,6 +124,7 @@ uv run world-marl-train-e2e \
 
 ```bash
 uv run world-marl-train-e2e \
+  --algorithm ippo \
   --substrate coins \
   --num-envs 4 \
   --rollout-steps 128 \

@@ -13,11 +13,13 @@ import numpy as np
 from flax.training.train_state import TrainState
 
 from world_marl.algs.ippo import select_actions
+from world_marl.algs.mappo import select_actions as select_mappo_actions
 from world_marl.envs.meltingpot_adapter import (
   MeltingPotVectorAdapter,
   flatten_agent_batch,
   unflatten_agent_actions,
 )
+from world_marl.training import build_central_observations
 
 
 PolicyFn = Callable[[np.ndarray], np.ndarray]
@@ -138,6 +140,47 @@ def train_state_policy(
       train_state,
       action_key,
       flat_observations,
+    )
+    return unflatten_agent_actions(
+      np.asarray(actions),
+      num_envs=num_envs,
+      num_agents=num_agents,
+    )
+
+  return act
+
+
+def mappo_train_state_policy(
+  train_state: TrainState,
+  *,
+  num_envs: int,
+  num_agents: int,
+  deterministic: bool = True,
+  seed: int = 0,
+) -> PolicyFn:
+  """Create a MAPPO policy function backed by a Flax TrainState."""
+  key = jax.random.PRNGKey(seed)
+  infer_fn = jax.jit(
+    lambda state, action_key, flat_obs, flat_central_obs: select_mappo_actions(
+      state,
+      action_key,
+      flat_obs,
+      flat_central_obs,
+      deterministic=deterministic,
+    )[0]
+  )
+
+  def act(observations: np.ndarray) -> np.ndarray:
+    nonlocal key
+    central_observations = build_central_observations(observations)
+    flat_observations = jnp.asarray(flatten_agent_batch(observations))
+    flat_central_observations = jnp.asarray(flatten_agent_batch(central_observations))
+    key, action_key = jax.random.split(key)
+    actions = infer_fn(
+      train_state,
+      action_key,
+      flat_observations,
+      flat_central_observations,
     )
     return unflatten_agent_actions(
       np.asarray(actions),
