@@ -382,6 +382,8 @@ def run_training(
         observations,
         rollout_key,
         rollout_steps=args.rollout_steps,
+        gamma=config.gamma,
+        gae_lambda=config.gae_lambda,
       )
       observations = rollout.next_observations
       update_metrics: dict[str, Any] = {}

@@ -26,6 +26,7 @@ class VectorStep:
   dones: np.ndarray
   completed_returns: tuple[tuple[float, ...], ...]
   completed_lengths: tuple[int, ...]
+  step_infos: tuple[dict[str, Any], ...]
   infos: tuple[dict[str, Any], ...]
 
 
@@ -114,6 +115,7 @@ class MeltingPotVectorAdapter:
     dones = np.zeros((self.num_envs, self.num_agents), dtype=np.float32)
     completed_returns: list[tuple[float, ...]] = []
     completed_lengths: list[int] = []
+    step_infos: list[dict[str, Any]] = []
     infos: list[dict[str, Any]] = []
 
     for env_index, env in enumerate(self._envs):
@@ -122,6 +124,12 @@ class MeltingPotVectorAdapter:
         for agent_index, agent in enumerate(self.agents)
       }
       obs, reward_dict, terminations, truncations, info_dict = env.step(action_dict)
+      step_infos.append(
+        {
+          "env_index": env_index,
+          "agent_infos": info_dict,
+        }
+      )
 
       reward_row = np.array(
         [reward_dict.get(agent, 0.0) for agent in self.agents], dtype=np.float32
@@ -164,6 +172,7 @@ class MeltingPotVectorAdapter:
       dones=dones,
       completed_returns=tuple(completed_returns),
       completed_lengths=tuple(completed_lengths),
+      step_infos=tuple(step_infos),
       infos=tuple(infos),
     )
 

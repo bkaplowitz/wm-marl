@@ -81,6 +81,8 @@ def main() -> None:
         observations,
         rollout_key,
         rollout_steps=4,
+        gamma=config.gamma,
+        gae_lambda=config.gae_lambda,
       )
       update_fn = jax.jit(lambda state, batch, last_values, rng: mappo_update(
         state,
@@ -102,6 +104,8 @@ def main() -> None:
         observations,
         rollout_key,
         rollout_steps=4,
+        gamma=config.gamma,
+        gae_lambda=config.gae_lambda,
       )
       update_fn = jax.jit(lambda state, batch, last_values, rng: ppo_update(
         state,

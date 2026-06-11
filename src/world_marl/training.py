@@ -10,8 +10,9 @@ import jax.numpy as jnp
 import numpy as np
 from flax.training.train_state import TrainState
 
-from world_marl.algs.ippo import RolloutBatch, select_actions
-from world_marl.algs.mappo import MAPPORolloutBatch, select_actions as select_mappo_actions
+from world_marl.algs.gae import compute_gae
+from world_marl.algs.ippo import RolloutBatch
+from world_marl.algs.mappo import MAPPORolloutBatch
 from world_marl.envs.meltingpot_adapter import (
   MeltingPotVectorAdapter,
   flatten_agent_batch,
@@ -34,6 +35,8 @@ def collect_rollout(
   rng: jax.Array,
   *,
   rollout_steps: int,
+  gamma: float = 0.99,
+  gae_lambda: float = 0.95,
 ) -> RolloutResult:
   """Collect a rollout by stepping the Python-side Melting Pot adapter."""
   if rollout_steps < 1:
@@ -45,15 +48,12 @@ def collect_rollout(
   reward_rows = []
   done_rows = []
   value_rows = []
+  entropy_rows = []
+  step_infos: list[dict[str, Any]] = []
   completed_returns: list[tuple[float, ...]] = []
   completed_lengths: list[int] = []
   infer_fn = jax.jit(
-    lambda state, key, flat_obs: select_actions(
-      state,
-      key,
-      flat_obs,
-      deterministic=False,
-    )
+    _ippo_infer_with_entropy
   )
   value_fn = jax.jit(
     lambda state, flat_obs: state.apply_fn(
@@ -66,7 +66,7 @@ def collect_rollout(
   for _ in range(rollout_steps):
     flat_observations = flatten_agent_batch(current_observations)
     rng, action_rng = jax.random.split(rng)
-    actions, log_probs, values = infer_fn(
+    actions, log_probs, values, entropies = infer_fn(
       train_state,
       action_rng,
       jnp.asarray(flat_observations),
@@ -84,6 +84,8 @@ def collect_rollout(
     reward_rows.append(step.rewards.reshape((-1,)))
     done_rows.append(step.dones.reshape((-1,)))
     value_rows.append(np.asarray(values, dtype=np.float32))
+    entropy_rows.append(np.asarray(entropies, dtype=np.float32))
+    step_infos.extend(step.step_infos)
     completed_returns.extend(step.completed_returns)
     completed_lengths.extend(step.completed_lengths)
     current_observations = step.observations
@@ -118,6 +120,20 @@ def collect_rollout(
       float(np.mean(completed_lengths)) if completed_lengths else None
     ),
   }
+  metrics.update(
+    _rollout_diagnostics(
+      batch=batch,
+      last_values=last_values,
+      entropies=np.stack(entropy_rows, axis=0),
+      completed_returns=completed_returns,
+      step_infos=step_infos,
+      action_dim=adapter.action_dim,
+      num_envs=adapter.num_envs,
+      num_agents=adapter.num_agents,
+      gamma=gamma,
+      gae_lambda=gae_lambda,
+    )
+  )
   return RolloutResult(
     batch=batch,
     next_observations=current_observations,
@@ -133,6 +149,8 @@ def collect_mappo_rollout(
   rng: jax.Array,
   *,
   rollout_steps: int,
+  gamma: float = 0.99,
+  gae_lambda: float = 0.95,
 ) -> RolloutResult:
   """Collect a rollout for MAPPO with centralized critic observations."""
   if rollout_steps < 1:
@@ -145,16 +163,12 @@ def collect_mappo_rollout(
   reward_rows = []
   done_rows = []
   value_rows = []
+  entropy_rows = []
+  step_infos: list[dict[str, Any]] = []
   completed_returns: list[tuple[float, ...]] = []
   completed_lengths: list[int] = []
   infer_fn = jax.jit(
-    lambda state, key, flat_obs, flat_central_obs: select_mappo_actions(
-      state,
-      key,
-      flat_obs,
-      flat_central_obs,
-      deterministic=False,
-    )
+    _mappo_infer_with_entropy
   )
   value_fn = jax.jit(
     lambda state, flat_obs, flat_central_obs: state.apply_fn(
@@ -170,7 +184,7 @@ def collect_mappo_rollout(
     flat_observations = flatten_agent_batch(current_observations)
     flat_central_observations = flatten_agent_batch(central_observations)
     rng, action_rng = jax.random.split(rng)
-    actions, log_probs, values = infer_fn(
+    actions, log_probs, values, entropies = infer_fn(
       train_state,
       action_rng,
       jnp.asarray(flat_observations),
@@ -190,6 +204,8 @@ def collect_mappo_rollout(
     reward_rows.append(step.rewards.reshape((-1,)))
     done_rows.append(step.dones.reshape((-1,)))
     value_rows.append(np.asarray(values, dtype=np.float32))
+    entropy_rows.append(np.asarray(entropies, dtype=np.float32))
+    step_infos.extend(step.step_infos)
     completed_returns.extend(step.completed_returns)
     completed_lengths.extend(step.completed_lengths)
     current_observations = step.observations
@@ -231,6 +247,20 @@ def collect_mappo_rollout(
       float(np.mean(completed_lengths)) if completed_lengths else None
     ),
   }
+  metrics.update(
+    _rollout_diagnostics(
+      batch=batch,
+      last_values=last_values,
+      entropies=np.stack(entropy_rows, axis=0),
+      completed_returns=completed_returns,
+      step_infos=step_infos,
+      action_dim=adapter.action_dim,
+      num_envs=adapter.num_envs,
+      num_agents=adapter.num_agents,
+      gamma=gamma,
+      gae_lambda=gae_lambda,
+    )
+  )
   return RolloutResult(
     batch=batch,
     next_observations=current_observations,
@@ -273,6 +303,148 @@ def build_central_observations(observations: np.ndarray) -> np.ndarray:
     (num_envs, num_agents, height, width, num_agents),
   )
   return np.concatenate([central, target_ids], axis=-1)
+
+
+def _ippo_infer_with_entropy(state, key, flat_obs):
+  policy, values = state.apply_fn({"params": state.params}, flat_obs)
+  actions = policy.sample(seed=key)
+  return (
+    actions.astype(jnp.int32),
+    policy.log_prob(actions),
+    values,
+    policy.entropy(),
+  )
+
+
+def _mappo_infer_with_entropy(state, key, flat_obs, flat_central_obs):
+  policy, values = state.apply_fn(
+    {"params": state.params},
+    flat_obs,
+    flat_central_obs,
+  )
+  actions = policy.sample(seed=key)
+  return (
+    actions.astype(jnp.int32),
+    policy.log_prob(actions),
+    values,
+    policy.entropy(),
+  )
+
+
+def _rollout_diagnostics(
+  *,
+  batch: RolloutBatch | MAPPORolloutBatch,
+  last_values: jnp.ndarray,
+  entropies: np.ndarray,
+  completed_returns: list[tuple[float, ...]],
+  step_infos: list[dict[str, Any]],
+  action_dim: int,
+  num_envs: int,
+  num_agents: int,
+  gamma: float,
+  gae_lambda: float,
+) -> dict[str, Any]:
+  actions = np.asarray(batch.actions)
+  rewards = np.asarray(batch.rewards, dtype=np.float32)
+  values = np.asarray(batch.values, dtype=np.float32)
+  targets = np.asarray(
+    compute_gae(
+      batch.rewards,
+      batch.values,
+      batch.dones,
+      last_values,
+      gamma,
+      gae_lambda,
+    )[1],
+    dtype=np.float32,
+  )
+
+  action_counts = np.bincount(actions.reshape(-1), minlength=action_dim)
+  action_total = max(1, int(action_counts.sum()))
+  action_counts_by_agent = []
+  action_freq_by_agent = []
+  actions_by_agent = actions.reshape((actions.shape[0], num_envs, num_agents))
+  for agent_index in range(num_agents):
+    counts = np.bincount(
+      actions_by_agent[:, :, agent_index].reshape(-1),
+      minlength=action_dim,
+    )
+    total = max(1, int(counts.sum()))
+    action_counts_by_agent.append(counts.astype(int).tolist())
+    action_freq_by_agent.append((counts / total).astype(float).tolist())
+
+  rewards_by_agent = rewards.reshape((rewards.shape[0], num_envs, num_agents))
+  entropies_by_agent = entropies.reshape((entropies.shape[0], num_envs, num_agents))
+  completed_array = (
+    np.asarray(completed_returns, dtype=np.float32)
+    if completed_returns
+    else np.zeros((0, num_agents), dtype=np.float32)
+  )
+
+  metrics: dict[str, Any] = {
+    "action_counts": action_counts.astype(int).tolist(),
+    "action_frequencies": (action_counts / action_total).astype(float).tolist(),
+    "action_counts_by_agent": action_counts_by_agent,
+    "action_frequencies_by_agent": action_freq_by_agent,
+    "policy_entropy_mean": float(entropies.mean()),
+    "policy_entropy_by_agent": entropies_by_agent.mean(axis=(0, 1)).astype(float).tolist(),
+    "policy_entropy_min": float(entropies.min()),
+    "policy_entropy_max": float(entropies.max()),
+    "rollout_reward_mean_by_agent": rewards_by_agent.mean(axis=(0, 1)).astype(float).tolist(),
+    "rollout_reward_sum_by_agent": rewards_by_agent.sum(axis=(0, 1)).astype(float).tolist(),
+    "value_mean": float(values.mean()),
+    "value_std": float(values.std()),
+    "value_target_mean": float(targets.mean()),
+    "value_target_std": float(targets.std()),
+    "value_explained_variance": _explained_variance(values, targets),
+  }
+  if completed_returns:
+    metrics["episode_return_mean_by_agent"] = (
+      completed_array.mean(axis=0).astype(float).tolist()
+    )
+  else:
+    metrics["episode_return_mean_by_agent"] = None
+  metrics.update(_info_diagnostics(step_infos))
+  return metrics
+
+
+def _explained_variance(predictions: np.ndarray, targets: np.ndarray) -> float:
+  target_variance = float(np.var(targets))
+  if target_variance < 1e-8:
+    return 0.0
+  return float(1.0 - np.var(targets - predictions) / target_variance)
+
+
+def _info_diagnostics(step_infos: list[dict[str, Any]]) -> dict[str, Any]:
+  counters = {
+    "info_items_seen": 0,
+    "coin_related_info_items": 0,
+    "coin_consumed_events": 0,
+  }
+
+  def visit(value: Any) -> None:
+    if isinstance(value, dict):
+      for key, item in value.items():
+        counters["info_items_seen"] += 1
+        key_text = str(key).lower()
+        if "coin" in key_text:
+          counters["coin_related_info_items"] += 1
+        if "coin_consumed" in key_text:
+          counters["coin_consumed_events"] += 1
+        visit(item)
+    elif isinstance(value, (list, tuple)):
+      for item in value:
+        visit(item)
+    elif isinstance(value, str):
+      text = value.lower()
+      if "coin" in text:
+        counters["coin_related_info_items"] += 1
+      if "coin_consumed" in text:
+        counters["coin_consumed_events"] += 1
+
+  for info in step_infos:
+    visit(info)
+  return counters
 
 
 def training_window_means(

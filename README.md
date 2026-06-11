@@ -155,6 +155,16 @@ Each run writes:
 
 The top-level experiment directory also writes `summary.json`.
 
+Each `metrics.jsonl` row includes rollout diagnostics for debugging learning
+failures:
+
+- sampled action counts/frequencies, both aggregate and per agent;
+- sampled-policy entropy, aggregate and per agent;
+- rollout rewards and completed-episode returns split by agent;
+- value prediction mean/std, GAE target mean/std, and value explained variance;
+- generic info/event counters, including coin-related and `coin_consumed` keys
+  if the Melting Pot wrapper exposes them.
+
 Pass criteria:
 
 - all runs complete;
