@@ -30,3 +30,21 @@ def test_adapter_shapes_and_auto_reset(dummy_env_factory):
     assert step.completed_returns[0] == (3.0, 3.0)
   finally:
     adapter.close()
+
+
+def test_adapter_can_append_agent_id_channels(dummy_env_factory):
+  adapter = MeltingPotVectorAdapter(
+    num_envs=1,
+    env_factory=dummy_env_factory,
+    observation_size=4,
+    append_agent_id=True,
+  )
+  try:
+    observations = adapter.reset()
+    assert observations.shape == (1, 2, 4, 4, 5)
+    np.testing.assert_allclose(observations[0, 0, :, :, 3], 1.0)
+    np.testing.assert_allclose(observations[0, 0, :, :, 4], 0.0)
+    np.testing.assert_allclose(observations[0, 1, :, :, 3], 0.0)
+    np.testing.assert_allclose(observations[0, 1, :, :, 4], 1.0)
+  finally:
+    adapter.close()

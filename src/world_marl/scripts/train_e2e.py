@@ -59,6 +59,16 @@ def parse_args() -> argparse.Namespace:
     default=None,
     help="Optional square RGB downsample size, e.g. 22 or 44. Default keeps 88x88.",
   )
+  parser.add_argument(
+    "--append-agent-id",
+    action="store_true",
+    help="Append one-hot agent identity channels to each RGB observation.",
+  )
+  parser.add_argument(
+    "--stochastic-eval",
+    action="store_true",
+    help="Evaluate learned policies by sampling instead of taking argmax actions.",
+  )
   parser.add_argument("--eval-max-steps", type=int, default=None)
   parser.add_argument("--out-dir", default="runs")
   parser.add_argument("--min-improvement", type=float, default=0.2)
@@ -120,6 +130,11 @@ def evaluate_checkpoint_mode(args: argparse.Namespace) -> None:
       if args.observation_size is not None
       else metadata.get("observation_size")
     ),
+    append_agent_id=(
+      args.append_agent_id
+      if args.append_agent_id
+      else metadata.get("append_agent_id", False)
+    ),
   )
   try:
     config = IPPOConfig(**metadata["ippo_config"])
@@ -137,7 +152,7 @@ def evaluate_checkpoint_mode(args: argparse.Namespace) -> None:
         train_state,
         num_envs=adapter.num_envs,
         num_agents=adapter.num_agents,
-        deterministic=True,
+        deterministic=not args.stochastic_eval,
         seed=args.seed,
       ),
       episodes=args.eval_episodes,
@@ -154,6 +169,7 @@ def evaluate_random_baseline(args: argparse.Namespace, seed: int) -> dict[str, A
     num_envs=args.num_envs,
     max_cycles=args.max_cycles,
     observation_size=args.observation_size,
+    append_agent_id=args.append_agent_id,
   )
   try:
     result = evaluate_policy(
@@ -192,6 +208,10 @@ def evaluate_checkpoint_subprocess(
   ]
   if args.observation_size is not None:
     command.extend(["--observation-size", str(args.observation_size)])
+  if args.append_agent_id:
+    command.append("--append-agent-id")
+  if args.stochastic_eval:
+    command.append("--stochastic-eval")
   if args.eval_max_steps is not None:
     command.extend(["--eval-max-steps", str(args.eval_max_steps)])
   result = subprocess.run(
@@ -237,6 +257,7 @@ def run_training(
     num_envs=args.num_envs,
     max_cycles=args.max_cycles,
     observation_size=args.observation_size,
+    append_agent_id=args.append_agent_id,
   )
   rows: list[dict[str, Any]] = []
   try:
@@ -254,7 +275,7 @@ def run_training(
         train_state,
         num_envs=adapter.num_envs,
         num_agents=adapter.num_agents,
-        deterministic=True,
+        deterministic=not args.stochastic_eval,
         seed=seed + 2,
       ),
       episodes=args.eval_episodes,
@@ -318,6 +339,7 @@ def run_training(
         "observation_shape": adapter.observation_shape,
         "raw_observation_shape": adapter.raw_observation_shape,
         "observation_size": adapter.observation_size,
+        "append_agent_id": adapter.append_agent_id,
         "action_dim": adapter.action_dim,
         "ippo_config": dataclasses.asdict(config),
         "seed": seed,
@@ -330,7 +352,7 @@ def run_training(
   reload_result = evaluate_checkpoint_subprocess(
     args,
     checkpoint_dir,
-    seed=seed + 3,
+    seed=seed + 2,
   )
   logger.write_json("reload_evaluation.json", reload_result)
 

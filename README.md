@@ -53,7 +53,7 @@ export XLA_PYTHON_CLIENT_MEM_FRACTION=0.60
 Verify that JAX sees the GPU before launching a long run:
 
 ```bash
-uv run world-marl-verify-install --require-gpu --observation-size 44
+uv run world-marl-verify-install --require-gpu --observation-size 44 --append-agent-id
 ```
 
 Melting Pot/dmlab2d environment stepping remains Python-side. The A100 speeds up
@@ -104,6 +104,8 @@ uv run world-marl-train-e2e \
   --num-runs 1 \
   --max-cycles 200 \
   --observation-size 44 \
+  --append-agent-id \
+  --stochastic-eval \
   --learning-rate 0.00025 \
   --update-epochs 4 \
   --num-minibatches 8 \

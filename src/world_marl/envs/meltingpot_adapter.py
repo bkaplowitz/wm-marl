@@ -49,6 +49,7 @@ class MeltingPotVectorAdapter:
     num_envs: int = 1,
     max_cycles: int = 1000,
     observation_size: int | tuple[int, int] | None = None,
+    append_agent_id: bool = False,
     env_factory: EnvFactory | None = None,
     auto_reset: bool = True,
   ) -> None:
@@ -59,6 +60,7 @@ class MeltingPotVectorAdapter:
     self.num_envs = num_envs
     self.max_cycles = max_cycles
     self.observation_size = _normalize_observation_size(observation_size)
+    self.append_agent_id = append_agent_id
     self.auto_reset = auto_reset
     self._env_factory = env_factory or (
       lambda: make_meltingpot_env(substrate, max_cycles=max_cycles)
@@ -73,7 +75,7 @@ class MeltingPotVectorAdapter:
 
     self.action_dim = self._get_action_dim(first_env, self.agents[0])
     self.raw_observation_shape = self._get_rgb_shape(first_env, self.agents[0])
-    self.observation_shape = self._downsampled_shape(self.raw_observation_shape)
+    self.observation_shape = self._final_observation_shape(self.raw_observation_shape)
     for env in self._envs:
       if tuple(env.possible_agents) != self.agents:
         raise ValueError("all vectorized envs must expose identical agents")
@@ -179,7 +181,10 @@ class MeltingPotVectorAdapter:
       env.close()
 
   def _stack_observations(self, observations: dict[str, Any]) -> np.ndarray:
-    rows = [self._extract_rgb(observations[agent]) for agent in self.agents]
+    rows = [
+      self._append_agent_id(self._extract_rgb(observations[agent]), agent_index)
+      for agent_index, agent in enumerate(self.agents)
+    ]
     return np.stack(rows, axis=0)
 
   def _extract_rgb(self, agent_observation: Any) -> np.ndarray:
@@ -205,10 +210,23 @@ class MeltingPotVectorAdapter:
     col_indices = np.linspace(0, width - 1, target_width).astype(np.int32)
     return rgb_array[row_indices][:, col_indices]
 
-  def _downsampled_shape(self, raw_shape: tuple[int, int, int]) -> tuple[int, int, int]:
+  def _final_observation_shape(self, raw_shape: tuple[int, int, int]) -> tuple[int, int, int]:
     if self.observation_size is None:
-      return raw_shape
-    return (self.observation_size[0], self.observation_size[1], raw_shape[2])
+      height, width, channels = raw_shape
+    else:
+      height, width = self.observation_size
+      channels = raw_shape[2]
+    if self.append_agent_id:
+      channels += self.num_agents
+    return (height, width, channels)
+
+  def _append_agent_id(self, rgb_array: np.ndarray, agent_index: int) -> np.ndarray:
+    if not self.append_agent_id:
+      return rgb_array
+    height, width = rgb_array.shape[:2]
+    id_channels = np.zeros((height, width, self.num_agents), dtype=rgb_array.dtype)
+    id_channels[:, :, agent_index] = 1.0
+    return np.concatenate([rgb_array, id_channels], axis=-1)
 
   @staticmethod
   def _get_action_dim(env: Any, agent: str) -> int:

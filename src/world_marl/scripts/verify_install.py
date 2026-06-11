@@ -21,6 +21,11 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument("--max-cycles", type=int, default=1000)
   parser.add_argument("--observation-size", type=int, default=22)
   parser.add_argument(
+    "--append-agent-id",
+    action="store_true",
+    help="Append one-hot agent identity channels to each RGB observation.",
+  )
+  parser.add_argument(
     "--require-gpu",
     action="store_true",
     help="Exit nonzero unless JAX exposes at least one GPU device.",
@@ -40,6 +45,7 @@ def main() -> None:
     num_envs=args.num_envs,
     max_cycles=args.max_cycles,
     observation_size=args.observation_size,
+    append_agent_id=args.append_agent_id,
   )
   try:
     observations = adapter.reset()
@@ -88,6 +94,7 @@ def main() -> None:
       "num_agents": adapter.num_agents,
       "observation_shape": adapter.observation_shape,
       "raw_observation_shape": adapter.raw_observation_shape,
+      "append_agent_id": adapter.append_agent_id,
       "action_dim": adapter.action_dim,
       "rollout": rollout.metrics,
       "update_metrics": metrics,
