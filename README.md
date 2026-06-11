@@ -1,17 +1,18 @@
 # JaxMARL-Style PPO on Melting Pot
 
-This project validates a JAX/JaxMARL-style IPPO training pipeline on Melting Pot
+This project validates a JAX/JaxMARL-style PPO training pipeline on Melting Pot
 substrates through Shimmy. It does **not** claim that the upstream JaxMARL
 baseline scripts run unchanged on Melting Pot. JaxMARL is used as a dependency
-and implementation reference; the reusable IPPO trainer in this repository is
-the local baseline for future work.
+and implementation reference; the reusable local IPPO/MAPPO trainers in this
+repository are the project baselines for future work.
 
 ## Architecture
 
 - Melting Pot / dmlab2d: Python-side substrate stepping.
 - Shimmy: PettingZoo-style compatibility wrapper.
 - `world_marl.envs.MeltingPotVectorAdapter`: batching, RGB normalization, reset,
-  step, auto-reset, and rollout-friendly tensors.
+  optional scalar-observation channels, step, auto-reset, and rollout-friendly
+  tensors.
 - JAX / Flax / Distrax / Optax: IPPO and MAPPO policies, GAE, and PPO updates.
 
 The first milestone targets macOS arm64 with Python 3.11 and the `coins`
@@ -57,6 +58,7 @@ uv run world-marl-verify-install \
   --require-gpu \
   --algorithm mappo \
   --observation-size 44 \
+  --include-observation-scalars \
   --append-agent-id
 ```
 
@@ -99,7 +101,9 @@ stronger acceptance test.
 For an A100-backed MAPPO run, start with a larger but still practical single-seed
 validation. MAPPO uses each agent's local observation for the actor and a
 centralized critic observation built from all agents' observations plus a
-target-agent identity channel:
+target-agent identity channel. `--include-observation-scalars` appends scalar
+Melting Pot observation keys, such as `COLLECTIVE_REWARD`, as constant channels
+after RGB; `--append-agent-id` then appends one-hot identity channels.
 
 ```bash
 uv run world-marl-train-e2e \
@@ -110,8 +114,9 @@ uv run world-marl-train-e2e \
   --total-env-steps 200000 \
   --eval-episodes 50 \
   --num-runs 1 \
-  --max-cycles 200 \
+  --max-cycles 500 \
   --observation-size 44 \
+  --include-observation-scalars \
   --append-agent-id \
   --stochastic-eval \
   --learning-rate 0.00025 \

@@ -40,6 +40,11 @@ def parse_args() -> argparse.Namespace:
     help="Append one-hot agent identity channels to each RGB observation.",
   )
   parser.add_argument(
+    "--include-observation-scalars",
+    action="store_true",
+    help="Append scalar Melting Pot observation keys as constant image channels.",
+  )
+  parser.add_argument(
     "--require-gpu",
     action="store_true",
     help="Exit nonzero unless JAX exposes at least one GPU device.",
@@ -59,6 +64,7 @@ def main() -> None:
     num_envs=args.num_envs,
     max_cycles=args.max_cycles,
     observation_size=args.observation_size,
+    include_observation_scalars=args.include_observation_scalars,
     append_agent_id=args.append_agent_id,
   )
   try:
@@ -138,6 +144,8 @@ def main() -> None:
         else None
       ),
       "raw_observation_shape": adapter.raw_observation_shape,
+      "include_observation_scalars": adapter.include_observation_scalars,
+      "scalar_observation_keys": adapter.scalar_observation_keys,
       "append_agent_id": adapter.append_agent_id,
       "action_dim": adapter.action_dim,
       "rollout": rollout.metrics,

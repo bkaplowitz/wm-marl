@@ -85,6 +85,11 @@ def parse_args() -> argparse.Namespace:
     help="Append one-hot agent identity channels to each RGB observation.",
   )
   parser.add_argument(
+    "--include-observation-scalars",
+    action="store_true",
+    help="Append scalar Melting Pot observation keys as constant image channels.",
+  )
+  parser.add_argument(
     "--stochastic-eval",
     action="store_true",
     help="Evaluate learned policies by sampling instead of taking argmax actions.",
@@ -195,6 +200,11 @@ def evaluate_checkpoint_mode(args: argparse.Namespace) -> None:
       if args.observation_size is not None
       else metadata.get("observation_size")
     ),
+    include_observation_scalars=(
+      args.include_observation_scalars
+      if args.include_observation_scalars
+      else metadata.get("include_observation_scalars", False)
+    ),
     append_agent_id=(
       args.append_agent_id
       if args.append_agent_id
@@ -237,6 +247,7 @@ def evaluate_random_baseline(args: argparse.Namespace, seed: int) -> dict[str, A
     num_envs=args.num_envs,
     max_cycles=args.max_cycles,
     observation_size=args.observation_size,
+    include_observation_scalars=args.include_observation_scalars,
     append_agent_id=args.append_agent_id,
   )
   try:
@@ -276,6 +287,8 @@ def evaluate_checkpoint_subprocess(
   ]
   if args.observation_size is not None:
     command.extend(["--observation-size", str(args.observation_size)])
+  if args.include_observation_scalars:
+    command.append("--include-observation-scalars")
   if args.append_agent_id:
     command.append("--append-agent-id")
   if args.stochastic_eval:
@@ -326,6 +339,7 @@ def run_training(
     num_envs=args.num_envs,
     max_cycles=args.max_cycles,
     observation_size=args.observation_size,
+    include_observation_scalars=args.include_observation_scalars,
     append_agent_id=args.append_agent_id,
   )
   rows: list[dict[str, Any]] = []
@@ -421,6 +435,8 @@ def run_training(
         "observation_shape": adapter.observation_shape,
         "raw_observation_shape": adapter.raw_observation_shape,
         "observation_size": adapter.observation_size,
+        "include_observation_scalars": adapter.include_observation_scalars,
+        "scalar_observation_keys": adapter.scalar_observation_keys,
         "append_agent_id": adapter.append_agent_id,
         "algorithm": args.algorithm,
         "central_observation_shape": (

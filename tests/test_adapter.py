@@ -48,3 +48,33 @@ def test_adapter_can_append_agent_id_channels(dummy_env_factory):
     np.testing.assert_allclose(observations[0, 1, :, :, 4], 1.0)
   finally:
     adapter.close()
+
+
+def test_adapter_can_append_scalar_observation_channels(dummy_env_factory):
+  adapter = MeltingPotVectorAdapter(
+    num_envs=1,
+    env_factory=dummy_env_factory,
+    observation_size=4,
+    include_observation_scalars=True,
+    append_agent_id=True,
+  )
+  try:
+    observations = adapter.reset()
+    assert adapter.scalar_observation_keys == (
+      "COLLECTIVE_REWARD",
+      "MISMATCHED_COIN_COLLECTED_BY_PARTNER",
+    )
+    assert adapter.observation_shape == (4, 4, 7)
+    assert observations.shape == (1, 2, 4, 4, 7)
+
+    np.testing.assert_allclose(observations[0, 0, :, :, 3], 0.0)
+    np.testing.assert_allclose(observations[0, 0, :, :, 4], 0.0)
+    np.testing.assert_allclose(observations[0, 1, :, :, 3], 0.0)
+    np.testing.assert_allclose(observations[0, 1, :, :, 4], 1.0)
+
+    np.testing.assert_allclose(observations[0, 0, :, :, 5], 1.0)
+    np.testing.assert_allclose(observations[0, 0, :, :, 6], 0.0)
+    np.testing.assert_allclose(observations[0, 1, :, :, 5], 0.0)
+    np.testing.assert_allclose(observations[0, 1, :, :, 6], 1.0)
+  finally:
+    adapter.close()

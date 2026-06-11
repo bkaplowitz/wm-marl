@@ -16,7 +16,11 @@ class DummyBox:
 
 class DummyDictSpace:
   def __init__(self, shape: tuple[int, ...]) -> None:
-    self.spaces = {"RGB": DummyBox(shape)}
+    self.spaces = {
+      "RGB": DummyBox(shape),
+      "COLLECTIVE_REWARD": DummyBox(()),
+      "MISMATCHED_COIN_COLLECTED_BY_PARTNER": DummyBox(()),
+    }
 
 
 class DummyParallelEnv:
@@ -61,7 +65,17 @@ class DummyParallelEnv:
   def _obs(self):
     value = self.steps * 10
     rgb = np.full(self.image_shape, value, dtype=np.uint8)
-    return {agent: {"RGB": rgb} for agent in self.possible_agents}
+    return {
+      agent: {
+        "RGB": rgb,
+        "COLLECTIVE_REWARD": np.asarray(self.steps, dtype=np.float64),
+        "MISMATCHED_COIN_COLLECTED_BY_PARTNER": np.asarray(
+          agent_index,
+          dtype=np.float64,
+        ),
+      }
+      for agent_index, agent in enumerate(self.possible_agents)
+    }
 
 
 @pytest.fixture

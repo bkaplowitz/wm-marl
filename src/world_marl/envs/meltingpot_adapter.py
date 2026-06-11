@@ -50,6 +50,7 @@ class MeltingPotVectorAdapter:
     num_envs: int = 1,
     max_cycles: int = 1000,
     observation_size: int | tuple[int, int] | None = None,
+    include_observation_scalars: bool = False,
     append_agent_id: bool = False,
     env_factory: EnvFactory | None = None,
     auto_reset: bool = True,
@@ -61,6 +62,7 @@ class MeltingPotVectorAdapter:
     self.num_envs = num_envs
     self.max_cycles = max_cycles
     self.observation_size = _normalize_observation_size(observation_size)
+    self.include_observation_scalars = include_observation_scalars
     self.append_agent_id = append_agent_id
     self.auto_reset = auto_reset
     self._env_factory = env_factory or (
@@ -76,6 +78,11 @@ class MeltingPotVectorAdapter:
 
     self.action_dim = self._get_action_dim(first_env, self.agents[0])
     self.raw_observation_shape = self._get_rgb_shape(first_env, self.agents[0])
+    self.scalar_observation_keys = (
+      self._get_scalar_observation_keys(first_env, self.agents[0])
+      if include_observation_scalars
+      else ()
+    )
     self.observation_shape = self._final_observation_shape(self.raw_observation_shape)
     for env in self._envs:
       if tuple(env.possible_agents) != self.agents:
@@ -85,6 +92,9 @@ class MeltingPotVectorAdapter:
           raise ValueError("all agents must share the same discrete action dim")
         if self._get_rgb_shape(env, agent) != self.raw_observation_shape:
           raise ValueError("all agents must share the same RGB observation shape")
+        if include_observation_scalars:
+          if self._get_scalar_observation_keys(env, agent) != self.scalar_observation_keys:
+            raise ValueError("all agents must share scalar observation keys")
 
     self._episode_returns = np.zeros(
       (self.num_envs, self.num_agents), dtype=np.float32
@@ -191,7 +201,13 @@ class MeltingPotVectorAdapter:
 
   def _stack_observations(self, observations: dict[str, Any]) -> np.ndarray:
     rows = [
-      self._append_agent_id(self._extract_rgb(observations[agent]), agent_index)
+      self._append_agent_id(
+        self._append_scalar_channels(
+          self._extract_rgb(observations[agent]),
+          observations[agent],
+        ),
+        agent_index,
+      )
       for agent_index, agent in enumerate(self.agents)
     ]
     return np.stack(rows, axis=0)
@@ -225,9 +241,33 @@ class MeltingPotVectorAdapter:
     else:
       height, width = self.observation_size
       channels = raw_shape[2]
+    channels += len(self.scalar_observation_keys)
     if self.append_agent_id:
       channels += self.num_agents
     return (height, width, channels)
+
+  def _append_scalar_channels(
+    self,
+    rgb_array: np.ndarray,
+    agent_observation: Any,
+  ) -> np.ndarray:
+    if not self.scalar_observation_keys:
+      return rgb_array
+    if not isinstance(agent_observation, dict):
+      raise TypeError("scalar observations require dict observations")
+
+    height, width = rgb_array.shape[:2]
+    scalar_channels = []
+    for key in self.scalar_observation_keys:
+      if key not in agent_observation:
+        raise KeyError(f"expected Melting Pot observation key {key!r}")
+      value = np.asarray(agent_observation[key], dtype=np.float32)
+      if value.size != 1:
+        raise ValueError(f"expected scalar observation for key {key!r}, got {value.shape}")
+      scalar_channels.append(
+        np.full((height, width, 1), float(value.reshape(())), dtype=rgb_array.dtype)
+      )
+    return np.concatenate([rgb_array, *scalar_channels], axis=-1)
 
   def _append_agent_id(self, rgb_array: np.ndarray, agent_index: int) -> np.ndarray:
     if not self.append_agent_id:
@@ -257,6 +297,20 @@ class MeltingPotVectorAdapter:
     if shape is None or len(shape) != 3:
       raise ValueError(f"expected RGB observation shape [H, W, C], got {shape}")
     return tuple(int(dim) for dim in shape)
+
+  @staticmethod
+  def _get_scalar_observation_keys(env: Any, agent: str) -> tuple[str, ...]:
+    observation_space = env.observation_space(agent)
+    if not hasattr(observation_space, "spaces"):
+      return ()
+    keys = []
+    for key, space in observation_space.spaces.items():
+      if key == "RGB":
+        continue
+      shape = getattr(space, "shape", None)
+      if shape in ((), (1,)):
+        keys.append(str(key))
+    return tuple(sorted(keys))
 
 
 def flatten_agent_batch(observations: np.ndarray) -> np.ndarray:

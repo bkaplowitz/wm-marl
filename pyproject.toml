@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "world-marl"
 version = "0.1.0"
-description = "JaxMARL-style IPPO validation on Melting Pot substrates through Shimmy."
+description = "JaxMARL-style PPO validation on Melting Pot substrates through Shimmy."
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
