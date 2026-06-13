@@ -8,8 +8,8 @@ import jax.numpy as jnp
 import optax
 from flax.training.train_state import TrainState
 
-from jax_flow_matching.distributions import GaussianMixture2D, sample_gmm
-from jax_flow_matching.paths import conditional_vector_field, sample_conditional_path
+from flow_matching.distributions import GaussianMixture2D, sample_gmm
+from flow_matching.paths import conditional_vector_field, sample_conditional_path
 
 
 def create_train_state(

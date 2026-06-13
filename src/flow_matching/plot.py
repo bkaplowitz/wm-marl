@@ -8,9 +8,13 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
-from jax_flow_matching.distributions import GaussianMixture2D, sample_gmm, sample_standard_normal
-from jax_flow_matching.paths import conditional_vector_field, sample_conditional_path
-from jax_flow_matching.simulate import euler_integrate
+from flow_matching.distributions import (
+    GaussianMixture2D,
+    sample_gmm,
+    sample_standard_normal,
+)
+from flow_matching.paths import conditional_vector_field, sample_conditional_path
+from flow_matching.simulate import euler_integrate
 
 
 def _finish_figure(fig: plt.Figure, output: Path | None) -> None:
@@ -158,7 +162,9 @@ def _scatter_marginals(
     ax.set_title(title)
     for idx, t in enumerate(np.asarray(ts)):
         samples = np.asarray(samples_by_time[idx])
-        ax.scatter(samples[:, 0], samples[:, 1], s=8, alpha=0.35, label=f"t={float(t):.2f}")
+        ax.scatter(
+            samples[:, 0], samples[:, 1], s=8, alpha=0.35, label=f"t={float(t):.2f}"
+        )
     ax.set_xlim(-scale, scale)
     ax.set_ylim(-scale, scale)
     ax.set_aspect("equal")
@@ -266,7 +272,9 @@ def create_conditional_probability_path_figure(
         x1_batch = jnp.repeat(x1, num_samples, axis=0)
         tt = jnp.full((num_samples, 1), t)
         samples = np.asarray(sample_conditional_path(sample_key, x1_batch, tt))
-        ax.scatter(samples[:, 0], samples[:, 1], alpha=0.25, s=8, label=f"t={float(t):.1f}")
+        ax.scatter(
+            samples[:, 0], samples[:, 1], alpha=0.25, s=8, label=f"t={float(t):.1f}"
+        )
 
     ax.legend(prop={"size": 18}, markerscale=3)
     return fig
@@ -306,14 +314,18 @@ def create_analytic_flow_path_figure(
     )
     for ax, title in zip(axes, titles, strict=True):
         _configure_density_axis(ax, title, scale)
-        _plot_source_target_density_backgrounds(ax, gmm, scale=scale, bins=background_bins)
+        _plot_source_target_density_backgrounds(
+            ax, gmm, scale=scale, bins=background_bins
+        )
         _scatter_conditioning_sample(ax, x1, s=200)
 
     for idx, t in enumerate(np.asarray(record_ts)):
         gt_samples = np.asarray(ground_truth[idx])
         ode_samples_at_t = np.asarray(ode_samples[idx])
         label = f"t={float(t):.2f}"
-        axes[0].scatter(gt_samples[:, 0], gt_samples[:, 1], marker="o", alpha=0.5, label=label)
+        axes[0].scatter(
+            gt_samples[:, 0], gt_samples[:, 1], marker="o", alpha=0.5, label=label
+        )
         axes[1].scatter(
             ode_samples_at_t[:, 0],
             ode_samples_at_t[:, 1],
@@ -324,7 +336,9 @@ def create_analytic_flow_path_figure(
 
     traj_np = np.asarray(trajectory)
     for traj_idx in range(min(15, num_samples)):
-        axes[2].plot(traj_np[:, traj_idx, 0], traj_np[:, traj_idx, 1], alpha=0.5, color="black")
+        axes[2].plot(
+            traj_np[:, traj_idx, 0], traj_np[:, traj_idx, 1], alpha=0.5, color="black"
+        )
 
     for ax in axes:
         ax.legend(prop={"size": 18}, loc="upper right", markerscale=1.8)
@@ -358,7 +372,9 @@ def create_learned_flow_path_figure(
 
     ground_truth = []
     for sample_key, t in zip(path_keys, record_ts, strict=True):
-        ground_truth.append(_sample_marginal_path(sample_key, gmm, t=t, num_samples=num_samples))
+        ground_truth.append(
+            _sample_marginal_path(sample_key, gmm, t=t, num_samples=num_samples)
+        )
     ground_truth = jnp.stack(ground_truth)
 
     fig, axes = plt.subplots(1, 3, figsize=(36, 12))
@@ -369,13 +385,17 @@ def create_learned_flow_path_figure(
     )
     for ax, title in zip(axes, titles, strict=True):
         _configure_density_axis(ax, title, scale)
-        _plot_source_target_density_backgrounds(ax, gmm, scale=scale, bins=background_bins)
+        _plot_source_target_density_backgrounds(
+            ax, gmm, scale=scale, bins=background_bins
+        )
 
     for idx, t in enumerate(np.asarray(record_ts)):
         gt_samples = np.asarray(ground_truth[idx])
         learned_samples_at_t = np.asarray(learned_samples[idx])
         label = f"t={float(t):.2f}"
-        axes[0].scatter(gt_samples[:, 0], gt_samples[:, 1], marker="o", alpha=0.5, label=label)
+        axes[0].scatter(
+            gt_samples[:, 0], gt_samples[:, 1], marker="o", alpha=0.5, label=label
+        )
         axes[1].scatter(
             learned_samples_at_t[:, 0],
             learned_samples_at_t[:, 1],
@@ -386,7 +406,9 @@ def create_learned_flow_path_figure(
 
     traj_np = np.asarray(trajectory)
     for traj_idx in range(min(max(num_samples // 10, 1), num_samples)):
-        axes[2].plot(traj_np[:, traj_idx, 0], traj_np[:, traj_idx, 1], alpha=0.5, color="black")
+        axes[2].plot(
+            traj_np[:, traj_idx, 0], traj_np[:, traj_idx, 1], alpha=0.5, color="black"
+        )
 
     axes[0].legend(prop={"size": 18}, loc="upper right", markerscale=1.8)
     axes[1].legend(prop={"size": 18}, loc="upper right", markerscale=1.8)
