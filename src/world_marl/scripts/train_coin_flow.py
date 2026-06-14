@@ -10,8 +10,11 @@ import jax
 import numpy as np
 from tqdm import tqdm
 
-from world_marl.checkpointing import save_checkpoint
+from world_marl.algs.ippo import IPPOConfig
+from world_marl.algs.mappo import MAPPOConfig
+from world_marl.checkpointing import load_metadata, load_params, save_checkpoint
 from world_marl.coin_flow import (
+  collect_policy_joint_actions,
   collect_random_joint_actions,
   decode_joint_actions,
   fit_joint_action_gmm,
@@ -22,6 +25,10 @@ from world_marl.coin_flow import (
 from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
 from world_marl.evaluation import evaluate_policy, random_policy
 from world_marl.logging import RunLogger, dependency_versions, timestamp
+from world_marl.scripts.train_e2e import (
+  create_algorithm_train_state,
+  policy_from_train_state,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,6 +39,22 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument("--observation-size", type=int, default=44)
   parser.add_argument("--include-observation-scalars", action="store_true")
   parser.add_argument("--append-agent-id", action="store_true")
+  parser.add_argument(
+    "--target-source",
+    choices=("random", "checkpoint"),
+    default="random",
+    help="Source policy used to collect joint actions for the GMM target.",
+  )
+  parser.add_argument(
+    "--policy-checkpoint",
+    default=None,
+    help="IPPO/MAPPO checkpoint directory used when --target-source checkpoint.",
+  )
+  parser.add_argument(
+    "--source-stochastic",
+    action="store_true",
+    help="Sample checkpoint policy actions while collecting/evaluating source actions.",
+  )
   parser.add_argument("--collect-steps", type=int, default=256)
   parser.add_argument("--gmm-std", type=float, default=0.10)
   parser.add_argument("--max-components", type=int, default=None)
@@ -74,10 +97,77 @@ def log_stage(args: argparse.Namespace, message: str) -> None:
     print(f"[coin-flow] {message}", flush=True)
 
 
+def load_checkpoint_policy(
+  checkpoint_dir: str | Path,
+  adapter: MeltingPotVectorAdapter,
+  *,
+  deterministic: bool,
+  seed: int,
+):
+  checkpoint_path = Path(checkpoint_dir)
+  metadata = load_metadata(checkpoint_path)
+  algorithm = metadata.get("algorithm", "ippo")
+  config_payload = metadata.get("algorithm_config", metadata.get("ippo_config"))
+  if config_payload is None:
+    raise KeyError("checkpoint metadata missing algorithm_config")
+  config = MAPPOConfig(**config_payload) if algorithm == "mappo" else IPPOConfig(**config_payload)
+
+  expected_substrate = metadata.get("substrate")
+  if expected_substrate is not None and expected_substrate != adapter.substrate:
+    raise ValueError(
+      f"checkpoint substrate {expected_substrate!r} does not match "
+      f"adapter substrate {adapter.substrate!r}"
+    )
+  expected_action_dim = metadata.get("action_dim")
+  if expected_action_dim is not None and int(expected_action_dim) != adapter.action_dim:
+    raise ValueError(
+      f"checkpoint action_dim {expected_action_dim} does not match "
+      f"adapter action_dim {adapter.action_dim}"
+    )
+  expected_num_agents = metadata.get("num_agents")
+  if expected_num_agents is not None and int(expected_num_agents) != adapter.num_agents:
+    raise ValueError(
+      f"checkpoint num_agents {expected_num_agents} does not match "
+      f"adapter num_agents {adapter.num_agents}"
+    )
+  expected_observation_shape = metadata.get("observation_shape")
+  if expected_observation_shape is not None:
+    expected_observation_shape = tuple(int(dim) for dim in expected_observation_shape)
+    if expected_observation_shape != adapter.observation_shape:
+      raise ValueError(
+        "checkpoint observation_shape "
+        f"{expected_observation_shape} does not match adapter observation_shape "
+        f"{adapter.observation_shape}. Use the same --observation-size, "
+        "--include-observation-scalars, and --append-agent-id flags used for "
+        "the checkpoint."
+      )
+
+  train_state = create_algorithm_train_state(
+    algorithm,
+    jax.random.PRNGKey(0),
+    adapter,
+    config,
+  )
+  params = load_params(checkpoint_path / "checkpoint.msgpack", train_state.params)
+  train_state = train_state.replace(params=params)
+  return (
+    policy_from_train_state(
+      algorithm,
+      train_state,
+      adapter=adapter,
+      deterministic=deterministic,
+      seed=seed,
+    ),
+    metadata,
+  )
+
+
 def main() -> None:
   args = parse_args()
   if args.substrate != "coins":
     raise SystemExit("world-marl-train-coin-flow currently targets --substrate coins")
+  if args.target_source == "checkpoint" and args.policy_checkpoint is None:
+    raise SystemExit("--policy-checkpoint is required with --target-source checkpoint")
 
   hidden_dims = parse_hidden_dims(args.hidden_dims)
   run_dir = Path(args.out_dir) / f"coin_flow_{timestamp()}"
@@ -88,6 +178,7 @@ def main() -> None:
     {
       "args": vars(args),
       "hidden_dims": hidden_dims,
+      "target_source": args.target_source,
       "purpose": (
         "Fit an empirical GMM over two-agent coins joint actions, train a "
         "JAX flow-matching sampler on that GMM, and evaluate generated joint "
@@ -99,27 +190,48 @@ def main() -> None:
 
   log_stage(args, "constructing Melting Pot coins adapter")
   np_rng = np.random.default_rng(args.seed)
+  source_metadata: dict[str, Any] | None = None
   adapter = make_adapter(args)
   try:
     log_stage(
       args,
       (
         f"collecting {args.collect_steps} rollout steps "
-        f"({args.collect_steps * args.num_envs} joint-action samples)"
+        f"({args.collect_steps * args.num_envs} joint-action samples) "
+        f"from {args.target_source}"
       ),
     )
+    if args.target_source == "checkpoint":
+      log_stage(args, f"loading source policy checkpoint from {args.policy_checkpoint}")
+      source_policy, source_metadata = load_checkpoint_policy(
+        args.policy_checkpoint,
+        adapter,
+        deterministic=not args.source_stochastic,
+        seed=args.seed + 10,
+      )
+    else:
+      source_policy = None
+
     with tqdm(
       total=args.collect_steps,
       desc="collect rollouts",
       unit="step",
       disable=args.quiet,
     ) as progress:
-      dataset = collect_random_joint_actions(
-        adapter,
-        np_rng,
-        rollout_steps=args.collect_steps,
-        progress_callback=lambda _step: progress.update(1),
-      )
+      if source_policy is None:
+        dataset = collect_random_joint_actions(
+          adapter,
+          np_rng,
+          rollout_steps=args.collect_steps,
+          progress_callback=lambda _step: progress.update(1),
+        )
+      else:
+        dataset = collect_policy_joint_actions(
+          adapter,
+          source_policy,
+          rollout_steps=args.collect_steps,
+          progress_callback=lambda _step: progress.update(1),
+        )
     env_metadata = {
       "substrate": adapter.substrate,
       "num_agents": adapter.num_agents,
@@ -144,6 +256,8 @@ def main() -> None:
     {
       **dataset.to_metadata(),
       "env": env_metadata,
+      "target_source": args.target_source,
+      "source_checkpoint_metadata": source_metadata,
     },
   )
 
@@ -229,6 +343,8 @@ def main() -> None:
     train_state,
     metadata={
       "kind": "coin_joint_action_flow",
+      "target_source": args.target_source,
+      "source_checkpoint": args.policy_checkpoint,
       "substrate": args.substrate,
       "action_dim": dataset.action_dim,
       "num_agents": dataset.num_agents,
@@ -248,6 +364,20 @@ def main() -> None:
       episodes=args.eval_episodes,
       max_steps=args.eval_max_steps,
     )
+    source_eval = None
+    if args.target_source == "checkpoint":
+      source_policy, _ = load_checkpoint_policy(
+        args.policy_checkpoint,
+        eval_adapter,
+        deterministic=not args.source_stochastic,
+        seed=args.seed + 3,
+      )
+      source_eval = evaluate_policy(
+        eval_adapter,
+        source_policy,
+        episodes=args.eval_episodes,
+        max_steps=args.eval_max_steps,
+      )
     flow_eval = evaluate_policy(
       eval_adapter,
       flow_joint_action_policy(
@@ -265,17 +395,29 @@ def main() -> None:
 
   outcome: dict[str, Any] = {
     "random": random_eval.to_dict(),
+    "source": source_eval.to_dict() if source_eval is not None else None,
     "flow": flow_eval.to_dict(),
     "flow_minus_random_mean_return_per_agent": (
       flow_eval.mean_return_per_agent - random_eval.mean_return_per_agent
     ),
+    "flow_minus_source_mean_return_per_agent": (
+      flow_eval.mean_return_per_agent - source_eval.mean_return_per_agent
+      if source_eval is not None
+      else None
+    ),
   }
   logger.write_json("evaluation.json", outcome)
+  source_fragment = (
+    f"source={source_eval.mean_return_per_agent:.4g}, "
+    if source_eval is not None
+    else ""
+  )
   log_stage(
     args,
     (
       "evaluation complete; "
       f"random={random_eval.mean_return_per_agent:.4g}, "
+      f"{source_fragment}"
       f"flow={flow_eval.mean_return_per_agent:.4g}, "
       f"delta={outcome['flow_minus_random_mean_return_per_agent']:.4g}"
     ),

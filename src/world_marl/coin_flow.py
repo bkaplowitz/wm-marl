@@ -110,6 +110,52 @@ def collect_random_joint_actions(
   )
 
 
+def collect_policy_joint_actions(
+  adapter: MeltingPotVectorAdapter,
+  policy_fn: Callable[[np.ndarray], np.ndarray],
+  *,
+  rollout_steps: int,
+  progress_callback: Callable[[int], None] | None = None,
+) -> JointActionDataset:
+  """Collect joint-action samples from a policy in a live Melting Pot adapter."""
+  if adapter.num_agents != 2:
+    raise ValueError("flow/GMM joint-action demo currently expects exactly 2 agents")
+  if rollout_steps < 1:
+    raise ValueError("rollout_steps must be >= 1")
+
+  joint_action_rows = []
+  reward_rows = []
+  completed_returns: list[tuple[float, ...]] = []
+  completed_lengths: list[int] = []
+  observations = adapter.reset()
+  for step_index in range(rollout_steps):
+    actions = np.asarray(policy_fn(observations), dtype=np.int32)
+    expected_shape = (adapter.num_envs, adapter.num_agents)
+    if actions.shape != expected_shape:
+      raise ValueError(f"policy actions must have shape {expected_shape}, got {actions.shape}")
+    step = adapter.step(actions)
+    observations = step.observations
+    joint_action_rows.append(actions.copy())
+    reward_rows.append(step.rewards.copy())
+    completed_returns.extend(step.completed_returns)
+    completed_lengths.extend(step.completed_lengths)
+    if progress_callback is not None:
+      progress_callback(step_index + 1)
+
+  joint_actions = np.concatenate(joint_action_rows, axis=0).astype(np.int32)
+  rewards = np.concatenate(reward_rows, axis=0).astype(np.float32)
+  return JointActionDataset(
+    joint_actions=joint_actions,
+    rewards=rewards,
+    action_dim=adapter.action_dim,
+    num_agents=adapter.num_agents,
+    num_envs=adapter.num_envs,
+    rollout_steps=rollout_steps,
+    completed_returns=tuple(completed_returns),
+    completed_lengths=tuple(completed_lengths),
+  )
+
+
 def normalize_joint_actions(joint_actions: np.ndarray, action_dim: int) -> np.ndarray:
   """Map integer action pairs from ``[0, action_dim)`` to ``[-1, 1]``."""
   if action_dim < 2:

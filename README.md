@@ -68,10 +68,10 @@ uv run world-marl-train-e2e \
 ### Flow Matching / GMMs on Coins
 
 The flow-matching code can now be exercised against the live Melting Pot
-`coins` substrate. The first integration models a two-agent joint-action
-distribution:
+`coins` substrate. The workflow models a two-agent joint-action distribution:
 
-1. collect random joint actions from Shimmy/Melting Pot `coins`;
+1. collect joint actions from Shimmy/Melting Pot `coins`, either from random
+   actions or from a saved IPPO/MAPPO checkpoint;
 2. fit an empirical 2D GMM over normalized action pairs `(player_0, player_1)`;
 3. train the JAX flow-matching MLP on that GMM;
 4. sample 2D points from the learned flow;
@@ -79,10 +79,10 @@ distribution:
    in `coins`.
 
 This is a wiring/validation step for flow matching on the game, not yet a claim
-that flow matching learns a strong coins strategy. The next target distribution
-can be swapped from random rollouts to MAPPO, expert, or scripted rollouts.
+that flow matching learns a strong coins strategy. The strongest next target
+distribution should come from MAPPO, expert, or scripted rollouts.
 
-Smoke test:
+Random-source smoke test:
 
 ```bash
 uv run world-marl-train-coin-flow \
@@ -97,7 +97,29 @@ uv run world-marl-train-coin-flow \
   --flow-integration-steps 4
 ```
 
-Larger local/A100 run:
+Checkpoint-source imitation run:
+
+```bash
+uv run world-marl-train-coin-flow \
+  --target-source checkpoint \
+  --policy-checkpoint runs/<e2e_run>/run_000/checkpoint \
+  --num-envs 8 \
+  --collect-steps 2048 \
+  --train-steps 5000 \
+  --batch-size 512 \
+  --generated-samples 1024 \
+  --eval-episodes 50 \
+  --max-cycles 500 \
+  --observation-size 44 \
+  --include-observation-scalars \
+  --append-agent-id
+```
+
+Use the same `--observation-size`, `--include-observation-scalars`, and
+`--append-agent-id` flags that were used when the checkpoint was trained. The
+flow run evaluates random, source-checkpoint, and flow-generated policies.
+
+Larger random-source local/A100 run:
 
 ```bash
 uv run world-marl-train-coin-flow \
@@ -118,6 +140,8 @@ Each run writes `config.json`, `versions.json`, `rollout_dataset.json`,
 `generated_action_samples.json`, `checkpoint/`, `evaluation.json`, and
 `outcome.json`. The command prints stage updates and progress bars by default;
 add `--quiet` to only emit the final JSON outcome.
+
+### PPO/MAPPO Artifacts
 
 Each run writes:
 

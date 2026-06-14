@@ -4,6 +4,7 @@ import jax
 import numpy as np
 
 from world_marl.coin_flow import (
+  collect_policy_joint_actions,
   collect_random_joint_actions,
   decode_joint_actions,
   fit_joint_action_gmm,
@@ -46,6 +47,25 @@ def test_joint_action_gmm_roundtrip_and_collection(dummy_env_factory):
   assert fitted.gmm.means.shape[1] == 2
   assert fitted.action_pairs.shape[1] == 2
   np.testing.assert_allclose(np.asarray(fitted.gmm.weights).sum(), 1.0, atol=1e-6)
+
+
+def test_policy_joint_action_collection_uses_policy_actions(dummy_env_factory):
+  adapter = MeltingPotVectorAdapter(num_envs=2, env_factory=dummy_env_factory)
+  try:
+    dataset = collect_policy_joint_actions(
+      adapter,
+      lambda observations: np.ones(
+        (observations.shape[0], observations.shape[1]),
+        dtype=np.int32,
+      ),
+      rollout_steps=4,
+    )
+  finally:
+    adapter.close()
+
+  assert dataset.joint_actions.shape == (8, 2)
+  np.testing.assert_array_equal(dataset.joint_actions, np.ones((8, 2), dtype=np.int32))
+  np.testing.assert_allclose(dataset.rewards, np.ones((8, 2), dtype=np.float32))
 
 
 def test_flow_training_samples_joint_actions():
