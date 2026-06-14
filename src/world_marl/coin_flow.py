@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -72,6 +73,7 @@ def collect_random_joint_actions(
   rng: np.random.Generator,
   *,
   rollout_steps: int,
+  progress_callback: Callable[[int], None] | None = None,
 ) -> JointActionDataset:
   """Collect random joint-action samples from a live Melting Pot adapter."""
   if adapter.num_agents != 2:
@@ -84,13 +86,15 @@ def collect_random_joint_actions(
   completed_returns: list[tuple[float, ...]] = []
   completed_lengths: list[int] = []
   adapter.reset()
-  for _ in range(rollout_steps):
+  for step_index in range(rollout_steps):
     actions = adapter.sample_actions(rng)
     step = adapter.step(actions)
     joint_action_rows.append(actions.copy())
     reward_rows.append(step.rewards.copy())
     completed_returns.extend(step.completed_returns)
     completed_lengths.extend(step.completed_lengths)
+    if progress_callback is not None:
+      progress_callback(step_index + 1)
 
   joint_actions = np.concatenate(joint_action_rows, axis=0).astype(np.int32)
   rewards = np.concatenate(reward_rows, axis=0).astype(np.float32)
@@ -171,6 +175,7 @@ def train_flow_for_gmm(
   batch_size: int,
   learning_rate: float,
   hidden_dims: tuple[int, ...] = (64, 64, 64, 64),
+  progress_callback: Callable[[int, float], None] | None = None,
 ) -> tuple[TrainState, list[float]]:
   """Train the existing JAX flow-matching MLP on a joint-action GMM."""
   if train_steps < 1:
@@ -186,10 +191,13 @@ def train_flow_for_gmm(
     dim=gmm.dim,
   )
   losses: list[float] = []
-  for _ in range(train_steps):
+  for step_index in range(train_steps):
     rng, step_key = jax.random.split(rng)
     state, loss = train_step(state, step_key, gmm, batch_size)
-    losses.append(float(loss))
+    loss_value = float(loss)
+    losses.append(loss_value)
+    if progress_callback is not None:
+      progress_callback(step_index + 1, loss_value)
   jax.block_until_ready(state.params)
   return state, losses
 

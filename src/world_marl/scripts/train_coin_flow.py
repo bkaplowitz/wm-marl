@@ -8,6 +8,7 @@ from typing import Any
 
 import jax
 import numpy as np
+from tqdm import tqdm
 
 from world_marl.checkpointing import save_checkpoint
 from world_marl.coin_flow import (
@@ -44,6 +45,7 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument("--eval-max-steps", type=int, default=None)
   parser.add_argument("--seed", type=int, default=0)
   parser.add_argument("--out-dir", default="runs")
+  parser.add_argument("--quiet", action="store_true", help="Disable terminal progress output.")
   return parser.parse_args()
 
 
@@ -67,6 +69,11 @@ def make_adapter(args: argparse.Namespace) -> MeltingPotVectorAdapter:
   )
 
 
+def log_stage(args: argparse.Namespace, message: str) -> None:
+  if not args.quiet:
+    print(f"[coin-flow] {message}", flush=True)
+
+
 def main() -> None:
   args = parse_args()
   if args.substrate != "coins":
@@ -74,6 +81,7 @@ def main() -> None:
 
   hidden_dims = parse_hidden_dims(args.hidden_dims)
   run_dir = Path(args.out_dir) / f"coin_flow_{timestamp()}"
+  log_stage(args, f"writing artifacts to {run_dir}")
   logger = RunLogger(run_dir)
   logger.write_json(
     "config.json",
@@ -89,14 +97,29 @@ def main() -> None:
   )
   logger.write_json("versions.json", dependency_versions())
 
+  log_stage(args, "constructing Melting Pot coins adapter")
   np_rng = np.random.default_rng(args.seed)
   adapter = make_adapter(args)
   try:
-    dataset = collect_random_joint_actions(
-      adapter,
-      np_rng,
-      rollout_steps=args.collect_steps,
+    log_stage(
+      args,
+      (
+        f"collecting {args.collect_steps} rollout steps "
+        f"({args.collect_steps * args.num_envs} joint-action samples)"
+      ),
     )
+    with tqdm(
+      total=args.collect_steps,
+      desc="collect rollouts",
+      unit="step",
+      disable=args.quiet,
+    ) as progress:
+      dataset = collect_random_joint_actions(
+        adapter,
+        np_rng,
+        rollout_steps=args.collect_steps,
+        progress_callback=lambda _step: progress.update(1),
+      )
     env_metadata = {
       "substrate": adapter.substrate,
       "num_agents": adapter.num_agents,
@@ -108,6 +131,14 @@ def main() -> None:
   finally:
     adapter.close()
 
+  log_stage(
+    args,
+    (
+      "collected "
+      f"{dataset.joint_actions.shape[0]} joint actions; "
+      f"mean reward per agent={dataset.rewards.mean(axis=0).round(4).tolist()}"
+    ),
+  )
   logger.write_json(
     "rollout_dataset.json",
     {
@@ -116,22 +147,43 @@ def main() -> None:
     },
   )
 
+  log_stage(args, "fitting empirical GMM over normalized joint actions")
   fitted = fit_joint_action_gmm(
     dataset.joint_actions,
     action_dim=dataset.action_dim,
     std=args.gmm_std,
     max_components=args.max_components,
   )
+  log_stage(args, f"fitted {fitted.action_pairs.shape[0]} GMM components")
   logger.write_json("gmm.json", fitted.to_metadata())
 
+  log_stage(args, f"training flow model for {args.train_steps} steps")
   rng = jax.random.PRNGKey(args.seed)
-  train_state, losses = train_flow_for_gmm(
-    rng,
-    fitted.gmm,
-    train_steps=args.train_steps,
-    batch_size=args.batch_size,
-    learning_rate=args.learning_rate,
-    hidden_dims=hidden_dims,
+  with tqdm(
+    total=args.train_steps,
+    desc="train flow",
+    unit="step",
+    disable=args.quiet,
+  ) as progress:
+    def update_training_progress(_step: int, loss: float) -> None:
+      progress.update(1)
+      progress.set_postfix(loss=f"{loss:.4g}")
+
+    train_state, losses = train_flow_for_gmm(
+      rng,
+      fitted.gmm,
+      train_steps=args.train_steps,
+      batch_size=args.batch_size,
+      learning_rate=args.learning_rate,
+      hidden_dims=hidden_dims,
+      progress_callback=update_training_progress,
+    )
+  log_stage(
+    args,
+    (
+      f"flow training complete; initial_loss={losses[0]:.6g}, "
+      f"final_loss={losses[-1]:.6g}, min_loss={min(losses):.6g}"
+    ),
   )
   for step, loss in enumerate(losses, start=1):
     logger.append_metrics({"step": step, "flow/loss": loss})
@@ -145,6 +197,7 @@ def main() -> None:
     },
   )
 
+  log_stage(args, f"sampling {args.generated_samples} points from learned flow")
   rng, sample_key = jax.random.split(rng)
   generated_points = np.asarray(
     sample_flow_points(
@@ -170,6 +223,7 @@ def main() -> None:
     },
   )
 
+  log_stage(args, "saving flow checkpoint")
   save_checkpoint(
     run_dir / "checkpoint",
     train_state,
@@ -185,6 +239,7 @@ def main() -> None:
     },
   )
 
+  log_stage(args, f"evaluating random and flow policies for {args.eval_episodes} episodes")
   eval_adapter = make_adapter(args)
   try:
     random_eval = evaluate_policy(
@@ -216,6 +271,16 @@ def main() -> None:
     ),
   }
   logger.write_json("evaluation.json", outcome)
+  log_stage(
+    args,
+    (
+      "evaluation complete; "
+      f"random={random_eval.mean_return_per_agent:.4g}, "
+      f"flow={flow_eval.mean_return_per_agent:.4g}, "
+      f"delta={outcome['flow_minus_random_mean_return_per_agent']:.4g}"
+    ),
+  )
+  log_stage(args, "done")
   print(logger.write_json("outcome.json", outcome).read_text(encoding="utf-8"))
 
 

@@ -116,7 +116,8 @@ uv run world-marl-train-coin-flow \
 Each run writes `config.json`, `versions.json`, `rollout_dataset.json`,
 `gmm.json`, `metrics.jsonl`, `training_summary.json`,
 `generated_action_samples.json`, `checkpoint/`, `evaluation.json`, and
-`outcome.json`.
+`outcome.json`. The command prints stage updates and progress bars by default;
+add `--quiet` to only emit the final JSON outcome.
 
 Each run writes:
 
