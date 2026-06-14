@@ -1,5 +1,6 @@
 """Training helpers for conditional flow matching."""
 
+import functools
 from typing import Any
 
 import flax
@@ -44,7 +45,7 @@ def flow_matching_loss(
     return jnp.mean((target_flow - model_flow) ** 2)  # mse loss on flow matching objective
 
 
-@jax.jit(static_argnames="batch_size")
+@functools.partial(jax.jit, static_argnames=("batch_size",))
 def train_step(
     state: TrainState,
     key: jax.Array,

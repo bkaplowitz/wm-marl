@@ -65,6 +65,59 @@ uv run world-marl-train-e2e \
   --num-runs 3
 ```
 
+### Flow Matching / GMMs on Coins
+
+The flow-matching code can now be exercised against the live Melting Pot
+`coins` substrate. The first integration models a two-agent joint-action
+distribution:
+
+1. collect random joint actions from Shimmy/Melting Pot `coins`;
+2. fit an empirical 2D GMM over normalized action pairs `(player_0, player_1)`;
+3. train the JAX flow-matching MLP on that GMM;
+4. sample 2D points from the learned flow;
+5. decode samples back to the two agents' discrete action IDs and evaluate them
+   in `coins`.
+
+This is a wiring/validation step for flow matching on the game, not yet a claim
+that flow matching learns a strong coins strategy. The next target distribution
+can be swapped from random rollouts to MAPPO, expert, or scripted rollouts.
+
+Smoke test:
+
+```bash
+uv run world-marl-train-coin-flow \
+  --num-envs 1 \
+  --collect-steps 8 \
+  --train-steps 3 \
+  --batch-size 16 \
+  --generated-samples 8 \
+  --eval-episodes 1 \
+  --max-cycles 20 \
+  --observation-size 22 \
+  --flow-integration-steps 4
+```
+
+Larger local/A100 run:
+
+```bash
+uv run world-marl-train-coin-flow \
+  --num-envs 8 \
+  --collect-steps 2048 \
+  --train-steps 5000 \
+  --batch-size 512 \
+  --generated-samples 1024 \
+  --eval-episodes 50 \
+  --max-cycles 500 \
+  --observation-size 44 \
+  --include-observation-scalars \
+  --append-agent-id
+```
+
+Each run writes `config.json`, `versions.json`, `rollout_dataset.json`,
+`gmm.json`, `metrics.jsonl`, `training_summary.json`,
+`generated_action_samples.json`, `checkpoint/`, `evaluation.json`, and
+`outcome.json`.
+
 Each run writes:
 
 - `config.json`
