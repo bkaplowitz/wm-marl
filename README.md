@@ -81,27 +81,6 @@ The flow-matching code can now be exercised against the live Melting Pot
 7. compare the generated distribution against heldout rollout actions,
    train-empirical, GMM-sample, and uniform baselines.
 
-This is the first minimal flow-distribution validation environment, not world
-modeling. It asks whether flow matching can reproduce rollout distributions
-from the JaxMARL-style/Melting Pot setup before we move to conditional
-distributions or dynamics.
-
-Random-source smoke test:
-
-```bash
-uv run world-marl-train-coin-flow \
-  --num-envs 1 \
-  --collect-steps 8 \
-  --train-steps 3 \
-  --batch-size 16 \
-  --generated-samples 8 \
-  --eval-episodes 1 \
-  --max-cycles 20 \
-  --observation-size 22 \
-  --flow-integration-steps 4 \
-  --skip-policy-eval
-```
-
 Checkpoint-source imitation run:
 
 ```bash
@@ -120,25 +99,7 @@ uv run world-marl-train-coin-flow \
   --append-agent-id
 ```
 
-Use the same `--observation-size`, `--include-observation-scalars`, and
-`--append-agent-id` flags that were used when the checkpoint was trained. The
-flow run evaluates random, source-checkpoint, and flow-generated policies.
-
 Larger random-source local/A100 run:
-
-```bash
-uv run world-marl-train-coin-flow \
-  --num-envs 8 \
-  --collect-steps 2048 \
-  --train-steps 5000 \
-  --batch-size 512 \
-  --generated-samples 1024 \
-  --eval-episodes 50 \
-  --max-cycles 500 \
-  --observation-size 44 \
-  --include-observation-scalars \
-  --append-agent-id
-```
 
 Each run writes `config.json`, `versions.json`, `rollout_dataset.json`,
 `distribution_split.json`, `gmm.json`, `metrics.jsonl`,
@@ -153,10 +114,6 @@ The key distribution fields are:
 - `distribution_validation.uniform_js_divergence`
 - `distribution_validation.strict_flow_beats_uniform`
 - `distribution_validation.reload_max_abs_point_diff`
-
-For random-source data, uniform can be a very strong baseline because random
-actions are close to the true target. The stricter test is more informative with
-checkpoint, expert, scripted, or otherwise biased rollout distributions.
 
 ### PPO/MAPPO Artifacts
 
