@@ -4,14 +4,20 @@ import jax
 import numpy as np
 
 from world_marl.coin_flow import (
+  compare_joint_action_distributions,
   collect_policy_joint_actions,
   collect_random_joint_actions,
   decode_joint_actions,
   fit_joint_action_gmm,
   flow_joint_action_policy,
+  joint_action_counts,
+  joint_action_probabilities,
   normalize_joint_actions,
   sample_flow_points,
+  split_joint_actions,
+  summarize_joint_action_distribution,
   train_flow_for_gmm,
+  uniform_joint_actions,
 )
 from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
 
@@ -103,3 +109,67 @@ def test_flow_training_samples_joint_actions():
   assert actions.shape == (2, 2)
   assert actions.min() >= 0
   assert actions.max() < 3
+
+
+def test_joint_action_distribution_metrics_identify_better_match():
+  reference = np.asarray(
+    [[0, 0], [0, 0], [0, 0], [1, 1]],
+    dtype=np.int32,
+  )
+  good_candidate = np.asarray(
+    [[0, 0], [0, 0], [0, 0], [1, 1]],
+    dtype=np.int32,
+  )
+  bad_candidate = np.asarray(
+    [[2, 2], [2, 2], [2, 2], [1, 1]],
+    dtype=np.int32,
+  )
+
+  counts = joint_action_counts(reference, action_dim=3)
+  assert counts[0, 0] == 3
+  assert counts[1, 1] == 1
+  probabilities = joint_action_probabilities(reference, action_dim=3)
+  np.testing.assert_allclose(probabilities.sum(), 1.0)
+
+  good = compare_joint_action_distributions(
+    reference,
+    good_candidate,
+    action_dim=3,
+    top_k=2,
+  )
+  bad = compare_joint_action_distributions(
+    reference,
+    bad_candidate,
+    action_dim=3,
+    top_k=2,
+  )
+  assert good["js_divergence"] < bad["js_divergence"]
+  assert good["total_variation"] < bad["total_variation"]
+  assert good["mode_matches"]
+  assert not bad["mode_matches"]
+
+  summary = summarize_joint_action_distribution(reference, action_dim=3, top_k=2)
+  assert summary["top_pairs"][0]["action_pair"] == [0, 0]
+
+
+def test_joint_action_split_and_uniform_sampler():
+  actions = np.asarray(
+    [[0, 0], [0, 1], [1, 0], [1, 1], [2, 2]],
+    dtype=np.int32,
+  )
+  train_actions, validation_actions = split_joint_actions(
+    actions,
+    validation_fraction=0.4,
+    seed=0,
+  )
+  assert train_actions.shape == (3, 2)
+  assert validation_actions.shape == (2, 2)
+
+  uniform = uniform_joint_actions(
+    np.random.default_rng(0),
+    num_samples=10,
+    action_dim=3,
+  )
+  assert uniform.shape == (10, 2)
+  assert uniform.min() >= 0
+  assert uniform.max() < 3

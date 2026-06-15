@@ -72,15 +72,19 @@ The flow-matching code can now be exercised against the live Melting Pot
 
 1. collect joint actions from Shimmy/Melting Pot `coins`, either from random
    actions or from a saved IPPO/MAPPO checkpoint;
-2. fit an empirical 2D GMM over normalized action pairs `(player_0, player_1)`;
-3. train the JAX flow-matching MLP on that GMM;
-4. sample 2D points from the learned flow;
-5. decode samples back to the two agents' discrete action IDs and evaluate them
-   in `coins`.
+2. split those actions into train and heldout samples;
+3. fit an empirical 2D GMM over normalized train action pairs
+   `(player_0, player_1)`;
+4. train the JAX flow-matching MLP on that GMM;
+5. sample 2D points from the learned flow;
+6. decode samples back to the two agents' discrete action IDs;
+7. compare the generated distribution against heldout rollout actions,
+   train-empirical, GMM-sample, and uniform baselines.
 
-This is a wiring/validation step for flow matching on the game, not yet a claim
-that flow matching learns a strong coins strategy. The strongest next target
-distribution should come from MAPPO, expert, or scripted rollouts.
+This is the first minimal flow-distribution validation environment, not world
+modeling. It asks whether flow matching can reproduce rollout distributions
+from the JaxMARL-style/Melting Pot setup before we move to conditional
+distributions or dynamics.
 
 Random-source smoke test:
 
@@ -94,7 +98,8 @@ uv run world-marl-train-coin-flow \
   --eval-episodes 1 \
   --max-cycles 20 \
   --observation-size 22 \
-  --flow-integration-steps 4
+  --flow-integration-steps 4 \
+  --skip-policy-eval
 ```
 
 Checkpoint-source imitation run:
@@ -136,10 +141,22 @@ uv run world-marl-train-coin-flow \
 ```
 
 Each run writes `config.json`, `versions.json`, `rollout_dataset.json`,
-`gmm.json`, `metrics.jsonl`, `training_summary.json`,
-`generated_action_samples.json`, `checkpoint/`, `evaluation.json`, and
-`outcome.json`. The command prints stage updates and progress bars by default;
-add `--quiet` to only emit the final JSON outcome.
+`distribution_split.json`, `gmm.json`, `metrics.jsonl`,
+`training_summary.json`, `generated_action_samples.json`,
+`distribution_validation.json`, `distribution_validation.png`, `checkpoint/`,
+`evaluation.json`, and `outcome.json`. The command prints stage updates and
+progress bars by default; add `--quiet` to only emit the final JSON outcome.
+
+The key distribution fields are:
+
+- `distribution_validation.flow_js_divergence`
+- `distribution_validation.uniform_js_divergence`
+- `distribution_validation.strict_flow_beats_uniform`
+- `distribution_validation.reload_max_abs_point_diff`
+
+For random-source data, uniform can be a very strong baseline because random
+actions are close to the true target. The stricter test is more informative with
+checkpoint, expert, scripted, or otherwise biased rollout distributions.
 
 ### PPO/MAPPO Artifacts
 

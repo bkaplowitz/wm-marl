@@ -10,17 +10,24 @@ import jax
 import numpy as np
 from tqdm import tqdm
 
+from flow_matching.distributions import sample_gmm
+from flow_matching.models import MLPVectorField
+from flow_matching.train import create_train_state as create_flow_train_state
 from world_marl.algs.ippo import IPPOConfig
 from world_marl.algs.mappo import MAPPOConfig
 from world_marl.checkpointing import load_metadata, load_params, save_checkpoint
 from world_marl.coin_flow import (
+  compare_joint_action_distributions,
   collect_policy_joint_actions,
   collect_random_joint_actions,
   decode_joint_actions,
   fit_joint_action_gmm,
   flow_joint_action_policy,
   sample_flow_points,
+  split_joint_actions,
+  summarize_joint_action_distribution,
   train_flow_for_gmm,
+  uniform_joint_actions,
 )
 from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
 from world_marl.evaluation import evaluate_policy, random_policy
@@ -56,6 +63,7 @@ def parse_args() -> argparse.Namespace:
     help="Sample checkpoint policy actions while collecting/evaluating source actions.",
   )
   parser.add_argument("--collect-steps", type=int, default=256)
+  parser.add_argument("--validation-fraction", type=float, default=0.25)
   parser.add_argument("--gmm-std", type=float, default=0.10)
   parser.add_argument("--max-components", type=int, default=None)
   parser.add_argument("--train-steps", type=int, default=1000)
@@ -64,11 +72,21 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument("--hidden-dims", default="64,64,64,64")
   parser.add_argument("--flow-integration-steps", type=int, default=64)
   parser.add_argument("--generated-samples", type=int, default=256)
+  parser.add_argument("--distribution-top-k", type=int, default=5)
   parser.add_argument("--eval-episodes", type=int, default=10)
   parser.add_argument("--eval-max-steps", type=int, default=None)
+  parser.add_argument(
+    "--skip-policy-eval",
+    action="store_true",
+    help="Only run distribution validation; skip environment return evaluation.",
+  )
   parser.add_argument("--seed", type=int, default=0)
   parser.add_argument("--out-dir", default="runs")
-  parser.add_argument("--quiet", action="store_true", help="Disable terminal progress output.")
+  parser.add_argument(
+    "--quiet",
+    action="store_true",
+    help="Disable terminal progress output.",
+  )
   return parser.parse_args()
 
 
@@ -95,6 +113,49 @@ def make_adapter(args: argparse.Namespace) -> MeltingPotVectorAdapter:
 def log_stage(args: argparse.Namespace, message: str) -> None:
   if not args.quiet:
     print(f"[coin-flow] {message}", flush=True)
+
+
+def plot_distribution_validation(
+  output_path: Path,
+  *,
+  validation_actions: np.ndarray,
+  train_actions: np.ndarray,
+  flow_actions: np.ndarray,
+  uniform_actions: np.ndarray,
+  action_dim: int,
+) -> None:
+  """Plot heldout, train, flow, and uniform joint-action distributions."""
+  import matplotlib
+
+  matplotlib.use("Agg")
+  import matplotlib.pyplot as plt
+
+  from world_marl.coin_flow import joint_action_probabilities
+
+  panels = [
+    ("heldout", validation_actions),
+    ("train", train_actions),
+    ("flow", flow_actions),
+    ("uniform", uniform_actions),
+  ]
+  matrices = [
+    joint_action_probabilities(actions, action_dim)
+    for _, actions in panels
+  ]
+  vmax = max(float(matrix.max()) for matrix in matrices)
+  fig, axes = plt.subplots(1, 4, figsize=(14, 3.5), constrained_layout=True)
+  image = None
+  for ax, (title, _actions), matrix in zip(axes, panels, matrices, strict=True):
+    image = ax.imshow(matrix, vmin=0.0, vmax=vmax, origin="lower")
+    ax.set_title(title)
+    ax.set_xlabel("player_1 action")
+    ax.set_ylabel("player_0 action")
+    ax.set_xticks(range(action_dim))
+    ax.set_yticks(range(action_dim))
+  if image is not None:
+    fig.colorbar(image, ax=axes.ravel().tolist(), shrink=0.8)
+  fig.savefig(output_path)
+  plt.close(fig)
 
 
 def load_checkpoint_policy(
@@ -180,9 +241,9 @@ def main() -> None:
       "hidden_dims": hidden_dims,
       "target_source": args.target_source,
       "purpose": (
-        "Fit an empirical GMM over two-agent coins joint actions, train a "
-        "JAX flow-matching sampler on that GMM, and evaluate generated joint "
-        "actions in Melting Pot."
+        "Validate whether flow matching can learn two-agent joint-action "
+        "distributions from Melting Pot coins rollouts. This is distribution "
+        "prediction/sampling validation, not world modeling."
       ),
     },
   )
@@ -258,12 +319,35 @@ def main() -> None:
       "env": env_metadata,
       "target_source": args.target_source,
       "source_checkpoint_metadata": source_metadata,
+      "validation_fraction": args.validation_fraction,
     },
   )
 
-  log_stage(args, "fitting empirical GMM over normalized joint actions")
-  fitted = fit_joint_action_gmm(
+  train_actions, validation_actions = split_joint_actions(
     dataset.joint_actions,
+    validation_fraction=args.validation_fraction,
+    seed=args.seed,
+  )
+  log_stage(
+    args,
+    (
+      f"split joint actions into {train_actions.shape[0]} train and "
+      f"{validation_actions.shape[0]} heldout samples"
+    ),
+  )
+  logger.write_json(
+    "distribution_split.json",
+    {
+      "train_samples": int(train_actions.shape[0]),
+      "heldout_samples": int(validation_actions.shape[0]),
+      "validation_fraction": args.validation_fraction,
+      "seed": args.seed,
+    },
+  )
+
+  log_stage(args, "fitting empirical GMM over train joint actions")
+  fitted = fit_joint_action_gmm(
+    train_actions,
     action_dim=dataset.action_dim,
     std=args.gmm_std,
     max_components=args.max_components,
@@ -327,6 +411,16 @@ def main() -> None:
     axis=0,
     return_counts=True,
   )
+  rng, gmm_sample_key = jax.random.split(rng)
+  gmm_actions = decode_joint_actions(
+    np.asarray(sample_gmm(gmm_sample_key, fitted.gmm, args.generated_samples)),
+    dataset.action_dim,
+  )
+  uniform_actions = uniform_joint_actions(
+    np.random.default_rng(args.seed + 20),
+    num_samples=args.generated_samples,
+    action_dim=dataset.action_dim,
+  )
   logger.write_json(
     "generated_action_samples.json",
     {
@@ -334,6 +428,8 @@ def main() -> None:
       "actions": generated_actions.astype(int).tolist(),
       "unique_action_pairs": unique_actions.astype(int).tolist(),
       "unique_action_counts": generated_counts.astype(int).tolist(),
+      "gmm_actions": gmm_actions.astype(int).tolist(),
+      "uniform_actions": uniform_actions.astype(int).tolist(),
     },
   )
 
@@ -351,77 +447,208 @@ def main() -> None:
       "gmm": fitted.to_metadata(),
       "hidden_dims": hidden_dims,
       "flow_integration_steps": args.flow_integration_steps,
+      "validation_fraction": args.validation_fraction,
       "config": vars(args),
     },
   )
 
-  log_stage(args, f"evaluating random and flow policies for {args.eval_episodes} episodes")
-  eval_adapter = make_adapter(args)
-  try:
-    random_eval = evaluate_policy(
-      eval_adapter,
-      random_policy(eval_adapter, np.random.default_rng(args.seed + 1)),
-      episodes=args.eval_episodes,
-      max_steps=args.eval_max_steps,
+  log_stage(args, "reloading flow checkpoint and validating sampled distribution")
+  reload_state = create_flow_train_state(
+    jax.random.PRNGKey(args.seed + 1000),
+    MLPVectorField(hidden_dims=hidden_dims),
+    learning_rate=args.learning_rate,
+    dim=fitted.gmm.dim,
+  )
+  reload_params = load_params(
+    run_dir / "checkpoint" / "checkpoint.msgpack",
+    reload_state.params,
+  )
+  reload_state = reload_state.replace(params=reload_params)
+  reload_points = np.asarray(
+    sample_flow_points(
+      reload_state,
+      sample_key,
+      num_samples=args.generated_samples,
+      integration_steps=args.flow_integration_steps,
     )
-    source_eval = None
-    if args.target_source == "checkpoint":
-      source_policy, _ = load_checkpoint_policy(
-        args.policy_checkpoint,
-        eval_adapter,
-        deterministic=not args.source_stochastic,
-        seed=args.seed + 3,
-      )
-      source_eval = evaluate_policy(
-        eval_adapter,
-        source_policy,
-        episodes=args.eval_episodes,
-        max_steps=args.eval_max_steps,
-      )
-    flow_eval = evaluate_policy(
-      eval_adapter,
-      flow_joint_action_policy(
-        train_state,
-        num_envs=eval_adapter.num_envs,
-        action_dim=eval_adapter.action_dim,
-        seed=args.seed + 2,
-        integration_steps=args.flow_integration_steps,
-      ),
-      episodes=args.eval_episodes,
-      max_steps=args.eval_max_steps,
-    )
-  finally:
-    eval_adapter.close()
+  )
+  reload_actions = decode_joint_actions(reload_points, dataset.action_dim)
+  reload_max_abs_point_diff = float(np.max(np.abs(reload_points - generated_points)))
 
-  outcome: dict[str, Any] = {
-    "random": random_eval.to_dict(),
-    "source": source_eval.to_dict() if source_eval is not None else None,
-    "flow": flow_eval.to_dict(),
-    "flow_minus_random_mean_return_per_agent": (
-      flow_eval.mean_return_per_agent - random_eval.mean_return_per_agent
+  distribution_metrics = {
+    "train_empirical": compare_joint_action_distributions(
+      validation_actions,
+      train_actions,
+      action_dim=dataset.action_dim,
+      top_k=args.distribution_top_k,
     ),
-    "flow_minus_source_mean_return_per_agent": (
-      flow_eval.mean_return_per_agent - source_eval.mean_return_per_agent
-      if source_eval is not None
-      else None
+    "flow": compare_joint_action_distributions(
+      validation_actions,
+      generated_actions,
+      action_dim=dataset.action_dim,
+      top_k=args.distribution_top_k,
+    ),
+    "gmm_sample": compare_joint_action_distributions(
+      validation_actions,
+      gmm_actions,
+      action_dim=dataset.action_dim,
+      top_k=args.distribution_top_k,
+    ),
+    "uniform": compare_joint_action_distributions(
+      validation_actions,
+      uniform_actions,
+      action_dim=dataset.action_dim,
+      top_k=args.distribution_top_k,
+    ),
+    "reload_flow": compare_joint_action_distributions(
+      validation_actions,
+      reload_actions,
+      action_dim=dataset.action_dim,
+      top_k=args.distribution_top_k,
     ),
   }
-  logger.write_json("evaluation.json", outcome)
-  source_fragment = (
-    f"source={source_eval.mean_return_per_agent:.4g}, "
-    if source_eval is not None
-    else ""
+  strict_flow_beats_uniform = (
+    distribution_metrics["flow"]["js_divergence"]
+    < distribution_metrics["uniform"]["js_divergence"]
+  )
+  reload_passed = reload_max_abs_point_diff <= 1e-6
+  distribution_payload = {
+    "passed": bool(strict_flow_beats_uniform and reload_passed),
+    "strict_flow_beats_uniform": bool(strict_flow_beats_uniform),
+    "reload_passed": bool(reload_passed),
+    "reload_max_abs_point_diff": reload_max_abs_point_diff,
+    "train_distribution": summarize_joint_action_distribution(
+      train_actions,
+      dataset.action_dim,
+      top_k=args.distribution_top_k,
+    ),
+    "heldout_distribution": summarize_joint_action_distribution(
+      validation_actions,
+      dataset.action_dim,
+      top_k=args.distribution_top_k,
+    ),
+    "flow_distribution": summarize_joint_action_distribution(
+      generated_actions,
+      dataset.action_dim,
+      top_k=args.distribution_top_k,
+    ),
+    "gmm_sample_distribution": summarize_joint_action_distribution(
+      gmm_actions,
+      dataset.action_dim,
+      top_k=args.distribution_top_k,
+    ),
+    "uniform_distribution": summarize_joint_action_distribution(
+      uniform_actions,
+      dataset.action_dim,
+      top_k=args.distribution_top_k,
+    ),
+    "metrics_vs_heldout": distribution_metrics,
+  }
+  logger.write_json("distribution_validation.json", distribution_payload)
+  plot_distribution_validation(
+    run_dir / "distribution_validation.png",
+    validation_actions=validation_actions,
+    train_actions=train_actions,
+    flow_actions=generated_actions,
+    uniform_actions=uniform_actions,
+    action_dim=dataset.action_dim,
   )
   log_stage(
     args,
     (
-      "evaluation complete; "
-      f"random={random_eval.mean_return_per_agent:.4g}, "
-      f"{source_fragment}"
-      f"flow={flow_eval.mean_return_per_agent:.4g}, "
-      f"delta={outcome['flow_minus_random_mean_return_per_agent']:.4g}"
+      "distribution validation complete; "
+      f"flow_js={distribution_metrics['flow']['js_divergence']:.6g}, "
+      f"uniform_js={distribution_metrics['uniform']['js_divergence']:.6g}, "
+      f"reload_diff={reload_max_abs_point_diff:.3g}"
     ),
   )
+
+  random_eval = None
+  source_eval = None
+  flow_eval = None
+  if not args.skip_policy_eval:
+    log_stage(args, f"evaluating random and flow policies for {args.eval_episodes} episodes")
+    eval_adapter = make_adapter(args)
+    try:
+      random_eval = evaluate_policy(
+        eval_adapter,
+        random_policy(eval_adapter, np.random.default_rng(args.seed + 1)),
+        episodes=args.eval_episodes,
+        max_steps=args.eval_max_steps,
+      )
+      if args.target_source == "checkpoint":
+        source_policy, _ = load_checkpoint_policy(
+          args.policy_checkpoint,
+          eval_adapter,
+          deterministic=not args.source_stochastic,
+          seed=args.seed + 3,
+        )
+        source_eval = evaluate_policy(
+          eval_adapter,
+          source_policy,
+          episodes=args.eval_episodes,
+          max_steps=args.eval_max_steps,
+        )
+      flow_eval = evaluate_policy(
+        eval_adapter,
+        flow_joint_action_policy(
+          train_state,
+          num_envs=eval_adapter.num_envs,
+          action_dim=eval_adapter.action_dim,
+          seed=args.seed + 2,
+          integration_steps=args.flow_integration_steps,
+        ),
+        episodes=args.eval_episodes,
+        max_steps=args.eval_max_steps,
+      )
+    finally:
+      eval_adapter.close()
+
+  outcome: dict[str, Any] = {
+    "distribution_validation": {
+      "passed": distribution_payload["passed"],
+      "strict_flow_beats_uniform": distribution_payload["strict_flow_beats_uniform"],
+      "reload_passed": distribution_payload["reload_passed"],
+      "flow_js_divergence": distribution_metrics["flow"]["js_divergence"],
+      "uniform_js_divergence": distribution_metrics["uniform"]["js_divergence"],
+      "gmm_sample_js_divergence": distribution_metrics["gmm_sample"]["js_divergence"],
+      "train_empirical_js_divergence": distribution_metrics[
+        "train_empirical"
+      ]["js_divergence"],
+      "reload_max_abs_point_diff": reload_max_abs_point_diff,
+      "plot": str(run_dir / "distribution_validation.png"),
+    },
+    "random": random_eval.to_dict() if random_eval is not None else None,
+    "source": source_eval.to_dict() if source_eval is not None else None,
+    "flow": flow_eval.to_dict() if flow_eval is not None else None,
+    "flow_minus_random_mean_return_per_agent": (
+      flow_eval.mean_return_per_agent - random_eval.mean_return_per_agent
+      if flow_eval is not None and random_eval is not None
+      else None
+    ),
+    "flow_minus_source_mean_return_per_agent": (
+      flow_eval.mean_return_per_agent - source_eval.mean_return_per_agent
+      if flow_eval is not None and source_eval is not None
+      else None
+    ),
+  }
+  logger.write_json("evaluation.json", outcome)
+  if flow_eval is not None and random_eval is not None:
+    source_fragment = (
+      f"source={source_eval.mean_return_per_agent:.4g}, "
+      if source_eval is not None
+      else ""
+    )
+    log_stage(
+      args,
+      (
+        "evaluation complete; "
+        f"random={random_eval.mean_return_per_agent:.4g}, "
+        f"{source_fragment}"
+        f"flow={flow_eval.mean_return_per_agent:.4g}, "
+        f"delta={outcome['flow_minus_random_mean_return_per_agent']:.4g}"
+      ),
+    )
   log_stage(args, "done")
   print(logger.write_json("outcome.json", outcome).read_text(encoding="utf-8"))
 
