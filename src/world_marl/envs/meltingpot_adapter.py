@@ -345,3 +345,5 @@ def _normalize_observation_size(
   if height < 1 or width < 1:
     raise ValueError("observation_size dimensions must be positive")
   return (int(height), int(width))
+
+# Do we want virtual env here to track fitted model?

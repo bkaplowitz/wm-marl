@@ -8,7 +8,7 @@ import jax.numpy as jnp
 
 
 class MLPVectorField(nn.Module):
-    """A small MLP that predicts u_theta(x, t)."""
+    """A small MLP that predicts u_theta(x, t). Uses SiLU activation."""
 
     hidden_dims: Sequence[int] = (64, 64, 64, 64)
 

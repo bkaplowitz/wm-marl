@@ -463,3 +463,5 @@ def training_window_means(
   ]
   window = max(1, int(len(values) * fraction))
   return float(np.mean(values[:window])), float(np.mean(values[-window:]))
+
+# Fit rollout and return summary statistics of fit.

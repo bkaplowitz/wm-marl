@@ -14,7 +14,7 @@ def euler_integrate(
     """Integrate an ODE with Euler steps and record every timestep."""
 
     def _euler_step(
-        xt: jax.Array, dt_t: tuple[float, float]
+        xt: jax.Array, dt_t: tuple[jax.Array, jax.Array]
     ) -> tuple[jax.Array, jax.Array]:  # (carry, x) -> (carry, y)
         """Takes one euler update step."""
         dt, t = dt_t

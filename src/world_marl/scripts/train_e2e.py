@@ -312,178 +312,186 @@ def run_training(
   run_index: int,
   control: str | None,
 ) -> RunOutcome:
-  logger = RunLogger(run_dir)
-  seed = args.seed + run_index * 10_000 + (5_000 if control else 0)
-  rng = jax.random.PRNGKey(seed)
-  config = algorithm_config_from_args(args, control)
-  freeze_policy = control == "freeze-policy"
+    logger = RunLogger(run_dir)
+    seed = args.seed + run_index * 10_000 + (5_000 if control else 0)
+    rng = jax.random.PRNGKey(seed)
+    config = algorithm_config_from_args(args, control)
+    freeze_policy = control == "freeze-policy"
 
-  logger.write_json(
-    "config.json",
-    {
-      "args": vars(args),
-      "run_index": run_index,
-      "control": control,
-      "seed": seed,
-      "algorithm": args.algorithm,
-      "algorithm_config": dataclasses.asdict(config),
-    },
-  )
-  logger.write_json("versions.json", dependency_versions())
-
-  random_result = evaluate_random_baseline(args, seed=seed + 1)
-  logger.write_json("random_baseline.json", random_result)
-
-  adapter = MeltingPotVectorAdapter(
-    substrate=args.substrate,
-    num_envs=args.num_envs,
-    max_cycles=args.max_cycles,
-    observation_size=args.observation_size,
-    include_observation_scalars=args.include_observation_scalars,
-    append_agent_id=args.append_agent_id,
-  )
-  rows: list[dict[str, Any]] = []
-  try:
-    observations = adapter.reset()
-    rng, init_key = jax.random.split(rng)
-    train_state = create_algorithm_train_state(
-      args.algorithm,
-      init_key,
-      adapter,
-      config,
+    logger.write_json(
+        "config.json",
+        {
+            "args": vars(args),
+            "run_index": run_index,
+            "control": control,
+            "seed": seed,
+            "algorithm": args.algorithm,
+            "algorithm_config": dataclasses.asdict(config),
+        },
     )
-    initial_result = evaluate_policy(
-      adapter,
-      policy_from_train_state(
-        args.algorithm,
-        train_state,
-        adapter=adapter,
-        deterministic=not args.stochastic_eval,
-        seed=seed + 2,
-      ),
-      episodes=args.eval_episodes,
-      max_steps=args.eval_max_steps,
-    ).to_dict()
-    logger.write_json("initial_policy_evaluation.json", initial_result)
-    observations = adapter.reset()
+    logger.write_json("versions.json", dependency_versions())
 
-    if args.algorithm == "mappo":
-      update_fn = jax.jit(lambda state, batch, last_values, update_rng: mappo_update(
-        state,
-        batch,
-        last_values,
-        update_rng,
-        config,
-      ))
-      collect_fn = collect_mappo_rollout
-    else:
-      update_fn = jax.jit(lambda state, batch, last_values, update_rng: ppo_update(
-        state,
-        batch,
-        last_values,
-        update_rng,
-        config,
-      ))
-      collect_fn = collect_rollout
+    random_result = evaluate_random_baseline(args, seed=seed + 1)
+    logger.write_json("random_baseline.json", random_result)
 
-    updates = max(1, args.total_env_steps // (args.num_envs * args.rollout_steps))
-    env_steps = 0
-    for update in range(1, updates + 1):
-      rng, rollout_key, update_key = jax.random.split(rng, 3)
-      rollout = collect_fn(
-        adapter,
-        train_state,
-        observations,
-        rollout_key,
-        rollout_steps=args.rollout_steps,
-        gamma=config.gamma,
-        gae_lambda=config.gae_lambda,
-      )
-      observations = rollout.next_observations
-      update_metrics: dict[str, Any] = {}
-      if not freeze_policy:
-        train_state, update_metrics = update_fn(
-          train_state,
-          rollout.batch,
-          rollout.last_values,
-          update_key,
+    adapter = MeltingPotVectorAdapter(
+        substrate=args.substrate,
+        num_envs=args.num_envs,
+        max_cycles=args.max_cycles,
+        observation_size=args.observation_size,
+        include_observation_scalars=args.include_observation_scalars,
+        append_agent_id=args.append_agent_id,
+    )
+    rows: list[dict[str, Any]] = []
+    try:
+        observations = adapter.reset()
+        rng, init_key = jax.random.split(rng)
+        train_state = create_algorithm_train_state(
+            args.algorithm,
+            init_key,
+            adapter,
+            config,
         )
-        jax.block_until_ready(jnp.asarray(update_metrics["total_loss"]))
+        initial_result = evaluate_policy(
+            adapter,
+            policy_from_train_state(
+                args.algorithm,
+                train_state,
+                adapter=adapter,
+                deterministic=not args.stochastic_eval,
+                seed=seed + 2,
+            ),
+            episodes=args.eval_episodes,
+            max_steps=args.eval_max_steps,
+        ).to_dict()
+        logger.write_json("initial_policy_evaluation.json", initial_result)
+        observations = adapter.reset()
 
-      env_steps += args.num_envs * args.rollout_steps
-      row = {
-        "update": update,
-        "env_steps": env_steps,
-        "control": control,
-        **rollout.metrics,
-        **{f"ppo/{key}": value for key, value in update_metrics.items()},
-      }
-      rows.append(to_jsonable(row))
-      logger.append_metrics(row)
+        if args.algorithm == "mappo":
+            update_fn = jax.jit(
+                lambda state, batch, last_values, update_rng: mappo_update(
+                    state,
+                    batch,
+                    last_values,
+                    update_rng,
+                    config,
+                )
+            )
+            collect_fn = collect_mappo_rollout
+        else:
+            update_fn = jax.jit(
+                lambda state, batch, last_values, update_rng: ppo_update(
+                    state,
+                    batch,
+                    last_values,
+                    update_rng,
+                    config,
+                )
+            )
+            collect_fn = collect_rollout
 
-    first_window_mean, final_window_mean = training_window_means(rows)
-    logger.plot_returns(rows)
+        updates = max(1, args.total_env_steps // (args.num_envs * args.rollout_steps))
+        env_steps = 0
+        for update in range(1, updates + 1):
+            rng, rollout_key, update_key = jax.random.split(rng, 3)
+            rollout = collect_fn(
+                adapter,
+                train_state,
+                observations,
+                rollout_key,
+                rollout_steps=args.rollout_steps,
+                gamma=config.gamma,
+                gae_lambda=config.gae_lambda,
+            )
+            # Fit env model to rollout. Raw rollout or latent states?
+            observations = rollout.next_observations
+            update_metrics: dict[str, Any] = {}
+            # Simulate from env model and use update_fn to fit to env rollouts.
+            if not freeze_policy:
+                train_state, update_metrics = update_fn(
+                    train_state,
+                    rollout.batch,
+                    rollout.last_values,
+                    update_key,
+                )
+                jax.block_until_ready(jnp.asarray(update_metrics["total_loss"]))
 
-    checkpoint_dir = run_dir / "checkpoint"
-    save_checkpoint(
-      checkpoint_dir,
-      train_state,
-      metadata={
-        "substrate": args.substrate,
-        "num_envs": args.num_envs,
-        "num_agents": adapter.num_agents,
-        "observation_shape": adapter.observation_shape,
-        "raw_observation_shape": adapter.raw_observation_shape,
-        "observation_size": adapter.observation_size,
-        "include_observation_scalars": adapter.include_observation_scalars,
-        "scalar_observation_keys": adapter.scalar_observation_keys,
-        "append_agent_id": adapter.append_agent_id,
-        "algorithm": args.algorithm,
-        "central_observation_shape": (
-          central_observation_shape(adapter.observation_shape, adapter.num_agents)
-          if args.algorithm == "mappo"
-          else None
-        ),
-        "action_dim": adapter.action_dim,
-        "algorithm_config": dataclasses.asdict(config),
-        "ippo_config": (
-          dataclasses.asdict(config) if args.algorithm == "ippo" else None
-        ),
-        "seed": seed,
-        "control": control,
-      },
+            env_steps += args.num_envs * args.rollout_steps
+            row = {
+                "update": update,
+                "env_steps": env_steps,
+                "control": control,
+                **rollout.metrics,
+                **{f"ppo/{key}": value for key, value in update_metrics.items()},
+            }
+            rows.append(to_jsonable(row))
+            logger.append_metrics(row)
+
+        first_window_mean, final_window_mean = training_window_means(rows)
+        logger.plot_returns(rows)
+
+        checkpoint_dir = run_dir / "checkpoint"
+        save_checkpoint(
+            checkpoint_dir,
+            train_state,
+            metadata={
+                "substrate": args.substrate,
+                "num_envs": args.num_envs,
+                "num_agents": adapter.num_agents,
+                "observation_shape": adapter.observation_shape,
+                "raw_observation_shape": adapter.raw_observation_shape,
+                "observation_size": adapter.observation_size,
+                "include_observation_scalars": adapter.include_observation_scalars,
+                "scalar_observation_keys": adapter.scalar_observation_keys,
+                "append_agent_id": adapter.append_agent_id,
+                "algorithm": args.algorithm,
+                "central_observation_shape": (
+                    central_observation_shape(
+                        adapter.observation_shape, adapter.num_agents
+                    )
+                    if args.algorithm == "mappo"
+                    else None
+                ),
+                "action_dim": adapter.action_dim,
+                "algorithm_config": dataclasses.asdict(config),
+                "ippo_config": (
+                    dataclasses.asdict(config) if args.algorithm == "ippo" else None
+                ),
+                "seed": seed,
+                "control": control,
+            },
+        )
+    finally:
+        adapter.close()
+
+    reload_result = evaluate_checkpoint_subprocess(
+        args,
+        checkpoint_dir,
+        seed=seed + 2,
     )
-  finally:
-    adapter.close()
+    logger.write_json("reload_evaluation.json", reload_result)
 
-  reload_result = evaluate_checkpoint_subprocess(
-    args,
-    checkpoint_dir,
-    seed=seed + 2,
-  )
-  logger.write_json("reload_evaluation.json", reload_result)
-
-  random_mean = float(random_result["mean_return_per_agent"])
-  initial_mean = float(initial_result["mean_return_per_agent"])
-  trained_mean = float(reload_result["mean_return_per_agent"])
-  random_improvement = trained_mean - random_mean
-  initial_improvement = trained_mean - initial_mean
-  outcome = RunOutcome(
-    name=name,
-    run_dir=str(run_dir),
-    control=control,
-    random_mean=random_mean,
-    initial_mean=initial_mean,
-    trained_mean=trained_mean,
-    improvement=random_improvement,
-    random_improvement=random_improvement,
-    initial_improvement=initial_improvement,
-    first_window_mean=first_window_mean,
-    final_window_mean=final_window_mean,
-    checkpoint_dir=str(checkpoint_dir),
-  )
-  logger.write_json("outcome.json", outcome.to_dict())
-  return outcome
+    random_mean = float(random_result["mean_return_per_agent"])
+    initial_mean = float(initial_result["mean_return_per_agent"])
+    trained_mean = float(reload_result["mean_return_per_agent"])
+    random_improvement = trained_mean - random_mean
+    initial_improvement = trained_mean - initial_mean
+    outcome = RunOutcome(
+        name=name,
+        run_dir=str(run_dir),
+        control=control,
+        random_mean=random_mean,
+        initial_mean=initial_mean,
+        trained_mean=trained_mean,
+        improvement=random_improvement,
+        random_improvement=random_improvement,
+        initial_improvement=initial_improvement,
+        first_window_mean=first_window_mean,
+        final_window_mean=final_window_mean,
+        checkpoint_dir=str(checkpoint_dir),
+    )
+    logger.write_json("outcome.json", outcome.to_dict())
+    return outcome
 
 
 def summarize(
