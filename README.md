@@ -107,6 +107,9 @@ Each run writes `config.json`, `versions.json`, `rollout_dataset.json`,
 `distribution_validation.json`, `distribution_validation.png`, `checkpoint/`,
 `evaluation.json`, and `outcome.json`. The command prints stage updates and
 progress bars by default; add `--quiet` to only emit the final JSON outcome.
+The PNG is a distribution dashboard with probability heatmaps, absolute-error
+heatmaps versus heldout actions, sorted action-pair probabilities, and JS/total
+variation bars.
 
 The key distribution fields are:
 

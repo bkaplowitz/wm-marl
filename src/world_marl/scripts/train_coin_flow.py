@@ -120,11 +120,13 @@ def plot_distribution_validation(
   *,
   validation_actions: np.ndarray,
   train_actions: np.ndarray,
+  gmm_actions: np.ndarray,
   flow_actions: np.ndarray,
   uniform_actions: np.ndarray,
   action_dim: int,
+  distribution_metrics: dict[str, Any],
 ) -> None:
-  """Plot heldout, train, flow, and uniform joint-action distributions."""
+  """Plot distribution fit, errors, and summary distances."""
   import matplotlib
 
   matplotlib.use("Agg")
@@ -135,25 +137,99 @@ def plot_distribution_validation(
   panels = [
     ("heldout", validation_actions),
     ("train", train_actions),
+    ("gmm sample", gmm_actions),
     ("flow", flow_actions),
     ("uniform", uniform_actions),
   ]
-  matrices = [
-    joint_action_probabilities(actions, action_dim)
-    for _, actions in panels
-  ]
+  matrices = [joint_action_probabilities(actions, action_dim) for _, actions in panels]
+  heldout = matrices[0]
   vmax = max(float(matrix.max()) for matrix in matrices)
-  fig, axes = plt.subplots(1, 4, figsize=(14, 3.5), constrained_layout=True)
-  image = None
-  for ax, (title, _actions), matrix in zip(axes, panels, matrices, strict=True):
-    image = ax.imshow(matrix, vmin=0.0, vmax=vmax, origin="lower")
+  error_matrices = [np.abs(matrix - heldout) for matrix in matrices]
+  error_vmax = max(float(matrix.max()) for matrix in error_matrices[1:]) or 1.0
+
+  fig = plt.figure(figsize=(19, 10))
+  grid = fig.add_gridspec(
+    3,
+    6,
+    height_ratios=(1.0, 1.0, 0.9),
+    width_ratios=(1.0, 1.0, 1.0, 1.0, 1.0, 0.08),
+  )
+
+  prob_image = None
+  for column, ((title, _actions), matrix) in enumerate(zip(panels, matrices, strict=True)):
+    ax = fig.add_subplot(grid[0, column])
+    prob_image = ax.imshow(matrix, vmin=0.0, vmax=vmax, origin="lower")
     ax.set_title(title)
     ax.set_xlabel("player_1 action")
-    ax.set_ylabel("player_0 action")
+    if column == 0:
+      ax.set_ylabel("player_0 action")
     ax.set_xticks(range(action_dim))
     ax.set_yticks(range(action_dim))
-  if image is not None:
-    fig.colorbar(image, ax=axes.ravel().tolist(), shrink=0.8)
+  if prob_image is not None:
+    cax = fig.add_subplot(grid[0, 5])
+    fig.colorbar(prob_image, cax=cax, label="probability")
+
+  error_image = None
+  for column, ((title, _actions), matrix) in enumerate(
+    zip(panels, error_matrices, strict=True)
+  ):
+    ax = fig.add_subplot(grid[1, column])
+    error_image = ax.imshow(matrix, vmin=0.0, vmax=error_vmax, origin="lower")
+    ax.set_title(f"|{title} - heldout|")
+    ax.set_xlabel("player_1 action")
+    if column == 0:
+      ax.set_ylabel("player_0 action")
+    ax.set_xticks(range(action_dim))
+    ax.set_yticks(range(action_dim))
+  if error_image is not None:
+    cax = fig.add_subplot(grid[1, 5])
+    fig.colorbar(error_image, cax=cax, label="abs error")
+
+  rank_ax = fig.add_subplot(grid[2, :3])
+  order = np.argsort(heldout.reshape(-1))[::-1]
+  x = np.arange(order.shape[0])
+  for title, matrix in zip(
+    ("heldout", "train", "gmm sample", "flow", "uniform"),
+    matrices,
+    strict=True,
+  ):
+    rank_ax.plot(x, matrix.reshape(-1)[order], marker="o", linewidth=1.5, label=title)
+  rank_ax.set_title("Action-pair probabilities sorted by heldout frequency")
+  rank_ax.set_xlabel("joint-action rank")
+  rank_ax.set_ylabel("probability")
+  rank_ax.grid(True, alpha=0.25)
+  rank_ax.legend(fontsize=8)
+
+  metric_ax = fig.add_subplot(grid[2, 3:5])
+  labels = ["train", "gmm", "flow", "uniform"]
+  metric_keys = ["train_empirical", "gmm_sample", "flow", "uniform"]
+  js_values = [
+    distribution_metrics[key]["js_divergence"]
+    for key in metric_keys
+  ]
+  tv_values = [
+    distribution_metrics[key]["total_variation"]
+    for key in metric_keys
+  ]
+  positions = np.arange(len(labels))
+  width = 0.38
+  metric_ax.bar(positions - width / 2, js_values, width, label="JS divergence")
+  metric_ax.bar(positions + width / 2, tv_values, width, label="total variation")
+  metric_ax.set_title("Distances to heldout distribution")
+  metric_ax.set_xticks(positions, labels)
+  metric_ax.grid(True, axis="y", alpha=0.25)
+  metric_ax.legend(fontsize=8)
+  fig.add_subplot(grid[2, 5]).axis("off")
+
+  fig.suptitle("Flow Matching Joint-Action Distribution Validation", fontsize=14)
+  fig.subplots_adjust(
+    left=0.04,
+    right=0.98,
+    top=0.90,
+    bottom=0.08,
+    wspace=0.55,
+    hspace=0.75,
+  )
   fig.savefig(output_path)
   plt.close(fig)
 
@@ -549,9 +625,11 @@ def main() -> None:
     run_dir / "distribution_validation.png",
     validation_actions=validation_actions,
     train_actions=train_actions,
+    gmm_actions=gmm_actions,
     flow_actions=generated_actions,
     uniform_actions=uniform_actions,
     action_dim=dataset.action_dim,
+    distribution_metrics=distribution_metrics,
   )
   log_stage(
     args,
