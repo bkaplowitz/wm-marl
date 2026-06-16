@@ -113,7 +113,7 @@ def simulate_ippo_model_rollout(
     *,
     rollout_steps: int,
     config: VectorWorldModelConfig,
-    reward_done_fn: RewardDoneFn | None = None,
+    reward_done_fn: RewardDoneFn,
 ) -> RolloutResult:
     return _simulate_model_rollout(
         model_state,
@@ -135,7 +135,7 @@ def simulate_mappo_model_rollout(
     *,
     rollout_steps: int,
     config: VectorWorldModelConfig,
-    reward_done_fn: RewardDoneFn | None = None,
+    reward_done_fn: RewardDoneFn,
 ) -> RolloutResult:
     return _simulate_model_rollout(
         model_state,
@@ -158,7 +158,7 @@ def _simulate_model_rollout(
     rollout_steps: int,
     config: VectorWorldModelConfig,
     algorithm: str,
-    reward_done_fn: RewardDoneFn | None = None,
+    reward_done_fn: RewardDoneFn,
 ) -> RolloutResult:
     if rollout_steps < 1:
         raise ValueError("rollout_steps must be >= 1")
@@ -256,16 +256,13 @@ def _apply_vector_policy(
 
 
 def _reward_done(
-    reward_done_fn: RewardDoneFn | None,
+    reward_done_fn: RewardDoneFn,
     states: jnp.ndarray,
     env_actions: jnp.ndarray,
     next_states: jnp.ndarray,
     config: VectorWorldModelConfig,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Rewards/dones from the callback, or zeros when none is supplied."""
-    if reward_done_fn is None:
-        zeros = jnp.zeros((states.shape[0], config.num_agents), dtype=jnp.float32)
-        return zeros, zeros
+    """Rewards/dones from the callback. None is not acceptable"""
     rewards, dones = reward_done_fn(states, env_actions, next_states)
     return (
         jnp.asarray(rewards, dtype=jnp.float32),

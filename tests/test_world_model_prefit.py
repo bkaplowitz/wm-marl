@@ -211,6 +211,10 @@ def test_simulate_mappo_model_rollout_returns_vector_central_batches():
     )
     initial_states = jnp.zeros((3, 2, 4), dtype=jnp.float32)
 
+    def reward_done_fn(states, actions, next_states):
+        del states, next_states
+        return actions.astype(jnp.float32), (actions == 2).astype(jnp.float32)
+
     rollout = simulate_mappo_model_rollout(
         model_state,
         policy_state,
@@ -218,6 +222,7 @@ def test_simulate_mappo_model_rollout_returns_vector_central_batches():
         jax.random.PRNGKey(2),
         rollout_steps=2,
         config=config,
+        reward_done_fn=reward_done_fn,
     )
 
     assert rollout.batch.observations.shape == (2, 6, 4)
@@ -250,6 +255,10 @@ def test_simulate_ippo_model_rollout_supports_mlp_vector_policy():
         IPPOConfig(network_arch="mlp", num_minibatches=1),
     )
 
+    def reward_done_fn(states, actions, next_states):
+        del states, next_states
+        return actions.astype(jnp.float32), (actions == 2).astype(jnp.float32)
+
     rollout = simulate_ippo_model_rollout(
         model_state,
         policy_state,
@@ -257,6 +266,7 @@ def test_simulate_ippo_model_rollout_supports_mlp_vector_policy():
         jax.random.PRNGKey(2),
         rollout_steps=2,
         config=config,
+        reward_done_fn=reward_done_fn,
     )
 
     assert rollout.batch.observations.shape == (2, 6, 4)
