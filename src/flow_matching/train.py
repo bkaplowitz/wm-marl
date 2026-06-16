@@ -21,6 +21,7 @@ def create_train_state(
     """Initialize model parameters and an Adam optimizer."""
     init_x = jnp.zeros((1, dim))
     init_t = jnp.zeros((1, 1))
+    key, train_state_key = jax.random.split(key)
     params = model.init(key, init_x, init_t)["params"]
     tx = optax.adam(learning_rate)
     return TrainState.create(apply_fn=model.apply, params=params, tx=tx)
@@ -34,7 +35,7 @@ def flow_matching_loss(
     batch_size: int,
 ) -> jax.Array:
     """Compute the conditional flow-matching MSE loss."""
-    key_x1, key_t, key_xt, _key = jax.random.split(key, 4)
+    key, key_x1, key_t, key_xt = jax.random.split(key, 4)
     # sample x1, t uniformly, xt from x1, t
     x1 = sample_gmm(key_x1, gmm, batch_size)
     t = jax.random.uniform(key_t, shape=(batch_size, 1))

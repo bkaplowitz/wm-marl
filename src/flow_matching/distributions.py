@@ -35,12 +35,13 @@ def make_symmetric_gmm_2d(
 
 def sample_standard_normal(key: jax.Array, n: int, dim: int = 2) -> jax.Array:
     """Sample from the source distribution p0 = N(0, I)."""
-    return jax.random.normal(key, shape=(n, dim))
+    key, normal_key = jax.random.split(key)
+    return jax.random.normal(normal_key, shape=(n, dim))
 
 
 def sample_gmm(key: jax.Array, gmm: GaussianMixture2D, n: int) -> jax.Array:
     """Sample `n` points from a 2D isotropic Gaussian mixture."""
-    key_labels, key_noise = jax.random.split(key)
+    key, key_labels, key_noise = jax.random.split(key, 3)
     component_label = jax.random.choice(
         key_labels, gmm.nmodes, shape=(n,), p=gmm.weights
     )
