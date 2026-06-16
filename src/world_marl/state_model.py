@@ -130,6 +130,7 @@ class WorldModelConfig:
   reward_loss_weight: float = 1.0
   done_loss_weight: float = 0.1
   policy_loss_weight: float = 0.1
+  max_grad_norm: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -167,8 +168,15 @@ class StateFitWorldModel(nn.Module):
       policy_hidden = nn.Dense(hidden_dim)(policy_hidden)
       policy_hidden = nn.silu(policy_hidden)
 
+    delta_features = nn.Dense(
+      self.feature_dim,
+      kernel_init=nn.initializers.zeros,
+      bias_init=nn.initializers.zeros,
+      name="state_delta",
+    )(transition_hidden)
+
     return {
-      "next_state_features": nn.Dense(self.feature_dim)(transition_hidden),
+      "next_state_features": state_features + delta_features,
       "rewards": nn.Dense(self.num_agents)(transition_hidden),
       "done_logits": nn.Dense(self.num_agents)(transition_hidden),
       "policy_logits": nn.Dense(self.num_agents * self.action_dim)(policy_hidden).reshape(
@@ -303,9 +311,7 @@ def prepare_transition_data(
   """Embed observations and build a feature normalizer."""
   state_features = embed_observations(dataset.obs, representation_config)
   next_state_features = embed_observations(dataset.next_obs, representation_config)
-  mean = state_features.mean(axis=0).astype(np.float32)
-  std = state_features.std(axis=0).astype(np.float32)
-  std = np.maximum(std, 1e-6)
+  normalizer = fit_feature_normalizer(state_features, next_state_features)
   return PreparedTransitionData(
     state_features=state_features,
     next_state_features=next_state_features,
@@ -316,9 +322,22 @@ def prepare_transition_data(
     next_obs=dataset.next_obs,
     action_dim=dataset.action_dim,
     num_agents=dataset.num_agents,
-    normalizer=FeatureNormalizer(mean=mean, std=std),
+    normalizer=normalizer,
     representation_config=representation_config,
   )
+
+
+def fit_feature_normalizer(*feature_arrays: np.ndarray) -> FeatureNormalizer:
+  """Fit a feature normalizer over current and next state features."""
+  if not feature_arrays:
+    raise ValueError("at least one feature array is required")
+  values = np.concatenate(
+    [np.asarray(array, dtype=np.float32) for array in feature_arrays],
+    axis=0,
+  )
+  mean = values.mean(axis=0).astype(np.float32)
+  std = np.maximum(values.std(axis=0).astype(np.float32), 1e-6)
+  return FeatureNormalizer(mean=mean, std=std)
 
 
 def split_prepared_data(
@@ -366,7 +385,10 @@ def create_world_model_train_state(
   return TrainState.create(
     apply_fn=model.apply,
     params=params,
-    tx=optax.adam(config.learning_rate),
+    tx=optax.chain(
+      optax.clip_by_global_norm(config.max_grad_norm),
+      optax.adam(config.learning_rate),
+    ),
   )
 
 
@@ -520,6 +542,16 @@ def evaluate_state_fit(
   persistence = validation_data.state_features
   model_next = predictions.next_state_features
   true_next = validation_data.next_state_features
+  true_delta = true_next - validation_data.state_features
+  model_delta = model_next - validation_data.state_features
+  train_delta = train_data.next_state_features - train_data.state_features
+  mean_delta = np.repeat(
+    train_delta.mean(axis=0, keepdims=True),
+    validation_data.num_transitions,
+    axis=0,
+  )
+  zero_delta = np.zeros_like(true_delta)
+  changed_mask = changed_feature_mask(train_delta)
 
   reward_mean = np.repeat(
     train_data.rewards.mean(axis=0, keepdims=True),
@@ -553,10 +585,35 @@ def evaluate_state_fit(
         mse(model_next, true_next) < mse(persistence, true_next)
       ),
     },
+    "delta_state": {
+      "model_mse": mse(model_delta, true_delta),
+      "zero_delta_baseline_mse": mse(zero_delta, true_delta),
+      "mean_delta_baseline_mse": mse(mean_delta, true_delta),
+      "model_beats_zero_delta": bool(mse(model_delta, true_delta) < mse(zero_delta, true_delta)),
+      "model_beats_mean_delta": bool(mse(model_delta, true_delta) < mse(mean_delta, true_delta)),
+      "true_delta_abs_mean": float(np.abs(true_delta).mean()),
+      "true_delta_abs_max": float(np.abs(true_delta).max(initial=0.0)),
+    },
+    "changed_features": changed_feature_metrics(
+      true_next=true_next,
+      model_next=model_next,
+      mean_next=mean_next,
+      persistence=persistence,
+      true_delta=true_delta,
+      model_delta=model_delta,
+      mean_delta=mean_delta,
+      zero_delta=zero_delta,
+      mask=changed_mask,
+    ),
     "state_distribution": {
       "model": distribution_metrics(true_next, model_next, seed=seed),
       "mean_baseline": distribution_metrics(true_next, mean_next, seed=seed),
       "persistence_baseline": distribution_metrics(true_next, persistence, seed=seed),
+    },
+    "delta_distribution": {
+      "model": distribution_metrics(true_delta, model_delta, seed=seed),
+      "zero_delta_baseline": distribution_metrics(true_delta, zero_delta, seed=seed),
+      "mean_delta_baseline": distribution_metrics(true_delta, mean_delta, seed=seed),
     },
     "reward": {
       "model_mse": mse(predictions.rewards, validation_data.rewards),
@@ -683,14 +740,16 @@ def plot_prediction_dashboard(
   ax.legend(fontsize=8)
 
   ax = fig.add_subplot(grid[0, 1])
-  labels = ["model", "mean", "persistence"]
+  labels = ["next\nmodel", "next\nmean", "next\npersist", "delta\nmodel", "delta\nzero"]
   values = [
     metrics["next_state"]["model_mse"],
     metrics["next_state"]["mean_baseline_mse"],
     metrics["next_state"]["persistence_baseline_mse"],
+    metrics["delta_state"]["model_mse"],
+    metrics["delta_state"]["zero_delta_baseline_mse"],
   ]
   ax.bar(labels, values)
-  ax.set_title("Next-state feature MSE")
+  ax.set_title("Transition feature MSE")
   ax.grid(True, axis="y", alpha=0.25)
 
   ax = fig.add_subplot(grid[1, 0])
@@ -821,6 +880,65 @@ def action_marginals(actions: np.ndarray, *, action_dim: int, num_agents: int) -
     np.add.at(counts[agent_index], actions[:, agent_index], 1.0)
   counts += 1e-6
   return counts / counts.sum(axis=-1, keepdims=True)
+
+
+def changed_feature_mask(
+  train_delta: np.ndarray,
+  *,
+  top_fraction: float = 0.25,
+  min_std: float = 1e-6,
+) -> np.ndarray:
+  """Select feature dimensions that change most in the training transitions."""
+  if not 0.0 < top_fraction <= 1.0:
+    raise ValueError("top_fraction must be in (0, 1]")
+  delta_std = np.asarray(train_delta, dtype=np.float32).std(axis=0)
+  active = delta_std > min_std
+  if not bool(active.any()):
+    return np.ones_like(delta_std, dtype=bool)
+  active_indices = np.flatnonzero(active)
+  keep = max(1, int(round(active_indices.shape[0] * top_fraction)))
+  ranked_active = active_indices[np.argsort(delta_std[active_indices])[::-1]]
+  mask = np.zeros_like(delta_std, dtype=bool)
+  mask[ranked_active[:keep]] = True
+  return mask
+
+
+def changed_feature_metrics(
+  *,
+  true_next: np.ndarray,
+  model_next: np.ndarray,
+  mean_next: np.ndarray,
+  persistence: np.ndarray,
+  true_delta: np.ndarray,
+  model_delta: np.ndarray,
+  mean_delta: np.ndarray,
+  zero_delta: np.ndarray,
+  mask: np.ndarray,
+) -> dict[str, Any]:
+  """Evaluate transition prediction only on the most-changing feature dimensions."""
+  mask = np.asarray(mask, dtype=bool)
+  if mask.ndim != 1 or mask.shape[0] != true_next.shape[1]:
+    raise ValueError("changed-feature mask has incompatible shape")
+  next_model_mse = mse(model_next[:, mask], true_next[:, mask])
+  next_mean_mse = mse(mean_next[:, mask], true_next[:, mask])
+  next_persistence_mse = mse(persistence[:, mask], true_next[:, mask])
+  delta_model_mse = mse(model_delta[:, mask], true_delta[:, mask])
+  delta_zero_mse = mse(zero_delta[:, mask], true_delta[:, mask])
+  delta_mean_mse = mse(mean_delta[:, mask], true_delta[:, mask])
+  return {
+    "feature_count": int(mask.sum()),
+    "feature_fraction": float(mask.mean()),
+    "next_model_mse": next_model_mse,
+    "next_mean_baseline_mse": next_mean_mse,
+    "next_persistence_baseline_mse": next_persistence_mse,
+    "next_model_beats_mean": bool(next_model_mse < next_mean_mse),
+    "next_model_beats_persistence": bool(next_model_mse < next_persistence_mse),
+    "delta_model_mse": delta_model_mse,
+    "delta_zero_baseline_mse": delta_zero_mse,
+    "delta_mean_baseline_mse": delta_mean_mse,
+    "delta_model_beats_zero": bool(delta_model_mse < delta_zero_mse),
+    "delta_model_beats_mean": bool(delta_model_mse < delta_mean_mse),
+  }
 
 
 def distribution_metrics(reference: np.ndarray, candidate: np.ndarray, *, seed: int) -> dict[str, float]:

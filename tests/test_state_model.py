@@ -106,6 +106,9 @@ def test_state_world_model_training_metrics_and_reload(tmp_path, dummy_env_facto
   assert predictions.rewards.shape == validation_data.rewards.shape
   metrics = evaluate_state_fit(train_data, validation_data, predictions, seed=0)
   assert metrics["next_state"]["model_mse"] >= 0.0
+  assert metrics["delta_state"]["model_mse"] >= 0.0
+  assert metrics["changed_features"]["feature_count"] >= 1
+  assert "delta_model_beats_zero" in metrics["changed_features"]
   assert metrics["reward"]["model_mse"] >= 0.0
   assert metrics["policy"]["model_cross_entropy"] > 0.0
 

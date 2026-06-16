@@ -76,9 +76,9 @@ obs_t, joint_action_t, reward_t, done_t, obs_{t+1}
 ```
 
 It embeds observations with deterministic pooled RGB/channel-stat features,
-then trains a supervised model with four heads:
+then trains a supervised residual model with four heads:
 
-- next state representation: `z_t, a_t -> z_{t+1}`;
+- next state representation: `z_t, a_t -> z_t + delta_z`;
 - reward: `z_t, a_t -> r_t`;
 - done: `z_t, a_t -> done_t`;
 - behavior policy: `z_t -> a_t`.
@@ -103,10 +103,12 @@ The run writes `config.json`, `versions.json`, `transition_dataset.json`,
 `evaluation.json`, and `outcome.json`.
 
 The first pass criterion is intentionally modest: finite training losses,
-checkpoint reload equality, and next-state feature MSE beating the global mean
-baseline. Reward, done, behavior-policy, state-distribution, and nearest-frame
-recovery metrics are reported so we can see what the representation recovers
-before adding a harder generative model.
+checkpoint reload equality, state-conditioned behavior-policy prediction beating
+the marginal action baseline, and at least one transition signal beating a
+persistence or zero-delta baseline. Reward, done, full-state distribution,
+changed-feature, delta, and nearest-frame recovery metrics are reported so we
+can see what the representation recovers before adding a harder generative
+model.
 
 ### Flow Matching / GMMs on Coins
 

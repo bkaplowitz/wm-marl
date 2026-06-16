@@ -15,12 +15,12 @@ from world_marl.checkpointing import load_params, save_checkpoint
 from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
 from world_marl.logging import RunLogger, dependency_versions, timestamp, to_jsonable
 from world_marl.state_model import (
-  FeatureNormalizer,
   StateRepresentationConfig,
   WorldModelConfig,
   collect_transition_dataset,
   create_world_model_train_state,
   evaluate_state_fit,
+  fit_feature_normalizer,
   plot_prediction_dashboard,
   plot_state_recoveries,
   predict_world_model,
@@ -58,6 +58,7 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument("--reward-loss-weight", type=float, default=1.0)
   parser.add_argument("--done-loss-weight", type=float, default=0.1)
   parser.add_argument("--policy-loss-weight", type=float, default=0.1)
+  parser.add_argument("--max-grad-norm", type=float, default=1.0)
   parser.add_argument("--recovery-examples", type=int, default=6)
   parser.add_argument("--seed", type=int, default=0)
   parser.add_argument("--out-dir", default="runs")
@@ -90,12 +91,6 @@ def log_stage(args: argparse.Namespace, message: str) -> None:
     print(f"[state-model] {message}", flush=True)
 
 
-def fit_train_normalizer(train_state_features: np.ndarray) -> FeatureNormalizer:
-  mean = train_state_features.mean(axis=0).astype(np.float32)
-  std = np.maximum(train_state_features.std(axis=0).astype(np.float32), 1e-6)
-  return FeatureNormalizer(mean=mean, std=std)
-
-
 def main() -> None:
   args = parse_args()
   if args.target_source == "checkpoint" and args.policy_checkpoint is None:
@@ -115,6 +110,7 @@ def main() -> None:
     reward_loss_weight=args.reward_loss_weight,
     done_loss_weight=args.done_loss_weight,
     policy_loss_weight=args.policy_loss_weight,
+    max_grad_norm=args.max_grad_norm,
   )
 
   run_dir = Path(args.out_dir) / f"state_model_{timestamp()}"
@@ -210,7 +206,10 @@ def main() -> None:
     validation_fraction=args.validation_fraction,
     seed=args.seed,
   )
-  normalizer = fit_train_normalizer(train_data.state_features)
+  normalizer = fit_feature_normalizer(
+    train_data.state_features,
+    train_data.next_state_features,
+  )
   train_data = replace(train_data, normalizer=normalizer)
   validation_data = replace(validation_data, normalizer=normalizer)
   logger.write_json(
@@ -346,19 +345,35 @@ def main() -> None:
     },
   )
 
+  transition_model_has_signal = bool(
+    prediction_metrics["next_state"]["model_beats_persistence"]
+    or prediction_metrics["delta_state"]["model_beats_zero_delta"]
+    or prediction_metrics["changed_features"]["delta_model_beats_zero"]
+  )
   passed = bool(
     finite_losses
     and reload_passed
-    and prediction_metrics["next_state"]["model_beats_mean"]
+    and transition_model_has_signal
+    and prediction_metrics["policy"]["model_beats_marginal_ce"]
   )
   outcome = {
     "passed": passed,
     "criteria": {
       "finite_losses": finite_losses,
       "reload_passed": reload_passed,
+      "transition_model_has_signal": transition_model_has_signal,
       "next_state_model_beats_mean": prediction_metrics["next_state"]["model_beats_mean"],
       "next_state_model_beats_persistence": prediction_metrics["next_state"][
         "model_beats_persistence"
+      ],
+      "delta_model_beats_zero": prediction_metrics["delta_state"][
+        "model_beats_zero_delta"
+      ],
+      "delta_model_beats_mean_delta": prediction_metrics["delta_state"][
+        "model_beats_mean_delta"
+      ],
+      "changed_feature_delta_model_beats_zero": prediction_metrics["changed_features"][
+        "delta_model_beats_zero"
       ],
       "reward_model_beats_mean": prediction_metrics["reward"]["model_beats_mean"],
       "policy_model_beats_marginal_ce": prediction_metrics["policy"][
@@ -366,10 +381,13 @@ def main() -> None:
       ],
     },
     "next_state": prediction_metrics["next_state"],
+    "delta_state": prediction_metrics["delta_state"],
+    "changed_features": prediction_metrics["changed_features"],
     "reward": prediction_metrics["reward"],
     "done": prediction_metrics["done"],
     "policy": prediction_metrics["policy"],
     "state_distribution": prediction_metrics["state_distribution"],
+    "delta_distribution": prediction_metrics["delta_distribution"],
     "reload_max_abs_prediction_diff": reload_max_abs_diff,
     "artifacts": {
       "prediction_dashboard": str(run_dir / "prediction_dashboard.png"),
@@ -384,7 +402,8 @@ def main() -> None:
       "done; "
       f"passed={passed}, "
       f"next_mse={prediction_metrics['next_state']['model_mse']:.6g}, "
-      f"mean_baseline={prediction_metrics['next_state']['mean_baseline_mse']:.6g}, "
+      f"persist_baseline={prediction_metrics['next_state']['persistence_baseline_mse']:.6g}, "
+      f"delta_mse={prediction_metrics['delta_state']['model_mse']:.6g}, "
       f"reload_diff={reload_max_abs_diff:.3g}"
     ),
   )
