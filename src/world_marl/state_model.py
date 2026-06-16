@@ -127,10 +127,17 @@ class WorldModelConfig:
   batch_size: int = 256
   train_steps: int = 1000
   next_loss_weight: float = 1.0
+  delta_loss_weight: float = 0.5
+  changed_loss_weight: float = 1.0
   reward_loss_weight: float = 1.0
+  reward_event_loss_weight: float = 0.25
   done_loss_weight: float = 0.1
   policy_loss_weight: float = 0.1
   max_grad_norm: float = 1.0
+  reward_oversample_factor: float = 8.0
+  delta_oversample_factor: float = 2.0
+  changed_feature_fraction: float = 0.25
+  reward_event_epsilon: float = 1e-6
 
 
 @dataclass(frozen=True)
@@ -139,6 +146,7 @@ class WorldModelPredictions:
 
   next_state_features: np.ndarray
   rewards: np.ndarray
+  reward_event_logits: np.ndarray
   done_logits: np.ndarray
   policy_logits: np.ndarray
 
@@ -178,6 +186,7 @@ class StateFitWorldModel(nn.Module):
     return {
       "next_state_features": state_features + delta_features,
       "rewards": nn.Dense(self.num_agents)(transition_hidden),
+      "reward_event_logits": nn.Dense(self.num_agents)(transition_hidden),
       "done_logits": nn.Dense(self.num_agents)(transition_hidden),
       "policy_logits": nn.Dense(self.num_agents * self.action_dim)(policy_hidden).reshape(
         (state_features.shape[0], self.num_agents, self.action_dim)
@@ -415,7 +424,26 @@ def train_world_model(
   )
   actions = jnp.asarray(train_data.actions, dtype=jnp.int32)
   rewards = jnp.asarray(train_data.rewards, dtype=jnp.float32)
+  reward_events = jnp.asarray(
+    np.abs(train_data.rewards) > config.reward_event_epsilon,
+    dtype=jnp.float32,
+  )
   dones = jnp.asarray(train_data.dones, dtype=jnp.float32)
+  changed_mask_np = changed_feature_mask(
+    train_data.next_state_features - train_data.state_features,
+    top_fraction=config.changed_feature_fraction,
+  )
+  changed_mask = jnp.asarray(changed_mask_np)
+  sampling_probs = jnp.asarray(
+    transition_sampling_probabilities(
+      train_data,
+      changed_mask=changed_mask_np,
+      reward_event_epsilon=config.reward_event_epsilon,
+      reward_oversample_factor=config.reward_oversample_factor,
+      delta_oversample_factor=config.delta_oversample_factor,
+    ),
+    dtype=jnp.float32,
+  )
   train_size = int(train_data.num_transitions)
 
   rng, init_key = jax.random.split(rng)
@@ -429,11 +457,12 @@ def train_world_model(
 
   @jax.jit
   def train_step(state: TrainState, step_key: jax.Array):
-    batch_indices = jax.random.randint(
+    batch_indices = jax.random.choice(
       step_key,
-      (config.batch_size,),
-      minval=0,
-      maxval=train_size,
+      train_size,
+      shape=(config.batch_size,),
+      replace=True,
+      p=sampling_probs,
     )
 
     batch = {
@@ -441,6 +470,7 @@ def train_world_model(
       "next": normalized_next[batch_indices],
       "actions": actions[batch_indices],
       "rewards": rewards[batch_indices],
+      "reward_events": reward_events[batch_indices],
       "dones": dones[batch_indices],
     }
 
@@ -454,10 +484,14 @@ def train_world_model(
         predictions,
         batch,
         action_dim=train_data.action_dim,
+        changed_mask=changed_mask,
       )
       total = (
         config.next_loss_weight * losses["next_mse"]
+        + config.delta_loss_weight * losses["delta_mse"]
+        + config.changed_loss_weight * losses["changed_delta_mse"]
         + config.reward_loss_weight * losses["reward_mse"]
+        + config.reward_event_loss_weight * losses["reward_event_bce"]
         + config.done_loss_weight * losses["done_bce"]
         + config.policy_loss_weight * losses["policy_ce"]
       )
@@ -484,10 +518,28 @@ def world_model_losses(
   batch: dict[str, jax.Array],
   *,
   action_dim: int,
+  changed_mask: jax.Array | None = None,
 ) -> dict[str, jax.Array]:
   """Compute supervised component losses."""
   next_mse = jnp.mean(jnp.square(predictions["next_state_features"] - batch["next"]))
+  predicted_delta = predictions["next_state_features"] - batch["state"]
+  target_delta = batch["next"] - batch["state"]
+  delta_mse = jnp.mean(jnp.square(predicted_delta - target_delta))
+  if changed_mask is None:
+    changed_delta_mse = delta_mse
+  else:
+    mask = changed_mask.astype(jnp.float32).reshape((1, -1))
+    squared_error = jnp.square(predicted_delta - target_delta)
+    changed_delta_mse = jnp.sum(squared_error * mask) / (
+      squared_error.shape[0] * jnp.maximum(jnp.sum(mask), 1.0)
+    )
   reward_mse = jnp.mean(jnp.square(predictions["rewards"] - batch["rewards"]))
+  reward_event_bce = jnp.mean(
+    optax.sigmoid_binary_cross_entropy(
+      predictions["reward_event_logits"],
+      batch["reward_events"],
+    )
+  )
   done_bce = jnp.mean(
     optax.sigmoid_binary_cross_entropy(
       predictions["done_logits"],
@@ -500,7 +552,10 @@ def world_model_losses(
   )
   return {
     "next_mse": next_mse,
+    "delta_mse": delta_mse,
+    "changed_delta_mse": changed_delta_mse,
     "reward_mse": reward_mse,
+    "reward_event_bce": reward_event_bce,
     "done_bce": done_bce,
     "policy_ce": policy_ce,
   }
@@ -521,6 +576,7 @@ def predict_world_model(
   return WorldModelPredictions(
     next_state_features=data.normalizer.denormalize(next_normalized),
     rewards=np.asarray(predictions["rewards"], dtype=np.float32),
+    reward_event_logits=np.asarray(predictions["reward_event_logits"], dtype=np.float32),
     done_logits=np.asarray(predictions["done_logits"], dtype=np.float32),
     policy_logits=np.asarray(predictions["policy_logits"], dtype=np.float32),
   )
@@ -532,6 +588,8 @@ def evaluate_state_fit(
   predictions: WorldModelPredictions,
   *,
   seed: int = 0,
+  changed_feature_fraction: float = 0.25,
+  reward_event_epsilon: float = 1e-6,
 ) -> dict[str, Any]:
   """Compare model predictions against simple state/reward/policy baselines."""
   mean_next = np.repeat(
@@ -551,13 +609,25 @@ def evaluate_state_fit(
     axis=0,
   )
   zero_delta = np.zeros_like(true_delta)
-  changed_mask = changed_feature_mask(train_delta)
+  changed_mask = changed_feature_mask(train_delta, top_fraction=changed_feature_fraction)
 
   reward_mean = np.repeat(
     train_data.rewards.mean(axis=0, keepdims=True),
     validation_data.num_transitions,
     axis=0,
   )
+  reward_zero = np.zeros_like(validation_data.rewards)
+  train_reward_events = (np.abs(train_data.rewards) > reward_event_epsilon).astype(np.float32)
+  validation_reward_events = (np.abs(validation_data.rewards) > reward_event_epsilon).astype(
+    np.float32
+  )
+  reward_event_prior = np.clip(train_reward_events.mean(axis=0), 1e-6, 1.0 - 1e-6)
+  reward_event_prior_rows = np.repeat(
+    reward_event_prior.reshape(1, -1),
+    validation_data.num_transitions,
+    axis=0,
+  )
+  reward_event_probs = sigmoid_np(predictions.reward_event_logits)
   done_prob = np.clip(train_data.dones.mean(axis=0), 1e-6, 1.0 - 1e-6)
   no_done = np.zeros_like(validation_data.dones)
   policy_marginals = action_marginals(
@@ -618,10 +688,42 @@ def evaluate_state_fit(
     "reward": {
       "model_mse": mse(predictions.rewards, validation_data.rewards),
       "mean_baseline_mse": mse(reward_mean, validation_data.rewards),
+      "zero_baseline_mse": mse(reward_zero, validation_data.rewards),
       "model_beats_mean": bool(
         mse(predictions.rewards, validation_data.rewards)
         < mse(reward_mean, validation_data.rewards)
       ),
+      "model_beats_zero": bool(
+        mse(predictions.rewards, validation_data.rewards)
+        < mse(reward_zero, validation_data.rewards)
+      ),
+      "event_model_mse": masked_mse(
+        predictions.rewards,
+        validation_data.rewards,
+        validation_reward_events.astype(bool),
+      ),
+      "event_mean_baseline_mse": masked_mse(
+        reward_mean,
+        validation_data.rewards,
+        validation_reward_events.astype(bool),
+      ),
+      "event_zero_baseline_mse": masked_mse(
+        reward_zero,
+        validation_data.rewards,
+        validation_reward_events.astype(bool),
+      ),
+      "event_count": int(validation_reward_events.sum()),
+      "event_fraction": float(validation_reward_events.mean()),
+    },
+    "reward_event": {
+      "model_bce": binary_cross_entropy_np(reward_event_probs, validation_reward_events),
+      "prior_bce": binary_cross_entropy_np(reward_event_prior_rows, validation_reward_events),
+      "no_event_accuracy": float((validation_reward_events == 0.0).mean()),
+      "model_beats_prior_bce": bool(
+        binary_cross_entropy_np(reward_event_probs, validation_reward_events)
+        < binary_cross_entropy_np(reward_event_prior_rows, validation_reward_events)
+      ),
+      **binary_event_metrics(reward_event_probs, validation_reward_events),
     },
     "done": {
       "model_bce": binary_cross_entropy_from_logits(
@@ -693,6 +795,9 @@ def state_recovery_examples(
       "nearest_feature_l2": float(np.sqrt(distances[row, nearest_index])),
       "true_reward": validation_data.rewards[index].tolist(),
       "predicted_reward": predictions.rewards[index].tolist(),
+      "predicted_reward_event_probability": sigmoid_np(
+        predictions.reward_event_logits[index]
+      ).tolist(),
       "actions": validation_data.actions[index].astype(int).tolist(),
     }
     for row, (index, nearest_index) in enumerate(zip(indices, nearest, strict=True))
@@ -765,14 +870,16 @@ def plot_prediction_dashboard(
   ax.grid(True, alpha=0.25)
 
   ax = fig.add_subplot(grid[1, 1])
-  labels = ["reward MSE", "policy CE", "done BCE"]
+  labels = ["reward MSE", "event BCE", "policy CE", "done BCE"]
   model_values = [
     metrics["reward"]["model_mse"],
+    metrics["reward_event"]["model_bce"],
     metrics["policy"]["model_cross_entropy"],
     metrics["done"]["model_bce"],
   ]
   baseline_values = [
     metrics["reward"]["mean_baseline_mse"],
+    metrics["reward_event"]["prior_bce"],
     metrics["policy"]["marginal_cross_entropy"],
     metrics["done"]["mean_prob_bce"],
   ]
@@ -853,6 +960,20 @@ def mse(prediction: np.ndarray, target: np.ndarray) -> float:
   return float(np.mean(np.square(np.asarray(prediction) - np.asarray(target))))
 
 
+def masked_mse(prediction: np.ndarray, target: np.ndarray, mask: np.ndarray) -> float | None:
+  prediction = np.asarray(prediction, dtype=np.float32)
+  target = np.asarray(target, dtype=np.float32)
+  mask = np.asarray(mask, dtype=bool)
+  if not bool(mask.any()):
+    return None
+  return float(np.mean(np.square(prediction[mask] - target[mask])))
+
+
+def sigmoid_np(values: np.ndarray) -> np.ndarray:
+  values = np.asarray(values, dtype=np.float64)
+  return 1.0 / (1.0 + np.exp(-values))
+
+
 def binary_cross_entropy_from_logits(logits: np.ndarray, targets: np.ndarray) -> float:
   logits = np.asarray(logits, dtype=np.float64)
   targets = np.asarray(targets, dtype=np.float64)
@@ -880,6 +1001,84 @@ def action_marginals(actions: np.ndarray, *, action_dim: int, num_agents: int) -
     np.add.at(counts[agent_index], actions[:, agent_index], 1.0)
   counts += 1e-6
   return counts / counts.sum(axis=-1, keepdims=True)
+
+
+def transition_sampling_probabilities(
+  data: PreparedTransitionData,
+  *,
+  changed_mask: np.ndarray,
+  reward_event_epsilon: float,
+  reward_oversample_factor: float,
+  delta_oversample_factor: float,
+) -> np.ndarray:
+  """Build minibatch sampling probabilities that emphasize rare reward/state events."""
+  reward_events = np.any(np.abs(data.rewards) > reward_event_epsilon, axis=1)
+  delta = np.abs(data.next_state_features - data.state_features)
+  mask = np.asarray(changed_mask, dtype=bool)
+  if mask.ndim != 1 or mask.shape[0] != data.feature_dim:
+    raise ValueError("changed_mask has incompatible shape")
+  delta_score = delta[:, mask].mean(axis=1)
+  delta_threshold = max(1e-6, float(np.quantile(delta_score, 0.75)))
+  delta_events = delta_score > delta_threshold
+  weights = np.ones(data.num_transitions, dtype=np.float64)
+  weights += max(0.0, reward_oversample_factor) * reward_events.astype(np.float64)
+  weights += max(0.0, delta_oversample_factor) * delta_events.astype(np.float64)
+  weights_sum = float(weights.sum())
+  if not np.isfinite(weights_sum) or weights_sum <= 0.0:
+    return np.full(data.num_transitions, 1.0 / data.num_transitions, dtype=np.float32)
+  return (weights / weights_sum).astype(np.float32)
+
+
+def binary_event_metrics(
+  probabilities: np.ndarray,
+  targets: np.ndarray,
+  *,
+  threshold: float = 0.5,
+) -> dict[str, Any]:
+  """Summarize rare binary event prediction without hiding behind accuracy."""
+  probabilities = np.asarray(probabilities, dtype=np.float64)
+  targets = np.asarray(targets, dtype=bool)
+  predictions = probabilities >= threshold
+  precision, recall, f1 = precision_recall_f1(predictions, targets)
+  best = {"threshold": threshold, "precision": precision, "recall": recall, "f1": f1}
+  for candidate_threshold in np.linspace(0.05, 0.95, 19):
+    candidate_predictions = probabilities >= candidate_threshold
+    candidate_precision, candidate_recall, candidate_f1 = precision_recall_f1(
+      candidate_predictions,
+      targets,
+    )
+    if candidate_f1 > best["f1"]:
+      best = {
+        "threshold": float(candidate_threshold),
+        "precision": candidate_precision,
+        "recall": candidate_recall,
+        "f1": candidate_f1,
+      }
+  return {
+    "event_count": int(targets.sum()),
+    "event_fraction": float(targets.mean()),
+    "model_positive_fraction": float(predictions.mean()),
+    "model_accuracy": float((predictions == targets).mean()),
+    "model_precision": precision,
+    "model_recall": recall,
+    "model_f1": f1,
+    "best_threshold": best["threshold"],
+    "best_precision": best["precision"],
+    "best_recall": best["recall"],
+    "best_f1": best["f1"],
+  }
+
+
+def precision_recall_f1(predictions: np.ndarray, targets: np.ndarray) -> tuple[float, float, float]:
+  predictions = np.asarray(predictions, dtype=bool)
+  targets = np.asarray(targets, dtype=bool)
+  true_positive = float(np.logical_and(predictions, targets).sum())
+  false_positive = float(np.logical_and(predictions, ~targets).sum())
+  false_negative = float(np.logical_and(~predictions, targets).sum())
+  precision = true_positive / (true_positive + false_positive + 1e-12)
+  recall = true_positive / (true_positive + false_negative + 1e-12)
+  f1 = 2.0 * precision * recall / (precision + recall + 1e-12)
+  return float(precision), float(recall), float(f1)
 
 
 def changed_feature_mask(

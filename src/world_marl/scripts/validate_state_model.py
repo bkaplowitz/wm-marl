@@ -25,6 +25,7 @@ from world_marl.state_model import (
   plot_state_recoveries,
   predict_world_model,
   prepare_transition_data,
+  sigmoid_np,
   split_prepared_data,
   train_world_model,
 )
@@ -55,10 +56,17 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument("--learning-rate", type=float, default=1e-3)
   parser.add_argument("--hidden-dims", default="256,256")
   parser.add_argument("--next-loss-weight", type=float, default=1.0)
+  parser.add_argument("--delta-loss-weight", type=float, default=0.5)
+  parser.add_argument("--changed-loss-weight", type=float, default=1.0)
   parser.add_argument("--reward-loss-weight", type=float, default=1.0)
+  parser.add_argument("--reward-event-loss-weight", type=float, default=0.25)
   parser.add_argument("--done-loss-weight", type=float, default=0.1)
   parser.add_argument("--policy-loss-weight", type=float, default=0.1)
   parser.add_argument("--max-grad-norm", type=float, default=1.0)
+  parser.add_argument("--reward-oversample-factor", type=float, default=8.0)
+  parser.add_argument("--delta-oversample-factor", type=float, default=2.0)
+  parser.add_argument("--changed-feature-fraction", type=float, default=0.25)
+  parser.add_argument("--reward-event-epsilon", type=float, default=1e-6)
   parser.add_argument("--recovery-examples", type=int, default=6)
   parser.add_argument("--seed", type=int, default=0)
   parser.add_argument("--out-dir", default="runs")
@@ -107,10 +115,17 @@ def main() -> None:
     batch_size=args.batch_size,
     train_steps=args.train_steps,
     next_loss_weight=args.next_loss_weight,
+    delta_loss_weight=args.delta_loss_weight,
+    changed_loss_weight=args.changed_loss_weight,
     reward_loss_weight=args.reward_loss_weight,
+    reward_event_loss_weight=args.reward_event_loss_weight,
     done_loss_weight=args.done_loss_weight,
     policy_loss_weight=args.policy_loss_weight,
     max_grad_norm=args.max_grad_norm,
+    reward_oversample_factor=args.reward_oversample_factor,
+    delta_oversample_factor=args.delta_oversample_factor,
+    changed_feature_fraction=args.changed_feature_fraction,
+    reward_event_epsilon=args.reward_event_epsilon,
   )
 
   run_dir = Path(args.out_dir) / f"state_model_{timestamp()}"
@@ -222,6 +237,13 @@ def main() -> None:
       "normalizer": normalizer.to_metadata(),
       "train_transitions": train_data.num_transitions,
       "heldout_transitions": validation_data.num_transitions,
+      "train_reward_event_fraction": float(
+        (np.abs(train_data.rewards) > args.reward_event_epsilon).mean()
+      ),
+      "heldout_reward_event_fraction": float(
+        (np.abs(validation_data.rewards) > args.reward_event_epsilon).mean()
+      ),
+      "changed_feature_fraction": args.changed_feature_fraction,
     },
   )
   log_stage(
@@ -270,6 +292,8 @@ def main() -> None:
     validation_data,
     predictions,
     seed=args.seed,
+    changed_feature_fraction=args.changed_feature_fraction,
+    reward_event_epsilon=args.reward_event_epsilon,
   )
   logger.write_json("prediction_metrics.json", prediction_metrics)
 
@@ -307,6 +331,7 @@ def main() -> None:
   reload_max_abs_diff = max(
     float(np.max(np.abs(reload_predictions.next_state_features - predictions.next_state_features))),
     float(np.max(np.abs(reload_predictions.rewards - predictions.rewards))),
+    float(np.max(np.abs(reload_predictions.reward_event_logits - predictions.reward_event_logits))),
     float(np.max(np.abs(reload_predictions.done_logits - predictions.done_logits))),
     float(np.max(np.abs(reload_predictions.policy_logits - predictions.policy_logits))),
   )
@@ -340,11 +365,19 @@ def main() -> None:
     {
       "recovery_examples": recovery_examples,
       "reward_predictions_preview": predictions.rewards[: min(10, len(predictions.rewards))].tolist(),
+      "reward_event_probabilities_preview": sigmoid_np(
+        predictions.reward_event_logits[: min(10, len(predictions.reward_event_logits))]
+      ).tolist(),
       "reward_targets_preview": validation_data.rewards[: min(10, len(validation_data.rewards))].tolist(),
       "actions_preview": validation_data.actions[: min(10, len(validation_data.actions))].astype(int).tolist(),
     },
   )
 
+  reward_model_has_signal = bool(
+    prediction_metrics["reward"]["model_beats_mean"]
+    or prediction_metrics["reward"]["model_beats_zero"]
+    or prediction_metrics["reward_event"]["model_beats_prior_bce"]
+  )
   transition_model_has_signal = bool(
     prediction_metrics["next_state"]["model_beats_persistence"]
     or prediction_metrics["delta_state"]["model_beats_zero_delta"]
@@ -376,6 +409,11 @@ def main() -> None:
         "delta_model_beats_zero"
       ],
       "reward_model_beats_mean": prediction_metrics["reward"]["model_beats_mean"],
+      "reward_model_beats_zero": prediction_metrics["reward"]["model_beats_zero"],
+      "reward_event_model_beats_prior_bce": prediction_metrics["reward_event"][
+        "model_beats_prior_bce"
+      ],
+      "reward_model_has_signal": reward_model_has_signal,
       "policy_model_beats_marginal_ce": prediction_metrics["policy"][
         "model_beats_marginal_ce"
       ],
@@ -384,6 +422,7 @@ def main() -> None:
     "delta_state": prediction_metrics["delta_state"],
     "changed_features": prediction_metrics["changed_features"],
     "reward": prediction_metrics["reward"],
+    "reward_event": prediction_metrics["reward_event"],
     "done": prediction_metrics["done"],
     "policy": prediction_metrics["policy"],
     "state_distribution": prediction_metrics["state_distribution"],
@@ -404,6 +443,7 @@ def main() -> None:
       f"next_mse={prediction_metrics['next_state']['model_mse']:.6g}, "
       f"persist_baseline={prediction_metrics['next_state']['persistence_baseline_mse']:.6g}, "
       f"delta_mse={prediction_metrics['delta_state']['model_mse']:.6g}, "
+      f"reward_event_bce={prediction_metrics['reward_event']['model_bce']:.6g}, "
       f"reload_diff={reload_max_abs_diff:.3g}"
     ),
   )

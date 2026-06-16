@@ -16,6 +16,7 @@ from world_marl.state_model import (
   prepare_transition_data,
   split_prepared_data,
   train_world_model,
+  transition_sampling_probabilities,
 )
 
 
@@ -104,12 +105,15 @@ def test_state_world_model_training_metrics_and_reload(tmp_path, dummy_env_facto
   predictions = predict_world_model(state, validation_data)
   assert predictions.next_state_features.shape == validation_data.next_state_features.shape
   assert predictions.rewards.shape == validation_data.rewards.shape
+  assert predictions.reward_event_logits.shape == validation_data.rewards.shape
   metrics = evaluate_state_fit(train_data, validation_data, predictions, seed=0)
   assert metrics["next_state"]["model_mse"] >= 0.0
   assert metrics["delta_state"]["model_mse"] >= 0.0
   assert metrics["changed_features"]["feature_count"] >= 1
   assert "delta_model_beats_zero" in metrics["changed_features"]
   assert metrics["reward"]["model_mse"] >= 0.0
+  assert metrics["reward_event"]["model_bce"] >= 0.0
+  assert "best_f1" in metrics["reward_event"]
   assert metrics["policy"]["model_cross_entropy"] > 0.0
 
   save_checkpoint(tmp_path / "checkpoint", state, metadata={"kind": "test"})
@@ -131,6 +135,36 @@ def test_state_world_model_training_metrics_and_reload(tmp_path, dummy_env_facto
     predictions.next_state_features,
     atol=0.0,
   )
+
+
+def test_transition_sampler_emphasizes_reward_events(dummy_env_factory):
+  adapter = MeltingPotVectorAdapter(num_envs=2, env_factory=dummy_env_factory)
+  try:
+    dataset = collect_transition_dataset(
+      adapter,
+      np.random.default_rng(0),
+      rollout_steps=8,
+    )
+  finally:
+    adapter.close()
+
+  prepared = prepare_transition_data(
+    dataset,
+    StateRepresentationConfig(pool_size=2, include_channel_stats=True),
+  )
+  prepared.rewards[:2] = 1.0
+  prepared.rewards[2:] = 0.0
+  changed_mask = np.ones(prepared.feature_dim, dtype=bool)
+  probabilities = transition_sampling_probabilities(
+    prepared,
+    changed_mask=changed_mask,
+    reward_event_epsilon=1e-6,
+    reward_oversample_factor=8.0,
+    delta_oversample_factor=0.0,
+  )
+
+  assert np.isclose(probabilities.sum(), 1.0)
+  assert probabilities[:2].mean() > probabilities[2:].mean()
 
 
 def test_state_model_cli_smoke(monkeypatch, tmp_path, dummy_env_factory):
