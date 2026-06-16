@@ -23,7 +23,9 @@ class GaussianMixture2D(struct.PyTreeNode):
         return int(self.means.shape[0])
 
 
-def make_symmetric_gmm_2d(nmodes: int, std: float, scale: float = 10.0) -> GaussianMixture2D:
+def make_symmetric_gmm_2d(
+    nmodes: int, std: float, scale: float = 10.0
+) -> GaussianMixture2D:
     """Place `nmodes` Gaussian means evenly on a radius-`scale` circle."""
     angles = jnp.linspace(0.0, 2.0 * jnp.pi, nmodes + 1)[:nmodes]
     means = jnp.stack([jnp.cos(angles), jnp.sin(angles)], axis=1) * scale
@@ -39,6 +41,8 @@ def sample_standard_normal(key: jax.Array, n: int, dim: int = 2) -> jax.Array:
 def sample_gmm(key: jax.Array, gmm: GaussianMixture2D, n: int) -> jax.Array:
     """Sample `n` points from a 2D isotropic Gaussian mixture."""
     key_labels, key_noise = jax.random.split(key)
-    component_label = jax.random.choice(key_labels, gmm.nmodes, shape=(n,), p=gmm.weights)
+    component_label = jax.random.choice(
+        key_labels, gmm.nmodes, shape=(n,), p=gmm.weights
+    )
     means = gmm.means[component_label, :]  # (bs, 2)
     return means + gmm.std * jax.random.normal(key_noise, shape=(n, gmm.dim))

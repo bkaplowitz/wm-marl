@@ -19,331 +19,360 @@ EnvFactory = Callable[[], Any]
 
 @dataclass(frozen=True)
 class VectorStep:
-  """Result from one vectorized environment step."""
+    """Result from one vectorized environment step."""
 
-  observations: np.ndarray
-  rewards: np.ndarray
-  dones: np.ndarray
-  completed_returns: tuple[tuple[float, ...], ...]
-  completed_lengths: tuple[int, ...]
-  step_infos: tuple[dict[str, Any], ...]
-  infos: tuple[dict[str, Any], ...]
+    observations: np.ndarray
+    rewards: np.ndarray
+    dones: np.ndarray
+    completed_returns: tuple[tuple[float, ...], ...]
+    completed_lengths: tuple[int, ...]
+    step_infos: tuple[dict[str, Any], ...]
+    infos: tuple[dict[str, Any], ...]
 
 
 def make_meltingpot_env(substrate: str, max_cycles: int = 1000):
-  """Build a single Shimmy-wrapped Melting Pot substrate."""
-  from shimmy import MeltingPotCompatibilityV0
+    """Build a single Shimmy-wrapped Melting Pot substrate."""
+    from shimmy import MeltingPotCompatibilityV0
 
-  return MeltingPotCompatibilityV0(
-    substrate_name=substrate,
-    max_cycles=max_cycles,
-    render_mode=None,
-  )
+    return MeltingPotCompatibilityV0(
+        substrate_name=substrate,
+        max_cycles=max_cycles,
+        render_mode=None,
+    )
 
 
 class MeltingPotVectorAdapter:
-  """Small synchronous vector env for homogeneous Melting Pot substrates."""
+    """Small synchronous vector env for homogeneous Melting Pot substrates."""
 
-  def __init__(
-    self,
-    substrate: str = "coins",
-    num_envs: int = 1,
-    max_cycles: int = 1000,
-    observation_size: int | tuple[int, int] | None = None,
-    include_observation_scalars: bool = False,
-    append_agent_id: bool = False,
-    env_factory: EnvFactory | None = None,
-    auto_reset: bool = True,
-  ) -> None:
-    if num_envs < 1:
-      raise ValueError("num_envs must be >= 1")
+    def __init__(
+        self,
+        substrate: str = "coins",
+        num_envs: int = 1,
+        max_cycles: int = 1000,
+        observation_size: int | tuple[int, int] | None = None,
+        include_observation_scalars: bool = False,
+        append_agent_id: bool = False,
+        env_factory: EnvFactory | None = None,
+        auto_reset: bool = True,
+    ) -> None:
+        if num_envs < 1:
+            raise ValueError("num_envs must be >= 1")
 
-    self.substrate = substrate
-    self.num_envs = num_envs
-    self.max_cycles = max_cycles
-    self.observation_size = _normalize_observation_size(observation_size)
-    self.include_observation_scalars = include_observation_scalars
-    self.append_agent_id = append_agent_id
-    self.auto_reset = auto_reset
-    self._env_factory = env_factory or (
-      lambda: make_meltingpot_env(substrate, max_cycles=max_cycles)
-    )
-    self._envs = [self._env_factory() for _ in range(num_envs)]
-
-    first_env = self._envs[0]
-    self.agents = tuple(first_env.possible_agents)
-    self.num_agents = len(self.agents)
-    if self.num_agents < 1:
-      raise ValueError("expected at least one agent")
-
-    self.action_dim = self._get_action_dim(first_env, self.agents[0])
-    self.raw_observation_shape = self._get_rgb_shape(first_env, self.agents[0])
-    self.scalar_observation_keys = (
-      self._get_scalar_observation_keys(first_env, self.agents[0])
-      if include_observation_scalars
-      else ()
-    )
-    self.observation_shape = self._final_observation_shape(self.raw_observation_shape)
-    for env in self._envs:
-      if tuple(env.possible_agents) != self.agents:
-        raise ValueError("all vectorized envs must expose identical agents")
-      for agent in self.agents:
-        if self._get_action_dim(env, agent) != self.action_dim:
-          raise ValueError("all agents must share the same discrete action dim")
-        if self._get_rgb_shape(env, agent) != self.raw_observation_shape:
-          raise ValueError("all agents must share the same RGB observation shape")
-        if include_observation_scalars:
-          if self._get_scalar_observation_keys(env, agent) != self.scalar_observation_keys:
-            raise ValueError("all agents must share scalar observation keys")
-
-    self._episode_returns = np.zeros(
-      (self.num_envs, self.num_agents), dtype=np.float32
-    )
-    self._episode_lengths = np.zeros((self.num_envs,), dtype=np.int32)
-    self._last_observations: np.ndarray | None = None
-
-  def reset(self) -> np.ndarray:
-    """Reset every env and return observations shaped [env, agent, H, W, C]."""
-    observations = []
-    for env_index, env in enumerate(self._envs):
-      obs, _ = env.reset()
-      self._episode_returns[env_index] = 0.0
-      self._episode_lengths[env_index] = 0
-      observations.append(self._stack_observations(obs))
-    self._last_observations = np.stack(observations, axis=0)
-    return self._last_observations
-
-  def step(self, actions: np.ndarray) -> VectorStep:
-    """Step every env with integer actions shaped [env, agent]."""
-    actions = np.asarray(actions)
-    expected_shape = (self.num_envs, self.num_agents)
-    if actions.shape != expected_shape:
-      raise ValueError(f"actions must have shape {expected_shape}, got {actions.shape}")
-
-    next_observations: list[np.ndarray] = []
-    rewards = np.zeros((self.num_envs, self.num_agents), dtype=np.float32)
-    dones = np.zeros((self.num_envs, self.num_agents), dtype=np.float32)
-    completed_returns: list[tuple[float, ...]] = []
-    completed_lengths: list[int] = []
-    step_infos: list[dict[str, Any]] = []
-    infos: list[dict[str, Any]] = []
-
-    for env_index, env in enumerate(self._envs):
-      action_dict = {
-        agent: int(actions[env_index, agent_index])
-        for agent_index, agent in enumerate(self.agents)
-      }
-      obs, reward_dict, terminations, truncations, info_dict = env.step(action_dict)
-      step_infos.append(
-        {
-          "env_index": env_index,
-          "agent_infos": info_dict,
-        }
-      )
-
-      reward_row = np.array(
-        [reward_dict.get(agent, 0.0) for agent in self.agents], dtype=np.float32
-      )
-      rewards[env_index] = reward_row
-      self._episode_returns[env_index] += reward_row
-      self._episode_lengths[env_index] += 1
-
-      done = (
-        not getattr(env, "agents", None)
-        or any(bool(terminations.get(agent, False)) for agent in self.agents)
-        or any(bool(truncations.get(agent, False)) for agent in self.agents)
-      )
-      if done:
-        dones[env_index] = 1.0
-        completed_returns.append(tuple(float(x) for x in self._episode_returns[env_index]))
-        completed_lengths.append(int(self._episode_lengths[env_index]))
-        infos.append(
-          {
-            "env_index": env_index,
-            "terminated": any(
-              bool(terminations.get(agent, False)) for agent in self.agents
-            ),
-            "truncated": any(bool(truncations.get(agent, False)) for agent in self.agents),
-            "agent_infos": info_dict,
-          }
+        self.substrate = substrate
+        self.num_envs = num_envs
+        self.max_cycles = max_cycles
+        self.observation_size = _normalize_observation_size(observation_size)
+        self.include_observation_scalars = include_observation_scalars
+        self.append_agent_id = append_agent_id
+        self.auto_reset = auto_reset
+        self._env_factory = env_factory or (
+            lambda: make_meltingpot_env(substrate, max_cycles=max_cycles)
         )
-        if self.auto_reset:
-          obs, _ = env.reset()
-          self._episode_returns[env_index] = 0.0
-          self._episode_lengths[env_index] = 0
+        self._envs = [self._env_factory() for _ in range(num_envs)]
 
-      next_observations.append(self._stack_observations(obs))
+        first_env = self._envs[0]
+        self.agents = tuple(first_env.possible_agents)
+        self.num_agents = len(self.agents)
+        if self.num_agents < 1:
+            raise ValueError("expected at least one agent")
 
-    observations = np.stack(next_observations, axis=0)
-    self._last_observations = observations
-    return VectorStep(
-      observations=observations,
-      rewards=rewards,
-      dones=dones,
-      completed_returns=tuple(completed_returns),
-      completed_lengths=tuple(completed_lengths),
-      step_infos=tuple(step_infos),
-      infos=tuple(infos),
-    )
+        self.action_dim = self._get_action_dim(first_env, self.agents[0])
+        self.raw_observation_shape = self._get_rgb_shape(first_env, self.agents[0])
+        self.scalar_observation_keys = (
+            self._get_scalar_observation_keys(first_env, self.agents[0])
+            if include_observation_scalars
+            else ()
+        )
+        self.observation_shape = self._final_observation_shape(
+            self.raw_observation_shape
+        )
+        for env in self._envs:
+            if tuple(env.possible_agents) != self.agents:
+                raise ValueError("all vectorized envs must expose identical agents")
+            for agent in self.agents:
+                if self._get_action_dim(env, agent) != self.action_dim:
+                    raise ValueError(
+                        "all agents must share the same discrete action dim"
+                    )
+                if self._get_rgb_shape(env, agent) != self.raw_observation_shape:
+                    raise ValueError(
+                        "all agents must share the same RGB observation shape"
+                    )
+                if include_observation_scalars:
+                    if (
+                        self._get_scalar_observation_keys(env, agent)
+                        != self.scalar_observation_keys
+                    ):
+                        raise ValueError(
+                            "all agents must share scalar observation keys"
+                        )
 
-  def sample_actions(self, rng: np.random.Generator) -> np.ndarray:
-    """Sample random discrete actions for every env and agent."""
-    return rng.integers(
-      low=0,
-      high=self.action_dim,
-      size=(self.num_envs, self.num_agents),
-      dtype=np.int32,
-    )
+        self._episode_returns = np.zeros(
+            (self.num_envs, self.num_agents), dtype=np.float32
+        )
+        self._episode_lengths = np.zeros((self.num_envs,), dtype=np.int32)
+        self._last_observations: np.ndarray | None = None
 
-  def close(self) -> None:
-    for env in self._envs:
-      env.close()
+    def reset(self) -> np.ndarray:
+        """Reset every env and return observations shaped [env, agent, H, W, C]."""
+        observations = []
+        for env_index, env in enumerate(self._envs):
+            obs, _ = env.reset()
+            self._episode_returns[env_index] = 0.0
+            self._episode_lengths[env_index] = 0
+            observations.append(self._stack_observations(obs))
+        self._last_observations = np.stack(observations, axis=0)
+        return self._last_observations
 
-  def _stack_observations(self, observations: dict[str, Any]) -> np.ndarray:
-    rows = [
-      self._append_agent_id(
-        self._append_scalar_channels(
-          self._extract_rgb(observations[agent]),
-          observations[agent],
-        ),
-        agent_index,
-      )
-      for agent_index, agent in enumerate(self.agents)
-    ]
-    return np.stack(rows, axis=0)
+    def step(self, actions: np.ndarray) -> VectorStep:
+        """Step every env with integer actions shaped [env, agent]."""
+        actions = np.asarray(actions)
+        expected_shape = (self.num_envs, self.num_agents)
+        if actions.shape != expected_shape:
+            raise ValueError(
+                f"actions must have shape {expected_shape}, got {actions.shape}"
+            )
 
-  def _extract_rgb(self, agent_observation: Any) -> np.ndarray:
-    if isinstance(agent_observation, dict):
-      if "RGB" not in agent_observation:
-        raise KeyError("expected Melting Pot observation key 'RGB'")
-      rgb = agent_observation["RGB"]
-    else:
-      rgb = agent_observation
-    rgb_array = np.asarray(rgb, dtype=np.float32)
-    if rgb_array.ndim != 3:
-      raise ValueError(f"expected RGB observation with 3 dims, got {rgb_array.shape}")
-    if rgb_array.max(initial=0.0) > 1.0:
-      rgb_array = rgb_array / 255.0
-    return self._resize_rgb(rgb_array)
+        next_observations: list[np.ndarray] = []
+        rewards = np.zeros((self.num_envs, self.num_agents), dtype=np.float32)
+        dones = np.zeros((self.num_envs, self.num_agents), dtype=np.float32)
+        completed_returns: list[tuple[float, ...]] = []
+        completed_lengths: list[int] = []
+        step_infos: list[dict[str, Any]] = []
+        infos: list[dict[str, Any]] = []
 
-  def _resize_rgb(self, rgb_array: np.ndarray) -> np.ndarray:
-    if self.observation_size is None:
-      return rgb_array
-    target_height, target_width = self.observation_size
-    height, width = rgb_array.shape[:2]
-    row_indices = np.linspace(0, height - 1, target_height).astype(np.int32)
-    col_indices = np.linspace(0, width - 1, target_width).astype(np.int32)
-    return rgb_array[row_indices][:, col_indices]
+        for env_index, env in enumerate(self._envs):
+            action_dict = {
+                agent: int(actions[env_index, agent_index])
+                for agent_index, agent in enumerate(self.agents)
+            }
+            obs, reward_dict, terminations, truncations, info_dict = env.step(
+                action_dict
+            )
+            step_infos.append(
+                {
+                    "env_index": env_index,
+                    "agent_infos": info_dict,
+                }
+            )
 
-  def _final_observation_shape(self, raw_shape: tuple[int, int, int]) -> tuple[int, int, int]:
-    if self.observation_size is None:
-      height, width, channels = raw_shape
-    else:
-      height, width = self.observation_size
-      channels = raw_shape[2]
-    channels += len(self.scalar_observation_keys)
-    if self.append_agent_id:
-      channels += self.num_agents
-    return (height, width, channels)
+            reward_row = np.array(
+                [reward_dict.get(agent, 0.0) for agent in self.agents], dtype=np.float32
+            )
+            rewards[env_index] = reward_row
+            self._episode_returns[env_index] += reward_row
+            self._episode_lengths[env_index] += 1
 
-  def _append_scalar_channels(
-    self,
-    rgb_array: np.ndarray,
-    agent_observation: Any,
-  ) -> np.ndarray:
-    if not self.scalar_observation_keys:
-      return rgb_array
-    if not isinstance(agent_observation, dict):
-      raise TypeError("scalar observations require dict observations")
+            done = (
+                not getattr(env, "agents", None)
+                or any(bool(terminations.get(agent, False)) for agent in self.agents)
+                or any(bool(truncations.get(agent, False)) for agent in self.agents)
+            )
+            if done:
+                dones[env_index] = 1.0
+                completed_returns.append(
+                    tuple(float(x) for x in self._episode_returns[env_index])
+                )
+                completed_lengths.append(int(self._episode_lengths[env_index]))
+                infos.append(
+                    {
+                        "env_index": env_index,
+                        "terminated": any(
+                            bool(terminations.get(agent, False))
+                            for agent in self.agents
+                        ),
+                        "truncated": any(
+                            bool(truncations.get(agent, False)) for agent in self.agents
+                        ),
+                        "agent_infos": info_dict,
+                    }
+                )
+                if self.auto_reset:
+                    obs, _ = env.reset()
+                    self._episode_returns[env_index] = 0.0
+                    self._episode_lengths[env_index] = 0
 
-    height, width = rgb_array.shape[:2]
-    scalar_channels = []
-    for key in self.scalar_observation_keys:
-      if key not in agent_observation:
-        raise KeyError(f"expected Melting Pot observation key {key!r}")
-      value = np.asarray(agent_observation[key], dtype=np.float32)
-      if value.size != 1:
-        raise ValueError(f"expected scalar observation for key {key!r}, got {value.shape}")
-      scalar_channels.append(
-        np.full((height, width, 1), float(value.reshape(())), dtype=rgb_array.dtype)
-      )
-    return np.concatenate([rgb_array, *scalar_channels], axis=-1)
+            next_observations.append(self._stack_observations(obs))
 
-  def _append_agent_id(self, rgb_array: np.ndarray, agent_index: int) -> np.ndarray:
-    if not self.append_agent_id:
-      return rgb_array
-    height, width = rgb_array.shape[:2]
-    id_channels = np.zeros((height, width, self.num_agents), dtype=rgb_array.dtype)
-    id_channels[:, :, agent_index] = 1.0
-    return np.concatenate([rgb_array, id_channels], axis=-1)
+        observations = np.stack(next_observations, axis=0)
+        self._last_observations = observations
+        return VectorStep(
+            observations=observations,
+            rewards=rewards,
+            dones=dones,
+            completed_returns=tuple(completed_returns),
+            completed_lengths=tuple(completed_lengths),
+            step_infos=tuple(step_infos),
+            infos=tuple(infos),
+        )
 
-  @staticmethod
-  def _get_action_dim(env: Any, agent: str) -> int:
-    action_space = env.action_space(agent)
-    if not hasattr(action_space, "n"):
-      raise TypeError("only homogeneous discrete action spaces are supported")
-    return int(action_space.n)
+    def sample_actions(self, rng: np.random.Generator) -> np.ndarray:
+        """Sample random discrete actions for every env and agent."""
+        return rng.integers(
+            low=0,
+            high=self.action_dim,
+            size=(self.num_envs, self.num_agents),
+            dtype=np.int32,
+        )
 
-  @staticmethod
-  def _get_rgb_shape(env: Any, agent: str) -> tuple[int, int, int]:
-    observation_space = env.observation_space(agent)
-    if hasattr(observation_space, "spaces"):
-      rgb_space = observation_space.spaces.get("RGB")
-      if rgb_space is None:
-        raise KeyError("expected observation space key 'RGB'")
-      shape = rgb_space.shape
-    else:
-      shape = observation_space.shape
-    if shape is None or len(shape) != 3:
-      raise ValueError(f"expected RGB observation shape [H, W, C], got {shape}")
-    return tuple(int(dim) for dim in shape)
+    def close(self) -> None:
+        for env in self._envs:
+            env.close()
 
-  @staticmethod
-  def _get_scalar_observation_keys(env: Any, agent: str) -> tuple[str, ...]:
-    observation_space = env.observation_space(agent)
-    if not hasattr(observation_space, "spaces"):
-      return ()
-    keys = []
-    for key, space in observation_space.spaces.items():
-      if key == "RGB":
-        continue
-      shape = getattr(space, "shape", None)
-      if shape in ((), (1,)):
-        keys.append(str(key))
-    return tuple(sorted(keys))
+    def _stack_observations(self, observations: dict[str, Any]) -> np.ndarray:
+        rows = [
+            self._append_agent_id(
+                self._append_scalar_channels(
+                    self._extract_rgb(observations[agent]),
+                    observations[agent],
+                ),
+                agent_index,
+            )
+            for agent_index, agent in enumerate(self.agents)
+        ]
+        return np.stack(rows, axis=0)
+
+    def _extract_rgb(self, agent_observation: Any) -> np.ndarray:
+        if isinstance(agent_observation, dict):
+            if "RGB" not in agent_observation:
+                raise KeyError("expected Melting Pot observation key 'RGB'")
+            rgb = agent_observation["RGB"]
+        else:
+            rgb = agent_observation
+        rgb_array = np.asarray(rgb, dtype=np.float32)
+        if rgb_array.ndim != 3:
+            raise ValueError(
+                f"expected RGB observation with 3 dims, got {rgb_array.shape}"
+            )
+        if rgb_array.max(initial=0.0) > 1.0:
+            rgb_array = rgb_array / 255.0
+        return self._resize_rgb(rgb_array)
+
+    def _resize_rgb(self, rgb_array: np.ndarray) -> np.ndarray:
+        if self.observation_size is None:
+            return rgb_array
+        target_height, target_width = self.observation_size
+        height, width = rgb_array.shape[:2]
+        row_indices = np.linspace(0, height - 1, target_height).astype(np.int32)
+        col_indices = np.linspace(0, width - 1, target_width).astype(np.int32)
+        return rgb_array[row_indices][:, col_indices]
+
+    def _final_observation_shape(
+        self, raw_shape: tuple[int, int, int]
+    ) -> tuple[int, int, int]:
+        if self.observation_size is None:
+            height, width, channels = raw_shape
+        else:
+            height, width = self.observation_size
+            channels = raw_shape[2]
+        channels += len(self.scalar_observation_keys)
+        if self.append_agent_id:
+            channels += self.num_agents
+        return (height, width, channels)
+
+    def _append_scalar_channels(
+        self,
+        rgb_array: np.ndarray,
+        agent_observation: Any,
+    ) -> np.ndarray:
+        if not self.scalar_observation_keys:
+            return rgb_array
+        if not isinstance(agent_observation, dict):
+            raise TypeError("scalar observations require dict observations")
+
+        height, width = rgb_array.shape[:2]
+        scalar_channels = []
+        for key in self.scalar_observation_keys:
+            if key not in agent_observation:
+                raise KeyError(f"expected Melting Pot observation key {key!r}")
+            value = np.asarray(agent_observation[key], dtype=np.float32)
+            if value.size != 1:
+                raise ValueError(
+                    f"expected scalar observation for key {key!r}, got {value.shape}"
+                )
+            scalar_channels.append(
+                np.full(
+                    (height, width, 1), float(value.reshape(())), dtype=rgb_array.dtype
+                )
+            )
+        return np.concatenate([rgb_array, *scalar_channels], axis=-1)
+
+    def _append_agent_id(self, rgb_array: np.ndarray, agent_index: int) -> np.ndarray:
+        if not self.append_agent_id:
+            return rgb_array
+        height, width = rgb_array.shape[:2]
+        id_channels = np.zeros((height, width, self.num_agents), dtype=rgb_array.dtype)
+        id_channels[:, :, agent_index] = 1.0
+        return np.concatenate([rgb_array, id_channels], axis=-1)
+
+    @staticmethod
+    def _get_action_dim(env: Any, agent: str) -> int:
+        action_space = env.action_space(agent)
+        if not hasattr(action_space, "n"):
+            raise TypeError("only homogeneous discrete action spaces are supported")
+        return int(action_space.n)
+
+    @staticmethod
+    def _get_rgb_shape(env: Any, agent: str) -> tuple[int, int, int]:
+        observation_space = env.observation_space(agent)
+        if hasattr(observation_space, "spaces"):
+            rgb_space = observation_space.spaces.get("RGB")
+            if rgb_space is None:
+                raise KeyError("expected observation space key 'RGB'")
+            shape = rgb_space.shape
+        else:
+            shape = observation_space.shape
+        if shape is None or len(shape) != 3:
+            raise ValueError(f"expected RGB observation shape [H, W, C], got {shape}")
+        return tuple(int(dim) for dim in shape)
+
+    @staticmethod
+    def _get_scalar_observation_keys(env: Any, agent: str) -> tuple[str, ...]:
+        observation_space = env.observation_space(agent)
+        if not hasattr(observation_space, "spaces"):
+            return ()
+        keys = []
+        for key, space in observation_space.spaces.items():
+            if key == "RGB":
+                continue
+            shape = getattr(space, "shape", None)
+            if shape in ((), (1,)):
+                keys.append(str(key))
+        return tuple(sorted(keys))
 
 
 def flatten_agent_batch(observations: np.ndarray) -> np.ndarray:
-  """Flatten [env, agent, ...] observations to [env * agent, ...]."""
-  if observations.ndim < 3:
-    raise ValueError("expected observations shaped [env, agent, ...]")
-  return observations.reshape((-1, *observations.shape[2:]))
+    """Flatten [env, agent, ...] observations to [env * agent, ...]."""
+    if observations.ndim < 3:
+        raise ValueError("expected observations shaped [env, agent, ...]")
+    return observations.reshape((-1, *observations.shape[2:]))
 
 
 def unflatten_agent_actions(
-  actions: Sequence[int] | np.ndarray,
-  *,
-  num_envs: int,
-  num_agents: int,
+    actions: Sequence[int] | np.ndarray,
+    *,
+    num_envs: int,
+    num_agents: int,
 ) -> np.ndarray:
-  """Restore flat actor actions to [env, agent]."""
-  return np.asarray(actions, dtype=np.int32).reshape((num_envs, num_agents))
+    """Restore flat actor actions to [env, agent]."""
+    return np.asarray(actions, dtype=np.int32).reshape((num_envs, num_agents))
 
 
 def _normalize_observation_size(
-  observation_size: int | tuple[int, int] | None,
+    observation_size: int | tuple[int, int] | None,
 ) -> tuple[int, int] | None:
-  if observation_size is None:
-    return None
-  if isinstance(observation_size, int):
-    if observation_size < 1:
-      raise ValueError("observation_size must be positive")
-    return (observation_size, observation_size)
-  if len(observation_size) != 2:
-    raise ValueError("observation_size tuple must be (height, width)")
-  height, width = observation_size
-  if height < 1 or width < 1:
-    raise ValueError("observation_size dimensions must be positive")
-  return (int(height), int(width))
+    if observation_size is None:
+        return None
+    if isinstance(observation_size, int):
+        if observation_size < 1:
+            raise ValueError("observation_size must be positive")
+        return (observation_size, observation_size)
+    if len(observation_size) != 2:
+        raise ValueError("observation_size tuple must be (height, width)")
+    height, width = observation_size
+    if height < 1 or width < 1:
+        raise ValueError("observation_size dimensions must be positive")
+    return (int(height), int(width))
+
 
 # ???: Do we want separate env here to track virtual fitted model?

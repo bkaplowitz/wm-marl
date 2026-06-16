@@ -17,6 +17,8 @@ class MLPVectorField(nn.Module):
         """Evaluate the vector field at batched positions and times."""
         xt = jnp.concat((x, t), axis=-1)  # concatenate `x`, `t`
 
-        hidden_layers = [layer for dim in self.hidden_dims for layer in (nn.Dense(dim), nn.silu)]
+        hidden_layers = [
+            layer for dim in self.hidden_dims for layer in (nn.Dense(dim), nn.silu)
+        ]
         final_layer = [nn.Dense(x.shape[-1])]
         return nn.Sequential(hidden_layers + final_layer)(xt)

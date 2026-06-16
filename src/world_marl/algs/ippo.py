@@ -16,193 +16,197 @@ from world_marl.algs.networks import CNNActorCritic
 
 @dataclass(frozen=True)
 class IPPOConfig:
-  learning_rate: float = 5e-4
-  gamma: float = 0.99
-  gae_lambda: float = 0.95
-  clip_eps: float = 0.2
-  ent_coef: float = 0.01
-  vf_coef: float = 0.5
-  max_grad_norm: float = 0.5
-  update_epochs: int = 4
-  num_minibatches: int = 4
-  activation: str = "relu"
-  shuffle_rewards: bool = False
-  zero_advantages: bool = False
+    learning_rate: float = 5e-4
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
+    clip_eps: float = 0.2
+    ent_coef: float = 0.01
+    vf_coef: float = 0.5
+    max_grad_norm: float = 0.5
+    update_epochs: int = 4
+    num_minibatches: int = 4
+    activation: str = "relu"
+    shuffle_rewards: bool = False
+    zero_advantages: bool = False
 
 
 class RolloutBatch(NamedTuple):
-  observations: jnp.ndarray
-  actions: jnp.ndarray
-  log_probs: jnp.ndarray
-  rewards: jnp.ndarray
-  dones: jnp.ndarray
-  values: jnp.ndarray
+    observations: jnp.ndarray
+    actions: jnp.ndarray
+    log_probs: jnp.ndarray
+    rewards: jnp.ndarray
+    dones: jnp.ndarray
+    values: jnp.ndarray
 
 
 def create_train_state(
-  rng: jax.Array,
-  observation_shape: tuple[int, int, int],
-  action_dim: int,
-  config: IPPOConfig,
+    rng: jax.Array,
+    observation_shape: tuple[int, int, int],
+    action_dim: int,
+    config: IPPOConfig,
 ) -> TrainState:
-  """Initialize the actor-critic network and optimizer."""
-  network = CNNActorCritic(action_dim=action_dim, activation=config.activation)
-  init_observation = jnp.zeros((1, *observation_shape), dtype=jnp.float32)
-  params = network.init(rng, init_observation)["params"]
-  tx = optax.chain(
-    optax.clip_by_global_norm(config.max_grad_norm),
-    optax.adam(config.learning_rate, eps=1e-5),
-  )
-  return TrainState.create(apply_fn=network.apply, params=params, tx=tx)
+    """Initialize the actor-critic network and optimizer."""
+    network = CNNActorCritic(action_dim=action_dim, activation=config.activation)
+    init_observation = jnp.zeros((1, *observation_shape), dtype=jnp.float32)
+    params = network.init(rng, init_observation)["params"]
+    tx = optax.chain(
+        optax.clip_by_global_norm(config.max_grad_norm),
+        optax.adam(config.learning_rate, eps=1e-5),
+    )
+    return TrainState.create(apply_fn=network.apply, params=params, tx=tx)
 
 
 def apply_actor_critic(
-  train_state: TrainState,
-  observations: jnp.ndarray,
+    train_state: TrainState,
+    observations: jnp.ndarray,
 ):
-  """Apply the current actor-critic parameters."""
-  return train_state.apply_fn({"params": train_state.params}, observations)
+    """Apply the current actor-critic parameters."""
+    return train_state.apply_fn({"params": train_state.params}, observations)
 
 
 def select_actions(
-  train_state: TrainState,
-  rng: jax.Array,
-  observations: jnp.ndarray,
-  *,
-  deterministic: bool = False,
+    train_state: TrainState,
+    rng: jax.Array,
+    observations: jnp.ndarray,
+    *,
+    deterministic: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-  """Select actions for a flat actor batch."""
-  policy, values = apply_actor_critic(train_state, observations)
-  if deterministic:
-    actions = jnp.argmax(policy.logits, axis=-1)
-  else:
-    actions = policy.sample(seed=rng)
-  log_probs = policy.log_prob(actions)
-  return actions.astype(jnp.int32), log_probs, values
+    """Select actions for a flat actor batch."""
+    policy, values = apply_actor_critic(train_state, observations)
+    if deterministic:
+        actions = jnp.argmax(policy.logits, axis=-1)
+    else:
+        actions = policy.sample(seed=rng)
+    log_probs = policy.log_prob(actions)
+    return actions.astype(jnp.int32), log_probs, values
 
 
 def action_nll(
-  train_state: TrainState,
-  observations: jnp.ndarray,
-  actions: jnp.ndarray,
+    train_state: TrainState,
+    observations: jnp.ndarray,
+    actions: jnp.ndarray,
 ) -> jnp.ndarray:
-  """Negative log-likelihood of chosen actions, useful for trainer tests."""
-  policy, _ = apply_actor_critic(train_state, observations)
-  return -jnp.mean(policy.log_prob(actions))
+    """Negative log-likelihood of chosen actions, useful for trainer tests."""
+    policy, _ = apply_actor_critic(train_state, observations)
+    return -jnp.mean(policy.log_prob(actions))
 
 
 def ppo_update(
-  train_state: TrainState,
-  batch: RolloutBatch,
-  last_values: jnp.ndarray,
-  rng: jax.Array,
-  config: IPPOConfig,
+    train_state: TrainState,
+    batch: RolloutBatch,
+    last_values: jnp.ndarray,
+    rng: jax.Array,
+    config: IPPOConfig,
 ) -> tuple[TrainState, dict[str, jnp.ndarray]]:
-  """Run one PPO update over a rollout batch."""
-  rewards = batch.rewards
-  if config.shuffle_rewards:
-    flat_rewards = rewards.reshape((-1,))
-    flat_rewards = jax.random.permutation(rng, flat_rewards)
-    rewards = flat_rewards.reshape(rewards.shape)
+    """Run one PPO update over a rollout batch."""
+    rewards = batch.rewards
+    if config.shuffle_rewards:
+        flat_rewards = rewards.reshape((-1,))
+        flat_rewards = jax.random.permutation(rng, flat_rewards)
+        rewards = flat_rewards.reshape(rewards.shape)
 
-  advantages, targets = compute_gae(
-    rewards=rewards,
-    values=batch.values,
-    dones=batch.dones,
-    last_values=last_values,
-    gamma=config.gamma,
-    gae_lambda=config.gae_lambda,
-  )
-  if config.zero_advantages:
-    advantages = jnp.zeros_like(advantages)
-
-  advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-  batch_size = batch.actions.shape[0] * batch.actions.shape[1]
-  if batch_size % config.num_minibatches != 0:
-    raise ValueError("rollout actors * steps must divide evenly into minibatches")
-  minibatch_size = batch_size // config.num_minibatches
-
-  flat = {
-    "observations": batch.observations.reshape(
-      (batch_size, *batch.observations.shape[2:])
-    ),
-    "actions": batch.actions.reshape((batch_size,)),
-    "old_log_probs": batch.log_probs.reshape((batch_size,)),
-    "old_values": batch.values.reshape((batch_size,)),
-    "advantages": advantages.reshape((batch_size,)),
-    "targets": targets.reshape((batch_size,)),
-  }
-
-  def loss_fn(params, minibatch):
-    policy, values = train_state.apply_fn(
-      {"params": params},
-      minibatch["observations"],
+    advantages, targets = compute_gae(
+        rewards=rewards,
+        values=batch.values,
+        dones=batch.dones,
+        last_values=last_values,
+        gamma=config.gamma,
+        gae_lambda=config.gae_lambda,
     )
-    log_probs = policy.log_prob(minibatch["actions"])
-    ratio = jnp.exp(log_probs - minibatch["old_log_probs"])
+    if config.zero_advantages:
+        advantages = jnp.zeros_like(advantages)
 
-    actor_loss_1 = ratio * minibatch["advantages"]
-    actor_loss_2 = (
-      jnp.clip(ratio, 1.0 - config.clip_eps, 1.0 + config.clip_eps)
-      * minibatch["advantages"]
-    )
-    actor_loss = -jnp.mean(jnp.minimum(actor_loss_1, actor_loss_2))
+    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+    batch_size = batch.actions.shape[0] * batch.actions.shape[1]
+    if batch_size % config.num_minibatches != 0:
+        raise ValueError("rollout actors * steps must divide evenly into minibatches")
+    minibatch_size = batch_size // config.num_minibatches
 
-    value_pred_clipped = minibatch["old_values"] + jnp.clip(
-      values - minibatch["old_values"],
-      -config.clip_eps,
-      config.clip_eps,
-    )
-    value_losses = jnp.square(values - minibatch["targets"])
-    value_losses_clipped = jnp.square(value_pred_clipped - minibatch["targets"])
-    value_loss = 0.5 * jnp.mean(jnp.maximum(value_losses, value_losses_clipped))
-    entropy = jnp.mean(policy.entropy())
-    total_loss = actor_loss + config.vf_coef * value_loss - config.ent_coef * entropy
-
-    approx_kl = jnp.mean(minibatch["old_log_probs"] - log_probs)
-    clip_fraction = jnp.mean((jnp.abs(ratio - 1.0) > config.clip_eps).astype(jnp.float32))
-    return total_loss, {
-      "total_loss": total_loss,
-      "actor_loss": actor_loss,
-      "value_loss": value_loss,
-      "entropy": entropy,
-      "approx_kl": approx_kl,
-      "clip_fraction": clip_fraction,
+    flat = {
+        "observations": batch.observations.reshape(
+            (batch_size, *batch.observations.shape[2:])
+        ),
+        "actions": batch.actions.reshape((batch_size,)),
+        "old_log_probs": batch.log_probs.reshape((batch_size,)),
+        "old_values": batch.values.reshape((batch_size,)),
+        "advantages": advantages.reshape((batch_size,)),
+        "targets": targets.reshape((batch_size,)),
     }
 
-  def update_minibatch(state, minibatch):
-    (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(
-      state.params,
-      minibatch,
-    )
-    del loss
-    return state.apply_gradients(grads=grads), metrics
+    def loss_fn(params, minibatch):
+        policy, values = train_state.apply_fn(
+            {"params": params},
+            minibatch["observations"],
+        )
+        log_probs = policy.log_prob(minibatch["actions"])
+        ratio = jnp.exp(log_probs - minibatch["old_log_probs"])
 
-  def update_epoch(carry, epoch_rng):
-    state = carry
-    permutation = jax.random.permutation(epoch_rng, batch_size)
-    shuffled = jax.tree_util.tree_map(lambda x: x[permutation], flat)
-    minibatches = jax.tree_util.tree_map(
-      lambda x: x.reshape((config.num_minibatches, minibatch_size, *x.shape[1:])),
-      shuffled,
-    )
-    state, metrics = jax.lax.scan(update_minibatch, state, minibatches)
-    return state, metrics
+        actor_loss_1 = ratio * minibatch["advantages"]
+        actor_loss_2 = (
+            jnp.clip(ratio, 1.0 - config.clip_eps, 1.0 + config.clip_eps)
+            * minibatch["advantages"]
+        )
+        actor_loss = -jnp.mean(jnp.minimum(actor_loss_1, actor_loss_2))
 
-  epoch_rngs = jax.random.split(rng, config.update_epochs)
-  train_state, metrics = jax.lax.scan(update_epoch, train_state, epoch_rngs)
-  metrics = jax.tree_util.tree_map(lambda x: jnp.mean(x), metrics)
-  metrics["advantages_mean"] = jnp.mean(advantages)
-  metrics["targets_mean"] = jnp.mean(targets)
-  return train_state, metrics
+        value_pred_clipped = minibatch["old_values"] + jnp.clip(
+            values - minibatch["old_values"],
+            -config.clip_eps,
+            config.clip_eps,
+        )
+        value_losses = jnp.square(values - minibatch["targets"])
+        value_losses_clipped = jnp.square(value_pred_clipped - minibatch["targets"])
+        value_loss = 0.5 * jnp.mean(jnp.maximum(value_losses, value_losses_clipped))
+        entropy = jnp.mean(policy.entropy())
+        total_loss = (
+            actor_loss + config.vf_coef * value_loss - config.ent_coef * entropy
+        )
+
+        approx_kl = jnp.mean(minibatch["old_log_probs"] - log_probs)
+        clip_fraction = jnp.mean(
+            (jnp.abs(ratio - 1.0) > config.clip_eps).astype(jnp.float32)
+        )
+        return total_loss, {
+            "total_loss": total_loss,
+            "actor_loss": actor_loss,
+            "value_loss": value_loss,
+            "entropy": entropy,
+            "approx_kl": approx_kl,
+            "clip_fraction": clip_fraction,
+        }
+
+    def update_minibatch(state, minibatch):
+        (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(
+            state.params,
+            minibatch,
+        )
+        del loss
+        return state.apply_gradients(grads=grads), metrics
+
+    def update_epoch(carry, epoch_rng):
+        state = carry
+        permutation = jax.random.permutation(epoch_rng, batch_size)
+        shuffled = jax.tree_util.tree_map(lambda x: x[permutation], flat)
+        minibatches = jax.tree_util.tree_map(
+            lambda x: x.reshape((config.num_minibatches, minibatch_size, *x.shape[1:])),
+            shuffled,
+        )
+        state, metrics = jax.lax.scan(update_minibatch, state, minibatches)
+        return state, metrics
+
+    epoch_rngs = jax.random.split(rng, config.update_epochs)
+    train_state, metrics = jax.lax.scan(update_epoch, train_state, epoch_rngs)
+    metrics = jax.tree_util.tree_map(lambda x: jnp.mean(x), metrics)
+    metrics["advantages_mean"] = jnp.mean(advantages)
+    metrics["targets_mean"] = jnp.mean(targets)
+    return train_state, metrics
 
 
 def tree_l2_distance(a, b) -> float:
-  """Compute an L2 distance between two pytrees of arrays."""
-  leaves_a = jax.tree_util.tree_leaves(a)
-  leaves_b = jax.tree_util.tree_leaves(b)
-  total = 0.0
-  for leaf_a, leaf_b in zip(leaves_a, leaves_b, strict=True):
-    diff = jnp.asarray(leaf_a) - jnp.asarray(leaf_b)
-    total += float(jnp.sum(jnp.square(diff)))
-  return total**0.5
+    """Compute an L2 distance between two pytrees of arrays."""
+    leaves_a = jax.tree_util.tree_leaves(a)
+    leaves_b = jax.tree_util.tree_leaves(b)
+    total = 0.0
+    for leaf_a, leaf_b in zip(leaves_a, leaves_b, strict=True):
+        diff = jnp.asarray(leaf_a) - jnp.asarray(leaf_b)
+        total += float(jnp.sum(jnp.square(diff)))
+    return total**0.5

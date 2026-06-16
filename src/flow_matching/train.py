@@ -41,7 +41,9 @@ def flow_matching_loss(
     xt = sample_conditional_path(key_xt, x1, t)
     target_flow = conditional_vector_field(xt, x1, t)  # flow from model
     model_flow = apply_fn({"params": params}, xt, t)  # model flow estimated
-    return jnp.mean((target_flow - model_flow) ** 2)  # mse loss on flow matching objective
+    return jnp.mean(
+        (target_flow - model_flow) ** 2
+    )  # mse loss on flow matching objective
 
 
 @jax.jit(static_argnames="batch_size")
