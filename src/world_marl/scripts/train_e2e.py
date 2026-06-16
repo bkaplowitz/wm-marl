@@ -132,7 +132,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wm-fit-steps", type=int, default=100)
     parser.add_argument("--wm-learning-rate", type=float, default=1e-3)
     parser.add_argument("--wm-hidden-dim", type=int, default=128)
-    parser.add_argument("--wm-integration-steps", type=int, default=100)
+    parser.add_argument("--wm-integration-steps", type=int, default=10)
 
     parser.add_argument("--learning-rate", type=float, default=5e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
