@@ -11,7 +11,11 @@ from flax.training.train_state import TrainState
 
 from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
 from world_marl.training import build_central_observations
-from world_marl.world_model import VectorTransitionBatch, train_world_model_step
+from world_marl.world_model import (
+    VectorTransitionBatch,
+    _apply_vector_policy,
+    train_world_model_step,
+)
 
 
 def flatten_state_observations(observations: np.ndarray) -> np.ndarray:
@@ -73,21 +77,19 @@ def collect_policy_transition_batch(
         states = flatten_state_observations(current_observations)
         flat_states = states.reshape((adapter.num_envs * adapter.num_agents, -1))
         rng, action_key = jax.random.split(rng)
-        if algorithm == "mappo":
-            central_states = build_central_observations(
-                states,
-                observation_mode="vector",
-            ).reshape((adapter.num_envs * adapter.num_agents, -1))
-            policy, _ = train_state.apply_fn(
-                {"params": train_state.params},
-                jnp.asarray(flat_states),
-                jnp.asarray(central_states),
+        central_states = (
+            jnp.asarray(
+                build_central_observations(
+                    states,
+                    observation_mode="vector",
+                ).reshape((adapter.num_envs * adapter.num_agents, -1))
             )
-        else:
-            policy, _ = train_state.apply_fn(
-                {"params": train_state.params},
-                jnp.asarray(flat_states),
-            )
+            if algorithm == "mappo"
+            else None
+        )
+        policy, _ = _apply_vector_policy(
+            train_state, jnp.asarray(flat_states), central_states
+        )
         actions = np.asarray(policy.sample(seed=action_key), dtype=np.int32).reshape(
             (adapter.num_envs, adapter.num_agents)
         )

@@ -13,9 +13,22 @@ class MLPVectorField(nn.Module):
     hidden_dims: Sequence[int] = (64, 64, 64, 64)
 
     @nn.compact
-    def __call__(self, x: jax.Array, t: jax.Array) -> jax.Array:
-        """Evaluate the vector field at batched positions and times."""
-        xt = jnp.concat((x, t), axis=-1)  # concatenate `x`, `t`
+    def __call__(
+        self,
+        x: jax.Array,
+        t: jax.Array,
+        cond_vars: jax.Array | None = None,
+    ) -> jax.Array:
+        """Evaluate the vector field at batched positions and times.
+
+        If cond_vars=None, unconditional vector field, else conditional.
+
+        When ``cond_vars`` is provided it is concatenated into the trunk input,
+        but the output head stays sized to ``x`` so the predicted field matches
+        the target dimensionality (no conditioning leakage into the output).
+        """
+        parts = (x, t) if cond_vars is None else (x, t, cond_vars)
+        xt = jnp.concat(parts, axis=-1)
 
         hidden_layers = [
             layer for dim in self.hidden_dims for layer in (nn.Dense(dim), nn.silu)

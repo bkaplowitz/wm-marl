@@ -11,7 +11,7 @@ from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
 from world_marl.world_model import (
     VectorTransitionBatch,
     VectorWorldModelConfig,
-    _pack_context,
+    _pack_cond_vars,
     _pack_transition,
     _transition_dim,
     _unpack_transition,
@@ -80,25 +80,27 @@ def test_create_world_model_state_uses_mlp_vector_field():
 
     model_state = create_world_model_state(jax.random.PRNGKey(0), config)
     model = model_state.apply_fn.__self__
-    input_dim = (config.num_agents * config.state_dim) + (
-        config.num_agents * config.state_dim + config.num_agents * config.action_dim
+    target_dim = config.num_agents * config.state_dim
+    cond_dim = config.num_agents * config.state_dim + (
+        config.num_agents * config.action_dim
     )
     output = model_state.apply_fn(
         {"params": model_state.params},
-        jnp.zeros((1, input_dim), dtype=jnp.float32),
+        jnp.zeros((1, target_dim), dtype=jnp.float32),
         jnp.zeros((1, 1), dtype=jnp.float32),
+        jnp.zeros((1, cond_dim), dtype=jnp.float32),
     )
 
     assert isinstance(model, MLPVectorField)
-    assert output.shape == (1, input_dim)
+    assert output.shape == (1, target_dim)
 
 
-def test_world_model_pack_context_order_is_state_then_agent_major_actions():
+def test_world_model_pack_cond_vars_order_is_state_then_agent_major_actions():
     config = VectorWorldModelConfig(state_dim=2, num_agents=2, action_dim=3)
     states = jnp.asarray([[[1.0, 2.0], [3.0, 4.0]]])
     actions = jnp.asarray([[0, 2]], dtype=jnp.int32)
 
-    packed = _pack_context(states, actions, config)
+    packed = _pack_cond_vars(states, actions, config)
 
     np.testing.assert_allclose(
         np.asarray(packed),

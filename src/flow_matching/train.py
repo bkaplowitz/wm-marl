@@ -63,3 +63,57 @@ def train_step(
     # update trainstate
     state = state.apply_gradients(grads=grads)
     return state, loss
+
+
+def create_conditioned_train_state(
+    key: jax.Array,
+    model: flax.linen.Module,
+    learning_rate: float,
+    *,
+    dim: int,
+    cond_dim: int,
+) -> TrainState:
+    """Initialize a conditioned vector-field model and its Adam optimizer.
+
+    ``dim`` is the size of the target ``x``; ``cond_dim`` is the size of the
+    conditioning variables threaded into the model alongside ``(x, t)``.
+    """
+    key, init_key = jax.random.split(key)
+    params = model.init(
+        init_key,
+        jnp.zeros((1, dim)),
+        jnp.zeros((1, 1)),
+        jnp.zeros((1, cond_dim)),
+    )["params"]
+    tx = optax.adam(learning_rate)
+    return TrainState.create(apply_fn=model.apply, params=params, tx=tx)
+
+
+def conditioned_flow_matching_loss(
+    params: Any,
+    apply_fn: Any,  # model.apply
+    key: jax.Array,
+    x1: jax.Array,
+    cond_vars: jax.Array,
+) -> jax.Array:
+    """Conditional FM MSE loss with conditioning passed straight to the model."""
+    key_t, key_xt = jax.random.split(key)
+    t = jax.random.uniform(key_t, shape=(x1.shape[0], 1))
+    xt = sample_conditional_path(key_xt, x1, t)
+    target_flow = conditional_vector_field(xt, x1, t)
+    model_flow = apply_fn({"params": params}, xt, t, cond_vars)  # already x1-sized
+    return jnp.mean((target_flow - model_flow) ** 2)
+
+
+@jax.jit
+def conditioned_train_step(
+    state: TrainState,
+    key: jax.Array,
+    x1: jax.Array,
+    cond_vars: jax.Array,
+) -> tuple[TrainState, jax.Array]:
+    """Run one optimizer update for the conditioned vector field."""
+    loss, grads = jax.value_and_grad(conditioned_flow_matching_loss)(
+        state.params, state.apply_fn, key, x1, cond_vars
+    )
+    return state.apply_gradients(grads=grads), loss

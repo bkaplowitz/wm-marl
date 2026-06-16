@@ -284,6 +284,26 @@ def central_observation_shape(
     return (height, width, channels * num_agents + num_agents)
 
 
+def build_vector_central(observations, xp):
+    """Array-module-agnostic vector-mode centralized-observation builder.
+
+    ``xp`` is either ``numpy`` or ``jax.numpy``; the same flatten/repeat/one-hot
+    logic serves both the numpy data pipeline and the jnp model rollouts.
+    """
+    num_envs, num_agents = observations.shape[:2]
+    flat = observations.reshape((num_envs, num_agents, -1))
+    central = xp.repeat(
+        flat.reshape((num_envs, num_agents * flat.shape[-1]))[:, None, :],
+        num_agents,
+        axis=1,
+    )
+    target_ids = xp.broadcast_to(
+        xp.eye(num_agents, dtype=xp.float32)[None],
+        (num_envs, num_agents, num_agents),
+    )
+    return xp.concatenate([central, target_ids], axis=-1)
+
+
 def build_central_observations(
     observations: np.ndarray,
     *,
@@ -299,17 +319,7 @@ def build_central_observations(
     if observation_mode == "vector":
         if observations.ndim < 3:
             raise ValueError("expected observations shaped [env, agent, ...]")
-        num_envs, num_agents = observations.shape[:2]
-        flat_observations = observations.reshape((num_envs, num_agents, -1))
-        central = flat_observations.reshape(
-            (num_envs, num_agents * flat_observations.shape[-1])
-        )
-        central = np.repeat(central[:, None, :], repeats=num_agents, axis=1)
-        target_ids = np.broadcast_to(
-            np.eye(num_agents, dtype=np.float32)[None, :, :],
-            (num_envs, num_agents, num_agents),
-        )
-        return np.concatenate([central, target_ids], axis=-1)
+        return build_vector_central(observations, np)
     if observation_mode != "image":
         raise ValueError(f"unsupported observation_mode {observation_mode!r}")
     if observations.ndim != 5:

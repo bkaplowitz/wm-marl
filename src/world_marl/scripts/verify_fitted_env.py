@@ -127,7 +127,7 @@ def main() -> None:
         )
 
         rng, predict_key = jax.random.split(rng)
-        predicted_next_states, predicted_rewards, predicted_dones = predict_next(
+        predicted_next_states = predict_next(
             model_state,
             predict_key,
             heldout_batch.states,
@@ -141,26 +141,10 @@ def main() -> None:
             heldout_batch=heldout_batch,
             losses=losses,
             predicted_next_states=predicted_next_states,
-            predicted_rewards=predicted_rewards,
-            predicted_dones=predicted_dones,
         )
 
         _write_loss_csv(run_dir / "loss_curve.csv", losses)
         _plot_loss_curve(run_dir / "loss_curve.png", losses)
-        _plot_histogram_overlay(
-            run_dir / "reward_distribution.png",
-            np.asarray(heldout_batch.rewards).reshape(-1),
-            np.asarray(predicted_rewards).reshape(-1),
-            title="Held-out reward distribution",
-            xlabel="reward",
-        )
-        _plot_histogram_overlay(
-            run_dir / "done_distribution.png",
-            np.asarray(heldout_batch.dones).reshape(-1),
-            np.asarray(predicted_dones).reshape(-1),
-            title="Held-out done distribution",
-            xlabel="done probability / indicator",
-        )
         _plot_histogram_overlay(
             run_dir / "next_state_delta_norm_distribution.png",
             _delta_norms(heldout_batch.next_states, heldout_batch.states),
@@ -171,8 +155,6 @@ def main() -> None:
         summary["artifacts"] = {
             "loss_csv": str(run_dir / "loss_curve.csv"),
             "loss_png": str(run_dir / "loss_curve.png"),
-            "reward_distribution_png": str(run_dir / "reward_distribution.png"),
-            "done_distribution_png": str(run_dir / "done_distribution.png"),
             "next_state_delta_norm_distribution_png": str(
                 run_dir / "next_state_delta_norm_distribution.png"
             ),
@@ -276,15 +258,11 @@ def _summarize_fit(
     heldout_batch: VectorTransitionBatch,
     losses: list[float],
     predicted_next_states: jnp.ndarray,
-    predicted_rewards: jnp.ndarray,
-    predicted_dones: jnp.ndarray,
 ) -> dict[str, Any]:
     true_next = np.asarray(heldout_batch.next_states)
     pred_next = np.asarray(predicted_next_states)
     true_rewards = np.asarray(heldout_batch.rewards)
-    pred_rewards = np.asarray(predicted_rewards)
     true_dones = np.asarray(heldout_batch.dones)
-    pred_dones = np.asarray(predicted_dones)
     true_delta_norms = _delta_norms(heldout_batch.next_states, heldout_batch.states)
     pred_delta_norms = _delta_norms(predicted_next_states, heldout_batch.states)
 
@@ -308,15 +286,10 @@ def _summarize_fit(
             "predicted_delta_norm": _numeric_summary(pred_delta_norms),
         },
         "reward": {
-            "mse": float(np.mean(np.square(pred_rewards - true_rewards))),
-            "mae": float(np.mean(np.abs(pred_rewards - true_rewards))),
             "true": _numeric_summary(true_rewards.reshape(-1)),
-            "predicted": _numeric_summary(pred_rewards.reshape(-1)),
         },
         "done": {
-            "brier": float(np.mean(np.square(pred_dones - true_dones))),
             "true": _numeric_summary(true_dones.reshape(-1)),
-            "predicted": _numeric_summary(pred_dones.reshape(-1)),
         },
     }
 

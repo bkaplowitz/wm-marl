@@ -5,7 +5,9 @@ from argparse import Namespace
 import jax
 
 from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
+from world_marl.envs.jaxmarl_coin_adapter import JaxMARLCoinGameVectorAdapter
 from world_marl.scripts.train_e2e import (
+    _make_training_adapter,
     algorithm_config_from_args,
     create_algorithm_train_state,
     policy_from_train_state,
@@ -15,6 +17,12 @@ from world_marl.scripts.train_e2e import (
 def _args(*, algorithm: str) -> Namespace:
     return Namespace(
         algorithm=algorithm,
+        substrate="coins",
+        num_envs=1,
+        max_cycles=5,
+        observation_size=None,
+        include_observation_scalars=False,
+        append_agent_id=False,
         prefit_world_model=True,
         learning_rate=5e-4,
         gamma=0.99,
@@ -27,6 +35,16 @@ def _args(*, algorithm: str) -> Namespace:
         num_minibatches=1,
         activation="relu",
     )
+
+
+def test_prefit_coins_uses_jaxmarl_vector_adapter():
+    adapter = _make_training_adapter(_args(algorithm="ippo"), seed=0)
+    try:
+        assert isinstance(adapter, JaxMARLCoinGameVectorAdapter)
+        assert adapter.observation_shape == (36,)
+        assert adapter.action_dim == 5
+    finally:
+        adapter.close()
 
 
 def test_prefit_world_model_selects_mlp_policy_config():
