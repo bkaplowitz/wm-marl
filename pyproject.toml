@@ -35,6 +35,7 @@ cuda12 = [
 world-marl-verify-install = "world_marl.scripts.verify_install:main"
 world-marl-train-e2e = "world_marl.scripts.train_e2e:main"
 world-marl-train-coin-flow = "world_marl.scripts.train_coin_flow:main"
+world-marl-validate-state-model = "world_marl.scripts.validate_state_model:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
