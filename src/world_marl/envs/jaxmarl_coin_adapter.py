@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 import jaxmarl
 import numpy as np
-from jaxmarl.environments.coin_game.coin_game import CoinGame
+from jaxmarl.environments.coin_game.coin_game import MOVES, CoinGame
 
 from world_marl.envs.meltingpot_adapter import VectorStep
 
@@ -160,53 +160,48 @@ def coin_game_reward_done(
     env_actions: jnp.ndarray,
     next_states: jnp.ndarray,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Analytic CoinGame reward/done evaluated on world-model states.
+    """Analytic CoinGame reward/done -- the env's true ``R(state, action)``.
 
-    The world model predicts only next observations, so rewards come from
-    CoinGame's *known* reward rule applied to the model's states. That reward is
-    a deterministic function of the coin positions *before* the move and the
-    player positions *after* it, both of which are encoded directly in the
-    observation grid -- so we decode them and apply the payoff matrix, exactly
-    mirroring the reward branch of ``CoinGame._step`` (pick up either coin: +1;
-    let the opponent take your coin: -2).
+    Mirrors the reward branch of ``CoinGame._step`` (lines applying ``MOVES``):
+    use agent's *current* state, move both players
+    with ``MOVES[action] % 3``, and pay out via the env's own payoff matrix
+    (pick up either coin: +1; let the opponent take your coin: -2). The reward
+    is a deterministic function of the current state and the actions taken.
 
-    ``states``/``next_states`` are ``[env, agent, 36]`` flattened ``(3, 3, 4)``
-    grids whose values are ``[red_player, blue_player, red_coin, blue_coin]``
-    in agent 0's absolute frame (agent 1 sees the same grid colour-swapped, so
-    agent 0 is the canonical view). ``env_actions`` is unused: the predicted
-    next-state player values already encode where each move landed.
-
-    Returns ``(rewards, dones)``, each shaped ``[env, agent]``. ``dones`` is all
-    zeros: the observation carries no episode clock (``inner_t``), and CoinGame
-    is a continuing task that auto-resets internally, so the imagined rollout is
-    treated as non-terminating.
+    ``states`` is ``[env, agent, 36]`` flattened ``(3, 3, 4)`` grids with
+    values ``[red_player, blue_player, red_coin, blue_coin]`` in agent 0's
+    absolute frame; agent 1's grid is the same colours
+    swapped. ``env_actions`` is
+    ``[env, agent]`` with column 0 the red (agent-0) action, matching the
+    ``action_0, action_1`` unpacking in ``_step``.
     """
-    del env_actions  # next-state player positions already reflect the moves
+    del next_states  # reward is R(state, action); model prediction not used
     states = jnp.asarray(states)
-    next_states = jnp.asarray(next_states)
+    env_actions = jnp.asarray(env_actions, dtype=jnp.int32)
     num_envs, num_agents = states.shape[0], states.shape[1]
 
-    current = states[:, 0].reshape((num_envs, 3, 3, 4))
-    nxt = next_states[:, 0].reshape((num_envs, 3, 3, 4))
+    grid = states[:, 0].reshape((num_envs, 3, 3, 4))
 
-    def _cell(plane: jnp.ndarray) -> jnp.ndarray:
-        # Most-likely occupied grid cell for an entity (model states are
-        # soft, not one-hot), as a flat index in [0, 9).
-        return jnp.argmax(plane.reshape((num_envs, 9)), axis=-1)
+    def _pos(channel: int) -> jnp.ndarray:
+        # Decode the occupied 2D cell (row, col) for an entity. argmax handles
+        # both one-hot env states and soft model states
+        flat = jnp.argmax(grid[..., channel].reshape((num_envs, 9)), axis=-1)
+        return jnp.stack([flat // 3, flat % 3], axis=-1)
 
-    red_next = _cell(nxt[..., 0])
-    blue_next = _cell(nxt[..., 1])
-    red_coin = _cell(current[..., 2])
-    blue_coin = _cell(current[..., 3])
+    red_pos, blue_pos = _pos(0), _pos(1)
+    red_coin, blue_coin = _pos(2), _pos(3)
 
-    red_takes_red = red_next == red_coin
-    red_takes_blue = red_next == blue_coin
-    blue_takes_red = blue_next == red_coin
-    blue_takes_blue = blue_next == blue_coin
+    new_red = (red_pos + MOVES[env_actions[:, 0]]) % 3
+    new_blue = (blue_pos + MOVES[env_actions[:, 1]]) % 3
+
+    red_red = jnp.all(new_red == red_coin, axis=-1)
+    red_blue = jnp.all(new_red == blue_coin, axis=-1)
+    blue_red = jnp.all(new_blue == red_coin, axis=-1)
+    blue_blue = jnp.all(new_blue == blue_coin, axis=-1)
 
     (rr, rb, r_pen), (br, bb, b_pen) = _COIN_PAYOFF
-    red_reward = red_takes_red * rr + red_takes_blue * rb + blue_takes_red * r_pen
-    blue_reward = blue_takes_red * br + blue_takes_blue * bb + red_takes_blue * b_pen
+    red_reward = rr * red_red + rb * red_blue + r_pen * blue_red
+    blue_reward = br * blue_red + bb * blue_blue + b_pen * red_blue
 
     rewards = jnp.stack([red_reward, blue_reward], axis=1).astype(jnp.float32)
     dones = jnp.zeros((num_envs, num_agents), dtype=jnp.float32)
