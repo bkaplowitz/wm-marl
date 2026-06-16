@@ -129,10 +129,15 @@ def fit_world_model_steps(
     config,
     *,
     steps: int,
-) -> tuple[TrainState, jax.Array, jnp.ndarray]:
-    """Run full-batch world-model fitting steps."""
+) -> tuple[TrainState, jax.Array, jnp.ndarray, jnp.ndarray]:
+    """Run full-batch world-model fitting steps.
+
+    Returns the updated state, the advanced rng, the final step loss, and the
+    per-step loss history (length ``steps``) for plotting fit convergence.
+    """
     if steps < 1:
         raise ValueError("steps must be >= 1")
+    losses = []
     loss = jnp.asarray(0.0, dtype=jnp.float32)
     for _ in range(steps):
         rng, fit_key = jax.random.split(rng)
@@ -142,7 +147,9 @@ def fit_world_model_steps(
             batch,
             config,
         )
-    return model_state, rng, loss
+        losses.append(loss)
+    loss_history = jnp.stack(losses)
+    return model_state, rng, loss, loss_history
 
 
 def sample_initial_states(

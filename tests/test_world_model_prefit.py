@@ -319,3 +319,38 @@ def test_simulate_ippo_model_rollout_uses_reward_done_provider():
         np.asarray(rollout.batch.dones),
         np.asarray(rollout.batch.actions == 2, dtype=np.float32),
     )
+
+
+def test_fit_world_model_steps_returns_per_step_loss_history():
+    from world_marl.world_model import create_world_model_state
+    from world_marl.world_model_training import fit_world_model_steps
+
+    config = VectorWorldModelConfig(
+        state_dim=4,
+        num_agents=2,
+        action_dim=3,
+        hidden_dims=(8,),
+        integration_steps=1,
+    )
+    model_state = create_world_model_state(jax.random.PRNGKey(0), config)
+    n = 6
+    batch = VectorTransitionBatch(
+        states=jnp.zeros((n, 2, 4), dtype=jnp.float32),
+        actions=jnp.zeros((n, 2), dtype=jnp.int32),
+        next_states=jnp.ones((n, 2, 4), dtype=jnp.float32),
+        rewards=jnp.zeros((n, 2), dtype=jnp.float32),
+        dones=jnp.zeros((n, 2), dtype=jnp.float32),
+    )
+    steps = 5
+
+    _, _, loss, history = fit_world_model_steps(
+        model_state,
+        jax.random.PRNGKey(1),
+        batch,
+        config,
+        steps=steps,
+    )
+
+    history = np.asarray(history, dtype=np.float32)
+    assert history.shape == (steps,)
+    np.testing.assert_allclose(history[-1], np.asarray(loss, dtype=np.float32))

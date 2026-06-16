@@ -27,7 +27,10 @@ from world_marl.algs.mappo import (
     mappo_update,
 )
 from world_marl.checkpointing import load_metadata, load_params, save_checkpoint
-from world_marl.envs.jaxmarl_coin_adapter import JaxMARLCoinGameVectorAdapter
+from world_marl.envs.jaxmarl_coin_adapter import (
+    JaxMARLCoinGameVectorAdapter,
+    coin_game_reward_done,
+)
 from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
 from world_marl.evaluation import (
     evaluate_policy,
@@ -264,6 +267,20 @@ def _make_training_adapter(args: argparse.Namespace, *, seed: int) -> TrainingAd
     )
 
 
+def _make_reward_done_fn(args: argparse.Namespace):
+    """Return the analytic reward/done callback for the world-model rollout.
+
+    The world model predicts only next-state dynamics, so rewards/dones come from
+    the environment's known reward function evaluated on the model's states.
+    """
+    if args.substrate == "coins":
+        return coin_game_reward_done
+    raise NotImplementedError(
+        "--prefit-world-model needs an analytic reward_done_fn for substrate "
+        f"{args.substrate!r}; only 'coins' is currently supported."
+    )
+
+
 def evaluate_checkpoint_mode(args: argparse.Namespace) -> None:
     checkpoint_dir = Path(args.eval_checkpoint)
     metadata = load_metadata(checkpoint_dir)
@@ -444,8 +461,10 @@ def run_training(
         world_model_config = None
         model_start_states = None
         world_model_prefit_loss = None
+        reward_done_fn = None
 
         if args.prefit_world_model:
+            reward_done_fn = _make_reward_done_fn(args)
             random_batch, observations, random_start_states = (
                 collect_random_transition_batch(
                     adapter,
@@ -483,14 +502,20 @@ def run_training(
                 world_model_key,
                 world_model_config,
             )
-            world_model_state, rng, world_model_prefit_loss = fit_world_model_steps(
+            (
+                world_model_state,
+                rng,
+                world_model_prefit_loss,
+                world_model_loss_history,
+            ) = fit_world_model_steps(
                 world_model_state,
                 rng,
                 prefit_batch,
                 world_model_config,
                 steps=args.wm_fit_steps,
             )
-            jax.block_until_ready(world_model_prefit_loss)
+            jax.block_until_ready(world_model_loss_history)
+            loss_history = [float(value) for value in world_model_loss_history]
             logger.write_json(
                 "world_model_prefit.json",
                 {
@@ -499,9 +524,11 @@ def run_training(
                     "fit_steps": args.wm_fit_steps,
                     "transition_count": int(prefit_batch.states.shape[0]),
                     "loss": float(world_model_prefit_loss),
+                    "loss_history": loss_history,
                     "config": dataclasses.asdict(world_model_config),
                 },
             )
+            logger.plot_world_model_loss(loss_history)
             observations = adapter.reset()
 
         if args.algorithm == "mappo":
@@ -551,6 +578,7 @@ def run_training(
                         rollout_key,
                         rollout_steps=args.rollout_steps,
                         config=world_model_config,
+                        reward_done_fn=reward_done_fn,
                     )
                 else:
                     rollout = simulate_ippo_model_rollout(
@@ -560,6 +588,7 @@ def run_training(
                         rollout_key,
                         rollout_steps=args.rollout_steps,
                         config=world_model_config,
+                        reward_done_fn=reward_done_fn,
                     )
             else:
                 rng, rollout_key, update_key = jax.random.split(rng, 3)
