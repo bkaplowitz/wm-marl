@@ -20,6 +20,7 @@ from world_marl.envs.meltingpot_adapter import (
     unflatten_agent_actions,
 )
 from world_marl.training import build_central_observations
+from world_marl.training import ObservationMode
 
 
 PolicyFn = Callable[[np.ndarray], np.ndarray]
@@ -122,6 +123,7 @@ def train_state_policy(
     num_agents: int,
     deterministic: bool = True,
     seed: int = 0,
+    observation_mode: ObservationMode = "image",
 ) -> PolicyFn:
     """Create a numpy policy function backed by a Flax TrainState."""
     key = jax.random.PRNGKey(seed)
@@ -136,7 +138,9 @@ def train_state_policy(
 
     def act(observations: np.ndarray) -> np.ndarray:
         nonlocal key
-        flat_observations = jnp.asarray(flatten_agent_batch(observations))
+        flat_observations = jnp.asarray(
+            _policy_observations(observations, observation_mode)
+        )
         key, action_key = jax.random.split(key)
         actions = infer_fn(
             train_state,
@@ -159,6 +163,7 @@ def mappo_train_state_policy(
     num_agents: int,
     deterministic: bool = True,
     seed: int = 0,
+    observation_mode: ObservationMode = "image",
 ) -> PolicyFn:
     """Create a MAPPO policy function backed by a Flax TrainState."""
     key = jax.random.PRNGKey(seed)
@@ -174,8 +179,13 @@ def mappo_train_state_policy(
 
     def act(observations: np.ndarray) -> np.ndarray:
         nonlocal key
-        central_observations = build_central_observations(observations)
-        flat_observations = jnp.asarray(flatten_agent_batch(observations))
+        central_observations = build_central_observations(
+            observations,
+            observation_mode=observation_mode,
+        )
+        flat_observations = jnp.asarray(
+            _policy_observations(observations, observation_mode)
+        )
         flat_central_observations = jnp.asarray(
             flatten_agent_batch(central_observations)
         )
@@ -193,6 +203,20 @@ def mappo_train_state_policy(
         )
 
     return act
+
+
+def _policy_observations(
+    observations: np.ndarray,
+    observation_mode: ObservationMode,
+) -> np.ndarray:
+    if observation_mode == "vector":
+        observations = np.asarray(observations, dtype=np.float32)
+        if observations.ndim < 3:
+            raise ValueError("expected observations shaped [env, agent, ...]")
+        return observations.reshape((-1, int(np.prod(observations.shape[2:]))))
+    if observation_mode == "image":
+        return flatten_agent_batch(observations)
+    raise ValueError(f"unsupported observation_mode {observation_mode!r}")
 
 
 # TODO: Generate evaluation from fit model of policy.

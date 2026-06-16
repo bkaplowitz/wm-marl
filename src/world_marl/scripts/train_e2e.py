@@ -36,10 +36,24 @@ from world_marl.evaluation import (
 )
 from world_marl.logging import RunLogger, dependency_versions, timestamp, to_jsonable
 from world_marl.training import (
+    ObservationMode,
     central_observation_shape,
     collect_mappo_rollout,
     collect_rollout,
     training_window_means,
+)
+from world_marl.world_model import (
+    VectorWorldModelConfig,
+    create_world_model_state,
+    simulate_ippo_model_rollout,
+    simulate_mappo_model_rollout,
+)
+from world_marl.world_model_training import (
+    collect_policy_transition_batch,
+    collect_random_transition_batch,
+    concatenate_transition_batches,
+    fit_world_model_steps,
+    sample_initial_states,
 )
 
 
@@ -102,6 +116,17 @@ def parse_args() -> argparse.Namespace:
         choices=("none", "freeze-policy", "shuffle-rewards", "zero-advantages"),
         default="freeze-policy",
     )
+    parser.add_argument(
+        "--prefit-world-model",
+        action="store_true",
+        help="Fit a vector-state world model before PPO and train on model rollouts.",
+    )
+    parser.add_argument("--wm-random-rollouts", type=int, default=1)
+    parser.add_argument("--wm-initial-rollouts", type=int, default=1)
+    parser.add_argument("--wm-fit-steps", type=int, default=100)
+    parser.add_argument("--wm-learning-rate", type=float, default=1e-3)
+    parser.add_argument("--wm-hidden-dim", type=int, default=128)
+    parser.add_argument("--wm-integration-steps", type=int, default=8)
 
     parser.add_argument("--learning-rate", type=float, default=5e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
@@ -119,7 +144,19 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=argparse.SUPPRESS,
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.prefit_world_model:
+        if args.wm_random_rollouts < 1:
+            parser.error("--wm-random-rollouts must be >= 1")
+        if args.wm_initial_rollouts < 1:
+            parser.error("--wm-initial-rollouts must be >= 1")
+        if args.wm_fit_steps < 1:
+            parser.error("--wm-fit-steps must be >= 1")
+        if args.wm_hidden_dim < 1:
+            parser.error("--wm-hidden-dim must be >= 1")
+        if args.wm_integration_steps < 1:
+            parser.error("--wm-integration-steps must be >= 1")
+    return args
 
 
 def algorithm_config_from_args(
@@ -138,6 +175,7 @@ def algorithm_config_from_args(
         update_epochs=args.update_epochs,
         num_minibatches=args.num_minibatches,
         activation=args.activation,
+        network_arch="mlp" if getattr(args, "prefit_world_model", False) else "cnn",
     )
     if control == "shuffle-rewards":
         return replace(config, shuffle_rewards=True)
@@ -151,18 +189,25 @@ def create_algorithm_train_state(
     rng: jax.Array,
     adapter: MeltingPotVectorAdapter,
     config: IPPOConfig | MAPPOConfig,
+    *,
+    observation_mode: ObservationMode = "image",
 ):
+    observation_shape = _policy_observation_shape(adapter, observation_mode)
     if algorithm == "mappo":
         return create_mappo_train_state(
             rng,
-            adapter.observation_shape,
-            central_observation_shape(adapter.observation_shape, adapter.num_agents),
+            observation_shape,
+            central_observation_shape(
+                observation_shape,
+                adapter.num_agents,
+                observation_mode=observation_mode,
+            ),
             adapter.action_dim,
             config,
         )
     return create_ippo_train_state(
         rng,
-        adapter.observation_shape,
+        observation_shape,
         adapter.action_dim,
         config,
     )
@@ -175,6 +220,7 @@ def policy_from_train_state(
     adapter: MeltingPotVectorAdapter,
     deterministic: bool,
     seed: int,
+    observation_mode: ObservationMode = "image",
 ):
     policy_fn = mappo_train_state_policy if algorithm == "mappo" else train_state_policy
     return policy_fn(
@@ -183,7 +229,19 @@ def policy_from_train_state(
         num_agents=adapter.num_agents,
         deterministic=deterministic,
         seed=seed,
+        observation_mode=observation_mode,
     )
+
+
+def _policy_observation_shape(
+    adapter: MeltingPotVectorAdapter,
+    observation_mode: ObservationMode,
+) -> tuple[int, ...]:
+    if observation_mode == "vector":
+        return (int(np.prod(adapter.observation_shape)),)
+    if observation_mode == "image":
+        return adapter.observation_shape
+    raise ValueError(f"unsupported observation_mode {observation_mode!r}")
 
 
 def evaluate_checkpoint_mode(args: argparse.Namespace) -> None:
@@ -225,6 +283,7 @@ def evaluate_checkpoint_mode(args: argparse.Namespace) -> None:
             jax.random.PRNGKey(0),
             adapter,
             config,
+            observation_mode=metadata.get("observation_mode", "image"),
         )
         params = load_params(checkpoint_dir / "checkpoint.msgpack", train_state.params)
         train_state = train_state.replace(params=params)
@@ -236,6 +295,7 @@ def evaluate_checkpoint_mode(args: argparse.Namespace) -> None:
                 adapter=adapter,
                 deterministic=not args.stochastic_eval,
                 seed=args.seed,
+                observation_mode=metadata.get("observation_mode", "image"),
             ),
             episodes=args.eval_episodes,
             max_steps=args.eval_max_steps,
@@ -321,6 +381,7 @@ def run_training(
     rng = jax.random.PRNGKey(seed)
     config = algorithm_config_from_args(args, control)
     freeze_policy = control == "freeze-policy"
+    observation_mode: ObservationMode = "vector" if args.prefit_world_model else "image"
 
     logger.write_json(
         "config.json",
@@ -330,6 +391,7 @@ def run_training(
             "control": control,
             "seed": seed,
             "algorithm": args.algorithm,
+            "observation_mode": observation_mode,
             "algorithm_config": dataclasses.asdict(config),
         },
     )
@@ -355,6 +417,7 @@ def run_training(
             init_key,
             adapter,
             config,
+            observation_mode=observation_mode,
         )
         initial_result = evaluate_policy(
             adapter,
@@ -364,12 +427,76 @@ def run_training(
                 adapter=adapter,
                 deterministic=not args.stochastic_eval,
                 seed=seed + 2,
+                observation_mode=observation_mode,
             ),
             episodes=args.eval_episodes,
             max_steps=args.eval_max_steps,
         ).to_dict()
         logger.write_json("initial_policy_evaluation.json", initial_result)
         observations = adapter.reset()
+        world_model_state = None
+        world_model_config = None
+        model_start_states = None
+        world_model_prefit_loss = None
+
+        if args.prefit_world_model:
+            random_batch, observations, random_start_states = (
+                collect_random_transition_batch(
+                    adapter,
+                    observations,
+                    np.random.default_rng(seed + 3),
+                    rollout_steps=args.wm_random_rollouts,
+                )
+            )
+            rng, policy_collect_key = jax.random.split(rng)
+            policy_batch, observations, rng, policy_start_states = (
+                collect_policy_transition_batch(
+                    adapter,
+                    train_state,
+                    observations,
+                    policy_collect_key,
+                    rollout_steps=args.wm_initial_rollouts,
+                    algorithm=args.algorithm,
+                )
+            )
+            prefit_batch = concatenate_transition_batches([random_batch, policy_batch])
+            model_start_states = jnp.concatenate(
+                [random_start_states, policy_start_states],
+                axis=0,
+            )
+            world_model_config = VectorWorldModelConfig(
+                state_dim=int(prefit_batch.states.shape[-1]),
+                num_agents=adapter.num_agents,
+                action_dim=adapter.action_dim,
+                hidden_dims=(args.wm_hidden_dim, args.wm_hidden_dim),
+                learning_rate=args.wm_learning_rate,
+                integration_steps=args.wm_integration_steps,
+            )
+            rng, world_model_key = jax.random.split(rng)
+            world_model_state = create_world_model_state(
+                world_model_key,
+                world_model_config,
+            )
+            world_model_state, rng, world_model_prefit_loss = fit_world_model_steps(
+                world_model_state,
+                rng,
+                prefit_batch,
+                world_model_config,
+                steps=args.wm_fit_steps,
+            )
+            jax.block_until_ready(world_model_prefit_loss)
+            logger.write_json(
+                "world_model_prefit.json",
+                {
+                    "random_rollouts": args.wm_random_rollouts,
+                    "initial_policy_rollouts": args.wm_initial_rollouts,
+                    "fit_steps": args.wm_fit_steps,
+                    "transition_count": int(prefit_batch.states.shape[0]),
+                    "loss": float(world_model_prefit_loss),
+                    "config": dataclasses.asdict(world_model_config),
+                },
+            )
+            observations = adapter.reset()
 
         if args.algorithm == "mappo":
             update_fn = jax.jit(
@@ -397,20 +524,50 @@ def run_training(
         updates = max(1, args.total_env_steps // (args.num_envs * args.rollout_steps))
         env_steps = 0
         for update in range(1, updates + 1):
-            rng, rollout_key, update_key = jax.random.split(rng, 3)
-            rollout = collect_fn(
-                adapter,
-                train_state,
-                observations,
-                rollout_key,
-                rollout_steps=args.rollout_steps,
-                gamma=config.gamma,
-                gae_lambda=config.gae_lambda,
-            )
-            # Fit env model to rollout. Raw rollout or latent states?
-            observations = rollout.next_observations
+            if args.prefit_world_model:
+                if (
+                    world_model_state is None
+                    or world_model_config is None
+                    or model_start_states is None
+                ):
+                    raise RuntimeError("world model prefit did not initialize")
+                rng, rollout_key, start_key, update_key = jax.random.split(rng, 4)
+                initial_states = sample_initial_states(
+                    model_start_states,
+                    start_key,
+                    num_envs=args.num_envs,
+                )
+                if args.algorithm == "mappo":
+                    rollout = simulate_mappo_model_rollout(
+                        world_model_state,
+                        train_state,
+                        initial_states,
+                        rollout_key,
+                        rollout_steps=args.rollout_steps,
+                        config=world_model_config,
+                    )
+                else:
+                    rollout = simulate_ippo_model_rollout(
+                        world_model_state,
+                        train_state,
+                        initial_states,
+                        rollout_key,
+                        rollout_steps=args.rollout_steps,
+                        config=world_model_config,
+                    )
+            else:
+                rng, rollout_key, update_key = jax.random.split(rng, 3)
+                rollout = collect_fn(
+                    adapter,
+                    train_state,
+                    observations,
+                    rollout_key,
+                    rollout_steps=args.rollout_steps,
+                    gamma=config.gamma,
+                    gae_lambda=config.gae_lambda,
+                )
+                observations = rollout.next_observations
             update_metrics: dict[str, Any] = {}
-            # Simulate from env model and use update_fn to fit to env rollouts.
             if not freeze_policy:
                 train_state, update_metrics = update_fn(
                     train_state,
@@ -428,6 +585,8 @@ def run_training(
                 **rollout.metrics,
                 **{f"ppo/{key}": value for key, value in update_metrics.items()},
             }
+            if world_model_prefit_loss is not None:
+                row["world_model/prefit_loss"] = world_model_prefit_loss
             rows.append(to_jsonable(row))
             logger.append_metrics(row)
 
@@ -449,9 +608,12 @@ def run_training(
                 "scalar_observation_keys": adapter.scalar_observation_keys,
                 "append_agent_id": adapter.append_agent_id,
                 "algorithm": args.algorithm,
+                "observation_mode": observation_mode,
                 "central_observation_shape": (
                     central_observation_shape(
-                        adapter.observation_shape, adapter.num_agents
+                        _policy_observation_shape(adapter, observation_mode),
+                        adapter.num_agents,
+                        observation_mode=observation_mode,
                     )
                     if args.algorithm == "mappo"
                     else None
@@ -460,6 +622,12 @@ def run_training(
                 "algorithm_config": dataclasses.asdict(config),
                 "ippo_config": (
                     dataclasses.asdict(config) if args.algorithm == "ippo" else None
+                ),
+                "prefit_world_model": args.prefit_world_model,
+                "world_model_config": (
+                    dataclasses.asdict(world_model_config)
+                    if world_model_config is not None
+                    else None
                 ),
                 "seed": seed,
                 "control": control,
