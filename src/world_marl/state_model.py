@@ -1,4 +1,17 @@
-"""State-representation fit validation for Melting Pot rollouts."""
+"""One-step state-representation validation for Melting Pot rollouts.
+
+This module is deliberately smaller than a full model-based MARL algorithm. It
+answers three falsifiable questions about real rollouts:
+
+1. Does `z_t, joint_action_t` predict meaningful state change in `z_{t+1}`?
+2. Does `z_t` recover the behavior policy better than action marginals?
+3. Is sparse reward/event information present in the representation?
+
+The pass criterion is based on transition and behavior-policy recovery. Reward
+and done recovery are reported as diagnostic signals because sparse rewards can
+be informative on event-only metrics even when full-sequence MSE is dominated by
+zeros.
+"""
 
 from __future__ import annotations
 
@@ -120,7 +133,7 @@ class PreparedTransitionData:
 
 @dataclass(frozen=True)
 class WorldModelConfig:
-  """Training configuration for the first supervised world-model fit."""
+  """Training configuration for one-step representation-fit validation."""
 
   hidden_dims: tuple[int, ...] = (256, 256)
   learning_rate: float = 1e-3
@@ -152,7 +165,13 @@ class WorldModelPredictions:
 
 
 class StateFitWorldModel(nn.Module):
-  """Small MLP that predicts next features, rewards, dones, and behavior policy."""
+  """Small supervised model for representation, reward, and policy recovery.
+
+  The transition branch is residual by construction. At initialization it is a
+  persistence model, so improvements over zero-delta/persistence baselines are a
+  meaningful signal that training learned environment dynamics rather than only
+  reconstructing static background features.
+  """
 
   feature_dim: int
   num_agents: int
@@ -772,6 +791,76 @@ def evaluate_state_fit(
   return metrics
 
 
+def summarize_validation_criteria(
+  metrics: dict[str, Any],
+  *,
+  finite_losses: bool,
+  reload_passed: bool,
+) -> tuple[bool, dict[str, Any]]:
+  """Convert detailed metrics into the milestone pass/fail criteria.
+
+  The current rung is a representation-fit validator. A passing run must show
+  reusable training artifacts, state-transition signal, and behavior-policy
+  signal. Reward/event recovery is summarized separately so sparse rewards do
+  not turn the main milestone into a reward-calibration benchmark.
+  """
+  transition_model_has_signal = bool(
+    metrics["next_state"]["model_beats_persistence"]
+    or metrics["delta_state"]["model_beats_zero_delta"]
+    or metrics["changed_features"]["delta_model_beats_zero"]
+  )
+  policy_model_has_signal = bool(metrics["policy"]["model_beats_marginal_ce"])
+  event_reward_beats_mean = optional_less(
+    metrics["reward"]["event_model_mse"],
+    metrics["reward"]["event_mean_baseline_mse"],
+  )
+  event_reward_beats_zero = optional_less(
+    metrics["reward"]["event_model_mse"],
+    metrics["reward"]["event_zero_baseline_mse"],
+  )
+  reward_value_has_signal = bool(
+    metrics["reward"]["model_beats_mean"]
+    or metrics["reward"]["model_beats_zero"]
+    or event_reward_beats_mean
+    or event_reward_beats_zero
+  )
+  reward_event_has_signal = bool(
+    metrics["reward_event"]["model_beats_prior_bce"]
+    or metrics["reward_event"]["best_f1"] > 0.0
+  )
+  reward_model_has_signal = bool(reward_value_has_signal or reward_event_has_signal)
+  criteria = {
+    "finite_losses": bool(finite_losses),
+    "reload_passed": bool(reload_passed),
+    "transition_model_has_signal": transition_model_has_signal,
+    "policy_model_has_signal": policy_model_has_signal,
+    "next_state_model_beats_mean": metrics["next_state"]["model_beats_mean"],
+    "next_state_model_beats_persistence": metrics["next_state"]["model_beats_persistence"],
+    "delta_model_beats_zero": metrics["delta_state"]["model_beats_zero_delta"],
+    "delta_model_beats_mean_delta": metrics["delta_state"]["model_beats_mean_delta"],
+    "changed_feature_delta_model_beats_zero": metrics["changed_features"][
+      "delta_model_beats_zero"
+    ],
+    "reward_model_beats_mean": metrics["reward"]["model_beats_mean"],
+    "reward_model_beats_zero": metrics["reward"]["model_beats_zero"],
+    "reward_event_value_beats_mean": event_reward_beats_mean,
+    "reward_event_value_beats_zero": event_reward_beats_zero,
+    "reward_event_model_beats_prior_bce": metrics["reward_event"][
+      "model_beats_prior_bce"
+    ],
+    "reward_event_best_f1_positive": bool(metrics["reward_event"]["best_f1"] > 0.0),
+    "reward_model_has_signal": reward_model_has_signal,
+    "policy_model_beats_marginal_ce": metrics["policy"]["model_beats_marginal_ce"],
+  }
+  passed = bool(
+    finite_losses
+    and reload_passed
+    and transition_model_has_signal
+    and policy_model_has_signal
+  )
+  return passed, criteria
+
+
 def state_recovery_examples(
   validation_data: PreparedTransitionData,
   predictions: WorldModelPredictions,
@@ -958,6 +1047,10 @@ def softmax_np(values: np.ndarray, axis: int = -1) -> np.ndarray:
 
 def mse(prediction: np.ndarray, target: np.ndarray) -> float:
   return float(np.mean(np.square(np.asarray(prediction) - np.asarray(target))))
+
+
+def optional_less(left: float | None, right: float | None) -> bool:
+  return left is not None and right is not None and left < right
 
 
 def masked_mse(prediction: np.ndarray, target: np.ndarray, mask: np.ndarray) -> float | None:

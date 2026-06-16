@@ -27,6 +27,7 @@ from world_marl.state_model import (
   prepare_transition_data,
   sigmoid_np,
   split_prepared_data,
+  summarize_validation_criteria,
   train_world_model,
 )
 
@@ -373,51 +374,14 @@ def main() -> None:
     },
   )
 
-  reward_model_has_signal = bool(
-    prediction_metrics["reward"]["model_beats_mean"]
-    or prediction_metrics["reward"]["model_beats_zero"]
-    or prediction_metrics["reward_event"]["model_beats_prior_bce"]
-  )
-  transition_model_has_signal = bool(
-    prediction_metrics["next_state"]["model_beats_persistence"]
-    or prediction_metrics["delta_state"]["model_beats_zero_delta"]
-    or prediction_metrics["changed_features"]["delta_model_beats_zero"]
-  )
-  passed = bool(
-    finite_losses
-    and reload_passed
-    and transition_model_has_signal
-    and prediction_metrics["policy"]["model_beats_marginal_ce"]
+  passed, criteria = summarize_validation_criteria(
+    prediction_metrics,
+    finite_losses=finite_losses,
+    reload_passed=reload_passed,
   )
   outcome = {
     "passed": passed,
-    "criteria": {
-      "finite_losses": finite_losses,
-      "reload_passed": reload_passed,
-      "transition_model_has_signal": transition_model_has_signal,
-      "next_state_model_beats_mean": prediction_metrics["next_state"]["model_beats_mean"],
-      "next_state_model_beats_persistence": prediction_metrics["next_state"][
-        "model_beats_persistence"
-      ],
-      "delta_model_beats_zero": prediction_metrics["delta_state"][
-        "model_beats_zero_delta"
-      ],
-      "delta_model_beats_mean_delta": prediction_metrics["delta_state"][
-        "model_beats_mean_delta"
-      ],
-      "changed_feature_delta_model_beats_zero": prediction_metrics["changed_features"][
-        "delta_model_beats_zero"
-      ],
-      "reward_model_beats_mean": prediction_metrics["reward"]["model_beats_mean"],
-      "reward_model_beats_zero": prediction_metrics["reward"]["model_beats_zero"],
-      "reward_event_model_beats_prior_bce": prediction_metrics["reward_event"][
-        "model_beats_prior_bce"
-      ],
-      "reward_model_has_signal": reward_model_has_signal,
-      "policy_model_beats_marginal_ce": prediction_metrics["policy"][
-        "model_beats_marginal_ce"
-      ],
-    },
+    "criteria": criteria,
     "next_state": prediction_metrics["next_state"],
     "delta_state": prediction_metrics["delta_state"],
     "changed_features": prediction_metrics["changed_features"],

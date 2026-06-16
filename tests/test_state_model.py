@@ -15,6 +15,7 @@ from world_marl.state_model import (
   predict_world_model,
   prepare_transition_data,
   split_prepared_data,
+  summarize_validation_criteria,
   train_world_model,
   transition_sampling_probabilities,
 )
@@ -115,6 +116,14 @@ def test_state_world_model_training_metrics_and_reload(tmp_path, dummy_env_facto
   assert metrics["reward_event"]["model_bce"] >= 0.0
   assert "best_f1" in metrics["reward_event"]
   assert metrics["policy"]["model_cross_entropy"] > 0.0
+  passed, criteria = summarize_validation_criteria(
+    metrics,
+    finite_losses=True,
+    reload_passed=True,
+  )
+  assert isinstance(passed, bool)
+  assert "transition_model_has_signal" in criteria
+  assert "reward_model_has_signal" in criteria
 
   save_checkpoint(tmp_path / "checkpoint", state, metadata={"kind": "test"})
   reload_state = create_world_model_train_state(
