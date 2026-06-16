@@ -96,9 +96,10 @@ def test_simulate_mappo_model_rollout_returns_vector_central_batches():
     assert rollout.batch.rewards.shape == (2, 6)
     assert rollout.last_values.shape == (6,)
     assert "rollout_mean_reward" in rollout.metrics
-    assert rollout.metrics["rollout_mean_reward"] == rollout.metrics[
-        "model_rollout_mean_reward"
-    ]
+    assert (
+        rollout.metrics["rollout_mean_reward"]
+        == rollout.metrics["model_rollout_mean_reward"]
+    )
 
 
 def test_simulate_ippo_model_rollout_supports_mlp_vector_policy():
@@ -132,6 +133,7 @@ def test_simulate_ippo_model_rollout_supports_mlp_vector_policy():
     assert rollout.batch.actions.shape == (2, 6)
     assert rollout.last_values.shape == (6,)
     assert "rollout_mean_reward" in rollout.metrics
-    assert rollout.metrics["rollout_mean_reward"] == rollout.metrics[
-        "model_rollout_mean_reward"
-    ]
+    assert (
+        rollout.metrics["rollout_mean_reward"]
+        == rollout.metrics["model_rollout_mean_reward"]
+    )
