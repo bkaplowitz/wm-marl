@@ -286,26 +286,33 @@ def evaluate_checkpoint_mode(args: argparse.Namespace) -> None:
     metadata = load_metadata(checkpoint_dir)
     algorithm = metadata.get("algorithm", "ippo")
     substrate = args.substrate or metadata["substrate"]
-    adapter = MeltingPotVectorAdapter(
-        substrate=substrate,
-        num_envs=args.num_envs,
-        max_cycles=args.max_cycles,
-        observation_size=(
-            args.observation_size
-            if args.observation_size is not None
-            else metadata.get("observation_size")
-        ),
-        include_observation_scalars=(
-            args.include_observation_scalars
-            if args.include_observation_scalars
-            else metadata.get("include_observation_scalars", False)
-        ),
-        append_agent_id=(
-            args.append_agent_id
-            if args.append_agent_id
-            else metadata.get("append_agent_id", False)
-        ),
-    )
+    if substrate == "coins":
+        adapter = JaxMARLCoinGameVectorAdapter(
+            num_envs=args.num_envs,
+            max_cycles=args.max_cycles,
+            seed=args.seed,
+        )
+    else:
+        adapter = MeltingPotVectorAdapter(
+            substrate=substrate,
+            num_envs=args.num_envs,
+            max_cycles=args.max_cycles,
+            observation_size=(
+                args.observation_size
+                if args.observation_size is not None
+                else metadata.get("observation_size")
+            ),
+            include_observation_scalars=(
+                args.include_observation_scalars
+                if args.include_observation_scalars
+                else metadata.get("include_observation_scalars", False)
+            ),
+            append_agent_id=(
+                args.append_agent_id
+                if args.append_agent_id
+                else metadata.get("append_agent_id", False)
+            ),
+        )
     try:
         config_payload = metadata.get("algorithm_config", metadata.get("ippo_config"))
         if config_payload is None:

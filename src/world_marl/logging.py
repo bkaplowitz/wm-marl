@@ -115,3 +115,29 @@ class RunLogger:
         fig.savefig(path)
         plt.close(fig)
         return path
+
+    def plot_world_model_loss(
+        self, loss_history: list[float], filename: str = "world_model_loss.png"
+    ) -> Path:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        path = self.run_dir / filename
+        if not loss_history:
+            return path
+
+        steps = list(range(1, len(loss_history) + 1))
+        fig, ax = plt.subplots(figsize=(8, 4.5))
+        ax.plot(steps, loss_history, label="world-model fit loss")
+        if all(value > 0.0 for value in loss_history):
+            ax.set_yscale("log")
+        ax.set_xlabel("fit step")
+        ax.set_ylabel("loss")
+        ax.legend()
+        ax.grid(True, alpha=0.25)
+        fig.tight_layout()
+        fig.savefig(path)
+        plt.close(fig)
+        return path
