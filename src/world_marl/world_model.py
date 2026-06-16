@@ -254,7 +254,10 @@ def simulate_ippo_model_rollout(
         batch=batch,
         next_observations=current_states,
         last_values=last_values,
-        metrics={"model_rollout_mean_reward": float(jnp.mean(batch.rewards))},
+        metrics={
+            "rollout_mean_reward": float(jnp.mean(batch.rewards)),
+            "model_rollout_mean_reward": float(jnp.mean(batch.rewards)),
+        },
     )
 
 
@@ -335,7 +338,10 @@ def simulate_mappo_model_rollout(
         batch=batch,
         next_observations=current_states,
         last_values=last_values,
-        metrics={"model_rollout_mean_reward": float(jnp.mean(batch.rewards))},
+        metrics={
+            "rollout_mean_reward": float(jnp.mean(batch.rewards)),
+            "model_rollout_mean_reward": float(jnp.mean(batch.rewards)),
+        },
     )
 
 
