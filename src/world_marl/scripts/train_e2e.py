@@ -603,4 +603,4 @@ def main() -> None:
 if __name__ == "__main__":
   main()
 
-# TODO:  Two timing e2e, one for fit-in-advance one for fit dyna style.
+# TODO:  Two timing approaches for e2e, one for fit-in-advance world model on data and then train, just focusing on env dynamics and agent effect on env seperately, one for fit dyna style.
