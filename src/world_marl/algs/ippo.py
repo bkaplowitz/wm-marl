@@ -11,7 +11,7 @@ import optax
 from flax.training.train_state import TrainState
 
 from world_marl.algs.gae import compute_gae
-from world_marl.algs.networks import CNNActorCritic
+from world_marl.algs.networks import CNNActorCritic, MLPActorCritic
 
 
 @dataclass(frozen=True)
@@ -26,6 +26,7 @@ class IPPOConfig:
     update_epochs: int = 4
     num_minibatches: int = 4
     activation: str = "relu"
+    network_arch: str = "cnn"
     shuffle_rewards: bool = False
     zero_advantages: bool = False
 
@@ -41,12 +42,17 @@ class RolloutBatch(NamedTuple):
 
 def create_train_state(
     rng: jax.Array,
-    observation_shape: tuple[int, int, int],
+    observation_shape: tuple[int, ...],
     action_dim: int,
     config: IPPOConfig,
 ) -> TrainState:
     """Initialize the actor-critic network and optimizer."""
-    network = CNNActorCritic(action_dim=action_dim, activation=config.activation)
+    if config.network_arch == "cnn":
+        network = CNNActorCritic(action_dim=action_dim, activation=config.activation)
+    elif config.network_arch == "mlp":
+        network = MLPActorCritic(action_dim=action_dim, activation=config.activation)
+    else:
+        raise ValueError(f"unsupported network_arch {config.network_arch!r}")
     init_observation = jnp.zeros((1, *observation_shape), dtype=jnp.float32)
     params = network.init(rng, init_observation)["params"]
     tx = optax.chain(

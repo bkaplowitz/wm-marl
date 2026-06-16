@@ -15,6 +15,7 @@ from flax.training.train_state import TrainState
 
 from flow_matching.paths import conditional_vector_field, sample_conditional_path
 from world_marl.algs.ippo import RolloutBatch
+from world_marl.algs.mappo import MAPPORolloutBatch
 from world_marl.training import RolloutResult
 
 
@@ -255,3 +256,95 @@ def simulate_ippo_model_rollout(
         last_values=last_values,
         metrics={"model_rollout_mean_reward": float(jnp.mean(batch.rewards))},
     )
+
+
+def simulate_mappo_model_rollout(
+    model_state: TrainState,
+    policy_state: TrainState,
+    initial_states: jnp.ndarray,
+    rng: jax.Array,
+    *,
+    rollout_steps: int,
+    config: VectorWorldModelConfig,
+    policy_id: int = 0,
+) -> RolloutResult:
+    if rollout_steps < 1:
+        raise ValueError("rollout_steps must be >= 1")
+
+    obs_rows = []
+    central_obs_rows = []
+    action_rows = []
+    log_prob_rows = []
+    reward_rows = []
+    done_rows = []
+    value_rows = []
+    current_states = initial_states
+    num_envs = current_states.shape[0]
+    num_actors = num_envs * config.num_agents
+
+    for _ in range(rollout_steps):
+        flat_states = current_states.reshape((num_actors, config.state_dim))
+        central_states = _vector_central_states(current_states).reshape(
+            (num_actors, -1)
+        )
+        rng, action_key = jax.random.split(rng)
+        policy, values = policy_state.apply_fn(
+            {"params": policy_state.params},
+            flat_states,
+            central_states,
+        )
+        actions = policy.sample(seed=action_key).astype(jnp.int32)
+        log_probs = policy.log_prob(actions)
+        env_actions = actions.reshape((num_envs, config.num_agents))
+        policy_ids = jnp.full((num_envs,), policy_id, dtype=jnp.int32)
+        next_states, rewards, done_probs = predict_next(
+            model_state,
+            current_states,
+            env_actions,
+            policy_ids,
+            config,
+        )
+
+        obs_rows.append(flat_states)
+        central_obs_rows.append(central_states)
+        action_rows.append(actions)
+        log_prob_rows.append(log_probs)
+        reward_rows.append(rewards.reshape((num_actors,)))
+        done_rows.append((done_probs > 0.5).astype(jnp.float32).reshape((num_actors,)))
+        value_rows.append(values)
+        current_states = next_states
+
+    last_central_states = _vector_central_states(current_states).reshape(
+        (num_actors, -1)
+    )
+    last_values = policy_state.apply_fn(
+        {"params": policy_state.params},
+        current_states.reshape((num_actors, config.state_dim)),
+        last_central_states,
+    )[1]
+    batch = MAPPORolloutBatch(
+        observations=jnp.stack(obs_rows, axis=0),
+        central_observations=jnp.stack(central_obs_rows, axis=0),
+        actions=jnp.stack(action_rows, axis=0),
+        log_probs=jnp.stack(log_prob_rows, axis=0),
+        rewards=jnp.stack(reward_rows, axis=0),
+        dones=jnp.stack(done_rows, axis=0),
+        values=jnp.stack(value_rows, axis=0),
+    )
+    return RolloutResult(
+        batch=batch,
+        next_observations=current_states,
+        last_values=last_values,
+        metrics={"model_rollout_mean_reward": float(jnp.mean(batch.rewards))},
+    )
+
+
+def _vector_central_states(states: jnp.ndarray) -> jnp.ndarray:
+    num_envs, num_agents, state_dim = states.shape
+    central = states.reshape((num_envs, num_agents * state_dim))
+    central = jnp.repeat(central[:, None, :], repeats=num_agents, axis=1)
+    target_ids = jnp.broadcast_to(
+        jnp.eye(num_agents, dtype=jnp.float32)[None, :, :],
+        (num_envs, num_agents, num_agents),
+    )
+    return jnp.concatenate([central, target_ids], axis=-1)

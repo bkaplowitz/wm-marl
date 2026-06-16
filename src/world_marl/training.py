@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import jax
 import jax.numpy as jnp
@@ -18,6 +18,9 @@ from world_marl.envs.meltingpot_adapter import (
     flatten_agent_batch,
     unflatten_agent_actions,
 )
+
+
+ObservationMode = Literal["image", "vector"]
 
 
 @dataclass(frozen=True)
@@ -266,15 +269,26 @@ def collect_mappo_rollout(
 
 
 def central_observation_shape(
-    observation_shape: tuple[int, int, int],
+    observation_shape: tuple[int, ...],
     num_agents: int,
-) -> tuple[int, int, int]:
+    *,
+    observation_mode: ObservationMode = "image",
+) -> tuple[int, ...]:
     """Shape for centralized critic observations built by this module."""
+    if observation_mode == "vector":
+        flat_dim = int(np.prod(observation_shape))
+        return (flat_dim * num_agents + num_agents,)
+    if observation_mode != "image":
+        raise ValueError(f"unsupported observation_mode {observation_mode!r}")
     height, width, channels = observation_shape
     return (height, width, channels * num_agents + num_agents)
 
 
-def build_central_observations(observations: np.ndarray) -> np.ndarray:
+def build_central_observations(
+    observations: np.ndarray,
+    *,
+    observation_mode: ObservationMode = "image",
+) -> np.ndarray:
     """Build centralized critic observations shaped [env, agent, H, W, C].
 
     The centralized input for each target agent contains all agents' local
@@ -282,6 +296,22 @@ def build_central_observations(observations: np.ndarray) -> np.ndarray:
     so the critic can estimate individual values.
     """
     observations = np.asarray(observations, dtype=np.float32)
+    if observation_mode == "vector":
+        if observations.ndim < 3:
+            raise ValueError("expected observations shaped [env, agent, ...]")
+        num_envs, num_agents = observations.shape[:2]
+        flat_observations = observations.reshape((num_envs, num_agents, -1))
+        central = flat_observations.reshape(
+            (num_envs, num_agents * flat_observations.shape[-1])
+        )
+        central = np.repeat(central[:, None, :], repeats=num_agents, axis=1)
+        target_ids = np.broadcast_to(
+            np.eye(num_agents, dtype=np.float32)[None, :, :],
+            (num_envs, num_agents, num_agents),
+        )
+        return np.concatenate([central, target_ids], axis=-1)
+    if observation_mode != "image":
+        raise ValueError(f"unsupported observation_mode {observation_mode!r}")
     if observations.ndim != 5:
         raise ValueError("expected observations shaped [env, agent, H, W, C]")
     num_envs, num_agents, height, width, channels = observations.shape

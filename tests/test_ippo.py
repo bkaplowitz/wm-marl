@@ -101,3 +101,37 @@ def test_policy_forward_on_synthetic_observations():
     assert log_probs.shape == (5,)
     assert values.shape == (5,)
     assert action_nll(state, observations, actions).shape == ()
+
+
+def test_mlp_policy_forward_and_update_on_vector_observations():
+    config = IPPOConfig(
+        network_arch="mlp",
+        update_epochs=2,
+        num_minibatches=2,
+        learning_rate=1e-3,
+    )
+    state = create_train_state(jax.random.PRNGKey(0), (7,), 3, config)
+    observations = jnp.ones((5, 7), dtype=jnp.float32)
+    actions, log_probs, values = select_actions(
+        state,
+        jax.random.PRNGKey(1),
+        observations,
+    )
+    assert actions.shape == (5,)
+    assert log_probs.shape == (5,)
+    assert values.shape == (5,)
+
+    batch = _synthetic_batch(
+        state,
+        jax.random.PRNGKey(2),
+        obs_shape=(7,),
+    )
+    new_state, metrics = ppo_update(
+        state,
+        batch,
+        jnp.zeros((4,)),
+        jax.random.PRNGKey(3),
+        config,
+    )
+    assert tree_l2_distance(state.params, new_state.params) > 0.0
+    assert "total_loss" in metrics

@@ -86,6 +86,50 @@ class CNNActorCritic(nn.Module):
         return distrax.Categorical(logits=logits), jnp.squeeze(value, axis=-1)
 
 
+class MLPActorCritic(nn.Module):
+    """Shared MLP actor-critic for flat vector observations."""
+
+    action_dim: int
+    activation: str = "relu"
+
+    @nn.compact
+    def __call__(
+        self, observations: jnp.ndarray
+    ) -> tuple[distrax.Categorical, jnp.ndarray]:
+        activation = _activation(self.activation)
+        embedding = _mlp_embedding(
+            observations,
+            activation=activation,
+            name="shared",
+        )
+
+        actor_hidden = nn.Dense(
+            features=64,
+            kernel_init=orthogonal(np.sqrt(2.0)),
+            bias_init=constant(0.0),
+        )(embedding)
+        actor_hidden = activation(actor_hidden)
+        logits = nn.Dense(
+            features=self.action_dim,
+            kernel_init=orthogonal(0.01),
+            bias_init=constant(0.0),
+        )(actor_hidden)
+
+        critic_hidden = nn.Dense(
+            features=64,
+            kernel_init=orthogonal(np.sqrt(2.0)),
+            bias_init=constant(0.0),
+        )(embedding)
+        critic_hidden = activation(critic_hidden)
+        value = nn.Dense(
+            features=1,
+            kernel_init=orthogonal(1.0),
+            bias_init=constant(0.0),
+        )(critic_hidden)
+
+        return distrax.Categorical(logits=logits), jnp.squeeze(value, axis=-1)
+
+
 class CNNMAPPOActorCritic(nn.Module):
     """CNN actor with a centralized CNN critic for MAPPO."""
 
@@ -125,6 +169,60 @@ class CNNMAPPOActorCritic(nn.Module):
         )(actor_hidden)
 
         critic_embedding = _cnn_embedding(
+            central_observations,
+            activation=activation,
+            name="critic",
+        )
+        critic_hidden = nn.Dense(
+            features=64,
+            kernel_init=orthogonal(np.sqrt(2.0)),
+            bias_init=constant(0.0),
+            name="critic_hidden",
+        )(critic_embedding)
+        critic_hidden = activation(critic_hidden)
+        value = nn.Dense(
+            features=1,
+            kernel_init=orthogonal(1.0),
+            bias_init=constant(0.0),
+            name="critic_value",
+        )(critic_hidden)
+
+        return distrax.Categorical(logits=logits), jnp.squeeze(value, axis=-1)
+
+
+class MLPMAPPOActorCritic(nn.Module):
+    """MLP actor with a centralized MLP critic for MAPPO vector states."""
+
+    action_dim: int
+    activation: str = "relu"
+
+    @nn.compact
+    def __call__(
+        self,
+        observations: jnp.ndarray,
+        central_observations: jnp.ndarray,
+    ) -> tuple[distrax.Categorical, jnp.ndarray]:
+        activation = _activation(self.activation)
+        actor_embedding = _mlp_embedding(
+            observations,
+            activation=activation,
+            name="actor",
+        )
+        actor_hidden = nn.Dense(
+            features=64,
+            kernel_init=orthogonal(np.sqrt(2.0)),
+            bias_init=constant(0.0),
+            name="actor_hidden",
+        )(actor_embedding)
+        actor_hidden = activation(actor_hidden)
+        logits = nn.Dense(
+            features=self.action_dim,
+            kernel_init=orthogonal(0.01),
+            bias_init=constant(0.0),
+            name="actor_logits",
+        )(actor_hidden)
+
+        critic_embedding = _mlp_embedding(
             central_observations,
             activation=activation,
             name="critic",
@@ -188,3 +286,28 @@ def _cnn_embedding(
         name=f"{name}_dense",
     )(x)
     return activation(x)
+
+
+def _mlp_embedding(
+    observations: jnp.ndarray,
+    *,
+    activation,
+    name: str,
+) -> jnp.ndarray:
+    x = observations.astype(jnp.float32)
+    x = x.reshape((x.shape[0], -1))
+    x = nn.Dense(
+        features=128,
+        kernel_init=orthogonal(np.sqrt(2.0)),
+        bias_init=constant(0.0),
+        name=f"{name}_dense",
+    )(x)
+    return activation(x)
+
+
+def _activation(name: str):
+    if name == "tanh":
+        return nn.tanh
+    if name == "relu":
+        return nn.relu
+    raise ValueError(f"unsupported activation {name!r}")

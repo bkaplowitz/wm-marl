@@ -64,10 +64,76 @@ def test_build_central_observations_adds_all_agents_and_target_id():
     np.testing.assert_allclose(central[0, 1, :, :, 7], 1.0)
 
 
+def test_build_vector_central_observations_adds_all_agents_and_target_id():
+    observations = np.array(
+        [
+            [
+                [1.0, 2.0, 3.0],
+                [4.0, 5.0, 6.0],
+            ]
+        ],
+        dtype=np.float32,
+    )
+
+    central = build_central_observations(observations, observation_mode="vector")
+
+    assert central.shape == (1, 2, 8)
+    assert central_observation_shape((3,), 2, observation_mode="vector") == (8,)
+    np.testing.assert_allclose(central[0, 0, :3], [1.0, 2.0, 3.0])
+    np.testing.assert_allclose(central[0, 0, 3:6], [4.0, 5.0, 6.0])
+    np.testing.assert_allclose(central[0, 0, 6:], [1.0, 0.0])
+    np.testing.assert_allclose(central[0, 1, 6:], [0.0, 1.0])
+
+
 def test_mappo_forward_and_update_change_parameters():
     config = MAPPOConfig(update_epochs=2, num_minibatches=2, learning_rate=1e-3)
     obs_shape = (8, 8, 3)
     central_obs_shape = (8, 8, 8)
+    state = create_train_state(
+        jax.random.PRNGKey(0),
+        obs_shape,
+        central_obs_shape,
+        3,
+        config,
+    )
+    obs = jnp.ones((5, *obs_shape), dtype=jnp.float32)
+    central_obs = jnp.ones((5, *central_obs_shape), dtype=jnp.float32)
+    actions, log_probs, values = select_actions(
+        state,
+        jax.random.PRNGKey(1),
+        obs,
+        central_obs,
+    )
+    assert actions.shape == (5,)
+    assert log_probs.shape == (5,)
+    assert values.shape == (5,)
+
+    batch = _synthetic_mappo_batch(
+        state,
+        jax.random.PRNGKey(2),
+        obs_shape=obs_shape,
+        central_obs_shape=central_obs_shape,
+    )
+    new_state, metrics = mappo_update(
+        state,
+        batch,
+        jnp.zeros((4,)),
+        jax.random.PRNGKey(3),
+        config,
+    )
+    assert tree_l2_distance(state.params, new_state.params) > 0.0
+    assert "total_loss" in metrics
+
+
+def test_mlp_mappo_forward_and_update_on_vector_observations():
+    config = MAPPOConfig(
+        network_arch="mlp",
+        update_epochs=2,
+        num_minibatches=2,
+        learning_rate=1e-3,
+    )
+    obs_shape = (5,)
+    central_obs_shape = (12,)
     state = create_train_state(
         jax.random.PRNGKey(0),
         obs_shape,

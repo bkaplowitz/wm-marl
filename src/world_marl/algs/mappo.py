@@ -11,7 +11,7 @@ import optax
 from flax.training.train_state import TrainState
 
 from world_marl.algs.gae import compute_gae
-from world_marl.algs.networks import CNNMAPPOActorCritic
+from world_marl.algs.networks import CNNMAPPOActorCritic, MLPMAPPOActorCritic
 
 
 @dataclass(frozen=True)
@@ -26,6 +26,7 @@ class MAPPOConfig:
     update_epochs: int = 4
     num_minibatches: int = 4
     activation: str = "relu"
+    network_arch: str = "cnn"
     shuffle_rewards: bool = False
     zero_advantages: bool = False
 
@@ -42,13 +43,24 @@ class MAPPORolloutBatch(NamedTuple):
 
 def create_train_state(
     rng: jax.Array,
-    observation_shape: tuple[int, int, int],
-    central_observation_shape: tuple[int, int, int],
+    observation_shape: tuple[int, ...],
+    central_observation_shape: tuple[int, ...],
     action_dim: int,
     config: MAPPOConfig,
 ) -> TrainState:
     """Initialize the MAPPO actor-critic network and optimizer."""
-    network = CNNMAPPOActorCritic(action_dim=action_dim, activation=config.activation)
+    if config.network_arch == "cnn":
+        network = CNNMAPPOActorCritic(
+            action_dim=action_dim,
+            activation=config.activation,
+        )
+    elif config.network_arch == "mlp":
+        network = MLPMAPPOActorCritic(
+            action_dim=action_dim,
+            activation=config.activation,
+        )
+    else:
+        raise ValueError(f"unsupported network_arch {config.network_arch!r}")
     init_observation = jnp.zeros((1, *observation_shape), dtype=jnp.float32)
     init_central_observation = jnp.zeros(
         (1, *central_observation_shape),
