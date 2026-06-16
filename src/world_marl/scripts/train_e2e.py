@@ -27,6 +27,7 @@ from world_marl.algs.mappo import (
     mappo_update,
 )
 from world_marl.checkpointing import load_metadata, load_params, save_checkpoint
+from world_marl.envs.jaxmarl_coin_adapter import JaxMARLCoinGameVectorAdapter
 from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
 from world_marl.evaluation import (
     evaluate_policy,
@@ -55,6 +56,8 @@ from world_marl.world_model_training import (
     fit_world_model_steps,
     sample_initial_states,
 )
+
+TrainingAdapter = MeltingPotVectorAdapter | JaxMARLCoinGameVectorAdapter
 
 
 @dataclass(frozen=True)
@@ -126,7 +129,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wm-fit-steps", type=int, default=100)
     parser.add_argument("--wm-learning-rate", type=float, default=1e-3)
     parser.add_argument("--wm-hidden-dim", type=int, default=128)
-    parser.add_argument("--wm-integration-steps", type=int, default=8)
+    parser.add_argument("--wm-integration-steps", type=int, default=100)
 
     parser.add_argument("--learning-rate", type=float, default=5e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
@@ -187,7 +190,7 @@ def algorithm_config_from_args(
 def create_algorithm_train_state(
     algorithm: str,
     rng: jax.Array,
-    adapter: MeltingPotVectorAdapter,
+    adapter: TrainingAdapter,
     config: IPPOConfig | MAPPOConfig,
     *,
     observation_mode: ObservationMode = "image",
@@ -217,7 +220,7 @@ def policy_from_train_state(
     algorithm: str,
     train_state,
     *,
-    adapter: MeltingPotVectorAdapter,
+    adapter: TrainingAdapter,
     deterministic: bool,
     seed: int,
     observation_mode: ObservationMode = "image",
@@ -234,7 +237,7 @@ def policy_from_train_state(
 
 
 def _policy_observation_shape(
-    adapter: MeltingPotVectorAdapter,
+    adapter: TrainingAdapter,
     observation_mode: ObservationMode,
 ) -> tuple[int, ...]:
     if observation_mode == "vector":
@@ -242,6 +245,23 @@ def _policy_observation_shape(
     if observation_mode == "image":
         return adapter.observation_shape
     raise ValueError(f"unsupported observation_mode {observation_mode!r}")
+
+
+def _make_training_adapter(args: argparse.Namespace, *, seed: int) -> TrainingAdapter:
+    if args.substrate == "coins":
+        return JaxMARLCoinGameVectorAdapter(
+            num_envs=args.num_envs,
+            max_cycles=args.max_cycles,
+            seed=seed,
+        )
+    return MeltingPotVectorAdapter(
+        substrate=args.substrate,
+        num_envs=args.num_envs,
+        max_cycles=args.max_cycles,
+        observation_size=args.observation_size,
+        include_observation_scalars=args.include_observation_scalars,
+        append_agent_id=args.append_agent_id,
+    )
 
 
 def evaluate_checkpoint_mode(args: argparse.Namespace) -> None:
@@ -306,14 +326,7 @@ def evaluate_checkpoint_mode(args: argparse.Namespace) -> None:
 
 
 def evaluate_random_baseline(args: argparse.Namespace, seed: int) -> dict[str, Any]:
-    adapter = MeltingPotVectorAdapter(
-        substrate=args.substrate,
-        num_envs=args.num_envs,
-        max_cycles=args.max_cycles,
-        observation_size=args.observation_size,
-        include_observation_scalars=args.include_observation_scalars,
-        append_agent_id=args.append_agent_id,
-    )
+    adapter = _make_training_adapter(args, seed=seed)
     try:
         result = evaluate_policy(
             adapter,
@@ -400,14 +413,7 @@ def run_training(
     random_result = evaluate_random_baseline(args, seed=seed + 1)
     logger.write_json("random_baseline.json", random_result)
 
-    adapter = MeltingPotVectorAdapter(
-        substrate=args.substrate,
-        num_envs=args.num_envs,
-        max_cycles=args.max_cycles,
-        observation_size=args.observation_size,
-        include_observation_scalars=args.include_observation_scalars,
-        append_agent_id=args.append_agent_id,
-    )
+    adapter = _make_training_adapter(args, seed=seed)
     rows: list[dict[str, Any]] = []
     try:
         observations = adapter.reset()
