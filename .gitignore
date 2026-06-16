@@ -9,3 +9,4 @@ runs/
 dist/
 build/
 *.egg-info/
+.serena/
