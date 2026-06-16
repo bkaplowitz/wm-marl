@@ -10,3 +10,11 @@ dist/
 build/
 *.egg-info/
 .serena/
+.specstory/
+.codex/
+.claude/
+.vscode/
+.cursor/
+.cursorindexingignore
+AGENTS.md
+CLAUDE.md

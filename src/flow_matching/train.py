@@ -1,5 +1,6 @@
 """Training helpers for conditional flow matching."""
 
+from functools import partial
 from typing import Any
 
 import flax
@@ -22,7 +23,7 @@ def create_train_state(
     init_x = jnp.zeros((1, dim))
     init_t = jnp.zeros((1, 1))
     key, train_state_key = jax.random.split(key)
-    params = model.init(key, init_x, init_t)["params"]
+    params = model.init(train_state_key, init_x, init_t)["params"]
     tx = optax.adam(learning_rate)
     return TrainState.create(apply_fn=model.apply, params=params, tx=tx)
 
@@ -47,7 +48,7 @@ def flow_matching_loss(
     )  # mse loss on flow matching objective
 
 
-@jax.jit(static_argnames="batch_size")
+@partial(jax.jit, static_argnames="batch_size")
 def train_step(
     state: TrainState,
     key: jax.Array,

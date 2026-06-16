@@ -117,7 +117,6 @@ def concatenate_transition_batches(
         next_states=jnp.concatenate([batch.next_states for batch in batches], axis=0),
         rewards=jnp.concatenate([batch.rewards for batch in batches], axis=0),
         dones=jnp.concatenate([batch.dones for batch in batches], axis=0),
-        policy_ids=jnp.concatenate([batch.policy_ids for batch in batches], axis=0),
     )
 
 
@@ -194,5 +193,4 @@ class _TransitionRows:
                 dtype=jnp.float32,
             ),
             dones=jnp.asarray(np.concatenate(self.dones, axis=0), dtype=jnp.float32),
-            policy_ids=jnp.zeros((states.shape[0],), dtype=jnp.int32),
         )
