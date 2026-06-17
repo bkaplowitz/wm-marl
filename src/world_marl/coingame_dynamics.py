@@ -442,6 +442,7 @@ def evaluate_coin_dynamics(
     "model_beats_persistence": bool(full_matches.mean() > persistence_exact.mean()),
     "valid_prediction_fraction": valid_position_fraction(predicted),
     "reward": reward_prediction_metrics(validation_data, derived_rewards),
+    "respawn": stochastic_respawn_metrics(validation_data, predictions),
     "reward_event_fraction": float(np.any(np.abs(validation_data.rewards) > 1e-6, axis=1).mean()),
     "done_fraction": float(np.any(validation_data.dones > 0.0, axis=1).mean()),
   }
@@ -580,8 +581,93 @@ def reward_prediction_metrics(
   }
 
 
+def stochastic_respawn_metrics(
+  data: CoinDynamicsData,
+  predictions: CoinDynamicsPredictions,
+) -> dict[str, Any]:
+  """Evaluate predicted distributions for random coin respawn targets.
+
+  Coin respawn locations are sampled from environment RNG after collection.
+  Exact argmax accuracy is therefore the wrong target; a good model should
+  represent uncertainty over possible cells.
+  """
+  logits = np.asarray(predictions.next_position_logits, dtype=np.float64)
+  targets = np.asarray(data.next_positions, dtype=np.int32)
+  nonterminal = ~np.any(data.dones > 0.0, axis=1)
+  red_collected, blue_collected = collected_coin_masks(data.positions, data.actions)
+  masks_and_entities = (
+    (red_collected & nonterminal, 2, "red_coin"),
+    (blue_collected & nonterminal, 3, "blue_coin"),
+  )
+
+  selected_logits = []
+  selected_targets = []
+  counts: dict[str, int] = {}
+  for mask, entity_index, name in masks_and_entities:
+    counts[f"{name}_respawn_count"] = int(mask.sum())
+    if bool(mask.any()):
+      selected_logits.append(logits[mask, 0, entity_index, :])
+      selected_targets.append(targets[mask, 0, entity_index])
+
+  if not selected_logits:
+    return {
+      "num_respawn_targets": 0,
+      **counts,
+      "cross_entropy": None,
+      "uniform_cross_entropy": float(np.log(NUM_CELLS)),
+      "top1_accuracy": None,
+      "top3_accuracy": None,
+      "mean_target_probability": None,
+      "uniform_target_probability": 1.0 / NUM_CELLS,
+      "mean_entropy": None,
+      "uniform_entropy": float(np.log(NUM_CELLS)),
+      "mean_distribution_tv_to_uniform": None,
+      "aggregate_distribution_tv_to_uniform": None,
+      "empirical_target_tv_to_uniform": None,
+    }
+
+  respawn_logits = np.concatenate(selected_logits, axis=0)
+  respawn_targets = np.concatenate(selected_targets, axis=0)
+  probs = softmax_np(respawn_logits, axis=-1)
+  selected = probs[np.arange(respawn_targets.shape[0]), respawn_targets]
+  sorted_indices = np.argsort(respawn_logits, axis=-1)
+  top1 = sorted_indices[:, -1]
+  top3 = sorted_indices[:, -3:]
+  uniform = np.full((NUM_CELLS,), 1.0 / NUM_CELLS, dtype=np.float64)
+  aggregate = probs.mean(axis=0)
+  target_counts = np.bincount(respawn_targets, minlength=NUM_CELLS).astype(np.float64)
+  empirical = target_counts / max(float(target_counts.sum()), 1.0)
+  entropy = -np.sum(probs * np.log(np.clip(probs, 1e-12, 1.0)), axis=-1)
+  return {
+    "num_respawn_targets": int(respawn_targets.shape[0]),
+    **counts,
+    "cross_entropy": float(-np.log(np.clip(selected, 1e-12, 1.0)).mean()),
+    "uniform_cross_entropy": float(np.log(NUM_CELLS)),
+    "top1_accuracy": float((top1 == respawn_targets).mean()),
+    "top3_accuracy": float((top3 == respawn_targets[:, None]).any(axis=1).mean()),
+    "mean_target_probability": float(selected.mean()),
+    "uniform_target_probability": 1.0 / NUM_CELLS,
+    "mean_entropy": float(entropy.mean()),
+    "uniform_entropy": float(np.log(NUM_CELLS)),
+    "mean_distribution_tv_to_uniform": float(
+      0.5 * np.abs(probs - uniform.reshape(1, -1)).sum(axis=1).mean()
+    ),
+    "aggregate_distribution_tv_to_uniform": float(0.5 * np.abs(aggregate - uniform).sum()),
+    "empirical_target_tv_to_uniform": float(0.5 * np.abs(empirical - uniform).sum()),
+  }
+
+
 def coin_collected(positions: np.ndarray, actions: np.ndarray) -> np.ndarray:
   """Return whether either player collects either coin after applying actions."""
+  red_collected, blue_collected = collected_coin_masks(positions, actions)
+  return red_collected | blue_collected
+
+
+def collected_coin_masks(
+  positions: np.ndarray,
+  actions: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+  """Return masks for red-coin and blue-coin collection events."""
   agent0 = np.asarray(positions, dtype=np.int32)[:, 0]
   actions = np.asarray(actions, dtype=np.int32)
   red_pos = cell_to_row_col(agent0[:, 0])
@@ -590,12 +676,11 @@ def coin_collected(positions: np.ndarray, actions: np.ndarray) -> np.ndarray:
   blue_coin = cell_to_row_col(agent0[:, 3])
   new_red = (red_pos + MOVES[actions[:, 0]]) % GRID_SIZE
   new_blue = (blue_pos + MOVES[actions[:, 1]]) % GRID_SIZE
-  return (
-    np.all(new_red == red_coin, axis=-1)
-    | np.all(new_red == blue_coin, axis=-1)
-    | np.all(new_blue == red_coin, axis=-1)
-    | np.all(new_blue == blue_coin, axis=-1)
-  )
+  red_red = np.all(new_red == red_coin, axis=-1)
+  red_blue = np.all(new_red == blue_coin, axis=-1)
+  blue_red = np.all(new_blue == red_coin, axis=-1)
+  blue_blue = np.all(new_blue == blue_coin, axis=-1)
+  return red_red | blue_red, red_blue | blue_blue
 
 
 def expected_deterministic_next_positions(
@@ -675,6 +760,13 @@ def masked_mse(prediction: np.ndarray, target: np.ndarray, mask: np.ndarray) -> 
   if not bool(mask.any()):
     return None
   return float(np.mean(np.square(prediction[mask] - target[mask])))
+
+
+def softmax_np(values: np.ndarray, axis: int = -1) -> np.ndarray:
+  values = np.asarray(values, dtype=np.float64)
+  shifted = values - values.max(axis=axis, keepdims=True)
+  exp = np.exp(shifted)
+  return exp / exp.sum(axis=axis, keepdims=True)
 
 
 def cell_to_row_col(cells: np.ndarray) -> np.ndarray:

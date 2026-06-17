@@ -7,8 +7,11 @@ from world_marl.checkpointing import load_params, save_checkpoint
 from world_marl.coingame_dynamics import (
   CoinDynamicsConfig,
   CoinDynamicsData,
+  CoinDynamicsPredictions,
+  NUM_CELLS,
   collect_coin_dynamics_dataset,
   coin_collected,
+  collected_coin_masks,
   create_coin_dynamics_train_state,
   decode_coin_positions,
   derive_coin_rewards,
@@ -20,6 +23,7 @@ from world_marl.coingame_dynamics import (
   prepare_coin_dynamics_data,
   reward_prediction_metrics,
   split_coin_dynamics_data,
+  stochastic_respawn_metrics,
   summarize_coin_dynamics_outcome,
   train_coin_dynamics_model,
 )
@@ -92,6 +96,9 @@ def test_expected_deterministic_next_positions_and_mask():
   )
 
   np.testing.assert_array_equal(coin_collected(positions, actions), [False, True])
+  red_collected, blue_collected = collected_coin_masks(positions, actions)
+  np.testing.assert_array_equal(red_collected, [False, True])
+  np.testing.assert_array_equal(blue_collected, [False, False])
   np.testing.assert_array_equal(deterministic_transition_mask(data), [True, False])
   np.testing.assert_array_equal(next_positions[0, 0], np.asarray([1, 8, 4, 5]))
   np.testing.assert_array_equal(next_positions[0, 1], np.asarray([8, 1, 5, 4]))
@@ -128,6 +135,44 @@ def test_derived_coin_rewards_cover_payoff_branches():
       np.asarray(expected, dtype=np.float32),
       err_msg=name,
     )
+
+
+def test_stochastic_respawn_metrics_use_distribution_not_argmax():
+  positions = np.asarray(
+    [
+      [[0, 4, 0, 8], [4, 0, 8, 0]],  # red coin collected
+      [[4, 0, 8, 0], [0, 4, 0, 8]],  # blue coin collected
+    ],
+    dtype=np.int32,
+  )
+  actions = np.asarray([[4, 4], [4, 4]], dtype=np.int32)
+  next_positions = np.asarray(
+    [
+      [[0, 4, 5, 8], [4, 0, 8, 5]],
+      [[4, 0, 8, 6], [0, 4, 6, 8]],
+    ],
+    dtype=np.int32,
+  )
+  data = _coin_data(
+    positions=positions,
+    next_positions=next_positions,
+    actions=actions,
+    rewards=derive_coin_rewards(positions, actions),
+    dones=np.zeros((2, 2), dtype=np.float32),
+  )
+  predictions = CoinDynamicsPredictions(
+    next_position_logits=np.zeros((2, 2, 4, NUM_CELLS), dtype=np.float32)
+  )
+
+  metrics = stochastic_respawn_metrics(data, predictions)
+
+  assert metrics["num_respawn_targets"] == 2
+  assert metrics["red_coin_respawn_count"] == 1
+  assert metrics["blue_coin_respawn_count"] == 1
+  np.testing.assert_allclose(metrics["cross_entropy"], np.log(NUM_CELLS))
+  np.testing.assert_allclose(metrics["mean_entropy"], np.log(NUM_CELLS))
+  assert metrics["aggregate_distribution_tv_to_uniform"] == 0.0
+  assert metrics["mean_target_probability"] == 1.0 / NUM_CELLS
 
 
 def test_discrete_dynamics_training_metrics_and_reload(tmp_path):
