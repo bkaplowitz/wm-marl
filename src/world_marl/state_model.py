@@ -1,8 +1,5 @@
 """One-step state-representation validation for Melting Pot rollouts.
 
-This module is deliberately smaller than a full model-based MARL algorithm. It
-answers three falsifiable questions about real rollouts:
-
 1. Does `z_t, joint_action_t` predict meaningful state change in `z_{t+1}`?
 2. Does `z_t` recover the behavior policy better than action marginals?
 3. Is sparse reward/event information present in the representation?
