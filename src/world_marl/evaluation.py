@@ -1,6 +1,7 @@
 """Evaluation loops for vectorized Melting Pot adapters."""
 
 from __future__ import annotations
+from world_marl.scripts.train_e2e import TrainingAdapter
 
 import math
 from collections.abc import Callable
@@ -46,7 +47,7 @@ class EvaluationResult:
 
 
 def evaluate_policy(
-    adapter: MeltingPotVectorAdapter,
+    adapter: TrainingAdapter,
     policy_fn: PolicyFn,
     *,
     episodes: int,
