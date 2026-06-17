@@ -174,6 +174,37 @@ The key distribution fields are:
 - `distribution_validation.strict_flow_beats_uniform`
 - `distribution_validation.reload_max_abs_point_diff`
 
+Milestone 1 state-conditioned action validation uses the same rollout source,
+but changes the objective from global `p(joint_action)` to
+`p(joint_action | state)`. It collects `(state_t, joint_action_t)` pairs,
+trains a conditional flow over normalized joint actions, trains a categorical
+behavior-cloning baseline as a discrete sanity check, and evaluates on heldout
+states. This is policy-distribution imitation, not a dynamics/world-model step.
+
+```bash
+uv run world-marl-train-coin-flow \
+  --conditional-action \
+  --target-source checkpoint \
+  --policy-checkpoint runs/<e2e_run>/run_000/checkpoint \
+  --num-envs 128 \
+  --collect-steps 2048 \
+  --train-steps 5000 \
+  --batch-size 1024 \
+  --generated-samples 4096 \
+  --flow-integration-steps 16 \
+  --eval-episodes 50 \
+  --max-cycles 50
+```
+
+That run writes `conditional_action_dataset.json`,
+`conditional_action_split.json`, `conditional_action_validation.json`,
+`conditional_action_validation.png`, `conditional_action_samples.json`,
+`conditional_classifier_checkpoint/`, and `conditional_flow_checkpoint/`.
+The main pass criteria are finite losses, classifier cross entropy beating the
+marginal action baseline, conditional-flow action accuracy beating the marginal
+baseline, conditional-flow distribution JS beating uniform, and checkpoint
+reload equality.
+
 ### PPO/MAPPO Artifacts
 
 Each run writes:
