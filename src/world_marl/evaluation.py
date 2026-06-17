@@ -1,4 +1,4 @@
-"""Evaluation loops for vectorized Melting Pot adapters."""
+"""Evaluation loops for vectorized multi-agent adapters."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from flax.training.train_state import TrainState
 from world_marl.algs.ippo import select_actions
 from world_marl.algs.mappo import select_actions as select_mappo_actions
 from world_marl.envs.meltingpot_adapter import (
-    MeltingPotVectorAdapter,
     flatten_agent_batch,
     unflatten_agent_actions,
 )
@@ -94,9 +93,7 @@ def evaluate_policy(
     )
 
 
-def random_policy(
-    adapter: MeltingPotVectorAdapter, rng: np.random.Generator
-) -> PolicyFn:
+def random_policy(adapter: Any, rng: np.random.Generator) -> PolicyFn:
     """Create a random action policy for an adapter."""
 
     def act(observations: np.ndarray) -> np.ndarray:
@@ -220,6 +217,3 @@ def _policy_observations(
     if observation_mode == "image":
         return flatten_agent_batch(observations)
     raise ValueError(f"unsupported observation_mode {observation_mode!r}")
-
-
-# TODO: Generate evaluation from fit model of policy.

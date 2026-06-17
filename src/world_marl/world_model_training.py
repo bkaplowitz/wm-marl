@@ -10,7 +10,6 @@ import jax.numpy as jnp
 import numpy as np
 from flax.training.train_state import TrainState
 
-from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
 from world_marl.training import build_central_observations
 from world_marl.world_model import (
     VectorTransitionBatch,
@@ -28,7 +27,7 @@ def flatten_state_observations(observations: np.ndarray) -> np.ndarray:
 
 
 def collect_random_transition_batch(
-    adapter: MeltingPotVectorAdapter,
+    adapter,
     observations: np.ndarray,
     rng: np.random.Generator,
     *,
@@ -58,7 +57,7 @@ def collect_random_transition_batch(
 
 
 def collect_policy_transition_batch(
-    adapter: MeltingPotVectorAdapter,
+    adapter,
     train_state: TrainState,
     observations: np.ndarray,
     rng: jax.Array,

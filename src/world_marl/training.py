@@ -14,7 +14,6 @@ from world_marl.algs.gae import compute_gae
 from world_marl.algs.ippo import RolloutBatch
 from world_marl.algs.mappo import MAPPORolloutBatch
 from world_marl.envs.meltingpot_adapter import (
-    MeltingPotVectorAdapter,
     flatten_agent_batch,
     unflatten_agent_actions,
 )
@@ -32,7 +31,7 @@ class RolloutResult:
 
 
 def collect_rollout(
-    adapter: MeltingPotVectorAdapter,
+    adapter: Any,
     train_state: TrainState,
     observations: np.ndarray,
     rng: jax.Array,
@@ -41,7 +40,7 @@ def collect_rollout(
     gamma: float = 0.99,
     gae_lambda: float = 0.95,
 ) -> RolloutResult:
-    """Collect a rollout by stepping the Python-side Melting Pot adapter."""
+    """Collect a rollout by stepping a vectorized multi-agent adapter."""
     if rollout_steps < 1:
         raise ValueError("rollout_steps must be >= 1")
 
@@ -144,7 +143,7 @@ def collect_rollout(
 
 
 def collect_mappo_rollout(
-    adapter: MeltingPotVectorAdapter,
+    adapter: Any,
     train_state: TrainState,
     observations: np.ndarray,
     rng: jax.Array,
@@ -512,6 +511,3 @@ def training_window_means(
     ]
     window = max(1, int(len(values) * fraction))
     return float(np.mean(values[:window])), float(np.mean(values[-window:]))
-
-
-# TODO: Fit rollout and return summary statistics of fit.
