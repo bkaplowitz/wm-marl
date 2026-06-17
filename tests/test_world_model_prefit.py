@@ -400,3 +400,277 @@ def test_fit_world_model_steps_returns_per_step_loss_history():
     history = np.asarray(history, dtype=np.float32)
     assert history.shape == (steps,)
     np.testing.assert_allclose(history[-1], np.asarray(loss, dtype=np.float32))
+
+
+def test_fit_world_model_steps_matches_explicit_python_loop():
+    # Pins the lax.scan fit against an independent Python-loop reference so a
+    # silent key-threading break (e.g. reusing one key every step) cannot pass.
+    # The flow-matching loss samples a fresh time/noise per key, so splitting the
+    # rng inside the scan body must reproduce the loop's exact key sequence,
+    # final optimizer state, and per-step loss history.
+    from world_marl.world_model import create_world_model_state
+    from world_marl.world_model_training import fit_world_model_steps
+
+    config = VectorWorldModelConfig(
+        state_dim=4,
+        num_agents=2,
+        action_dim=3,
+        hidden_dims=(8,),
+        integration_steps=2,
+    )
+    model_state = create_world_model_state(jax.random.PRNGKey(0), config)
+    n, steps = 6, 7
+    batch = VectorTransitionBatch(
+        states=jax.random.normal(jax.random.PRNGKey(3), (n, 2, 4)),
+        actions=jnp.ones((n, 2), dtype=jnp.int32),
+        next_states=jax.random.normal(jax.random.PRNGKey(4), (n, 2, 4)),
+        rewards=jnp.zeros((n, 2), dtype=jnp.float32),
+        dones=jnp.zeros((n, 2), dtype=jnp.float32),
+    )
+    rng = jax.random.PRNGKey(1)
+
+    new_state, new_rng, new_loss, new_history = fit_world_model_steps(
+        model_state, rng, batch, config, steps=steps
+    )
+
+    ref_state, ref_rng = model_state, rng
+    ref_losses = []
+    for _ in range(steps):
+        ref_rng, fit_key = jax.random.split(ref_rng)
+        ref_state, ref_loss = train_world_model_step(ref_state, fit_key, batch, config)
+        ref_losses.append(ref_loss)
+    ref_history = jnp.stack(ref_losses)
+
+    np.testing.assert_allclose(
+        np.asarray(new_history), np.asarray(ref_history), atol=1e-5
+    )
+    np.testing.assert_allclose(
+        np.asarray(new_loss), np.asarray(ref_history[-1]), atol=1e-5
+    )
+    np.testing.assert_allclose(np.asarray(new_rng), np.asarray(ref_rng))
+    for new_leaf, ref_leaf in zip(
+        jax.tree_util.tree_leaves(new_state.params),
+        jax.tree_util.tree_leaves(ref_state.params),
+        strict=True,
+    ):
+        np.testing.assert_allclose(
+            np.asarray(new_leaf), np.asarray(ref_leaf), atol=1e-5
+        )
+
+    # Non-vacuity: the fit must actually move the loss, else equality is trivial.
+    assert not bool(jnp.allclose(new_history[0], new_history[-1]))
+
+
+def _reward_done_actions(states, actions, next_states):
+    del states, next_states
+    return actions.astype(jnp.float32), (actions == 2).astype(jnp.float32)
+
+
+def _explicit_imagined_unroll(
+    model_state,
+    policy_state,
+    initial_states,
+    rng,
+    *,
+    rollout_steps,
+    config,
+    is_mappo,
+):
+    # Plain-Python reference for the jitted lax.scan in _imagined_rollout. Splits
+    # the rng into (action_key, model_key) per step exactly as the scan body does,
+    # so any divergence in key threading or carry handling shows up as a mismatch.
+    from world_marl.training import build_vector_central
+    from world_marl.world_model import (
+        _apply_vector_policy,
+        _reward_done,
+        predict_next,
+    )
+
+    num_envs = initial_states.shape[0]
+    num_actors = num_envs * config.num_agents
+    current = initial_states
+    keys = ("observations", "actions", "log_probs", "rewards", "dones", "values")
+    rows = {key: [] for key in keys}
+    if is_mappo:
+        rows["central_observations"] = []
+
+    for _ in range(rollout_steps):
+        flat = current.reshape((num_actors, config.state_dim))
+        central = (
+            build_vector_central(current, jnp).reshape((num_actors, -1))
+            if is_mappo
+            else None
+        )
+        rng, action_key, model_key = jax.random.split(rng, 3)
+        policy, values = _apply_vector_policy(policy_state, flat, central)
+        actions = policy.sample(seed=action_key).astype(jnp.int32)
+        log_probs = policy.log_prob(actions)
+        env_actions = actions.reshape((num_envs, config.num_agents))
+        next_states = predict_next(model_state, model_key, current, env_actions, config)
+        rewards, dones = _reward_done(
+            _reward_done_actions, current, env_actions, next_states, config
+        )
+        rows["observations"].append(flat)
+        rows["actions"].append(actions)
+        rows["log_probs"].append(log_probs)
+        rows["rewards"].append(rewards.reshape((num_actors,)))
+        rows["dones"].append(dones.reshape((num_actors,)))
+        rows["values"].append(values)
+        if is_mappo:
+            rows["central_observations"].append(central)
+        current = next_states
+
+    stacked = {key: jnp.stack(value, axis=0) for key, value in rows.items()}
+    last_flat = current.reshape((num_actors, config.state_dim))
+    last_central = (
+        build_vector_central(current, jnp).reshape((num_actors, -1))
+        if is_mappo
+        else None
+    )
+    last_values = _apply_vector_policy(policy_state, last_flat, last_central)[1]
+    return stacked, current, last_values
+
+
+def test_simulate_ippo_model_rollout_matches_explicit_python_loop():
+    from world_marl.world_model import (
+        create_world_model_state,
+        simulate_ippo_model_rollout,
+    )
+
+    config = VectorWorldModelConfig(
+        state_dim=4,
+        num_agents=2,
+        action_dim=3,
+        hidden_dims=(8,),
+        integration_steps=2,
+    )
+    model_state = create_world_model_state(jax.random.PRNGKey(0), config)
+    policy_state = create_ippo_state(
+        jax.random.PRNGKey(1),
+        (4,),
+        3,
+        IPPOConfig(network_arch="mlp", num_minibatches=1),
+    )
+    initial_states = jax.random.normal(jax.random.PRNGKey(5), (3, 2, 4))
+    rng = jax.random.PRNGKey(2)
+    rollout_steps = 4
+
+    rollout = simulate_ippo_model_rollout(
+        model_state,
+        policy_state,
+        initial_states,
+        rng,
+        rollout_steps=rollout_steps,
+        config=config,
+        reward_done_fn=_reward_done_actions,
+    )
+    stacked, final_states, last_values = _explicit_imagined_unroll(
+        model_state,
+        policy_state,
+        initial_states,
+        rng,
+        rollout_steps=rollout_steps,
+        config=config,
+        is_mappo=False,
+    )
+
+    np.testing.assert_array_equal(
+        np.asarray(rollout.batch.actions), np.asarray(stacked["actions"])
+    )
+    np.testing.assert_allclose(
+        np.asarray(rollout.batch.observations),
+        np.asarray(stacked["observations"]),
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(
+        np.asarray(rollout.batch.log_probs),
+        np.asarray(stacked["log_probs"]),
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(
+        np.asarray(rollout.batch.rewards), np.asarray(stacked["rewards"]), atol=1e-5
+    )
+    np.testing.assert_allclose(
+        np.asarray(rollout.batch.dones), np.asarray(stacked["dones"]), atol=1e-5
+    )
+    np.testing.assert_allclose(
+        np.asarray(rollout.batch.values), np.asarray(stacked["values"]), atol=1e-5
+    )
+    np.testing.assert_allclose(
+        np.asarray(rollout.last_values), np.asarray(last_values), atol=1e-5
+    )
+    np.testing.assert_allclose(
+        np.asarray(rollout.next_observations), np.asarray(final_states), atol=1e-5
+    )
+
+    # Non-vacuity: the world model must actually evolve the states over the
+    # rollout, otherwise matching a no-op reference proves nothing.
+    assert not bool(jnp.allclose(rollout.next_observations, initial_states))
+
+
+def test_simulate_mappo_model_rollout_matches_explicit_python_loop():
+    config = VectorWorldModelConfig(
+        state_dim=4,
+        num_agents=2,
+        action_dim=3,
+        hidden_dims=(8,),
+        integration_steps=2,
+    )
+    model_state = create_world_model_state(jax.random.PRNGKey(0), config)
+    policy_state = create_mappo_state(
+        jax.random.PRNGKey(1),
+        (4,),
+        (10,),
+        3,
+        MAPPOConfig(network_arch="mlp", num_minibatches=1),
+    )
+    initial_states = jax.random.normal(jax.random.PRNGKey(5), (3, 2, 4))
+    rng = jax.random.PRNGKey(2)
+    rollout_steps = 4
+
+    rollout = simulate_mappo_model_rollout(
+        model_state,
+        policy_state,
+        initial_states,
+        rng,
+        rollout_steps=rollout_steps,
+        config=config,
+        reward_done_fn=_reward_done_actions,
+    )
+    stacked, final_states, last_values = _explicit_imagined_unroll(
+        model_state,
+        policy_state,
+        initial_states,
+        rng,
+        rollout_steps=rollout_steps,
+        config=config,
+        is_mappo=True,
+    )
+
+    np.testing.assert_array_equal(
+        np.asarray(rollout.batch.actions), np.asarray(stacked["actions"])
+    )
+    np.testing.assert_allclose(
+        np.asarray(rollout.batch.central_observations),
+        np.asarray(stacked["central_observations"]),
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(
+        np.asarray(rollout.batch.observations),
+        np.asarray(stacked["observations"]),
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(
+        np.asarray(rollout.batch.rewards), np.asarray(stacked["rewards"]), atol=1e-5
+    )
+    np.testing.assert_allclose(
+        np.asarray(rollout.batch.values), np.asarray(stacked["values"]), atol=1e-5
+    )
+    np.testing.assert_allclose(
+        np.asarray(rollout.last_values), np.asarray(last_values), atol=1e-5
+    )
+    np.testing.assert_allclose(
+        np.asarray(rollout.next_observations), np.asarray(final_states), atol=1e-5
+    )
+
+    assert not bool(jnp.allclose(rollout.next_observations, initial_states))
