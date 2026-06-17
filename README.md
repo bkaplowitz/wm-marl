@@ -10,9 +10,7 @@ Current focus is the native JaxMARL `coin_game`, not Melting Pot `coins`.
 - CoinGame observations are flat vector states with shape `(36,)` per agent.
 - CoinGame has 5 discrete actions per agent.
 - JAX / Flax / Distrax / Optax: IPPO/MAPPO policies, GAE, PPO updates, and
-  flow-matching models.
-- The Melting Pot adapter remains in the repo for earlier integration work, but
-  it is not the current CoinGame validation target.
+  categorical CoinGame dynamics models.
 
 ## Setup
 
@@ -71,44 +69,6 @@ uv run world-marl-train-e2e \
   --wm-fit-steps 500 \
   --wm-flow-type linear
 ```
-
-### Conditional Action Flow on JaxMARL CoinGame
-
-The current flow-matching milestone targets native JaxMARL CoinGame and models
-the trained behavior policy's state-conditioned joint-action distribution:
-
-```text
-p(joint_action_t | state_t)
-```
-
-It collects `(state_t, joint_action_t)` pairs from either random actions or a
-saved vector-mode IPPO/MAPPO checkpoint, trains a conditional flow over
-normalized joint actions, trains a categorical behavior-cloning baseline as a
-discrete sanity check, and evaluates on heldout states. This is
-policy-distribution imitation, not a dynamics/world-model step.
-
-```bash
-uv run world-marl-train-coin-flow \
-  --target-source checkpoint \
-  --policy-checkpoint runs/<e2e_run>/run_000/checkpoint \
-  --num-envs 128 \
-  --collect-steps 2048 \
-  --train-steps 5000 \
-  --batch-size 1024 \
-  --generated-samples 4096 \
-  --flow-integration-steps 16 \
-  --eval-episodes 50 \
-  --max-cycles 50
-```
-
-That run writes `conditional_action_dataset.json`,
-`conditional_action_split.json`, `conditional_action_validation.json`,
-`conditional_action_validation.png`, `conditional_action_samples.json`,
-`conditional_classifier_checkpoint/`, and `conditional_flow_checkpoint/`.
-The main pass criteria are finite losses, classifier cross entropy beating the
-marginal action baseline, conditional-flow action accuracy beating the marginal
-baseline, conditional-flow distribution JS beating uniform, and checkpoint
-reload equality.
 
 ### Discrete CoinGame Dynamics
 

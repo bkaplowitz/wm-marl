@@ -330,7 +330,7 @@ def main() -> None:
 def _make_source_policy(args: argparse.Namespace, adapter: JaxMARLCoinGameVectorAdapter):
   if args.target_source == "random":
     return None, None
-  from world_marl.coin_flow_experiments import load_checkpoint_policy
+  from world_marl.policy_loading import load_checkpoint_policy
 
   return load_checkpoint_policy(
     args.policy_checkpoint,
