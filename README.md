@@ -72,58 +72,6 @@ uv run world-marl-train-e2e \
   --wm-flow-type linear
 ```
 
-### Legacy State-Representation Validation
-
-This older validator fits a supervised one-step model to Melting Pot-style image
-rollouts. It is useful historical scaffolding, but it is no longer the main
-CoinGame path. The active world-model integration below uses JaxMARL CoinGame
-vector states.
-
-```text
-obs_t, joint_action_t, reward_t, done_t, obs_{t+1}
-```
-
-It embeds observations with deterministic pooled RGB/channel-stat features,
-then trains a supervised residual model with five heads:
-
-- next state representation: `z_t, a_t -> z_t + delta_z`;
-- reward: `z_t, a_t -> r_t`;
-- reward event: `z_t, a_t -> 1[|r_t| > eps]`;
-- done: `z_t, a_t -> done_t`;
-- behavior policy: `z_t -> a_t`.
-
-Minibatches oversample rare reward events and large state-change transitions,
-and the transition objective includes full-state, delta, and changed-feature
-loss terms. This keeps mostly-static pixels/features from hiding the parts of
-the transition that actually changed.
-
-Smoke/default run:
-
-```bash
-uv run world-marl-validate-state-model \
-  --substrate coins \
-  --num-envs 4 \
-  --collect-steps 512 \
-  --train-steps 1000 \
-  --batch-size 256 \
-  --observation-size 22 \
-  --pool-size 4
-```
-
-The run writes `config.json`, `versions.json`, `transition_dataset.json`,
-`representation.json`, `metrics.jsonl`, `training_summary.json`,
-`prediction_metrics.json`, `sample_predictions.json`, `prediction_dashboard.png`,
-`state_recoveries.png`, `checkpoint/`, `reload_evaluation.json`,
-`evaluation.json`, and `outcome.json`.
-
-The first pass criterion is intentionally modest: finite training losses,
-checkpoint reload equality, state-conditioned behavior-policy prediction beating
-the marginal action baseline, and at least one transition signal beating a
-persistence or zero-delta baseline. Reward, done, full-state distribution,
-changed-feature, delta, reward-event, and nearest-frame recovery metrics are
-reported so we can see what the representation recovers before adding a harder
-generative model.
-
 ### Conditional Action Flow on JaxMARL CoinGame
 
 The current flow-matching milestone targets native JaxMARL CoinGame and models
@@ -161,6 +109,41 @@ The main pass criteria are finite losses, classifier cross entropy beating the
 marginal action baseline, conditional-flow action accuracy beating the marginal
 baseline, conditional-flow distribution JS beating uniform, and checkpoint
 reload equality.
+
+### Discrete CoinGame Dynamics
+
+The first actual world-model milestone predicts the environment transition:
+
+```text
+p(next_joint_state_{t+1} | state_t, joint_action_t)
+```
+
+This uses the native JaxMARL CoinGame vector state. Each agent observes a
+flattened `3 x 3 x 4` grid, so the model decodes every entity position into a
+categorical cell id and predicts the next cell for each entity with softmax
+heads. This is intentionally discrete rather than flow matching, because
+CoinGame positions and actions are discrete.
+
+```bash
+uv run world-marl-train-coin-dynamics \
+  --num-envs 128 \
+  --collect-steps 4096 \
+  --train-steps 5000 \
+  --batch-size 1024 \
+  --max-cycles 100 \
+  --out-dir runs/coin_dynamics
+```
+
+The run writes `transition_dataset.json`, `metrics.jsonl`,
+`training_summary.json`, `prediction_metrics.json`, `sample_predictions.json`,
+`dynamics_training.png`, `checkpoint/`, `reload_evaluation.json`, and
+`outcome.json`.
+
+The main validation metric is exact heldout next-state prediction. Metrics are
+reported separately for deterministic transitions and stochastic transitions:
+when a coin is collected, CoinGame respawns that coin with environment RNG, so
+the exact next coin location is not fully determined by `state, joint_action`
+alone.
 
 ### PPO/MAPPO Artifacts
 
