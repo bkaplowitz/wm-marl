@@ -156,9 +156,7 @@ def _fit_world_model_updates(
     """Fused full-batch fitting: one ``lax.scan`` step per gradient update.
 
     The carry is ``(model_state, rng)`` and ``scan`` stacks each step's loss into
-    the returned history. Splitting ``rng`` inside the body reproduces the exact
-    key sequence of a Python ``for`` loop, while compiling the whole fit once
-    instead of dispatching ``steps`` separate ``train_world_model_step`` calls.
+    the returned history.
     """
 
     def update(carry, _):
