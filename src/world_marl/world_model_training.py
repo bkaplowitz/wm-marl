@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -137,19 +138,39 @@ def fit_world_model_steps(
     """
     if steps < 1:
         raise ValueError("steps must be >= 1")
-    losses = []
-    loss = jnp.asarray(0.0, dtype=jnp.float32)
-    for _ in range(steps):
+    model_state, rng, loss_history = _fit_world_model_updates(
+        model_state, rng, batch, config, steps=steps
+    )
+    return model_state, rng, loss_history[-1], loss_history
+
+
+@partial(jax.jit, static_argnames=("config", "steps"))
+def _fit_world_model_updates(
+    model_state: TrainState,
+    rng: jax.Array,
+    batch: VectorTransitionBatch,
+    config,
+    *,
+    steps: int,
+) -> tuple[TrainState, jax.Array, jnp.ndarray]:
+    """Fused full-batch fitting: one ``lax.scan`` step per gradient update.
+
+    The carry is ``(model_state, rng)`` and ``scan`` stacks each step's loss into
+    the returned history. Splitting ``rng`` inside the body reproduces the exact
+    key sequence of a Python ``for`` loop, while compiling the whole fit once
+    instead of dispatching ``steps`` separate ``train_world_model_step`` calls.
+    """
+
+    def update(carry, _):
+        state, rng = carry
         rng, fit_key = jax.random.split(rng)
-        model_state, loss = train_world_model_step(
-            model_state,
-            fit_key,
-            batch,
-            config,
-        )
-        losses.append(loss)
-    loss_history = jnp.stack(losses)
-    return model_state, rng, loss, loss_history
+        state, loss = train_world_model_step(state, fit_key, batch, config)
+        return (state, rng), loss
+
+    (model_state, rng), loss_history = jax.lax.scan(
+        update, (model_state, rng), xs=None, length=steps
+    )
+    return model_state, rng, loss_history
 
 
 def sample_initial_states(

@@ -166,7 +166,7 @@ def _simulate_model_rollout(
         raise ValueError(f"unsupported algorithm {algorithm!r}")
     is_mappo = algorithm == "mappo"
 
-    stacked, final_states, last_values = _rollout_scan(
+    stacked, final_states, last_values = _imagined_rollout(
         model_state,
         policy_state,
         initial_states,
@@ -209,7 +209,7 @@ def _simulate_model_rollout(
     jax.jit,
     static_argnames=("rollout_steps", "config", "is_mappo", "reward_done_fn"),
 )
-def _rollout_scan(
+def _imagined_rollout(
     model_state: TrainState,
     policy_state: TrainState,
     initial_states: jnp.ndarray,

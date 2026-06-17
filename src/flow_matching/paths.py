@@ -20,13 +20,13 @@ def beta(t: jax.Array, eps: float = 1e-4) -> jax.Array:
 
 
 def beta_dt(t: jax.Array, eps: float = 1e-4) -> jax.Array:
-    """Time derivative of beta_t, matching the original PyTorch notebook convention."""
+    """Time derivative of beta_t."""
     return -0.5 / (jnp.sqrt(jnp.maximum(1.0 - t, eps)) + eps)
 
 
 def sample_conditional_path(key: jax.Array, x1: jax.Array, t: jax.Array) -> jax.Array:
     """Sample x_t ~ N(alpha_t x1, beta_t^2 I)."""
-    key1, key_epsilon = jax.random.split(key)
+    key, key_epsilon = jax.random.split(key)
     epsilon = jax.random.normal(key_epsilon, x1.shape)
     return alpha(t) * x1 + beta(t) * epsilon  # xt
 
