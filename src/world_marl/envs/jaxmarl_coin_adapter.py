@@ -175,7 +175,7 @@ def coin_game_reward_done(
     ``[env, agent]`` with column 0 the red (agent-0) action, matching the
     ``action_0, action_1`` unpacking in ``_step``.
     """
-    del next_states  # reward is R(state, action); model prediction not used
+    # reward is R(state, action); model prediction not used
     states = jnp.asarray(states)
     env_actions = jnp.asarray(env_actions, dtype=jnp.int32)
     num_envs, num_agents = states.shape[0], states.shape[1]
