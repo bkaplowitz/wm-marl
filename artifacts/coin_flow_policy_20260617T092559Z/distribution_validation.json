@@ -1,0 +1,688 @@
+{
+  "flow_distribution": {
+    "action_dim": 5,
+    "counts": [
+      [
+        794,
+        93,
+        97,
+        595,
+        18
+      ],
+      [
+        143,
+        36,
+        17,
+        92,
+        5
+      ],
+      [
+        85,
+        19,
+        13,
+        110,
+        13
+      ],
+      [
+        478,
+        122,
+        107,
+        1084,
+        77
+      ],
+      [
+        27,
+        5,
+        4,
+        52,
+        10
+      ]
+    ],
+    "num_samples": 4096,
+    "probabilities": [
+      [
+        0.19384765625,
+        0.022705078125,
+        0.023681640625,
+        0.145263671875,
+        0.00439453125
+      ],
+      [
+        0.034912109375,
+        0.0087890625,
+        0.004150390625,
+        0.0224609375,
+        0.001220703125
+      ],
+      [
+        0.020751953125,
+        0.004638671875,
+        0.003173828125,
+        0.02685546875,
+        0.003173828125
+      ],
+      [
+        0.11669921875,
+        0.02978515625,
+        0.026123046875,
+        0.2646484375,
+        0.018798828125
+      ],
+      [
+        0.006591796875,
+        0.001220703125,
+        0.0009765625,
+        0.0126953125,
+        0.00244140625
+      ]
+    ],
+    "top_pairs": [
+      {
+        "action_pair": [
+          3,
+          3
+        ],
+        "count": 1084,
+        "probability": 0.2646484375
+      },
+      {
+        "action_pair": [
+          0,
+          0
+        ],
+        "count": 794,
+        "probability": 0.19384765625
+      },
+      {
+        "action_pair": [
+          0,
+          3
+        ],
+        "count": 595,
+        "probability": 0.145263671875
+      },
+      {
+        "action_pair": [
+          3,
+          0
+        ],
+        "count": 478,
+        "probability": 0.11669921875
+      },
+      {
+        "action_pair": [
+          1,
+          0
+        ],
+        "count": 143,
+        "probability": 0.034912109375
+      }
+    ]
+  },
+  "gmm_sample_distribution": {
+    "action_dim": 5,
+    "counts": [
+      [
+        1049,
+        69,
+        2,
+        590,
+        4
+      ],
+      [
+        71,
+        44,
+        0,
+        88,
+        2
+      ],
+      [
+        3,
+        1,
+        0,
+        13,
+        0
+      ],
+      [
+        620,
+        89,
+        7,
+        1422,
+        8
+      ],
+      [
+        7,
+        0,
+        1,
+        6,
+        0
+      ]
+    ],
+    "num_samples": 4096,
+    "probabilities": [
+      [
+        0.256103515625,
+        0.016845703125,
+        0.00048828125,
+        0.14404296875,
+        0.0009765625
+      ],
+      [
+        0.017333984375,
+        0.0107421875,
+        0.0,
+        0.021484375,
+        0.00048828125
+      ],
+      [
+        0.000732421875,
+        0.000244140625,
+        0.0,
+        0.003173828125,
+        0.0
+      ],
+      [
+        0.1513671875,
+        0.021728515625,
+        0.001708984375,
+        0.34716796875,
+        0.001953125
+      ],
+      [
+        0.001708984375,
+        0.0,
+        0.000244140625,
+        0.00146484375,
+        0.0
+      ]
+    ],
+    "top_pairs": [
+      {
+        "action_pair": [
+          3,
+          3
+        ],
+        "count": 1422,
+        "probability": 0.34716796875
+      },
+      {
+        "action_pair": [
+          0,
+          0
+        ],
+        "count": 1049,
+        "probability": 0.256103515625
+      },
+      {
+        "action_pair": [
+          3,
+          0
+        ],
+        "count": 620,
+        "probability": 0.1513671875
+      },
+      {
+        "action_pair": [
+          0,
+          3
+        ],
+        "count": 590,
+        "probability": 0.14404296875
+      },
+      {
+        "action_pair": [
+          3,
+          1
+        ],
+        "count": 89,
+        "probability": 0.021728515625
+      }
+    ]
+  },
+  "heldout_distribution": {
+    "action_dim": 5,
+    "counts": [
+      [
+        4169,
+        285,
+        0,
+        2537,
+        0
+      ],
+      [
+        314,
+        155,
+        0,
+        338,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        2490,
+        287,
+        0,
+        5809,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    ],
+    "num_samples": 16384,
+    "probabilities": [
+      [
+        0.25445556640625,
+        0.01739501953125,
+        0.0,
+        0.15484619140625,
+        0.0
+      ],
+      [
+        0.0191650390625,
+        0.00946044921875,
+        0.0,
+        0.0206298828125,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.1519775390625,
+        0.01751708984375,
+        0.0,
+        0.35455322265625,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    ],
+    "top_pairs": [
+      {
+        "action_pair": [
+          3,
+          3
+        ],
+        "count": 5809,
+        "probability": 0.35455322265625
+      },
+      {
+        "action_pair": [
+          0,
+          0
+        ],
+        "count": 4169,
+        "probability": 0.25445556640625
+      },
+      {
+        "action_pair": [
+          0,
+          3
+        ],
+        "count": 2537,
+        "probability": 0.15484619140625
+      },
+      {
+        "action_pair": [
+          3,
+          0
+        ],
+        "count": 2490,
+        "probability": 0.1519775390625
+      },
+      {
+        "action_pair": [
+          1,
+          3
+        ],
+        "count": 338,
+        "probability": 0.0206298828125
+      }
+    ]
+  },
+  "metrics_vs_heldout": {
+    "flow": {
+      "candidate_samples": 4096,
+      "js_divergence": 0.06449710013471938,
+      "kl_candidate_to_reference": 3.7282240084221887,
+      "kl_reference_to_candidate": 0.19646613974942764,
+      "max_abs_frequency_error": 0.08990478515625,
+      "mean_abs_frequency_error": 0.01568359375,
+      "mode_matches": true,
+      "reference_samples": 16384,
+      "support_precision_mass": 0.839111328125,
+      "support_recall_mass": 1.0,
+      "top_k": 5,
+      "top_k_overlap": 4,
+      "top_k_overlap_fraction": 0.8,
+      "total_variation": 0.196044921875
+    },
+    "gmm_sample": {
+      "candidate_samples": 4096,
+      "js_divergence": 0.004850849729457758,
+      "kl_candidate_to_reference": 0.27339636960688046,
+      "kl_reference_to_candidate": 0.014300150477893006,
+      "max_abs_frequency_error": 0.01080322265625,
+      "mean_abs_frequency_error": 0.0016943359375,
+      "mode_matches": true,
+      "reference_samples": 16384,
+      "support_precision_mass": 0.98681640625,
+      "support_recall_mass": 1.0,
+      "top_k": 5,
+      "top_k_overlap": 4,
+      "top_k_overlap_fraction": 0.8,
+      "total_variation": 0.02117919921875
+    },
+    "reload_flow": {
+      "candidate_samples": 4096,
+      "js_divergence": 0.06449710013471938,
+      "kl_candidate_to_reference": 3.7282240084221887,
+      "kl_reference_to_candidate": 0.19646613974942764,
+      "max_abs_frequency_error": 0.08990478515625,
+      "mean_abs_frequency_error": 0.01568359375,
+      "mode_matches": true,
+      "reference_samples": 16384,
+      "support_precision_mass": 0.839111328125,
+      "support_recall_mass": 1.0,
+      "top_k": 5,
+      "top_k_overlap": 4,
+      "top_k_overlap_fraction": 0.8,
+      "total_variation": 0.196044921875
+    },
+    "train_empirical": {
+      "candidate_samples": 49152,
+      "js_divergence": 7.678776076293131e-05,
+      "kl_candidate_to_reference": 0.00030485156854986374,
+      "kl_reference_to_candidate": 0.00030975156268416444,
+      "max_abs_frequency_error": 0.002339680989583315,
+      "mean_abs_frequency_error": 0.0004964192708333315,
+      "mode_matches": true,
+      "reference_samples": 16384,
+      "support_precision_mass": 1.0,
+      "support_recall_mass": 1.0,
+      "top_k": 5,
+      "top_k_overlap": 5,
+      "top_k_overlap_fraction": 1.0,
+      "total_variation": 0.006205240885416643
+    },
+    "uniform": {
+      "candidate_samples": 4096,
+      "js_divergence": 0.3913220527799599,
+      "kl_candidate_to_reference": 16.02708288779945,
+      "kl_reference_to_candidate": 1.6382035767797365,
+      "max_abs_frequency_error": 0.32135009765625,
+      "mean_abs_frequency_error": 0.0606689453125,
+      "mode_matches": false,
+      "reference_samples": 16384,
+      "support_precision_mass": 0.353271484375,
+      "support_recall_mass": 1.0,
+      "top_k": 5,
+      "top_k_overlap": 0,
+      "top_k_overlap_fraction": 0.0,
+      "total_variation": 0.75836181640625
+    }
+  },
+  "passed": true,
+  "reload_max_abs_point_diff": 0.0,
+  "reload_passed": true,
+  "strict_flow_beats_uniform": true,
+  "train_distribution": {
+    "action_dim": 5,
+    "counts": [
+      [
+        12622,
+        867,
+        0,
+        7641,
+        0
+      ],
+      [
+        831,
+        523,
+        0,
+        935,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        7550,
+        871,
+        0,
+        17312,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    ],
+    "num_samples": 49152,
+    "probabilities": [
+      [
+        0.2567952473958333,
+        0.01763916015625,
+        0.0,
+        0.15545654296875,
+        0.0
+      ],
+      [
+        0.01690673828125,
+        0.010640462239583334,
+        0.0,
+        0.019022623697916668,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.15360514322916666,
+        0.017720540364583332,
+        0.0,
+        0.3522135416666667,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    ],
+    "top_pairs": [
+      {
+        "action_pair": [
+          3,
+          3
+        ],
+        "count": 17312,
+        "probability": 0.3522135416666667
+      },
+      {
+        "action_pair": [
+          0,
+          0
+        ],
+        "count": 12622,
+        "probability": 0.2567952473958333
+      },
+      {
+        "action_pair": [
+          0,
+          3
+        ],
+        "count": 7641,
+        "probability": 0.15545654296875
+      },
+      {
+        "action_pair": [
+          3,
+          0
+        ],
+        "count": 7550,
+        "probability": 0.15360514322916666
+      },
+      {
+        "action_pair": [
+          1,
+          3
+        ],
+        "count": 935,
+        "probability": 0.019022623697916668
+      }
+    ]
+  },
+  "uniform_distribution": {
+    "action_dim": 5,
+    "counts": [
+      [
+        164,
+        142,
+        151,
+        170,
+        148
+      ],
+      [
+        175,
+        154,
+        208,
+        158,
+        166
+      ],
+      [
+        155,
+        180,
+        158,
+        167,
+        174
+      ],
+      [
+        175,
+        173,
+        151,
+        136,
+        160
+      ],
+      [
+        175,
+        186,
+        150,
+        177,
+        143
+      ]
+    ],
+    "num_samples": 4096,
+    "probabilities": [
+      [
+        0.0400390625,
+        0.03466796875,
+        0.036865234375,
+        0.04150390625,
+        0.0361328125
+      ],
+      [
+        0.042724609375,
+        0.03759765625,
+        0.05078125,
+        0.03857421875,
+        0.04052734375
+      ],
+      [
+        0.037841796875,
+        0.0439453125,
+        0.03857421875,
+        0.040771484375,
+        0.04248046875
+      ],
+      [
+        0.042724609375,
+        0.042236328125,
+        0.036865234375,
+        0.033203125,
+        0.0390625
+      ],
+      [
+        0.042724609375,
+        0.04541015625,
+        0.03662109375,
+        0.043212890625,
+        0.034912109375
+      ]
+    ],
+    "top_pairs": [
+      {
+        "action_pair": [
+          1,
+          2
+        ],
+        "count": 208,
+        "probability": 0.05078125
+      },
+      {
+        "action_pair": [
+          4,
+          1
+        ],
+        "count": 186,
+        "probability": 0.04541015625
+      },
+      {
+        "action_pair": [
+          2,
+          1
+        ],
+        "count": 180,
+        "probability": 0.0439453125
+      },
+      {
+        "action_pair": [
+          4,
+          3
+        ],
+        "count": 177,
+        "probability": 0.043212890625
+      },
+      {
+        "action_pair": [
+          4,
+          0
+        ],
+        "count": 175,
+        "probability": 0.042724609375
+      }
+    ]
+  }
+}
