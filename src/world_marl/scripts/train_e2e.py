@@ -133,6 +133,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wm-learning-rate", type=float, default=1e-3)
     parser.add_argument("--wm-hidden-dim", type=int, default=128)
     parser.add_argument("--wm-integration-steps", type=int, default=10)
+    parser.add_argument(
+        "--wm-flow-type", choices=("gaussian", "linear"), default="linear"
+    )
 
     parser.add_argument("--learning-rate", type=float, default=5e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
@@ -485,6 +488,7 @@ def run_training(
                 hidden_dims=(args.wm_hidden_dim, args.wm_hidden_dim),
                 learning_rate=args.wm_learning_rate,
                 integration_steps=args.wm_integration_steps,
+                flow_type=args.wm_flow_type,
             )
             rng, world_model_key = jax.random.split(rng)
             world_model_state = create_world_model_state(

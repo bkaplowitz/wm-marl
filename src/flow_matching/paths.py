@@ -34,13 +34,13 @@ def linear_beta_dt(t: jax.Array, eps: float = 1e-4) -> jax.Array:
     return -jnp.ones_like(t)
 
 
-def get_schedule(kind: str = "gaussian"):
-    """Map a path name to its (alpha, alpha_dt, beta, beta_dt) callables."""
-    if kind == "gaussian":
+def flow_schedule(flow_type: str = "gaussian"):
+    """Map a flow type to its (alpha, alpha_dt, beta, beta_dt) callables."""
+    if flow_type == "gaussian":
         return alpha, alpha_dt, gaussian_beta, gaussian_beta_dt
-    if kind == "linear":
+    if flow_type == "linear":
         return alpha, alpha_dt, linear_beta, linear_beta_dt
-    raise ValueError(f"unknown path kind {kind!r}")
+    raise ValueError(f"unknown flow_type {flow_type!r}")
 
 
 def sample_conditional_path(

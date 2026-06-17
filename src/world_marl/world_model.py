@@ -45,6 +45,7 @@ class VectorWorldModelConfig:
     hidden_dims: tuple[int, ...] = (128, 128)
     learning_rate: float = 1e-3
     integration_steps: int = 8
+    flow_type: str = "gaussian"
 
 
 def create_world_model_state(
@@ -70,7 +71,9 @@ def world_model_loss(
 ) -> jnp.ndarray:
     x1 = _pack_transition(batch.next_states, config)
     cond_vars = _pack_cond_vars(batch.states, batch.actions, config)
-    return conditioned_flow_matching_loss(params, apply_fn, key, x1, cond_vars)
+    return conditioned_flow_matching_loss(
+        params, apply_fn, key, x1, cond_vars, config.flow_type
+    )
 
 
 @partial(jax.jit, static_argnames="config")
@@ -82,7 +85,7 @@ def train_world_model_step(
 ) -> tuple[TrainState, jnp.ndarray]:
     x1 = _pack_transition(batch.next_states, config)
     cond_vars = _pack_cond_vars(batch.states, batch.actions, config)
-    return conditioned_train_step(state, key, x1, cond_vars)
+    return conditioned_train_step(state, key, x1, cond_vars, config.flow_type)
 
 
 def predict_next(
