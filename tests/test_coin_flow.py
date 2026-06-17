@@ -19,11 +19,11 @@ from world_marl.coin_flow import (
   train_flow_for_gmm,
   uniform_joint_actions,
 )
-from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
+from world_marl.envs.jaxmarl_coin_adapter import JaxMARLCoinGameVectorAdapter
 
 
-def test_joint_action_gmm_roundtrip_and_collection(dummy_env_factory):
-  adapter = MeltingPotVectorAdapter(num_envs=2, env_factory=dummy_env_factory)
+def test_joint_action_gmm_roundtrip_and_collection():
+  adapter = JaxMARLCoinGameVectorAdapter(num_envs=2, max_cycles=5, seed=0)
   try:
     dataset = collect_random_joint_actions(
       adapter,
@@ -35,15 +35,15 @@ def test_joint_action_gmm_roundtrip_and_collection(dummy_env_factory):
 
   assert dataset.joint_actions.shape == (10, 2)
   assert dataset.rewards.shape == (10, 2)
-  assert dataset.action_dim == 3
+  assert dataset.action_dim == 5
 
   normalized = normalize_joint_actions(
-    np.asarray([[0, 1], [2, 2]], dtype=np.int32),
-    action_dim=3,
+    np.asarray([[0, 2], [4, 4]], dtype=np.int32),
+    action_dim=5,
   )
   np.testing.assert_allclose(normalized, np.asarray([[-1.0, 0.0], [1.0, 1.0]]))
-  decoded = decode_joint_actions(normalized, action_dim=3)
-  np.testing.assert_array_equal(decoded, np.asarray([[0, 1], [2, 2]]))
+  decoded = decode_joint_actions(normalized, action_dim=5)
+  np.testing.assert_array_equal(decoded, np.asarray([[0, 2], [4, 4]]))
 
   fitted = fit_joint_action_gmm(
     dataset.joint_actions,
@@ -55,8 +55,8 @@ def test_joint_action_gmm_roundtrip_and_collection(dummy_env_factory):
   np.testing.assert_allclose(np.asarray(fitted.gmm.weights).sum(), 1.0, atol=1e-6)
 
 
-def test_policy_joint_action_collection_uses_policy_actions(dummy_env_factory):
-  adapter = MeltingPotVectorAdapter(num_envs=2, env_factory=dummy_env_factory)
+def test_policy_joint_action_collection_uses_policy_actions():
+  adapter = JaxMARLCoinGameVectorAdapter(num_envs=2, max_cycles=5, seed=0)
   try:
     dataset = collect_policy_joint_actions(
       adapter,
@@ -71,7 +71,8 @@ def test_policy_joint_action_collection_uses_policy_actions(dummy_env_factory):
 
   assert dataset.joint_actions.shape == (8, 2)
   np.testing.assert_array_equal(dataset.joint_actions, np.ones((8, 2), dtype=np.int32))
-  np.testing.assert_allclose(dataset.rewards, np.ones((8, 2), dtype=np.float32))
+  assert dataset.rewards.shape == (8, 2)
+  assert np.isfinite(dataset.rewards).all()
 
 
 def test_flow_training_samples_joint_actions():

@@ -1,4 +1,4 @@
-"""Train a flow-matching joint-action sampler on Melting Pot coins rollouts."""
+"""Train a flow-matching joint-action sampler on JaxMARL CoinGame rollouts."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ from world_marl.coin_flow import (
   train_flow_for_gmm,
   uniform_joint_actions,
 )
-from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
+from world_marl.envs.jaxmarl_coin_adapter import JaxMARLCoinGameVectorAdapter
 from world_marl.evaluation import evaluate_policy, random_policy
 from world_marl.logging import RunLogger, dependency_versions, timestamp
 from world_marl.scripts.train_e2e import (
@@ -99,14 +99,17 @@ def parse_hidden_dims(value: str) -> tuple[int, ...]:
   return dims
 
 
-def make_adapter(args: argparse.Namespace) -> MeltingPotVectorAdapter:
-  return MeltingPotVectorAdapter(
-    substrate=args.substrate,
+def make_adapter(args: argparse.Namespace) -> JaxMARLCoinGameVectorAdapter:
+  _ignored_meltingpot_args = (
+    args.observation_size,
+    args.include_observation_scalars,
+    args.append_agent_id,
+  )
+  del _ignored_meltingpot_args
+  return JaxMARLCoinGameVectorAdapter(
     num_envs=args.num_envs,
     max_cycles=args.max_cycles,
-    observation_size=args.observation_size,
-    include_observation_scalars=args.include_observation_scalars,
-    append_agent_id=args.append_agent_id,
+    seed=args.seed,
   )
 
 
@@ -236,7 +239,7 @@ def plot_distribution_validation(
 
 def load_checkpoint_policy(
   checkpoint_dir: str | Path,
-  adapter: MeltingPotVectorAdapter,
+  adapter: JaxMARLCoinGameVectorAdapter,
   *,
   deterministic: bool,
   seed: int,
@@ -273,17 +276,22 @@ def load_checkpoint_policy(
     if expected_observation_shape != adapter.observation_shape:
       raise ValueError(
         "checkpoint observation_shape "
-        f"{expected_observation_shape} does not match adapter observation_shape "
-        f"{adapter.observation_shape}. Use the same --observation-size, "
-        "--include-observation-scalars, and --append-agent-id flags used for "
-        "the checkpoint."
+        f"{expected_observation_shape} does not match JaxMARL CoinGame "
+        f"adapter observation_shape {adapter.observation_shape}."
       )
+  observation_mode = metadata.get("observation_mode", "vector")
+  if observation_mode != "vector":
+    raise ValueError(
+      "JaxMARL CoinGame flow validation expects vector-mode checkpoints; "
+      f"got observation_mode={observation_mode!r}"
+    )
 
   train_state = create_algorithm_train_state(
     algorithm,
     jax.random.PRNGKey(0),
     adapter,
     config,
+    observation_mode=observation_mode,
   )
   params = load_params(checkpoint_path / "checkpoint.msgpack", train_state.params)
   train_state = train_state.replace(params=params)
@@ -294,6 +302,7 @@ def load_checkpoint_policy(
       adapter=adapter,
       deterministic=deterministic,
       seed=seed,
+      observation_mode=observation_mode,
     ),
     metadata,
   )
@@ -318,14 +327,14 @@ def main() -> None:
       "target_source": args.target_source,
       "purpose": (
         "Validate whether flow matching can learn two-agent joint-action "
-        "distributions from Melting Pot coins rollouts. This is distribution "
+        "distributions from JaxMARL CoinGame rollouts. This is distribution "
         "prediction/sampling validation, not world modeling."
       ),
     },
   )
   logger.write_json("versions.json", dependency_versions())
 
-  log_stage(args, "constructing Melting Pot coins adapter")
+  log_stage(args, "constructing JaxMARL CoinGame adapter")
   np_rng = np.random.default_rng(args.seed)
   source_metadata: dict[str, Any] | None = None
   adapter = make_adapter(args)
@@ -376,6 +385,7 @@ def main() -> None:
       "observation_shape": adapter.observation_shape,
       "raw_observation_shape": adapter.raw_observation_shape,
       "scalar_observation_keys": adapter.scalar_observation_keys,
+      "environment_family": "jaxmarl_coin_game",
     }
   finally:
     adapter.close()
@@ -518,6 +528,7 @@ def main() -> None:
       "target_source": args.target_source,
       "source_checkpoint": args.policy_checkpoint,
       "substrate": args.substrate,
+      "environment_family": "jaxmarl_coin_game",
       "action_dim": dataset.action_dim,
       "num_agents": dataset.num_agents,
       "gmm": fitted.to_metadata(),

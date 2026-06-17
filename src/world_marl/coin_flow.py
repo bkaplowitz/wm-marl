@@ -1,4 +1,4 @@
-"""Flow-matching utilities for two-agent Melting Pot coins actions."""
+"""Flow-matching utilities for two-agent JaxMARL CoinGame actions."""
 
 from __future__ import annotations
 
@@ -15,8 +15,6 @@ from flow_matching.distributions import GaussianMixture2D
 from flow_matching.models import MLPVectorField
 from flow_matching.simulate import euler_integrate
 from flow_matching.train import create_train_state, train_step
-from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
-
 
 @dataclass(frozen=True)
 class JointActionDataset:
@@ -227,13 +225,13 @@ def uniform_joint_actions(
 
 
 def collect_random_joint_actions(
-  adapter: MeltingPotVectorAdapter,
+  adapter,
   rng: np.random.Generator,
   *,
   rollout_steps: int,
   progress_callback: Callable[[int], None] | None = None,
 ) -> JointActionDataset:
-  """Collect random joint-action samples from a live Melting Pot adapter."""
+  """Collect random joint-action samples from a live two-agent vector adapter."""
   if adapter.num_agents != 2:
     raise ValueError("flow/GMM joint-action demo currently expects exactly 2 agents")
   if rollout_steps < 1:
@@ -269,13 +267,13 @@ def collect_random_joint_actions(
 
 
 def collect_policy_joint_actions(
-  adapter: MeltingPotVectorAdapter,
+  adapter,
   policy_fn: Callable[[np.ndarray], np.ndarray],
   *,
   rollout_steps: int,
   progress_callback: Callable[[int], None] | None = None,
 ) -> JointActionDataset:
-  """Collect joint-action samples from a policy in a live Melting Pot adapter."""
+  """Collect joint-action samples from a policy in a live two-agent vector adapter."""
   if adapter.num_agents != 2:
     raise ValueError("flow/GMM joint-action demo currently expects exactly 2 agents")
   if rollout_steps < 1:

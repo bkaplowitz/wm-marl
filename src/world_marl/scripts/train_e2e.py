@@ -173,6 +173,9 @@ def algorithm_config_from_args(
     control: str | None = None,
 ) -> IPPOConfig | MAPPOConfig:
     config_cls = MAPPOConfig if args.algorithm == "mappo" else IPPOConfig
+    uses_vector_policy = args.substrate == "coins" or getattr(
+        args, "prefit_world_model", False
+    )
     config = config_cls(
         learning_rate=args.learning_rate,
         gamma=args.gamma,
@@ -184,7 +187,7 @@ def algorithm_config_from_args(
         update_epochs=args.update_epochs,
         num_minibatches=args.num_minibatches,
         activation=args.activation,
-        network_arch="mlp" if getattr(args, "prefit_world_model", False) else "cnn",
+        network_arch="mlp" if uses_vector_policy else "cnn",
     )
     if control == "shuffle-rewards":
         return replace(config, shuffle_rewards=True)
@@ -403,7 +406,9 @@ def run_training(
     rng = jax.random.PRNGKey(seed)
     config = algorithm_config_from_args(args, control)
     freeze_policy = control == "freeze-policy"
-    observation_mode: ObservationMode = "vector" if args.prefit_world_model else "image"
+    observation_mode: ObservationMode = (
+        "vector" if args.substrate == "coins" or args.prefit_world_model else "image"
+    )
 
     logger.write_json(
         "config.json",

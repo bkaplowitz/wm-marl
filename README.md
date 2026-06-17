@@ -1,13 +1,18 @@
-# JaxMARL + MeltingPot POC
+# JaxMARL CoinGame World-Model Validation
 
 ## Architecture
 
-- Melting Pot / dmlab2d: Python-side substrate stepping.
-- Shimmy: PettingZoo-style compatibility wrapper.
-- `world_marl.envs.MeltingPotVectorAdapter`: batching, RGB normalization, reset,
-  optional scalar-observation channels, step, auto-reset, and rollout-friendly
-  tensors.
-- JAX / Flax / Distrax / Optax: IPPO and MAPPO policies, GAE, and PPO updates.
+Current focus is the native JaxMARL `coin_game`, not Melting Pot `coins`.
+
+- `world_marl.envs.JaxMARLCoinGameVectorAdapter`: two-agent JaxMARL CoinGame
+  exposed through the same vector-env interface used by training and
+  validation.
+- CoinGame observations are flat vector states with shape `(36,)` per agent.
+- CoinGame has 5 discrete actions per agent.
+- JAX / Flax / Distrax / Optax: IPPO/MAPPO policies, GAE, PPO updates, and
+  flow-matching models.
+- The Melting Pot adapter remains in the repo for earlier integration work, but
+  it is not the current CoinGame validation target.
 
 ## Setup
 
@@ -42,9 +47,6 @@ uv run world-marl-train-e2e \
   --eval-episodes 50 \
   --num-runs 1 \
   --max-cycles 500 \
-  --observation-size 44 \
-  --include-observation-scalars \
-  --append-agent-id \
   --stochastic-eval \
   --learning-rate 0.00025 \
   --update-epochs 4 \
@@ -58,18 +60,24 @@ uv run world-marl-train-e2e \
 uv run world-marl-train-e2e \
   --algorithm ippo \
   --substrate coins \
+  --prefit-world-model \
   --num-envs 4 \
   --rollout-steps 128 \
   --total-env-steps 100000 \
   --eval-episodes 50 \
-  --num-runs 3
+  --num-runs 3 \
+  --wm-random-rollouts 8 \
+  --wm-initial-rollouts 8 \
+  --wm-fit-steps 500 \
+  --wm-flow-type linear
 ```
 
-### State-Representation World Model Validation
+### Legacy State-Representation Validation
 
-Before using flow matching or imagined rollouts, validate that a simple world
-model can fit the rollout representation itself. This command collects real
-Melting Pot `coins` transitions:
+This older validator fits a supervised one-step model to Melting Pot-style image
+rollouts. It is useful historical scaffolding, but it is no longer the main
+CoinGame path. The active world-model integration below uses JaxMARL CoinGame
+vector states.
 
 ```text
 obs_t, joint_action_t, reward_t, done_t, obs_{t+1}
@@ -116,13 +124,13 @@ changed-feature, delta, reward-event, and nearest-frame recovery metrics are
 reported so we can see what the representation recovers before adding a harder
 generative model.
 
-### Flow Matching / GMMs on Coins
+### Flow Matching / GMMs on JaxMARL CoinGame
 
-The flow-matching code can now be exercised against the live Melting Pot
-`coins` substrate. The workflow models a two-agent joint-action distribution:
+The flow-matching code is exercised against native JaxMARL CoinGame. The
+workflow models a two-agent joint-action distribution:
 
-1. collect joint actions from Shimmy/Melting Pot `coins`, either from random
-   actions or from a saved IPPO/MAPPO checkpoint;
+1. collect joint actions from JaxMARL CoinGame, either from random actions or
+   from a saved vector-mode IPPO/MAPPO checkpoint;
 2. split those actions into train and heldout samples;
 3. fit an empirical 2D GMM over normalized train action pairs
    `(player_0, player_1)`;
@@ -144,10 +152,7 @@ uv run world-marl-train-coin-flow \
   --batch-size 512 \
   --generated-samples 1024 \
   --eval-episodes 50 \
-  --max-cycles 500 \
-  --observation-size 44 \
-  --include-observation-scalars \
-  --append-agent-id
+  --max-cycles 500
 ```
 
 Larger random-source local/A100 run:
