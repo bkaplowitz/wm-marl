@@ -112,17 +112,20 @@ reload equality.
 
 ### Discrete CoinGame Dynamics
 
-The first actual world-model milestone predicts the environment transition:
+The first actual world-model milestone predicts the environment transition and
+reward:
 
 ```text
-p(next_joint_state_{t+1} | state_t, joint_action_t)
+p(next_joint_state_{t+1}, reward_t | state_t, joint_action_t)
 ```
 
 This uses the native JaxMARL CoinGame vector state. Each agent observes a
 flattened `3 x 3 x 4` grid, so the model decodes every entity position into a
 categorical cell id and predicts the next cell for each entity with softmax
 heads. This is intentionally discrete rather than flow matching, because
-CoinGame positions and actions are discrete.
+CoinGame positions and actions are discrete. Reward is derived analytically from
+the same `state_t, joint_action_t` pair and validated against the environment
+reward.
 
 ```bash
 uv run world-marl-train-coin-dynamics \

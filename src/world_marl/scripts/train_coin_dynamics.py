@@ -54,6 +54,12 @@ def parse_args() -> argparse.Namespace:
     default=0.95,
     help="Pass threshold for exact next-state accuracy on deterministic transitions.",
   )
+  parser.add_argument(
+    "--min-reward-exact",
+    type=float,
+    default=0.99,
+    help="Pass threshold for exact reward accuracy on non-terminal transitions.",
+  )
   parser.add_argument("--sample-predictions", type=int, default=16)
   parser.add_argument("--seed", type=int, default=0)
   parser.add_argument("--out-dir", default="runs")
@@ -73,6 +79,8 @@ def parse_args() -> argparse.Namespace:
     parser.error("--validation-fraction must be between 0 and 1")
   if not 0.0 <= args.min_deterministic_exact <= 1.0:
     parser.error("--min-deterministic-exact must be in [0, 1]")
+  if not 0.0 <= args.min_reward_exact <= 1.0:
+    parser.error("--min-reward-exact must be in [0, 1]")
   return args
 
 
@@ -108,7 +116,7 @@ def main() -> None:
     {
       "args": vars(args),
       "model_config": dataclasses.asdict(config),
-      "target": "p(next_joint_state | state, joint_action)",
+      "target": "p(next_joint_state, reward | state, joint_action)",
       "purpose": (
         "Validate a discrete categorical CoinGame dynamics model before "
         "using learned dynamics for model-based policy improvement."
@@ -232,7 +240,7 @@ def main() -> None:
 
   checkpoint_metadata = {
     "kind": "coingame_discrete_dynamics",
-    "target": "p(next_joint_state | state, joint_action)",
+    "target": "p(next_joint_state, reward | state, joint_action)",
     "config": dataclasses.asdict(config),
     "action_dim": data.action_dim,
     "num_agents": data.num_agents,
@@ -273,10 +281,11 @@ def main() -> None:
     finite_losses=finite_losses,
     reload_passed=reload_passed,
     min_deterministic_exact=args.min_deterministic_exact,
+    min_reward_exact=args.min_reward_exact,
   )
   outcome: dict[str, Any] = {
     "milestone": "discrete_coingame_next_state_dynamics",
-    "target": "p(next_joint_state | state, joint_action)",
+    "target": "p(next_joint_state, reward | state, joint_action)",
     "passed": passed,
     "criteria": criteria,
     "prediction_metrics": metrics,
@@ -291,6 +300,7 @@ def main() -> None:
     (
       "done; deterministic exact="
       f"{metrics['deterministic_full_state_exact_accuracy']}, "
+      f"reward exact={metrics['reward']['nonterminal_transition_exact_accuracy']}, "
       f"full exact={metrics['full_state_exact_accuracy']:.4f}"
     ),
   )

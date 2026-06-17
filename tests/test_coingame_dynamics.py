@@ -11,12 +11,14 @@ from world_marl.coingame_dynamics import (
   coin_collected,
   create_coin_dynamics_train_state,
   decode_coin_positions,
+  derive_coin_rewards,
   deterministic_transition_mask,
   encode_coin_positions,
   evaluate_coin_dynamics,
   expected_deterministic_next_positions,
   predict_coin_dynamics,
   prepare_coin_dynamics_data,
+  reward_prediction_metrics,
   split_coin_dynamics_data,
   summarize_coin_dynamics_outcome,
   train_coin_dynamics_model,
@@ -57,6 +59,10 @@ def test_collect_and_split_coin_dynamics_dataset():
   assert dataset.rewards.shape == (8, 2)
 
   data = prepare_coin_dynamics_data(dataset)
+  derived_rewards = derive_coin_rewards(data.positions, data.actions)
+  reward_metrics = reward_prediction_metrics(data, derived_rewards)
+  assert reward_metrics["nonterminal_transition_exact_accuracy"] == 1.0
+
   train_data, validation_data = split_coin_dynamics_data(
     data,
     validation_fraction=0.25,
@@ -91,6 +97,39 @@ def test_expected_deterministic_next_positions_and_mask():
   np.testing.assert_array_equal(next_positions[0, 1], np.asarray([8, 1, 5, 4]))
 
 
+def test_derived_coin_rewards_cover_payoff_branches():
+  stay = 4
+  actions = np.asarray([[stay, stay]], dtype=np.int32)
+  cases = {
+    "red_takes_red": (
+      np.asarray([[[0, 4, 0, 8], [4, 0, 8, 0]]], dtype=np.int32),
+      [[1.0, 0.0]],
+    ),
+    "red_takes_blue": (
+      np.asarray([[[0, 4, 8, 0], [4, 0, 0, 8]]], dtype=np.int32),
+      [[1.0, -2.0]],
+    ),
+    "blue_takes_red": (
+      np.asarray([[[4, 0, 0, 8], [0, 4, 8, 0]]], dtype=np.int32),
+      [[-2.0, 1.0]],
+    ),
+    "blue_takes_blue": (
+      np.asarray([[[4, 0, 8, 0], [0, 4, 0, 8]]], dtype=np.int32),
+      [[0.0, 1.0]],
+    ),
+    "neither": (
+      np.asarray([[[0, 4, 8, 2], [4, 0, 2, 8]]], dtype=np.int32),
+      [[0.0, 0.0]],
+    ),
+  }
+  for name, (positions, expected) in cases.items():
+    np.testing.assert_allclose(
+      derive_coin_rewards(positions, actions),
+      np.asarray(expected, dtype=np.float32),
+      err_msg=name,
+    )
+
+
 def test_discrete_dynamics_training_metrics_and_reload(tmp_path):
   positions = []
   actions = []
@@ -103,11 +142,12 @@ def test_discrete_dynamics_training_metrics_and_reload(tmp_path):
   positions = np.asarray(positions, dtype=np.int32)
   actions = np.asarray(actions, dtype=np.int32)
   next_positions = expected_deterministic_next_positions(positions, actions)
+  rewards = derive_coin_rewards(positions, actions)
   data = _coin_data(
     positions=positions,
     next_positions=next_positions,
     actions=actions,
-    rewards=np.zeros((positions.shape[0], 2), dtype=np.float32),
+    rewards=rewards,
     dones=np.zeros((positions.shape[0], 2), dtype=np.float32),
   )
   train_data, validation_data = split_coin_dynamics_data(
@@ -138,6 +178,7 @@ def test_discrete_dynamics_training_metrics_and_reload(tmp_path):
     finite_losses=True,
     reload_passed=True,
     min_deterministic_exact=0.0,
+    min_reward_exact=0.0,
   )
   assert isinstance(passed, bool)
   assert criteria["valid_predictions"]

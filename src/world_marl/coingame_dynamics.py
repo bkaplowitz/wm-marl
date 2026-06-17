@@ -2,7 +2,7 @@
 
 This module is the clean first world-model milestone:
 
-    p(next_joint_state | state, joint_action)
+    p(next_joint_state, reward | state, joint_action)
 
 The state is the native JaxMARL CoinGame vector observation. Each agent observes
 a flattened ``3 x 3 x 4`` one-hot grid, so the model predicts each next entity
@@ -41,6 +41,7 @@ MOVES = np.asarray(
   ],
   dtype=np.int32,
 )
+PAYOFF_MATRIX = np.asarray([[1, 1, -2], [1, 1, -2]], dtype=np.float32)
 
 
 @dataclass(frozen=True)
@@ -396,7 +397,7 @@ def evaluate_coin_dynamics(
   validation_data: CoinDynamicsData,
   predictions: CoinDynamicsPredictions,
 ) -> dict[str, Any]:
-  """Evaluate next-joint-state prediction against simple baselines."""
+  """Evaluate next-state and reward prediction against simple baselines."""
   predicted = predictions.next_positions
   target = validation_data.next_positions
   entity_matches = predicted == target
@@ -417,6 +418,7 @@ def evaluate_coin_dynamics(
   analytic_matches = np.all(expected_deterministic == target, axis=(1, 2))
   marginal_exact = np.all(marginal == target, axis=(1, 2))
   persistence_exact = np.all(persistence == target, axis=(1, 2))
+  derived_rewards = derive_coin_rewards(validation_data.positions, validation_data.actions)
   return {
     "position_cross_entropy": categorical_cross_entropy_positions(
       predictions.next_position_logits,
@@ -439,6 +441,7 @@ def evaluate_coin_dynamics(
     "model_beats_marginal": bool(full_matches.mean() > marginal_exact.mean()),
     "model_beats_persistence": bool(full_matches.mean() > persistence_exact.mean()),
     "valid_prediction_fraction": valid_position_fraction(predicted),
+    "reward": reward_prediction_metrics(validation_data, derived_rewards),
     "reward_event_fraction": float(np.any(np.abs(validation_data.rewards) > 1e-6, axis=1).mean()),
     "done_fraction": float(np.any(validation_data.dones > 0.0, axis=1).mean()),
   }
@@ -450,9 +453,11 @@ def summarize_coin_dynamics_outcome(
   finite_losses: bool,
   reload_passed: bool,
   min_deterministic_exact: float,
+  min_reward_exact: float = 0.99,
 ) -> tuple[bool, dict[str, bool]]:
   """Build pass/fail criteria for the first dynamics milestone."""
   deterministic_exact = metrics["deterministic_full_state_exact_accuracy"]
+  reward_exact = metrics["reward"]["nonterminal_transition_exact_accuracy"]
   criteria = {
     "finite_losses": bool(finite_losses),
     "reload_passed": bool(reload_passed),
@@ -462,6 +467,9 @@ def summarize_coin_dynamics_outcome(
     "deterministic_exact_high": bool(
       deterministic_exact is not None
       and deterministic_exact >= min_deterministic_exact
+    ),
+    "reward_exact_high": bool(
+      reward_exact is not None and reward_exact >= min_reward_exact
     ),
   }
   return all(criteria.values()), criteria
@@ -496,6 +504,80 @@ def deterministic_transition_mask(data: CoinDynamicsData) -> np.ndarray:
   collected = coin_collected(data.positions, data.actions)
   done = np.any(data.dones > 0.0, axis=1)
   return np.logical_not(np.logical_or(collected, done))
+
+
+def derive_coin_rewards(
+  positions: np.ndarray,
+  actions: np.ndarray,
+  *,
+  payoff_matrix: np.ndarray = PAYOFF_MATRIX,
+) -> np.ndarray:
+  """Derive CoinGame rewards from state and joint action.
+
+  Reward is deterministic before terminal time-limit handling: move both
+  players, check whether either player lands on either coin, then apply the
+  default JaxMARL CoinGame payoff matrix.
+  """
+  agent0 = np.asarray(positions, dtype=np.int32)[:, 0]
+  actions = np.asarray(actions, dtype=np.int32)
+  payoff = np.asarray(payoff_matrix, dtype=np.float32)
+  red_pos = cell_to_row_col(agent0[:, 0])
+  blue_pos = cell_to_row_col(agent0[:, 1])
+  red_coin = cell_to_row_col(agent0[:, 2])
+  blue_coin = cell_to_row_col(agent0[:, 3])
+  new_red = (red_pos + MOVES[actions[:, 0]]) % GRID_SIZE
+  new_blue = (blue_pos + MOVES[actions[:, 1]]) % GRID_SIZE
+
+  red_red = np.all(new_red == red_coin, axis=-1).astype(np.float32)
+  red_blue = np.all(new_red == blue_coin, axis=-1).astype(np.float32)
+  blue_red = np.all(new_blue == red_coin, axis=-1).astype(np.float32)
+  blue_blue = np.all(new_blue == blue_coin, axis=-1).astype(np.float32)
+
+  red_reward = (
+    payoff[0, 0] * red_red
+    + payoff[0, 1] * red_blue
+    + payoff[0, 2] * blue_red
+  )
+  blue_reward = (
+    payoff[1, 0] * blue_red
+    + payoff[1, 1] * blue_blue
+    + payoff[1, 2] * red_blue
+  )
+  return np.stack([red_reward, blue_reward], axis=1).astype(np.float32)
+
+
+def reward_prediction_metrics(
+  data: CoinDynamicsData,
+  predicted_rewards: np.ndarray,
+  *,
+  atol: float = 1e-6,
+) -> dict[str, Any]:
+  """Evaluate derived reward predictions against environment rewards."""
+  predicted = np.asarray(predicted_rewards, dtype=np.float32)
+  target = np.asarray(data.rewards, dtype=np.float32)
+  if predicted.shape != target.shape:
+    raise ValueError(f"reward shape mismatch: {predicted.shape} vs {target.shape}")
+  per_agent_exact = np.isclose(predicted, target, atol=atol)
+  transition_exact = np.all(per_agent_exact, axis=1)
+  nonterminal = ~np.any(data.dones > 0.0, axis=1)
+  predicted_event = np.any(np.abs(predicted) > atol, axis=1)
+  target_event = np.any(np.abs(target) > atol, axis=1)
+  return {
+    "mse": mse(predicted, target),
+    "per_agent_exact_accuracy": float(per_agent_exact.mean()),
+    "transition_exact_accuracy": float(transition_exact.mean()),
+    "nonterminal_transition_exact_accuracy": masked_mean(
+      transition_exact,
+      nonterminal,
+    ),
+    "nonterminal_mse": masked_mse(predicted, target, nonterminal),
+    "event_accuracy": float((predicted_event == target_event).mean()),
+    "nonterminal_event_accuracy": masked_mean(
+      predicted_event == target_event,
+      nonterminal,
+    ),
+    "nonterminal_fraction": float(nonterminal.mean()),
+  }
 
 
 def coin_collected(positions: np.ndarray, actions: np.ndarray) -> np.ndarray:
@@ -543,6 +625,7 @@ def sample_predictions(
   """Small JSON-friendly prediction table."""
   count = min(max(0, count), data.num_transitions)
   predicted = predictions.next_positions
+  predicted_rewards = derive_coin_rewards(data.positions, data.actions)
   rows = []
   deterministic = deterministic_transition_mask(data)
   for index in range(count):
@@ -556,6 +639,10 @@ def sample_predictions(
         "exact": bool(np.array_equal(predicted[index], data.next_positions[index])),
         "deterministic_transition": bool(deterministic[index]),
         "rewards": data.rewards[index].astype(float).tolist(),
+        "derived_rewards": predicted_rewards[index].astype(float).tolist(),
+        "reward_exact": bool(
+          np.allclose(predicted_rewards[index], data.rewards[index], atol=1e-6)
+        ),
         "dones": data.dones[index].astype(float).tolist(),
       }
     )
@@ -573,6 +660,21 @@ def masked_mean(values: np.ndarray, mask: np.ndarray) -> float | None:
   if not bool(mask.any()):
     return None
   return float(values[mask].mean())
+
+
+def mse(prediction: np.ndarray, target: np.ndarray) -> float:
+  prediction = np.asarray(prediction, dtype=np.float32)
+  target = np.asarray(target, dtype=np.float32)
+  return float(np.mean(np.square(prediction - target)))
+
+
+def masked_mse(prediction: np.ndarray, target: np.ndarray, mask: np.ndarray) -> float | None:
+  prediction = np.asarray(prediction, dtype=np.float32)
+  target = np.asarray(target, dtype=np.float32)
+  mask = np.asarray(mask, dtype=bool)
+  if not bool(mask.any()):
+    return None
+  return float(np.mean(np.square(prediction[mask] - target[mask])))
 
 
 def cell_to_row_col(cells: np.ndarray) -> np.ndarray:
