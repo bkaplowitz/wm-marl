@@ -6,16 +6,26 @@ import numpy as np
 from world_marl.checkpointing import load_params, save_checkpoint
 from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
 from world_marl.state_model import (
+  CoinGameDiscreteConfig,
   StateRepresentationConfig,
   WorldModelConfig,
+  coin_game_deterministic_transition_mask,
+  coin_game_expected_deterministic_next_positions,
   collect_transition_dataset,
   create_world_model_train_state,
+  decode_coin_game_positions,
+  encode_coin_game_positions,
+  evaluate_coin_game_discrete_fit,
   embed_observations,
+  prepare_coin_game_discrete_data,
   evaluate_state_fit,
+  predict_coin_game_discrete_model,
   predict_world_model,
   prepare_transition_data,
+  split_coin_game_discrete_data,
   split_prepared_data,
   summarize_validation_criteria,
+  train_coin_game_discrete_model,
   train_world_model,
   transition_sampling_probabilities,
 )
@@ -67,6 +77,100 @@ def test_transition_collection_and_preparation(dummy_env_factory):
   assert prepared.state_features.shape[0] == 8
   assert prepared.next_state_features.shape == prepared.state_features.shape
   assert prepared.feature_dim == 2 * ((2 * 2 * 3) + (4 * 3))
+
+
+def test_coin_game_position_codec_round_trips_valid_positions():
+  positions = np.asarray(
+    [
+      [
+        [0, 4, 2, 8],
+        [4, 0, 8, 2],
+      ],
+      [
+        [3, 5, 1, 7],
+        [5, 3, 7, 1],
+      ],
+    ],
+    dtype=np.int32,
+  )
+
+  observations = encode_coin_game_positions(positions)
+  decoded = decode_coin_game_positions(observations)
+
+  assert observations.shape == (2, 2, 36)
+  np.testing.assert_array_equal(decoded, positions)
+
+
+def test_coin_game_deterministic_mask_and_expected_next_positions():
+  positions = np.asarray(
+    [
+      [[0, 8, 4, 5], [8, 0, 5, 4]],  # no pickup
+      [[0, 8, 1, 5], [8, 0, 5, 1]],  # red moves onto red coin
+    ],
+    dtype=np.int32,
+  )
+  actions = np.asarray([[0, 4], [0, 4]], dtype=np.int32)
+  next_positions = coin_game_expected_deterministic_next_positions(positions, actions)
+  data = prepare_coin_game_discrete_data(
+    _coin_transition_dataset(
+      positions=positions,
+      next_positions=next_positions,
+      actions=actions,
+      rewards=np.zeros((2, 2), dtype=np.float32),
+      dones=np.zeros((2, 2), dtype=np.float32),
+    )
+  )
+
+  mask = coin_game_deterministic_transition_mask(data)
+
+  np.testing.assert_array_equal(mask, np.asarray([True, False]))
+  np.testing.assert_array_equal(next_positions[0, 0], np.asarray([1, 8, 4, 5]))
+  np.testing.assert_array_equal(next_positions[0, 1], np.asarray([8, 1, 5, 4]))
+
+
+def test_coin_game_discrete_model_training_and_metrics():
+  positions = []
+  actions = []
+  for red in [0, 3, 6]:
+    for blue in [2, 5, 8]:
+      for red_action in [0, 4]:
+        for blue_action in [1, 4]:
+          positions.append([[red, blue, 4, 7], [blue, red, 7, 4]])
+          actions.append([red_action, blue_action])
+  positions = np.asarray(positions, dtype=np.int32)
+  actions = np.asarray(actions, dtype=np.int32)
+  next_positions = coin_game_expected_deterministic_next_positions(positions, actions)
+  dataset = _coin_transition_dataset(
+    positions=positions,
+    next_positions=next_positions,
+    actions=actions,
+    rewards=np.zeros((positions.shape[0], 2), dtype=np.float32),
+    dones=np.zeros((positions.shape[0], 2), dtype=np.float32),
+  )
+  data = prepare_coin_game_discrete_data(dataset)
+  train_data, validation_data = split_coin_game_discrete_data(
+    data,
+    validation_fraction=0.25,
+    seed=0,
+  )
+  config = CoinGameDiscreteConfig(
+    hidden_dims=(32,),
+    learning_rate=1e-2,
+    batch_size=16,
+    train_steps=80,
+  )
+
+  state, rows = train_coin_game_discrete_model(
+    jax.random.PRNGKey(0),
+    train_data,
+    config=config,
+  )
+  predictions = predict_coin_game_discrete_model(state, validation_data)
+  metrics = evaluate_coin_game_discrete_fit(train_data, validation_data, predictions)
+
+  assert rows[-1]["loss"] < rows[0]["loss"]
+  assert metrics["deterministic_full_state_exact_accuracy"] is not None
+  assert metrics["full_state_exact_accuracy"] > metrics["marginal_full_state_exact_accuracy"]
 
 
 def test_state_world_model_training_metrics_and_reload(tmp_path, dummy_env_factory):
@@ -217,3 +321,30 @@ def test_state_model_cli_smoke(monkeypatch, tmp_path, dummy_env_factory):
   assert (run_dirs[0] / "prediction_dashboard.png").exists()
   assert (run_dirs[0] / "state_recoveries.png").exists()
   assert (run_dirs[0] / "checkpoint" / "checkpoint.msgpack").exists()
+
+
+def _coin_transition_dataset(
+  *,
+  positions: np.ndarray,
+  next_positions: np.ndarray,
+  actions: np.ndarray,
+  rewards: np.ndarray,
+  dones: np.ndarray,
+) -> object:
+  obs = encode_coin_game_positions(positions)
+  next_obs = encode_coin_game_positions(next_positions)
+  from world_marl.state_model import TransitionDataset
+
+  return TransitionDataset(
+    obs=obs,
+    actions=actions,
+    rewards=rewards,
+    dones=dones,
+    next_obs=next_obs,
+    action_dim=5,
+    num_agents=2,
+    num_envs=positions.shape[0],
+    rollout_steps=1,
+    completed_returns=(),
+    completed_lengths=(),
+  )

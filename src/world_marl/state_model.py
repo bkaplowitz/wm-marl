@@ -210,6 +210,89 @@ class StateFitWorldModel(nn.Module):
     }
 
 
+_COIN_GRID_SIZE = 3
+_COIN_NUM_CELLS = _COIN_GRID_SIZE * _COIN_GRID_SIZE
+_COIN_NUM_ENTITIES = 4
+_COIN_MOVES = np.asarray(
+  [
+    [0, 1],
+    [0, -1],
+    [1, 0],
+    [-1, 0],
+    [0, 0],
+  ],
+  dtype=np.int32,
+)
+
+
+@dataclass(frozen=True)
+class CoinGameDiscreteData:
+  """CoinGame transitions represented as categorical entity positions."""
+
+  positions: np.ndarray
+  next_positions: np.ndarray
+  actions: np.ndarray
+  rewards: np.ndarray
+  dones: np.ndarray
+  obs: np.ndarray
+  next_obs: np.ndarray
+  action_dim: int
+  num_agents: int
+
+  @property
+  def num_transitions(self) -> int:
+    return int(self.actions.shape[0])
+
+
+@dataclass(frozen=True)
+class CoinGameDiscreteConfig:
+  """Training config for the discrete CoinGame transition model."""
+
+  hidden_dims: tuple[int, ...] = (256, 256)
+  learning_rate: float = 1e-3
+  batch_size: int = 256
+  train_steps: int = 1000
+  max_grad_norm: float = 1.0
+
+
+@dataclass(frozen=True)
+class CoinGameDiscretePredictions:
+  """Discrete CoinGame transition predictions."""
+
+  next_position_logits: np.ndarray
+
+  @property
+  def next_positions(self) -> np.ndarray:
+    return np.argmax(self.next_position_logits, axis=-1).astype(np.int32)
+
+
+class CoinGameDiscreteTransitionModel(nn.Module):
+  """Predict next CoinGame entity cells as categorical variables."""
+
+  num_agents: int = 2
+  action_dim: int = 5
+  hidden_dims: tuple[int, ...] = (256, 256)
+
+  @nn.compact
+  def __call__(self, positions: jax.Array, actions: jax.Array) -> jax.Array:
+    position_features = jax.nn.one_hot(
+      positions.astype(jnp.int32),
+      _COIN_NUM_CELLS,
+    ).reshape((positions.shape[0], -1))
+    action_features = jax.nn.one_hot(
+      actions.astype(jnp.int32),
+      self.action_dim,
+    ).reshape((actions.shape[0], -1))
+    hidden = jnp.concatenate([position_features, action_features], axis=-1)
+    for hidden_dim in self.hidden_dims:
+      hidden = nn.Dense(hidden_dim)(hidden)
+      hidden = nn.silu(hidden)
+    logits = nn.Dense(self.num_agents * _COIN_NUM_ENTITIES * _COIN_NUM_CELLS)(hidden)
+    return logits.reshape(
+      (positions.shape[0], self.num_agents, _COIN_NUM_ENTITIES, _COIN_NUM_CELLS)
+    )
+
+
 def collect_transition_dataset(
   adapter: MeltingPotVectorAdapter,
   rng: np.random.Generator,
@@ -269,6 +352,118 @@ def collect_transition_dataset(
     rollout_steps=rollout_steps,
     completed_returns=tuple(completed_returns),
     completed_lengths=tuple(completed_lengths),
+  )
+
+
+def is_coin_game_vector_dataset(dataset: TransitionDataset) -> bool:
+  """Return whether a transition dataset has native JaxMARL CoinGame shape."""
+  return (
+    dataset.num_agents == 2
+    and dataset.action_dim == 5
+    and tuple(dataset.obs.shape[2:]) == (36,)
+  )
+
+
+def decode_coin_game_positions(observations: np.ndarray) -> np.ndarray:
+  """Decode CoinGame observations into entity-cell indices.
+
+  Input shape is ``[transition, agent, 36]`` or
+  ``[transition, agent, 3, 3, 4]``. Output shape is
+  ``[transition, agent, entity]`` where entity order follows the environment
+  channels: player-self/red, other/blue, own/red coin, other/blue coin.
+  Each entity value is an integer cell id in ``[0, 8]``.
+  """
+  observations = np.asarray(observations, dtype=np.float32)
+  if observations.ndim == 3 and observations.shape[-1] == 36:
+    grids = observations.reshape(
+      (observations.shape[0], observations.shape[1], _COIN_GRID_SIZE, _COIN_GRID_SIZE, _COIN_NUM_ENTITIES)
+    )
+  elif observations.ndim == 5 and observations.shape[2:] == (
+    _COIN_GRID_SIZE,
+    _COIN_GRID_SIZE,
+    _COIN_NUM_ENTITIES,
+  ):
+    grids = observations
+  else:
+    raise ValueError(
+      "expected CoinGame observations shaped [N, agent, 36] or "
+      f"[N, agent, 3, 3, 4], got {observations.shape}"
+    )
+  flat = grids.reshape((grids.shape[0], grids.shape[1], _COIN_NUM_CELLS, _COIN_NUM_ENTITIES))
+  return np.argmax(flat, axis=2).astype(np.int32)
+
+
+def encode_coin_game_positions(positions: np.ndarray) -> np.ndarray:
+  """Encode entity-cell indices back into flattened CoinGame observations."""
+  positions = np.asarray(positions, dtype=np.int32)
+  if positions.ndim != 3 or positions.shape[1:] != (2, _COIN_NUM_ENTITIES):
+    raise ValueError(f"expected positions shaped [N, 2, 4], got {positions.shape}")
+  if np.any(positions < 0) or np.any(positions >= _COIN_NUM_CELLS):
+    raise ValueError("CoinGame positions must be in [0, 8]")
+  observations = np.zeros((positions.shape[0], 2, _COIN_NUM_CELLS, _COIN_NUM_ENTITIES), dtype=np.float32)
+  rows = np.arange(positions.shape[0])[:, None, None]
+  agents = np.arange(2)[None, :, None]
+  entities = np.arange(_COIN_NUM_ENTITIES)[None, None, :]
+  observations[rows, agents, positions[:, :, :, None].squeeze(-1), entities] = 1.0
+  return observations.reshape((positions.shape[0], 2, 36))
+
+
+def prepare_coin_game_discrete_data(dataset: TransitionDataset) -> CoinGameDiscreteData:
+  """Prepare categorical entity-position targets for native CoinGame vectors."""
+  if not is_coin_game_vector_dataset(dataset):
+    raise ValueError(
+      "CoinGame discrete validation requires observations shaped [N, 2, 36] "
+      "with two agents and five actions"
+    )
+  return CoinGameDiscreteData(
+    positions=decode_coin_game_positions(dataset.obs),
+    next_positions=decode_coin_game_positions(dataset.next_obs),
+    actions=dataset.actions,
+    rewards=dataset.rewards,
+    dones=dataset.dones,
+    obs=dataset.obs,
+    next_obs=dataset.next_obs,
+    action_dim=dataset.action_dim,
+    num_agents=dataset.num_agents,
+  )
+
+
+def split_coin_game_discrete_data(
+  data: CoinGameDiscreteData,
+  *,
+  validation_fraction: float,
+  seed: int,
+) -> tuple[CoinGameDiscreteData, CoinGameDiscreteData]:
+  """Shuffle CoinGame discrete transitions into train and heldout splits."""
+  if not 0.0 < validation_fraction < 1.0:
+    raise ValueError("validation_fraction must be between 0 and 1")
+  if data.num_transitions < 2:
+    raise ValueError("at least two transitions are required")
+  validation_size = int(round(data.num_transitions * validation_fraction))
+  validation_size = min(max(1, validation_size), data.num_transitions - 1)
+  indices = np.random.default_rng(seed).permutation(data.num_transitions)
+  validation_indices = indices[:validation_size]
+  train_indices = indices[validation_size:]
+  return _take_coin_game_discrete_data(data, train_indices), _take_coin_game_discrete_data(
+    data,
+    validation_indices,
+  )
+
+
+def _take_coin_game_discrete_data(
+  data: CoinGameDiscreteData,
+  indices: np.ndarray,
+) -> CoinGameDiscreteData:
+  return CoinGameDiscreteData(
+    positions=data.positions[indices],
+    next_positions=data.next_positions[indices],
+    actions=data.actions[indices],
+    rewards=data.rewards[indices],
+    dones=data.dones[indices],
+    obs=data.obs[indices],
+    next_obs=data.next_obs[indices],
+    action_dim=data.action_dim,
+    num_agents=data.num_agents,
   )
 
 
@@ -527,6 +722,176 @@ def train_world_model(
       progress_callback(step_index + 1, row)
   jax.block_until_ready(state.params)
   return state, rows
+
+
+def create_coin_game_discrete_train_state(
+  rng: jax.Array,
+  *,
+  num_agents: int,
+  action_dim: int,
+  config: CoinGameDiscreteConfig,
+) -> TrainState:
+  """Initialize the discrete CoinGame transition TrainState."""
+  model = CoinGameDiscreteTransitionModel(
+    num_agents=num_agents,
+    action_dim=action_dim,
+    hidden_dims=config.hidden_dims,
+  )
+  params = model.init(
+    rng,
+    jnp.zeros((1, num_agents, _COIN_NUM_ENTITIES), dtype=jnp.int32),
+    jnp.zeros((1, num_agents), dtype=jnp.int32),
+  )["params"]
+  return TrainState.create(
+    apply_fn=model.apply,
+    params=params,
+    tx=optax.chain(
+      optax.clip_by_global_norm(config.max_grad_norm),
+      optax.adam(config.learning_rate),
+    ),
+  )
+
+
+def train_coin_game_discrete_model(
+  rng: jax.Array,
+  train_data: CoinGameDiscreteData,
+  *,
+  config: CoinGameDiscreteConfig,
+  progress_callback: Callable[[int, dict[str, float]], None] | None = None,
+) -> tuple[TrainState, list[dict[str, float]]]:
+  """Train a categorical next-position model for CoinGame transitions."""
+  if config.train_steps < 1:
+    raise ValueError("train_steps must be >= 1")
+  if config.batch_size < 1:
+    raise ValueError("batch_size must be >= 1")
+
+  positions = jnp.asarray(train_data.positions, dtype=jnp.int32)
+  next_positions = jnp.asarray(train_data.next_positions, dtype=jnp.int32)
+  actions = jnp.asarray(train_data.actions, dtype=jnp.int32)
+  train_size = int(train_data.num_transitions)
+
+  rng, init_key = jax.random.split(rng)
+  state = create_coin_game_discrete_train_state(
+    init_key,
+    num_agents=train_data.num_agents,
+    action_dim=train_data.action_dim,
+    config=config,
+  )
+
+  @jax.jit
+  def train_step(state: TrainState, step_key: jax.Array):
+    batch_indices = jax.random.randint(
+      step_key,
+      shape=(config.batch_size,),
+      minval=0,
+      maxval=train_size,
+    )
+    batch_positions = positions[batch_indices]
+    batch_actions = actions[batch_indices]
+    batch_next = next_positions[batch_indices]
+
+    def loss_fn(params):
+      logits = state.apply_fn(
+        {"params": params},
+        batch_positions,
+        batch_actions,
+      )
+      entity_ce = optax.softmax_cross_entropy_with_integer_labels(
+        logits,
+        batch_next,
+      )
+      loss = jnp.mean(entity_ce)
+      accuracy = jnp.mean((jnp.argmax(logits, axis=-1) == batch_next).astype(jnp.float32))
+      exact = jnp.mean(
+        jnp.all(jnp.argmax(logits, axis=-1) == batch_next, axis=(1, 2)).astype(jnp.float32)
+      )
+      return loss, {
+        "loss": loss,
+        "position_cross_entropy": loss,
+        "entity_accuracy": accuracy,
+        "full_state_exact_accuracy": exact,
+      }
+
+    (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
+    del loss
+    return state.apply_gradients(grads=grads), metrics
+
+  rows: list[dict[str, float]] = []
+  for step_index in range(config.train_steps):
+    rng, step_key = jax.random.split(rng)
+    state, metrics = train_step(state, step_key)
+    row = {key: float(value) for key, value in metrics.items()}
+    rows.append(row)
+    if progress_callback is not None:
+      progress_callback(step_index + 1, row)
+  jax.block_until_ready(state.params)
+  return state, rows
+
+
+def predict_coin_game_discrete_model(
+  train_state: TrainState,
+  data: CoinGameDiscreteData,
+) -> CoinGameDiscretePredictions:
+  """Predict CoinGame next-position logits."""
+  logits = train_state.apply_fn(
+    {"params": train_state.params},
+    jnp.asarray(data.positions, dtype=jnp.int32),
+    jnp.asarray(data.actions, dtype=jnp.int32),
+  )
+  return CoinGameDiscretePredictions(next_position_logits=np.asarray(logits, dtype=np.float32))
+
+
+def evaluate_coin_game_discrete_fit(
+  train_data: CoinGameDiscreteData,
+  validation_data: CoinGameDiscreteData,
+  predictions: CoinGameDiscretePredictions,
+) -> dict[str, Any]:
+  """Evaluate discrete CoinGame transition recovery on heldout transitions."""
+  predicted = predictions.next_positions
+  target = validation_data.next_positions
+  entity_matches = predicted == target
+  full_matches = np.all(entity_matches, axis=(1, 2))
+  deterministic_mask = coin_game_deterministic_transition_mask(validation_data)
+  stochastic_mask = ~deterministic_mask
+  marginal_modes = coin_game_position_marginal_modes(train_data.next_positions)
+  marginal_pred = np.repeat(
+    marginal_modes.reshape(1, *marginal_modes.shape),
+    validation_data.num_transitions,
+    axis=0,
+  )
+  persistence = validation_data.positions
+  expected_deterministic = coin_game_expected_deterministic_next_positions(
+    validation_data.positions,
+    validation_data.actions,
+  )
+  analytic_matches = np.all(expected_deterministic == target, axis=(1, 2))
+  return {
+    "position_cross_entropy": categorical_cross_entropy_positions(
+      predictions.next_position_logits,
+      target,
+    ),
+    "entity_accuracy": float(entity_matches.mean()),
+    "agent_exact_accuracy": np.all(entity_matches, axis=2).mean(axis=0).astype(float).tolist(),
+    "full_state_exact_accuracy": float(full_matches.mean()),
+    "deterministic_transition_fraction": float(deterministic_mask.mean()),
+    "deterministic_entity_accuracy": masked_mean(entity_matches, deterministic_mask),
+    "deterministic_full_state_exact_accuracy": masked_mean(full_matches, deterministic_mask),
+    "stochastic_transition_fraction": float(stochastic_mask.mean()),
+    "stochastic_full_state_exact_accuracy": masked_mean(full_matches, stochastic_mask),
+    "marginal_full_state_exact_accuracy": float(
+      np.all(marginal_pred == target, axis=(1, 2)).mean()
+    ),
+    "persistence_full_state_exact_accuracy": float(
+      np.all(persistence == target, axis=(1, 2)).mean()
+    ),
+    "analytic_deterministic_full_state_exact_accuracy": masked_mean(
+      analytic_matches,
+      deterministic_mask,
+    ),
+    "reward_event_fraction": float(np.any(np.abs(validation_data.rewards) > 1e-6, axis=1).mean()),
+    "done_fraction": float(np.any(validation_data.dones > 0.0, axis=1).mean()),
+    "valid_prediction_fraction": valid_coin_game_position_fraction(predicted),
+  }
 
 
 def world_model_losses(
@@ -1091,6 +1456,97 @@ def action_marginals(actions: np.ndarray, *, action_dim: int, num_agents: int) -
     np.add.at(counts[agent_index], actions[:, agent_index], 1.0)
   counts += 1e-6
   return counts / counts.sum(axis=-1, keepdims=True)
+
+
+def categorical_cross_entropy_positions(logits: np.ndarray, targets: np.ndarray) -> float:
+  logits = np.asarray(logits, dtype=np.float64)
+  targets = np.asarray(targets, dtype=np.int32)
+  shifted = logits - logits.max(axis=-1, keepdims=True)
+  log_probs = shifted - np.log(np.exp(shifted).sum(axis=-1, keepdims=True))
+  rows = np.arange(targets.shape[0])[:, None, None]
+  agents = np.arange(targets.shape[1])[None, :, None]
+  entities = np.arange(targets.shape[2])[None, None, :]
+  selected = log_probs[rows, agents, entities, targets]
+  return float(-selected.mean())
+
+
+def coin_game_position_marginal_modes(next_positions: np.ndarray) -> np.ndarray:
+  next_positions = np.asarray(next_positions, dtype=np.int32)
+  modes = np.zeros(next_positions.shape[1:], dtype=np.int32)
+  for agent in range(next_positions.shape[1]):
+    for entity in range(next_positions.shape[2]):
+      counts = np.bincount(
+        next_positions[:, agent, entity],
+        minlength=_COIN_NUM_CELLS,
+      )
+      modes[agent, entity] = int(np.argmax(counts))
+  return modes
+
+
+def coin_game_deterministic_transition_mask(data: CoinGameDiscreteData) -> np.ndarray:
+  """Mask transitions whose next observation is deterministic without env PRNG."""
+  collected = coin_game_coin_collected(data.positions, data.actions)
+  done = np.any(data.dones > 0.0, axis=1)
+  return np.logical_not(np.logical_or(collected, done))
+
+
+def coin_game_coin_collected(positions: np.ndarray, actions: np.ndarray) -> np.ndarray:
+  """Return whether either player collects either coin after applying actions."""
+  agent0 = np.asarray(positions, dtype=np.int32)[:, 0]
+  actions = np.asarray(actions, dtype=np.int32)
+  red_pos = _cell_to_row_col(agent0[:, 0])
+  blue_pos = _cell_to_row_col(agent0[:, 1])
+  red_coin = _cell_to_row_col(agent0[:, 2])
+  blue_coin = _cell_to_row_col(agent0[:, 3])
+  new_red = (red_pos + _COIN_MOVES[actions[:, 0]]) % _COIN_GRID_SIZE
+  new_blue = (blue_pos + _COIN_MOVES[actions[:, 1]]) % _COIN_GRID_SIZE
+  red_red = np.all(new_red == red_coin, axis=-1)
+  red_blue = np.all(new_red == blue_coin, axis=-1)
+  blue_red = np.all(new_blue == red_coin, axis=-1)
+  blue_blue = np.all(new_blue == blue_coin, axis=-1)
+  return red_red | red_blue | blue_red | blue_blue
+
+
+def coin_game_expected_deterministic_next_positions(
+  positions: np.ndarray,
+  actions: np.ndarray,
+) -> np.ndarray:
+  """Expected next positions when no coin respawn or reset is involved."""
+  agent0 = np.asarray(positions, dtype=np.int32)[:, 0]
+  actions = np.asarray(actions, dtype=np.int32)
+  red_pos = _cell_to_row_col(agent0[:, 0])
+  blue_pos = _cell_to_row_col(agent0[:, 1])
+  new_red = _row_col_to_cell((red_pos + _COIN_MOVES[actions[:, 0]]) % _COIN_GRID_SIZE)
+  new_blue = _row_col_to_cell((blue_pos + _COIN_MOVES[actions[:, 1]]) % _COIN_GRID_SIZE)
+  red_coin = agent0[:, 2]
+  blue_coin = agent0[:, 3]
+  expected_agent0 = np.stack([new_red, new_blue, red_coin, blue_coin], axis=1)
+  expected_agent1 = np.stack([new_blue, new_red, blue_coin, red_coin], axis=1)
+  return np.stack([expected_agent0, expected_agent1], axis=1).astype(np.int32)
+
+
+def valid_coin_game_position_fraction(positions: np.ndarray) -> float:
+  positions = np.asarray(positions, dtype=np.int32)
+  valid = (positions >= 0) & (positions < _COIN_NUM_CELLS)
+  return float(valid.mean())
+
+
+def masked_mean(values: np.ndarray, mask: np.ndarray) -> float | None:
+  values = np.asarray(values)
+  mask = np.asarray(mask, dtype=bool)
+  if not bool(mask.any()):
+    return None
+  return float(values[mask].mean())
+
+
+def _cell_to_row_col(cells: np.ndarray) -> np.ndarray:
+  cells = np.asarray(cells, dtype=np.int32)
+  return np.stack([cells // _COIN_GRID_SIZE, cells % _COIN_GRID_SIZE], axis=-1)
+
+
+def _row_col_to_cell(row_col: np.ndarray) -> np.ndarray:
+  row_col = np.asarray(row_col, dtype=np.int32)
+  return row_col[..., 0] * _COIN_GRID_SIZE + row_col[..., 1]
 
 
 def transition_sampling_probabilities(

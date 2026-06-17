@@ -12,21 +12,30 @@ import numpy as np
 from tqdm import tqdm
 
 from world_marl.checkpointing import load_params, save_checkpoint
+from world_marl.envs.jaxmarl_coin_adapter import JaxMARLCoinGameVectorAdapter
 from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
 from world_marl.logging import RunLogger, dependency_versions, timestamp, to_jsonable
 from world_marl.state_model import (
+  CoinGameDiscreteConfig,
   StateRepresentationConfig,
   WorldModelConfig,
   collect_transition_dataset,
+  create_coin_game_discrete_train_state,
   create_world_model_train_state,
+  evaluate_coin_game_discrete_fit,
   evaluate_state_fit,
   fit_feature_normalizer,
+  is_coin_game_vector_dataset,
   plot_prediction_dashboard,
   plot_state_recoveries,
+  predict_coin_game_discrete_model,
   predict_world_model,
+  prepare_coin_game_discrete_data,
   prepare_transition_data,
   sigmoid_np,
+  split_coin_game_discrete_data,
   split_prepared_data,
+  train_coin_game_discrete_model,
   summarize_validation_criteria,
   train_world_model,
 )
@@ -72,6 +81,16 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument("--seed", type=int, default=0)
   parser.add_argument("--out-dir", default="runs")
   parser.add_argument("--quiet", action="store_true")
+  parser.add_argument(
+    "--model-kind",
+    choices=("auto", "continuous", "coingame-discrete"),
+    default="auto",
+    help=(
+      "Validation model. 'auto' uses the discrete categorical model for native "
+      "JaxMARL CoinGame vector observations and the continuous feature model "
+      "otherwise."
+    ),
+  )
   return parser.parse_args()
 
 
@@ -85,6 +104,12 @@ def parse_hidden_dims(value: str) -> tuple[int, ...]:
 
 
 def make_adapter(args: argparse.Namespace) -> MeltingPotVectorAdapter:
+  if args.substrate == "coins":
+    return JaxMARLCoinGameVectorAdapter(
+      num_envs=args.num_envs,
+      max_cycles=args.max_cycles,
+      seed=args.seed,
+    )
   return MeltingPotVectorAdapter(
     substrate=args.substrate,
     num_envs=args.num_envs,
@@ -214,6 +239,168 @@ def main() -> None:
       f"mean reward per agent={dataset.rewards.mean(axis=0).round(4).tolist()}"
     ),
   )
+
+  model_kind = args.model_kind
+  if model_kind == "auto":
+    model_kind = "coingame-discrete" if is_coin_game_vector_dataset(dataset) else "continuous"
+  if model_kind == "coingame-discrete":
+    if not is_coin_game_vector_dataset(dataset):
+      raise SystemExit(
+        "--model-kind coingame-discrete requires native CoinGame vector "
+        "observations shaped [transition, 2, 36]"
+      )
+    log_stage(args, "decoding CoinGame states into categorical entity positions")
+    discrete_data = prepare_coin_game_discrete_data(dataset)
+    train_data, validation_data = split_coin_game_discrete_data(
+      discrete_data,
+      validation_fraction=args.validation_fraction,
+      seed=args.seed,
+    )
+    discrete_config = CoinGameDiscreteConfig(
+      hidden_dims=hidden_dims,
+      learning_rate=args.learning_rate,
+      batch_size=args.batch_size,
+      train_steps=args.train_steps,
+      max_grad_norm=args.max_grad_norm,
+    )
+    logger.write_json(
+      "discrete_representation.json",
+      {
+        "kind": "coingame_discrete_entity_positions",
+        "entities_per_agent": 4,
+        "cells_per_entity": 9,
+        "train_transitions": train_data.num_transitions,
+        "heldout_transitions": validation_data.num_transitions,
+        "config": discrete_config,
+      },
+    )
+
+    rng = jax.random.PRNGKey(args.seed)
+    log_stage(args, f"training discrete CoinGame model for {args.train_steps} steps")
+    with tqdm(
+      total=args.train_steps,
+      desc="train discrete state model",
+      unit="step",
+      disable=args.quiet,
+    ) as progress:
+      def update_progress(step: int, losses: dict[str, float]) -> None:
+        progress.update(1)
+        progress.set_postfix(
+          loss=f"{losses['loss']:.4g}",
+          exact=f"{losses['full_state_exact_accuracy']:.3f}",
+        )
+        logger.append_metrics({"step": step, **losses})
+
+      train_state, loss_rows = train_coin_game_discrete_model(
+        rng,
+        train_data,
+        config=discrete_config,
+        progress_callback=update_progress,
+      )
+    finite_losses = bool(np.isfinite([row["loss"] for row in loss_rows]).all())
+    logger.write_json(
+      "training_summary.json",
+      {
+        "initial_loss": loss_rows[0]["loss"],
+        "final_loss": loss_rows[-1]["loss"],
+        "min_loss": min(row["loss"] for row in loss_rows),
+        "final_full_state_exact_accuracy": loss_rows[-1]["full_state_exact_accuracy"],
+        "finite_losses": finite_losses,
+        "train_steps": args.train_steps,
+      },
+    )
+
+    log_stage(args, "evaluating heldout discrete transition recovery")
+    predictions = predict_coin_game_discrete_model(train_state, validation_data)
+    prediction_metrics = evaluate_coin_game_discrete_fit(
+      train_data,
+      validation_data,
+      predictions,
+    )
+    logger.write_json("prediction_metrics.json", prediction_metrics)
+
+    log_stage(args, "saving checkpoint and validating reload equality")
+    save_checkpoint(
+      run_dir / "checkpoint",
+      train_state,
+      metadata=to_jsonable({
+        "kind": "coingame_discrete_transition_model",
+        "substrate": args.substrate,
+        "target_source": args.target_source,
+        "source_checkpoint": args.policy_checkpoint,
+        "env": env_metadata,
+        "num_agents": discrete_data.num_agents,
+        "action_dim": discrete_data.action_dim,
+        "model_config": discrete_config,
+        "config": vars(args),
+      }),
+    )
+    reload_state = create_coin_game_discrete_train_state(
+      jax.random.PRNGKey(args.seed + 1000),
+      num_agents=validation_data.num_agents,
+      action_dim=validation_data.action_dim,
+      config=discrete_config,
+    )
+    reload_params = load_params(
+      run_dir / "checkpoint" / "checkpoint.msgpack",
+      reload_state.params,
+    )
+    reload_state = reload_state.replace(params=reload_params)
+    reload_predictions = predict_coin_game_discrete_model(reload_state, validation_data)
+    reload_max_abs_diff = float(
+      np.max(np.abs(reload_predictions.next_position_logits - predictions.next_position_logits))
+    )
+    reload_passed = reload_max_abs_diff <= 1e-6
+    logger.write_json(
+      "reload_evaluation.json",
+      {
+        "reload_passed": reload_passed,
+        "reload_max_abs_prediction_diff": reload_max_abs_diff,
+      },
+    )
+
+    deterministic_exact = prediction_metrics["deterministic_full_state_exact_accuracy"]
+    passed = bool(
+      finite_losses
+      and reload_passed
+      and deterministic_exact is not None
+      and deterministic_exact >= 0.95
+      and prediction_metrics["full_state_exact_accuracy"]
+      > prediction_metrics["marginal_full_state_exact_accuracy"]
+    )
+    criteria = {
+      "finite_losses": finite_losses,
+      "reload_passed": reload_passed,
+      "deterministic_full_state_exact_at_least_95pct": bool(
+        deterministic_exact is not None and deterministic_exact >= 0.95
+      ),
+      "beats_marginal_full_state_exact": bool(
+        prediction_metrics["full_state_exact_accuracy"]
+        > prediction_metrics["marginal_full_state_exact_accuracy"]
+      ),
+    }
+    outcome = {
+      "passed": passed,
+      "criteria": criteria,
+      "prediction_metrics": prediction_metrics,
+      "reload_max_abs_prediction_diff": reload_max_abs_diff,
+      "artifacts": {
+        "checkpoint": str(run_dir / "checkpoint"),
+      },
+    }
+    logger.write_json("evaluation.json", outcome)
+    log_stage(
+      args,
+      (
+        "done; "
+        f"passed={passed}, "
+        f"full_exact={prediction_metrics['full_state_exact_accuracy']:.4g}, "
+        f"deterministic_exact={deterministic_exact}, "
+        f"reload_diff={reload_max_abs_diff:.3g}"
+      ),
+    )
+    print(logger.write_json("outcome.json", outcome).read_text(encoding="utf-8"))
+    return
 
   log_stage(args, "embedding observations into deterministic state features")
   prepared = prepare_transition_data(dataset, representation_config)
