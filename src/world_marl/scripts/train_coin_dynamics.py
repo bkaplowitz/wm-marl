@@ -49,6 +49,12 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument("--hidden-dims", default="256,256")
   parser.add_argument("--max-grad-norm", type=float, default=1.0)
   parser.add_argument(
+    "--stochastic-target-weight",
+    type=float,
+    default=32.0,
+    help="Loss weight for respawn/reset distribution targets.",
+  )
+  parser.add_argument(
     "--min-deterministic-exact",
     type=float,
     default=0.95,
@@ -59,6 +65,12 @@ def parse_args() -> argparse.Namespace:
     type=float,
     default=0.99,
     help="Pass threshold for exact reward accuracy on non-terminal transitions.",
+  )
+  parser.add_argument(
+    "--max-respawn-uniform-kl",
+    type=float,
+    default=0.25,
+    help="Pass threshold for KL(uniform respawn target || model respawn distribution).",
   )
   parser.add_argument("--sample-predictions", type=int, default=16)
   parser.add_argument("--seed", type=int, default=0)
@@ -81,6 +93,10 @@ def parse_args() -> argparse.Namespace:
     parser.error("--min-deterministic-exact must be in [0, 1]")
   if not 0.0 <= args.min_reward_exact <= 1.0:
     parser.error("--min-reward-exact must be in [0, 1]")
+  if args.max_respawn_uniform_kl < 0.0:
+    parser.error("--max-respawn-uniform-kl must be non-negative")
+  if args.stochastic_target_weight <= 0.0:
+    parser.error("--stochastic-target-weight must be positive")
   return args
 
 
@@ -107,6 +123,7 @@ def main() -> None:
     batch_size=args.batch_size,
     train_steps=args.train_steps,
     max_grad_norm=args.max_grad_norm,
+    stochastic_target_weight=args.stochastic_target_weight,
   )
   run_dir = Path(args.out_dir) / f"coin_dynamics_{timestamp()}"
   log_stage(args, f"writing artifacts to {run_dir}")
@@ -118,8 +135,9 @@ def main() -> None:
       "model_config": dataclasses.asdict(config),
       "target": "p(next_joint_state, reward | state, joint_action)",
       "purpose": (
-        "Validate a discrete categorical CoinGame dynamics model before "
-        "using learned dynamics for model-based policy improvement."
+        "Validate a discrete categorical CoinGame dynamics model before using "
+        "learned dynamics for model-based policy improvement. Stochastic "
+        "coin respawns and terminal resets are trained as distributions."
       ),
     },
   )
@@ -282,6 +300,7 @@ def main() -> None:
     reload_passed=reload_passed,
     min_deterministic_exact=args.min_deterministic_exact,
     min_reward_exact=args.min_reward_exact,
+    max_respawn_uniform_kl=args.max_respawn_uniform_kl,
   )
   outcome: dict[str, Any] = {
     "milestone": "discrete_coingame_next_state_dynamics",
@@ -301,6 +320,7 @@ def main() -> None:
       "done; deterministic exact="
       f"{metrics['deterministic_full_state_exact_accuracy']}, "
       f"reward exact={metrics['reward']['nonterminal_transition_exact_accuracy']}, "
+      f"respawn KL={metrics['respawn']['uniform_target_kl']}, "
       f"full exact={metrics['full_state_exact_accuracy']:.4f}"
     ),
   )

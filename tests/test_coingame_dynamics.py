@@ -11,11 +11,13 @@ from world_marl.coingame_dynamics import (
   NUM_CELLS,
   collect_coin_dynamics_dataset,
   coin_collected,
+  coin_dynamics_target_distributions,
   collected_coin_masks,
   create_coin_dynamics_train_state,
   decode_coin_positions,
   derive_coin_rewards,
   deterministic_transition_mask,
+  distributional_cross_entropy_positions,
   encode_coin_positions,
   evaluate_coin_dynamics,
   expected_deterministic_next_positions,
@@ -171,8 +173,67 @@ def test_stochastic_respawn_metrics_use_distribution_not_argmax():
   assert metrics["blue_coin_respawn_count"] == 1
   np.testing.assert_allclose(metrics["cross_entropy"], np.log(NUM_CELLS))
   np.testing.assert_allclose(metrics["mean_entropy"], np.log(NUM_CELLS))
+  np.testing.assert_allclose(metrics["uniform_target_cross_entropy"], np.log(NUM_CELLS))
+  np.testing.assert_allclose(metrics["uniform_target_kl"], 0.0)
   assert metrics["aggregate_distribution_tv_to_uniform"] == 0.0
   assert metrics["mean_target_probability"] == 1.0 / NUM_CELLS
+
+
+def test_coin_dynamics_targets_use_uniform_for_respawn_and_reset():
+  positions = np.asarray(
+    [
+      [[0, 4, 0, 8], [4, 0, 8, 0]],  # red coin collected
+      [[4, 0, 8, 0], [0, 4, 0, 8]],  # blue coin collected
+      [[0, 4, 8, 2], [4, 0, 2, 8]],  # terminal reset
+    ],
+    dtype=np.int32,
+  )
+  actions = np.asarray([[4, 4], [4, 4], [4, 4]], dtype=np.int32)
+  next_positions = np.asarray(
+    [
+      [[0, 4, 5, 8], [4, 0, 8, 5]],
+      [[4, 0, 8, 6], [0, 4, 6, 8]],
+      [[1, 2, 3, 4], [2, 1, 4, 3]],
+    ],
+    dtype=np.int32,
+  )
+  data = _coin_data(
+    positions=positions,
+    next_positions=next_positions,
+    actions=actions,
+    rewards=derive_coin_rewards(positions, actions),
+    dones=np.asarray([[0.0, 0.0], [0.0, 0.0], [1.0, 1.0]], dtype=np.float32),
+  )
+
+  target_bundle = coin_dynamics_target_distributions(
+    data,
+    stochastic_target_weight=3.0,
+  )
+  targets = target_bundle.distributions
+  weights = target_bundle.weights
+  uniform = np.full((NUM_CELLS,), 1.0 / NUM_CELLS, dtype=np.float32)
+
+  np.testing.assert_allclose(targets[0, 0, 2], uniform)
+  np.testing.assert_allclose(targets[0, 1, 3], uniform)
+  np.testing.assert_allclose(targets[1, 0, 3], uniform)
+  np.testing.assert_allclose(targets[1, 1, 2], uniform)
+  np.testing.assert_allclose(targets[2], np.broadcast_to(uniform, targets[2].shape))
+  assert weights[0, 0, 2] == 3.0
+  assert weights[0, 1, 3] == 3.0
+  assert weights[1, 0, 3] == 3.0
+  assert weights[1, 1, 2] == 3.0
+  np.testing.assert_allclose(weights[2], np.full_like(weights[2], 3.0))
+
+  assert targets[0, 0, 0, next_positions[0, 0, 0]] == 1.0
+  assert targets[0, 0, 0].sum() == 1.0
+  assert weights[0, 0, 0] == 1.0
+  assert targets[0, 0, 1, next_positions[0, 0, 1]] == 1.0
+
+  zero_logits = np.zeros_like(targets)
+  np.testing.assert_allclose(
+    distributional_cross_entropy_positions(zero_logits, targets),
+    np.log(NUM_CELLS),
+  )
 
 
 def test_discrete_dynamics_training_metrics_and_reload(tmp_path):

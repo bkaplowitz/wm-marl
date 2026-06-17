@@ -1,13 +1,14 @@
 """Discrete CoinGame dynamics modeling.
 
-This module is the clean first world-model milestone:
+This module validates the first explicit world-model target:
 
     p(next_joint_state, reward | state, joint_action)
 
 The state is the native JaxMARL CoinGame vector observation. Each agent observes
 a flattened ``3 x 3 x 4`` one-hot grid, so the model predicts each next entity
 cell with a categorical head instead of treating grid positions as continuous
-numbers.
+numbers. Deterministic next positions use one-hot targets; stochastic coin
+respawns and terminal resets use distributional targets.
 """
 
 from __future__ import annotations
@@ -89,6 +90,7 @@ class CoinDynamicsConfig:
   batch_size: int = 256
   train_steps: int = 1000
   max_grad_norm: float = 1.0
+  stochastic_target_weight: float = 32.0
 
 
 @dataclass(frozen=True)
@@ -100,6 +102,29 @@ class CoinDynamicsPredictions:
   @property
   def next_positions(self) -> np.ndarray:
     return np.argmax(self.next_position_logits, axis=-1).astype(np.int32)
+
+
+@dataclass(frozen=True)
+class CoinDynamicsTargets:
+  """Categorical supervision for next entity positions."""
+
+  distributions: np.ndarray
+  weights: np.ndarray
+
+  @property
+  def entropy(self) -> float:
+    clipped = np.clip(self.distributions, 1e-12, 1.0)
+    return float(-np.sum(self.distributions * np.log(clipped), axis=-1).mean())
+
+
+@dataclass(frozen=True)
+class _MovedCoinPositions:
+  """Player and coin coordinates after applying a joint action."""
+
+  red_player: np.ndarray
+  blue_player: np.ndarray
+  red_coin: np.ndarray
+  blue_coin: np.ndarray
 
 
 class DiscreteCoinDynamicsModel(nn.Module):
@@ -259,6 +284,41 @@ def encode_coin_positions(positions: np.ndarray) -> np.ndarray:
   return observations.reshape((positions.shape[0], 2, 36))
 
 
+def coin_dynamics_target_distributions(
+  data: CoinDynamicsData,
+  *,
+  stochastic_target_weight: float = 1.0,
+) -> CoinDynamicsTargets:
+  """Build categorical targets for deterministic and stochastic transitions.
+
+  Most entities have an exact next cell. If a coin is collected, its respawn
+  location is sampled by the environment RNG, so that coin's target is uniform
+  over cells. Terminal resets are also treated as uniform over all entities.
+  """
+  if stochastic_target_weight <= 0.0:
+    raise ValueError("stochastic_target_weight must be positive")
+  distributions = np.eye(NUM_CELLS, dtype=np.float32)[data.next_positions]
+  weights = np.ones(data.next_positions.shape, dtype=np.float32)
+  uniform = np.full((NUM_CELLS,), 1.0 / NUM_CELLS, dtype=np.float32)
+  red_collected, blue_collected = collected_coin_masks(data.positions, data.actions)
+  terminal = np.any(data.dones > 0.0, axis=1)
+  nonterminal = ~terminal
+
+  red_respawn = red_collected & nonterminal
+  blue_respawn = blue_collected & nonterminal
+  distributions[red_respawn, 0, 2, :] = uniform
+  distributions[red_respawn, 1, 3, :] = uniform
+  weights[red_respawn, 0, 2] = stochastic_target_weight
+  weights[red_respawn, 1, 3] = stochastic_target_weight
+  distributions[blue_respawn, 0, 3, :] = uniform
+  distributions[blue_respawn, 1, 2, :] = uniform
+  weights[blue_respawn, 0, 3] = stochastic_target_weight
+  weights[blue_respawn, 1, 2] = stochastic_target_weight
+  distributions[terminal, :, :, :] = uniform
+  weights[terminal, :, :] = stochastic_target_weight
+  return CoinDynamicsTargets(distributions=distributions, weights=weights)
+
+
 def create_coin_dynamics_train_state(
   rng: jax.Array,
   *,
@@ -293,22 +353,30 @@ def coin_dynamics_loss(
   positions: jax.Array,
   actions: jax.Array,
   next_positions: jax.Array,
+  target_distributions: jax.Array,
+  target_weights: jax.Array,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
-  """Categorical next-position loss and accuracy metrics."""
+  """Distributional next-position loss and sampled-label accuracy metrics."""
   logits = apply_fn({"params": params}, positions, actions)
-  per_entity_ce = optax.softmax_cross_entropy_with_integer_labels(
-    logits,
-    next_positions,
-  )
+  per_entity_ce = optax.softmax_cross_entropy(logits, target_distributions)
+  weighted_ce = per_entity_ce * target_weights
   predicted = jnp.argmax(logits, axis=-1)
   entity_accuracy = jnp.mean((predicted == next_positions).astype(jnp.float32))
   full_exact = jnp.mean(
     jnp.all(predicted == next_positions, axis=(1, 2)).astype(jnp.float32)
   )
-  loss = jnp.mean(per_entity_ce)
+  weight_sum = jnp.maximum(jnp.sum(target_weights), 1.0)
+  loss = jnp.sum(weighted_ce) / weight_sum
+  per_entity_entropy = -jnp.sum(
+    target_distributions * jnp.log(jnp.clip(target_distributions, 1e-12, 1.0)),
+    axis=-1,
+  )
+  target_entropy = jnp.sum(per_entity_entropy * target_weights) / weight_sum
   return loss, {
     "loss": loss,
-    "position_cross_entropy": loss,
+    "distributional_position_cross_entropy": loss,
+    "target_distribution_entropy": target_entropy,
+    "target_distribution_kl": loss - target_entropy,
     "entity_accuracy": entity_accuracy,
     "full_state_exact_accuracy": full_exact,
   }
@@ -320,11 +388,21 @@ def coin_dynamics_train_step(
   positions: jax.Array,
   actions: jax.Array,
   next_positions: jax.Array,
+  target_distributions: jax.Array,
+  target_weights: jax.Array,
 ) -> tuple[TrainState, dict[str, jax.Array]]:
   """Run one optimizer update on an already sampled minibatch."""
 
   def loss_fn(params):
-    return coin_dynamics_loss(params, state.apply_fn, positions, actions, next_positions)
+    return coin_dynamics_loss(
+      params,
+      state.apply_fn,
+      positions,
+      actions,
+      next_positions,
+      target_distributions,
+      target_weights,
+    )
 
   (_loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
   return state.apply_gradients(grads=grads), metrics
@@ -353,6 +431,12 @@ def train_coin_dynamics_model(
   positions = jnp.asarray(train_data.positions, dtype=jnp.int32)
   actions = jnp.asarray(train_data.actions, dtype=jnp.int32)
   next_positions = jnp.asarray(train_data.next_positions, dtype=jnp.int32)
+  targets = coin_dynamics_target_distributions(
+    train_data,
+    stochastic_target_weight=config.stochastic_target_weight,
+  )
+  target_distributions = jnp.asarray(targets.distributions, dtype=jnp.float32)
+  target_weights = jnp.asarray(targets.weights, dtype=jnp.float32)
   train_size = int(train_data.num_transitions)
   rows: list[dict[str, float]] = []
 
@@ -369,6 +453,8 @@ def train_coin_dynamics_model(
       positions[indices],
       actions[indices],
       next_positions[indices],
+      target_distributions[indices],
+      target_weights[indices],
     )
     row = {key: float(value) for key, value in metrics.items()}
     rows.append(row)
@@ -419,11 +505,21 @@ def evaluate_coin_dynamics(
   marginal_exact = np.all(marginal == target, axis=(1, 2))
   persistence_exact = np.all(persistence == target, axis=(1, 2))
   derived_rewards = derive_coin_rewards(validation_data.positions, validation_data.actions)
+  reward_metrics = reward_prediction_metrics(validation_data, derived_rewards)
+  respawn_metrics = stochastic_respawn_metrics(validation_data, predictions)
+  target_distributions = coin_dynamics_target_distributions(validation_data)
+  distributional_ce = distributional_cross_entropy_positions(
+    predictions.next_position_logits,
+    target_distributions.distributions,
+  )
   return {
     "position_cross_entropy": categorical_cross_entropy_positions(
       predictions.next_position_logits,
       target,
     ),
+    "distributional_position_cross_entropy": distributional_ce,
+    "target_distribution_entropy": target_distributions.entropy,
+    "target_distribution_kl": distributional_ce - target_distributions.entropy,
     "entity_accuracy": float(entity_matches.mean()),
     "agent_exact_accuracy": np.all(entity_matches, axis=2).mean(axis=0).astype(float).tolist(),
     "full_state_exact_accuracy": float(full_matches.mean()),
@@ -441,8 +537,8 @@ def evaluate_coin_dynamics(
     "model_beats_marginal": bool(full_matches.mean() > marginal_exact.mean()),
     "model_beats_persistence": bool(full_matches.mean() > persistence_exact.mean()),
     "valid_prediction_fraction": valid_position_fraction(predicted),
-    "reward": reward_prediction_metrics(validation_data, derived_rewards),
-    "respawn": stochastic_respawn_metrics(validation_data, predictions),
+    "reward": reward_metrics,
+    "respawn": respawn_metrics,
     "reward_event_fraction": float(np.any(np.abs(validation_data.rewards) > 1e-6, axis=1).mean()),
     "done_fraction": float(np.any(validation_data.dones > 0.0, axis=1).mean()),
   }
@@ -455,10 +551,12 @@ def summarize_coin_dynamics_outcome(
   reload_passed: bool,
   min_deterministic_exact: float,
   min_reward_exact: float = 0.99,
+  max_respawn_uniform_kl: float = 0.25,
 ) -> tuple[bool, dict[str, bool]]:
   """Build pass/fail criteria for the first dynamics milestone."""
   deterministic_exact = metrics["deterministic_full_state_exact_accuracy"]
   reward_exact = metrics["reward"]["nonterminal_transition_exact_accuracy"]
+  respawn_kl = metrics["respawn"]["uniform_target_kl"]
   criteria = {
     "finite_losses": bool(finite_losses),
     "reload_passed": bool(reload_passed),
@@ -471,6 +569,9 @@ def summarize_coin_dynamics_outcome(
     ),
     "reward_exact_high": bool(
       reward_exact is not None and reward_exact >= min_reward_exact
+    ),
+    "respawn_distribution_calibrated": bool(
+      respawn_kl is None or respawn_kl <= max_respawn_uniform_kl
     ),
   }
   return all(criteria.values()), criteria
@@ -487,6 +588,23 @@ def categorical_cross_entropy_positions(logits: np.ndarray, targets: np.ndarray)
   entities = np.arange(targets.shape[2])[None, None, :]
   selected = log_probs[rows, agents, entities, targets]
   return float(-selected.mean())
+
+
+def distributional_cross_entropy_positions(
+  logits: np.ndarray,
+  target_distributions: np.ndarray,
+) -> float:
+  """Mean CE for categorical target distributions."""
+  logits = np.asarray(logits, dtype=np.float64)
+  target_distributions = np.asarray(target_distributions, dtype=np.float64)
+  if logits.shape != target_distributions.shape:
+    raise ValueError(
+      "logits and target distributions must have the same shape, "
+      f"got {logits.shape} and {target_distributions.shape}"
+    )
+  shifted = logits - logits.max(axis=-1, keepdims=True)
+  log_probs = shifted - np.log(np.exp(shifted).sum(axis=-1, keepdims=True))
+  return float(-np.sum(target_distributions * log_probs, axis=-1).mean())
 
 
 def position_marginal_modes(next_positions: np.ndarray) -> np.ndarray:
@@ -507,6 +625,23 @@ def deterministic_transition_mask(data: CoinDynamicsData) -> np.ndarray:
   return np.logical_not(np.logical_or(collected, done))
 
 
+def _moved_player_and_coin_positions(
+  positions: np.ndarray,
+  actions: np.ndarray,
+) -> _MovedCoinPositions:
+  """Return wrapped player coordinates and current coin coordinates."""
+  agent0 = np.asarray(positions, dtype=np.int32)[:, 0]
+  actions = np.asarray(actions, dtype=np.int32)
+  red_pos = cell_to_row_col(agent0[:, 0])
+  blue_pos = cell_to_row_col(agent0[:, 1])
+  return _MovedCoinPositions(
+    red_player=(red_pos + MOVES[actions[:, 0]]) % GRID_SIZE,
+    blue_player=(blue_pos + MOVES[actions[:, 1]]) % GRID_SIZE,
+    red_coin=cell_to_row_col(agent0[:, 2]),
+    blue_coin=cell_to_row_col(agent0[:, 3]),
+  )
+
+
 def derive_coin_rewards(
   positions: np.ndarray,
   actions: np.ndarray,
@@ -519,20 +654,13 @@ def derive_coin_rewards(
   players, check whether either player lands on either coin, then apply the
   default JaxMARL CoinGame payoff matrix.
   """
-  agent0 = np.asarray(positions, dtype=np.int32)[:, 0]
-  actions = np.asarray(actions, dtype=np.int32)
   payoff = np.asarray(payoff_matrix, dtype=np.float32)
-  red_pos = cell_to_row_col(agent0[:, 0])
-  blue_pos = cell_to_row_col(agent0[:, 1])
-  red_coin = cell_to_row_col(agent0[:, 2])
-  blue_coin = cell_to_row_col(agent0[:, 3])
-  new_red = (red_pos + MOVES[actions[:, 0]]) % GRID_SIZE
-  new_blue = (blue_pos + MOVES[actions[:, 1]]) % GRID_SIZE
+  moved = _moved_player_and_coin_positions(positions, actions)
 
-  red_red = np.all(new_red == red_coin, axis=-1).astype(np.float32)
-  red_blue = np.all(new_red == blue_coin, axis=-1).astype(np.float32)
-  blue_red = np.all(new_blue == red_coin, axis=-1).astype(np.float32)
-  blue_blue = np.all(new_blue == blue_coin, axis=-1).astype(np.float32)
+  red_red = np.all(moved.red_player == moved.red_coin, axis=-1).astype(np.float32)
+  red_blue = np.all(moved.red_player == moved.blue_coin, axis=-1).astype(np.float32)
+  blue_red = np.all(moved.blue_player == moved.red_coin, axis=-1).astype(np.float32)
+  blue_blue = np.all(moved.blue_player == moved.blue_coin, axis=-1).astype(np.float32)
 
   red_reward = (
     payoff[0, 0] * red_red
@@ -621,6 +749,8 @@ def stochastic_respawn_metrics(
       "uniform_target_probability": 1.0 / NUM_CELLS,
       "mean_entropy": None,
       "uniform_entropy": float(np.log(NUM_CELLS)),
+      "uniform_target_cross_entropy": None,
+      "uniform_target_kl": None,
       "mean_distribution_tv_to_uniform": None,
       "aggregate_distribution_tv_to_uniform": None,
       "empirical_target_tv_to_uniform": None,
@@ -638,6 +768,10 @@ def stochastic_respawn_metrics(
   target_counts = np.bincount(respawn_targets, minlength=NUM_CELLS).astype(np.float64)
   empirical = target_counts / max(float(target_counts.sum()), 1.0)
   entropy = -np.sum(probs * np.log(np.clip(probs, 1e-12, 1.0)), axis=-1)
+  uniform_target_ce = -np.sum(
+    uniform.reshape(1, -1) * np.log(np.clip(probs, 1e-12, 1.0)),
+    axis=-1,
+  )
   return {
     "num_respawn_targets": int(respawn_targets.shape[0]),
     **counts,
@@ -649,6 +783,8 @@ def stochastic_respawn_metrics(
     "uniform_target_probability": 1.0 / NUM_CELLS,
     "mean_entropy": float(entropy.mean()),
     "uniform_entropy": float(np.log(NUM_CELLS)),
+    "uniform_target_cross_entropy": float(uniform_target_ce.mean()),
+    "uniform_target_kl": float(uniform_target_ce.mean() - np.log(NUM_CELLS)),
     "mean_distribution_tv_to_uniform": float(
       0.5 * np.abs(probs - uniform.reshape(1, -1)).sum(axis=1).mean()
     ),
@@ -668,18 +804,11 @@ def collected_coin_masks(
   actions: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
   """Return masks for red-coin and blue-coin collection events."""
-  agent0 = np.asarray(positions, dtype=np.int32)[:, 0]
-  actions = np.asarray(actions, dtype=np.int32)
-  red_pos = cell_to_row_col(agent0[:, 0])
-  blue_pos = cell_to_row_col(agent0[:, 1])
-  red_coin = cell_to_row_col(agent0[:, 2])
-  blue_coin = cell_to_row_col(agent0[:, 3])
-  new_red = (red_pos + MOVES[actions[:, 0]]) % GRID_SIZE
-  new_blue = (blue_pos + MOVES[actions[:, 1]]) % GRID_SIZE
-  red_red = np.all(new_red == red_coin, axis=-1)
-  red_blue = np.all(new_red == blue_coin, axis=-1)
-  blue_red = np.all(new_blue == red_coin, axis=-1)
-  blue_blue = np.all(new_blue == blue_coin, axis=-1)
+  moved = _moved_player_and_coin_positions(positions, actions)
+  red_red = np.all(moved.red_player == moved.red_coin, axis=-1)
+  red_blue = np.all(moved.red_player == moved.blue_coin, axis=-1)
+  blue_red = np.all(moved.blue_player == moved.red_coin, axis=-1)
+  blue_blue = np.all(moved.blue_player == moved.blue_coin, axis=-1)
   return red_red | blue_red, red_blue | blue_blue
 
 
@@ -689,11 +818,9 @@ def expected_deterministic_next_positions(
 ) -> np.ndarray:
   """Next positions when no coin respawn/reset randomness is involved."""
   agent0 = np.asarray(positions, dtype=np.int32)[:, 0]
-  actions = np.asarray(actions, dtype=np.int32)
-  red_pos = cell_to_row_col(agent0[:, 0])
-  blue_pos = cell_to_row_col(agent0[:, 1])
-  new_red = row_col_to_cell((red_pos + MOVES[actions[:, 0]]) % GRID_SIZE)
-  new_blue = row_col_to_cell((blue_pos + MOVES[actions[:, 1]]) % GRID_SIZE)
+  moved = _moved_player_and_coin_positions(positions, actions)
+  new_red = row_col_to_cell(moved.red_player)
+  new_blue = row_col_to_cell(moved.blue_player)
   red_coin = agent0[:, 2]
   blue_coin = agent0[:, 3]
   expected_agent0 = np.stack([new_red, new_blue, red_coin, blue_coin], axis=1)
