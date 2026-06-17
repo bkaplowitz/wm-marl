@@ -3,52 +3,33 @@ from __future__ import annotations
 import jax
 import numpy as np
 
-from world_marl.coin_flow import (
+from world_marl.action_flow import (
   action_prediction_metrics,
   classifier_joint_action_policy,
   collect_policy_state_actions,
-  compare_joint_action_distributions,
-  collect_policy_joint_actions,
-  collect_random_joint_actions,
   collect_random_state_actions,
   conditional_flow_joint_action_policy,
   fit_feature_normalizer,
+  predict_action_logits,
+  sample_conditional_action_flow_points,
+  sampled_action_prediction_metrics,
+  split_state_action_dataset,
+  train_action_classifier,
+  train_conditional_action_flow,
+)
+from world_marl.coin_flow import (
+  compare_joint_action_distributions,
   decode_joint_actions,
-  fit_joint_action_gmm,
-  flow_joint_action_policy,
   joint_action_counts,
   joint_action_probabilities,
   normalize_joint_actions,
-  predict_action_logits,
-  sample_conditional_action_flow_points,
-  sample_flow_points,
-  sampled_action_prediction_metrics,
-  split_joint_actions,
-  split_state_action_dataset,
   summarize_joint_action_distribution,
-  train_action_classifier,
-  train_conditional_action_flow,
-  train_flow_for_gmm,
   uniform_joint_actions,
 )
 from world_marl.envs.jaxmarl_coin_adapter import JaxMARLCoinGameVectorAdapter
 
 
-def test_joint_action_gmm_roundtrip_and_collection():
-  adapter = JaxMARLCoinGameVectorAdapter(num_envs=2, max_cycles=5, seed=0)
-  try:
-    dataset = collect_random_joint_actions(
-      adapter,
-      np.random.default_rng(0),
-      rollout_steps=5,
-    )
-  finally:
-    adapter.close()
-
-  assert dataset.joint_actions.shape == (10, 2)
-  assert dataset.rewards.shape == (10, 2)
-  assert dataset.action_dim == 5
-
+def test_joint_action_normalization_roundtrip():
   normalized = normalize_joint_actions(
     np.asarray([[0, 2], [4, 4]], dtype=np.int32),
     action_dim=5,
@@ -56,35 +37,6 @@ def test_joint_action_gmm_roundtrip_and_collection():
   np.testing.assert_allclose(normalized, np.asarray([[-1.0, 0.0], [1.0, 1.0]]))
   decoded = decode_joint_actions(normalized, action_dim=5)
   np.testing.assert_array_equal(decoded, np.asarray([[0, 2], [4, 4]]))
-
-  fitted = fit_joint_action_gmm(
-    dataset.joint_actions,
-    action_dim=dataset.action_dim,
-    std=0.2,
-  )
-  assert fitted.gmm.means.shape[1] == 2
-  assert fitted.action_pairs.shape[1] == 2
-  np.testing.assert_allclose(np.asarray(fitted.gmm.weights).sum(), 1.0, atol=1e-6)
-
-
-def test_policy_joint_action_collection_uses_policy_actions():
-  adapter = JaxMARLCoinGameVectorAdapter(num_envs=2, max_cycles=5, seed=0)
-  try:
-    dataset = collect_policy_joint_actions(
-      adapter,
-      lambda observations: np.ones(
-        (observations.shape[0], observations.shape[1]),
-        dtype=np.int32,
-      ),
-      rollout_steps=4,
-    )
-  finally:
-    adapter.close()
-
-  assert dataset.joint_actions.shape == (8, 2)
-  np.testing.assert_array_equal(dataset.joint_actions, np.ones((8, 2), dtype=np.int32))
-  assert dataset.rewards.shape == (8, 2)
-  assert np.isfinite(dataset.rewards).all()
 
 
 def test_state_action_collection_and_split():
@@ -137,43 +89,6 @@ def test_policy_state_action_collection_uses_policy_actions():
 
   assert dataset.state_features.shape == (6, 72)
   np.testing.assert_array_equal(dataset.joint_actions, np.full((6, 2), 2))
-
-
-def test_flow_training_samples_joint_actions():
-  joint_actions = np.asarray(
-    [[0, 0], [0, 0], [2, 2], [2, 2], [2, 2]],
-    dtype=np.int32,
-  )
-  fitted = fit_joint_action_gmm(joint_actions, action_dim=3, std=0.2)
-  state, losses = train_flow_for_gmm(
-    jax.random.PRNGKey(0),
-    fitted.gmm,
-    train_steps=2,
-    batch_size=8,
-    learning_rate=1e-3,
-    hidden_dims=(8,),
-  )
-
-  assert len(losses) == 2
-  points = sample_flow_points(
-    state,
-    jax.random.PRNGKey(1),
-    num_samples=4,
-    integration_steps=4,
-  )
-  assert points.shape == (4, 2)
-
-  policy = flow_joint_action_policy(
-    state,
-    num_envs=2,
-    action_dim=3,
-    seed=2,
-    integration_steps=4,
-  )
-  actions = policy(np.zeros((2, 2, 4, 4, 3), dtype=np.float32))
-  assert actions.shape == (2, 2)
-  assert actions.min() >= 0
-  assert actions.max() < 3
 
 
 def test_action_classifier_learns_synthetic_state_action_mapping():
@@ -345,19 +260,7 @@ def test_joint_action_distribution_metrics_identify_better_match():
   assert summary["top_pairs"][0]["action_pair"] == [0, 0]
 
 
-def test_joint_action_split_and_uniform_sampler():
-  actions = np.asarray(
-    [[0, 0], [0, 1], [1, 0], [1, 1], [2, 2]],
-    dtype=np.int32,
-  )
-  train_actions, validation_actions = split_joint_actions(
-    actions,
-    validation_fraction=0.4,
-    seed=0,
-  )
-  assert train_actions.shape == (3, 2)
-  assert validation_actions.shape == (2, 2)
-
+def test_uniform_sampler():
   uniform = uniform_joint_actions(
     np.random.default_rng(0),
     num_samples=10,

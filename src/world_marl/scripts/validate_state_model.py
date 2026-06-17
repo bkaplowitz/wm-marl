@@ -188,7 +188,7 @@ def main() -> None:
       "scalar_observation_keys": adapter.scalar_observation_keys,
     }
     if args.target_source == "checkpoint":
-      from world_marl.scripts.train_coin_flow import load_checkpoint_policy
+      from world_marl.coin_flow_experiments import load_checkpoint_policy
 
       log_stage(args, f"loading source checkpoint from {args.policy_checkpoint}")
       source_policy, source_metadata = load_checkpoint_policy(

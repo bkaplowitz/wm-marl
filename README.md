@@ -124,66 +124,23 @@ changed-feature, delta, reward-event, and nearest-frame recovery metrics are
 reported so we can see what the representation recovers before adding a harder
 generative model.
 
-### Flow Matching / GMMs on JaxMARL CoinGame
+### Conditional Action Flow on JaxMARL CoinGame
 
-The flow-matching code is exercised against native JaxMARL CoinGame. The
-workflow models a two-agent joint-action distribution:
+The current flow-matching milestone targets native JaxMARL CoinGame and models
+the trained behavior policy's state-conditioned joint-action distribution:
 
-1. collect joint actions from JaxMARL CoinGame, either from random actions or
-   from a saved vector-mode IPPO/MAPPO checkpoint;
-2. split those actions into train and heldout samples;
-3. fit an empirical 2D GMM over normalized train action pairs
-   `(player_0, player_1)`;
-4. train the JAX flow-matching MLP on that GMM;
-5. sample 2D points from the learned flow;
-6. decode samples back to the two agents' discrete action IDs;
-7. compare the generated distribution against heldout rollout actions,
-   train-empirical, GMM-sample, and uniform baselines.
-
-Checkpoint-source imitation run:
-
-```bash
-uv run world-marl-train-coin-flow \
-  --target-source checkpoint \
-  --policy-checkpoint runs/<e2e_run>/run_000/checkpoint \
-  --num-envs 8 \
-  --collect-steps 2048 \
-  --train-steps 5000 \
-  --batch-size 512 \
-  --generated-samples 1024 \
-  --eval-episodes 50 \
-  --max-cycles 500
+```text
+p(joint_action_t | state_t)
 ```
 
-Larger random-source local/A100 run:
-
-Each run writes `config.json`, `versions.json`, `rollout_dataset.json`,
-`distribution_split.json`, `gmm.json`, `metrics.jsonl`,
-`training_summary.json`, `generated_action_samples.json`,
-`distribution_validation.json`, `distribution_validation.png`, `checkpoint/`,
-`evaluation.json`, and `outcome.json`. The command prints stage updates and
-progress bars by default; add `--quiet` to only emit the final JSON outcome.
-The PNG is a distribution dashboard with probability heatmaps, absolute-error
-heatmaps versus heldout actions, sorted action-pair probabilities, and JS/total
-variation bars.
-
-The key distribution fields are:
-
-- `distribution_validation.flow_js_divergence`
-- `distribution_validation.uniform_js_divergence`
-- `distribution_validation.strict_flow_beats_uniform`
-- `distribution_validation.reload_max_abs_point_diff`
-
-Milestone 1 state-conditioned action validation uses the same rollout source,
-but changes the objective from global `p(joint_action)` to
-`p(joint_action | state)`. It collects `(state_t, joint_action_t)` pairs,
-trains a conditional flow over normalized joint actions, trains a categorical
-behavior-cloning baseline as a discrete sanity check, and evaluates on heldout
-states. This is policy-distribution imitation, not a dynamics/world-model step.
+It collects `(state_t, joint_action_t)` pairs from either random actions or a
+saved vector-mode IPPO/MAPPO checkpoint, trains a conditional flow over
+normalized joint actions, trains a categorical behavior-cloning baseline as a
+discrete sanity check, and evaluates on heldout states. This is
+policy-distribution imitation, not a dynamics/world-model step.
 
 ```bash
 uv run world-marl-train-coin-flow \
-  --conditional-action \
   --target-source checkpoint \
   --policy-checkpoint runs/<e2e_run>/run_000/checkpoint \
   --num-envs 128 \
