@@ -321,6 +321,52 @@ def test_simulate_ippo_model_rollout_uses_reward_done_provider():
     )
 
 
+def test_simulate_ippo_model_rollout_jits_with_multiple_integration_steps():
+    # Guards the jitted lax.scan rollout: with integration_steps > 1 the inner
+    # Euler integrator is itself a lax.scan, so a stray host-sync (e.g. a float()
+    # left inside the scan body) would raise ConcretizationTypeError here rather
+    # than passing silently as it can with integration_steps == 1.
+    from world_marl.world_model import simulate_ippo_model_rollout
+
+    config = VectorWorldModelConfig(
+        state_dim=4,
+        num_agents=2,
+        action_dim=3,
+        hidden_dims=(8,),
+        integration_steps=3,
+    )
+    model_state = create_world_model_state(jax.random.PRNGKey(0), config)
+    policy_state = create_ippo_state(
+        jax.random.PRNGKey(1),
+        (4,),
+        3,
+        IPPOConfig(network_arch="mlp", num_minibatches=1),
+    )
+
+    def reward_done_fn(states, actions, next_states):
+        del states, next_states
+        return actions.astype(jnp.float32), (actions == 2).astype(jnp.float32)
+
+    rollout = simulate_ippo_model_rollout(
+        model_state,
+        policy_state,
+        jnp.zeros((3, 2, 4), dtype=jnp.float32),
+        jax.random.PRNGKey(2),
+        rollout_steps=4,
+        config=config,
+        reward_done_fn=reward_done_fn,
+    )
+
+    assert rollout.batch.observations.shape == (4, 6, 4)
+    assert rollout.batch.actions.shape == (4, 6)
+    assert rollout.batch.rewards.shape == (4, 6)
+    assert rollout.last_values.shape == (6,)
+    assert bool(jnp.all(jnp.isfinite(rollout.batch.observations)))
+    assert bool(jnp.all(jnp.isfinite(rollout.batch.rewards)))
+    assert bool(jnp.all(jnp.isfinite(rollout.last_values)))
+    assert np.isfinite(rollout.metrics["rollout_mean_reward"])
+
+
 def test_fit_world_model_steps_returns_per_step_loss_history():
     from world_marl.world_model import create_world_model_state
     from world_marl.world_model_training import fit_world_model_steps

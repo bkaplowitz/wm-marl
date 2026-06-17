@@ -1,12 +1,11 @@
 """Evaluation loops for vectorized Melting Pot adapters."""
 
 from __future__ import annotations
-from world_marl.scripts.train_e2e import TrainingAdapter
 
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import jax
 import jax.numpy as jnp
@@ -22,6 +21,9 @@ from world_marl.envs.meltingpot_adapter import (
 )
 from world_marl.training import build_central_observations
 from world_marl.training import ObservationMode
+
+if TYPE_CHECKING:
+    from world_marl.scripts.train_e2e import TrainingAdapter
 
 
 PolicyFn = Callable[[np.ndarray], np.ndarray]

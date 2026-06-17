@@ -166,18 +166,79 @@ def _simulate_model_rollout(
         raise ValueError(f"unsupported algorithm {algorithm!r}")
     is_mappo = algorithm == "mappo"
 
-    obs_rows = []
-    central_obs_rows = []
-    action_rows = []
-    log_prob_rows = []
-    reward_rows = []
-    done_rows = []
-    value_rows = []
-    current_states = initial_states
-    num_envs = current_states.shape[0]
+    stacked, final_states, last_values = _rollout_scan(
+        model_state,
+        policy_state,
+        initial_states,
+        rng,
+        rollout_steps=rollout_steps,
+        config=config,
+        is_mappo=is_mappo,
+        reward_done_fn=reward_done_fn,
+    )
+
+    common = {
+        "observations": stacked["observations"],
+        "actions": stacked["actions"],
+        "log_probs": stacked["log_probs"],
+        "rewards": stacked["rewards"],
+        "dones": stacked["dones"],
+        "values": stacked["values"],
+    }
+    if is_mappo:
+        batch = MAPPORolloutBatch(
+            central_observations=stacked["central_observations"],
+            **common,
+        )
+    else:
+        batch = RolloutBatch(**common)
+    # float() metrics stay on the host, outside the jitted scan above.
+    mean_reward = float(jnp.mean(batch.rewards))
+    return RolloutResult(
+        batch=batch,
+        next_observations=final_states,
+        last_values=last_values,
+        metrics={
+            "rollout_mean_reward": mean_reward,
+            "model_rollout_mean_reward": mean_reward,
+        },
+    )
+
+
+@partial(
+    jax.jit,
+    static_argnames=("rollout_steps", "config", "is_mappo", "reward_done_fn"),
+)
+def _rollout_scan(
+    model_state: TrainState,
+    policy_state: TrainState,
+    initial_states: jnp.ndarray,
+    rng: jax.Array,
+    *,
+    rollout_steps: int,
+    config: VectorWorldModelConfig,
+    is_mappo: bool,
+    reward_done_fn: RewardDoneFn,
+) -> tuple[dict[str, jnp.ndarray], jnp.ndarray, jnp.ndarray]:
+    """Fused imagined rollout: one ``lax.scan`` step per imagined timestep. This prevents interdevice unloading and loading that would otherwise slow down the runtime substantially and keeps all training on the GPU.
+
+    The carry is ``(rng, current_states)`` and ``scan`` stacks every per-step
+    transition along axis 0.``.
+    This is safe:
+    - ``reward_done_fn`` is a static argument because it is a plain callable, not a
+    pytree
+    - a module-level provider such as ``coin_game_reward_done`` keeps a
+    stable identity, so this compiles once and reuses the cache across every PPO
+    update
+    - The inner Euler integrator in ``predict_next`` is itself a
+    ``lax.scan``, so the two nest.
+
+    """
+    num_envs = initial_states.shape[0]
     num_actors = num_envs * config.num_agents
 
-    for _ in range(rollout_steps):
+    def step(carry, _):
+        rng, current_states = carry
         flat_states = current_states.reshape((num_actors, config.state_dim))
         central_states = (
             build_vector_central(current_states, jnp).reshape((num_actors, -1))
@@ -197,49 +258,30 @@ def _simulate_model_rollout(
         rewards, dones = _reward_done(
             reward_done_fn, current_states, env_actions, next_states, config
         )
-
-        obs_rows.append(flat_states)
+        outputs = {
+            "observations": flat_states,
+            "actions": actions,
+            "log_probs": log_probs,
+            "rewards": rewards.reshape((num_actors,)),
+            "dones": dones.reshape((num_actors,)),
+            "values": values,
+        }
         if is_mappo:
-            central_obs_rows.append(central_states)
-        action_rows.append(actions)
-        log_prob_rows.append(log_probs)
-        reward_rows.append(rewards.reshape((num_actors,)))
-        done_rows.append(dones.reshape((num_actors,)))
-        value_rows.append(values)
-        current_states = next_states
+            outputs["central_observations"] = central_states
+        return (rng, next_states), outputs
 
-    last_flat = current_states.reshape((num_actors, config.state_dim))
+    (rng, final_states), stacked = jax.lax.scan(
+        step, (rng, initial_states), xs=None, length=rollout_steps
+    )
+
+    last_flat = final_states.reshape((num_actors, config.state_dim))
     last_central = (
-        build_vector_central(current_states, jnp).reshape((num_actors, -1))
+        build_vector_central(final_states, jnp).reshape((num_actors, -1))
         if is_mappo
         else None
     )
     last_values = _apply_vector_policy(policy_state, last_flat, last_central)[1]
-
-    common = {
-        "observations": jnp.stack(obs_rows, axis=0),
-        "actions": jnp.stack(action_rows, axis=0),
-        "log_probs": jnp.stack(log_prob_rows, axis=0),
-        "rewards": jnp.stack(reward_rows, axis=0),
-        "dones": jnp.stack(done_rows, axis=0),
-        "values": jnp.stack(value_rows, axis=0),
-    }
-    if is_mappo:
-        batch = MAPPORolloutBatch(
-            central_observations=jnp.stack(central_obs_rows, axis=0),
-            **common,
-        )
-    else:
-        batch = RolloutBatch(**common)
-    return RolloutResult(
-        batch=batch,
-        next_observations=current_states,
-        last_values=last_values,
-        metrics={
-            "rollout_mean_reward": float(jnp.mean(batch.rewards)),
-            "model_rollout_mean_reward": float(jnp.mean(batch.rewards)),
-        },
-    )
+    return stacked, final_states, last_values
 
 
 def _apply_vector_policy(
