@@ -1,10 +1,13 @@
 """Helper utils for envs."""
+
 from collections.abc import Iterable
 from typing import Any
 import jax
 
 import jax.numpy as jnp
+
 Agent = Any
+
 
 def batchify(
     x: jax.Array, agents: dict[Agent, jax.Array], num_actors: int
