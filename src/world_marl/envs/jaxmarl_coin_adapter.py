@@ -1,4 +1,4 @@
-"""Expose JaxMARL's CoinGame through the shared vector-adapter interface."""
+"""Expose JaxMARL's CoinGame through the MeltingPot vector-adapter interface."""
 
 from __future__ import annotations
 
@@ -18,6 +18,8 @@ from world_marl.envs.meltingpot_adapter import VectorStep
 _COIN_PAYOFF = inspect.signature(CoinGame.__init__).parameters["payoff_matrix"].default
 
 
+# NB: This uses a compatible interface with MeltingPot. As a result it comes at the cost of complete vectorization/avoiding transferring from gppu to cu
+# That would require something like jaxmarl.envs.coingame.
 class JaxMARLCoinGameVectorAdapter:
     """Wrap JaxMARL CoinGame as a synchronous, numpy-batched vector environment.
 

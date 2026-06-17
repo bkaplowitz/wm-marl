@@ -511,3 +511,6 @@ def summarize_samples(samples: jax.Array) -> dict[str, jax.Array]:
         "mean": jnp.mean(samples, axis=0),
         "std": jnp.std(samples, axis=0),
     }
+
+
+# TODO: plot rollout from env against world model generated env fit.

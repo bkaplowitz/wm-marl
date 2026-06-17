@@ -37,3 +37,6 @@ def load_metadata(checkpoint_dir: str | Path) -> dict[str, Any]:
     """Load checkpoint metadata."""
     metadata_path = Path(checkpoint_dir) / "metadata.json"
     return json.loads(metadata_path.read_text(encoding="utf-8"))
+
+
+# TODO: add checkpointing for world model
