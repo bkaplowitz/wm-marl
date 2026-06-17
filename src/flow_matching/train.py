@@ -14,6 +14,7 @@ from flow_matching.paths import (
     conditional_vector_field,
     flow_schedule,
     sample_conditional_path,
+    sample_discrete_conditional_path,
 )
 
 
@@ -122,5 +123,48 @@ def conditioned_train_step(
     """Run one optimizer update for the conditioned vector field."""
     loss, grads = jax.value_and_grad(conditioned_flow_matching_loss)(
         state.params, state.apply_fn, key, x1, cond_vars, flow_type
+    )
+    return state.apply_gradients(grads=grads), loss
+
+
+def conditioned_discrete_flow_matching_loss(
+    params: Any,
+    apply_fn: Any,  # model.apply
+    key: jax.Array,
+    z: jax.Array,
+    cond_vars: jax.Array,
+    num_categories: int,
+) -> jax.Array:
+    """Discrete FM token-wise cross-entropy loss (discrete.md Alg 8).
+
+    Corrupt the clean tokens ``z`` ``(B, d)`` via the mixture path, one-hot the
+    noisy tokens into the ``(B, d*V)`` model input (same width the continuous
+    field uses), read per-factor logits back as ``(B, d, V)``, and sum the
+    cross-entropy of the clean tokens over factors. Discrete twin of
+    :func:`conditioned_flow_matching_loss` (MSE -> NLL); the model is reused
+    unchanged because ``d*V`` equals its target width.
+    """
+    num_factors = z.shape[1]
+    key_t, key_path = jax.random.split(key)
+    t = jax.random.uniform(key_t, shape=(z.shape[0], 1))
+    xt = sample_discrete_conditional_path(key_path, z, t, num_categories)
+    xt_onehot = jax.nn.one_hot(xt, num_categories).reshape(z.shape[0], -1)
+    logits = apply_fn({"params": params}, xt_onehot, t, cond_vars)
+    logits = logits.reshape(z.shape[0], num_factors, num_categories)
+    token_ce = optax.softmax_cross_entropy_with_integer_labels(logits, z)
+    return jnp.mean(jnp.sum(token_ce, axis=-1))
+
+
+@partial(jax.jit, static_argnames="num_categories")
+def conditioned_discrete_train_step(
+    state: TrainState,
+    key: jax.Array,
+    z: jax.Array,
+    cond_vars: jax.Array,
+    num_categories: int,
+) -> tuple[TrainState, jax.Array]:
+    """Run one optimizer update for the discrete denoiser."""
+    loss, grads = jax.value_and_grad(conditioned_discrete_flow_matching_loss)(
+        state.params, state.apply_fn, key, z, cond_vars, num_categories
     )
     return state.apply_gradients(grads=grads), loss

@@ -73,3 +73,43 @@ def conditional_vector_field(
 def conditional_score(xt: jax.Array, x1: jax.Array, t: jax.Array) -> jax.Array:
     """Evaluate the conditional score for the Gaussian path."""
     return (alpha(t) * x1 - xt) / (gaussian_beta(t) ** 2)
+
+
+def sample_discrete_conditional_path(
+    key: jax.Array,
+    z: jax.Array,
+    t: jax.Array,
+    num_categories: int,
+) -> jax.Array:
+    """Sample x_t from the factorized mixture path (discrete.md Alg 8, lines 5-9).
+
+    Per factor, keep the clean token z_j with prob kappa_t (= ``alpha(t) = t``) and
+    otherwise draw a noise token from the uniform source p_init. This is the
+    discrete twin of :func:`sample_conditional_path`.
+
+    ``z`` holds integer tokens of shape ``(B, d)``; ``t`` is ``(B, 1)``. Returns
+    integer tokens ``x_t`` of shape ``(B, d)``.
+    """
+    key_mask, key_noise = jax.random.split(key)
+    kappa = alpha(t)  # (B, 1), broadcast over the d factors
+    mask = jax.random.bernoulli(key_mask, kappa, z.shape)
+    noise = jax.random.randint(key_noise, z.shape, 0, num_categories)
+    return jnp.where(mask, z, noise)
+
+
+def mixture_path_rates(
+    posterior: jax.Array,
+    t: jax.Array,
+    eps: float = 1e-4,
+) -> jax.Array:
+    """Off-diagonal CTMC jump rates q_j(v) from the denoising posterior.
+
+    The conditional generator "jump to the clean token z at rate kappa_dot/(1 -
+    kappa)" generates the mixture path, so the marginal rate is the posterior-
+    average ``p_{1|t}(v|x) * kappa_dot/(1 - kappa)``. With the linear schedule
+    ``kappa_t = t`` (``kappa_dot = 1``) this is ``posterior / (1 - t)``. The
+    ``eps`` floor mirrors the schedule guards in this module and is inert on the
+    left-endpoint sampling grid where ``1 - t >= 1/steps``. Discrete twin of
+    :func:`conditional_vector_field`.
+    """
+    return posterior / jnp.maximum(1.0 - t, eps)

@@ -15,12 +15,14 @@ import numpy as np
 
 from world_marl.algs.ippo import IPPOConfig, create_train_state as create_ippo_state
 from world_marl.algs.mappo import MAPPOConfig, create_train_state as create_mappo_state
+from world_marl.envs.jaxmarl_coin_adapter import JaxMARLCoinGameVectorAdapter
 from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
 from world_marl.logging import timestamp, to_jsonable
 from world_marl.training import central_observation_shape
 from world_marl.world_model import (
     VectorTransitionBatch,
     VectorWorldModelConfig,
+    _pack_discrete_tokens,
     create_world_model_state,
     predict_next,
     train_world_model_step,
@@ -30,6 +32,8 @@ from world_marl.world_model_training import (
     collect_random_transition_batch,
     concatenate_transition_batches,
 )
+
+TrainingAdapter = MeltingPotVectorAdapter | JaxMARLCoinGameVectorAdapter
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,6 +54,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--integration-steps", type=int, default=8)
+    parser.add_argument(
+        "--flow-type",
+        choices=("gaussian", "linear", "discrete"),
+        default="gaussian",
+    )
+    parser.add_argument(
+        "--num-categories",
+        type=int,
+        default=9,
+        help=(
+            "Per-factor category count (coins = 9). Selects the discrete model "
+            "when --flow-type discrete, and is also the cell cardinality used to "
+            "decode per-factor categorical accuracy for every flow type."
+        ),
+    )
     parser.add_argument("--out-dir", default="runs")
     args = parser.parse_args()
     for name in (
@@ -71,14 +90,24 @@ def main() -> None:
     run_dir = Path(args.out_dir) / f"verify_fitted_env_{timestamp()}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    adapter = MeltingPotVectorAdapter(
-        substrate=args.substrate,
-        num_envs=args.num_envs,
-        max_cycles=args.max_cycles,
-        observation_size=args.observation_size,
-        include_observation_scalars=args.include_observation_scalars,
-        append_agent_id=args.append_agent_id,
-    )
+    if args.substrate == "coins":
+        # Mirror train_e2e: "coins" is the JaxMARL CoinGame vector env (state_dim
+        # 36, strided (3,3,4) one-hots), the only substrate where the discrete
+        # flow's per-factor categorical structure applies.
+        adapter = JaxMARLCoinGameVectorAdapter(
+            num_envs=args.num_envs,
+            max_cycles=args.max_cycles,
+            seed=args.seed,
+        )
+    else:
+        adapter = MeltingPotVectorAdapter(
+            substrate=args.substrate,
+            num_envs=args.num_envs,
+            max_cycles=args.max_cycles,
+            observation_size=args.observation_size,
+            include_observation_scalars=args.include_observation_scalars,
+            append_agent_id=args.append_agent_id,
+        )
     try:
         rng = jax.random.PRNGKey(args.seed)
         rng, policy_key = jax.random.split(rng)
@@ -115,6 +144,10 @@ def main() -> None:
             hidden_dims=(args.hidden_dim, args.hidden_dim),
             learning_rate=args.learning_rate,
             integration_steps=args.integration_steps,
+            flow_type=args.flow_type,
+            num_categories=(
+                args.num_categories if args.flow_type == "discrete" else 0
+            ),
         )
         rng, model_key = jax.random.split(rng)
         model_state = create_world_model_state(model_key, config)
@@ -171,7 +204,7 @@ def main() -> None:
 
 def _create_initial_policy_state(
     args: argparse.Namespace,
-    adapter: MeltingPotVectorAdapter,
+    adapter: TrainingAdapter,
     key: jax.Array,
 ):
     observation_shape = (int(np.prod(adapter.observation_shape)),)
@@ -197,7 +230,7 @@ def _create_initial_policy_state(
 
 def _collect_combined_batch(
     args: argparse.Namespace,
-    adapter: MeltingPotVectorAdapter,
+    adapter: TrainingAdapter,
     policy_state,
     observations: np.ndarray,
     rng: jax.Array,
@@ -282,6 +315,12 @@ def _summarize_fit(
         "next_state": {
             "mse": float(np.mean(np.square(pred_next - true_next))),
             "mae": float(np.mean(np.abs(pred_next - true_next))),
+            "categorical_accuracy": _categorical_accuracy(
+                predicted_next_states,
+                heldout_batch.next_states,
+                config,
+                args.num_categories,
+            ),
             "true_delta_norm": _numeric_summary(true_delta_norms),
             "predicted_delta_norm": _numeric_summary(pred_delta_norms),
         },
@@ -292,6 +331,32 @@ def _summarize_fit(
             "true": _numeric_summary(true_dones.reshape(-1)),
         },
     }
+
+
+def _categorical_accuracy(
+    predicted_next_states: jnp.ndarray,
+    true_next_states: jnp.ndarray,
+    config: VectorWorldModelConfig,
+    num_categories: int,
+) -> float | None:
+    """Per-factor cell accuracy via the strided coin decode, flow-type agnostic.
+
+    Decode both the prediction and the truth to per-channel cell tokens with the
+    same strided argmax (``_pack_discrete_tokens`` at cardinality
+    ``num_categories``) and report the fraction that match. Because the decode is
+    independent of how the prediction was produced, discrete and the continuous
+    baselines (whose soft outputs are argmax-ed to the most likely cell) are
+    measured on identical factors. Returns ``None`` when the state is not a clean
+    multiple of ``num_categories`` (e.g. observation scalars appended), where the
+    coin layout no longer holds.
+    """
+    transition_dim = config.num_agents * config.state_dim
+    if num_categories <= 0 or transition_dim % num_categories != 0:
+        return None
+    decode_config = dataclasses.replace(config, num_categories=num_categories)
+    pred_tokens = _pack_discrete_tokens(jnp.asarray(predicted_next_states), decode_config)
+    true_tokens = _pack_discrete_tokens(jnp.asarray(true_next_states), decode_config)
+    return float(np.mean(np.asarray(pred_tokens) == np.asarray(true_tokens)))
 
 
 def _delta_norms(next_states: jnp.ndarray, states: jnp.ndarray) -> np.ndarray:

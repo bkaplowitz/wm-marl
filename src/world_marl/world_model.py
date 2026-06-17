@@ -12,8 +12,13 @@ import jax.numpy as jnp
 from flax.training.train_state import TrainState
 
 from flow_matching.models import MLPVectorField
-from flow_matching.simulate import sample_conditioned_flow
+from flow_matching.simulate import (
+    sample_conditioned_discrete_flow,
+    sample_conditioned_flow,
+)
 from flow_matching.train import (
+    conditioned_discrete_flow_matching_loss,
+    conditioned_discrete_train_step,
     conditioned_flow_matching_loss,
     conditioned_train_step,
     create_conditioned_train_state,
@@ -46,6 +51,9 @@ class VectorWorldModelConfig:
     learning_rate: float = 1e-3
     integration_steps: int = 8
     flow_type: str = "gaussian"
+    # Categorical cardinality V for discrete flow matching (0 = continuous). For
+    # CoinGame each (3, 3, 4) grid is 4 channels one-hot over 9 cells, so V = 9.
+    num_categories: int = 0
 
 
 def create_world_model_state(
@@ -69,8 +77,13 @@ def world_model_loss(
     batch: VectorTransitionBatch,
     config: VectorWorldModelConfig,
 ) -> jnp.ndarray:
-    x1 = _pack_transition(batch.next_states, config)
     cond_vars = _pack_cond_vars(batch.states, batch.actions, config)
+    if config.flow_type == "discrete":
+        z = _pack_discrete_tokens(batch.next_states, config)
+        return conditioned_discrete_flow_matching_loss(
+            params, apply_fn, key, z, cond_vars, config.num_categories
+        )
+    x1 = _pack_transition(batch.next_states, config)
     return conditioned_flow_matching_loss(
         params, apply_fn, key, x1, cond_vars, config.flow_type
     )
@@ -83,8 +96,13 @@ def train_world_model_step(
     batch: VectorTransitionBatch,
     config: VectorWorldModelConfig,
 ) -> tuple[TrainState, jnp.ndarray]:
-    x1 = _pack_transition(batch.next_states, config)
     cond_vars = _pack_cond_vars(batch.states, batch.actions, config)
+    if config.flow_type == "discrete":
+        z = _pack_discrete_tokens(batch.next_states, config)
+        return conditioned_discrete_train_step(
+            state, key, z, cond_vars, config.num_categories
+        )
+    x1 = _pack_transition(batch.next_states, config)
     return conditioned_train_step(state, key, x1, cond_vars, config.flow_type)
 
 
@@ -97,6 +115,17 @@ def predict_next(
 ) -> jnp.ndarray:
     """Sample next-states from the conditioned flow (next-state only)."""
     cond_vars = _pack_cond_vars(states, actions, config)
+    if config.flow_type == "discrete":
+        tokens = sample_conditioned_discrete_flow(
+            state.apply_fn,
+            state.params,
+            key,
+            cond_vars,
+            num_factors=_num_factors(config),
+            num_categories=config.num_categories,
+            steps=config.integration_steps,
+        )
+        return _unpack_discrete_onehot(tokens, config)
     transition = sample_conditioned_flow(
         state.apply_fn,
         state.params,
@@ -342,6 +371,55 @@ def _unpack_transition(
     return transition.reshape(
         (transition.shape[0], config.num_agents, config.state_dim)
     )
+
+
+def _channels_per_agent(config: VectorWorldModelConfig) -> int:
+    """Categorical groups inside one agent's grid (CoinGame: 4 channels)."""
+    return config.state_dim // config.num_categories
+
+
+def _num_factors(config: VectorWorldModelConfig) -> int:
+    """Total categorical factors d packed across agents (CoinGame: 2*4 = 8)."""
+    return config.num_agents * _channels_per_agent(config)
+
+
+def _pack_discrete_tokens(
+    next_states: jnp.ndarray,
+    config: VectorWorldModelConfig,
+) -> jnp.ndarray:
+    """Decode one-hot grids ``(B, A, state_dim)`` to integer tokens ``(B, d)``.
+
+    CoinGame flattens each ``(3, 3, 4)`` grid in C-order, so the layout is
+    position-major / channel-minor: index ``= pos*C + ch``. Reshaping to
+    ``(B, A, V, C)`` therefore puts positions on axis -2 and channels on axis -1,
+    and ``argmax`` over the V positions recovers each channel's occupied cell --
+    the same decode ``coin_game_reward_done`` trusts. A plain contiguous
+    ``reshape(B, d, V)`` would scramble channels into positions.
+    """
+    num_categories = config.num_categories
+    channels = _channels_per_agent(config)
+    grid = next_states.reshape(
+        (next_states.shape[0], config.num_agents, num_categories, channels)
+    )
+    tokens = jnp.argmax(grid, axis=2)  # (B, A, C): occupied position per channel
+    return tokens.reshape((next_states.shape[0], _num_factors(config)))
+
+
+def _unpack_discrete_onehot(
+    tokens: jnp.ndarray,
+    config: VectorWorldModelConfig,
+) -> jnp.ndarray:
+    """Inverse of :func:`_pack_discrete_tokens`: tokens ``(B, d)`` -> one-hot grids.
+
+    Rebuilds the strided position-major / channel-minor layout so the returned
+    ``(B, A, state_dim)`` one-hot floats are byte-compatible with env states.
+    """
+    num_categories = config.num_categories
+    channels = _channels_per_agent(config)
+    per_agent = tokens.reshape((tokens.shape[0], config.num_agents, channels))
+    onehot = jax.nn.one_hot(per_agent, num_categories)  # (B, A, C, V)
+    grid = jnp.swapaxes(onehot, -1, -2)  # (B, A, V, C): position-major
+    return grid.reshape((tokens.shape[0], config.num_agents, config.state_dim))
 
 
 def _flat_state_dim(config: VectorWorldModelConfig) -> int:

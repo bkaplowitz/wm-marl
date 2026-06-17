@@ -134,7 +134,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wm-hidden-dim", type=int, default=128)
     parser.add_argument("--wm-integration-steps", type=int, default=10)
     parser.add_argument(
-        "--wm-flow-type", choices=("gaussian", "linear"), default="linear"
+        "--wm-flow-type",
+        choices=("gaussian", "linear", "discrete"),
+        default="linear",
+    )
+    parser.add_argument(
+        "--wm-num-categories",
+        type=int,
+        default=9,
+        help=(
+            "Per-factor category count for --wm-flow-type discrete (coins = 9); "
+            "must divide num_agents*state_dim. Ignored by the continuous flows."
+        ),
     )
 
     parser.add_argument("--learning-rate", type=float, default=5e-4)
@@ -481,14 +492,27 @@ def run_training(
                 [random_start_states, policy_start_states],
                 axis=0,
             )
+            state_dim = int(prefit_batch.states.shape[-1])
+            num_categories = (
+                args.wm_num_categories if args.wm_flow_type == "discrete" else 0
+            )
+            if args.wm_flow_type == "discrete":
+                transition_dim = adapter.num_agents * state_dim
+                if num_categories <= 0 or transition_dim % num_categories != 0:
+                    raise ValueError(
+                        "--wm-num-categories must be > 0 and divide "
+                        f"num_agents*state_dim={transition_dim} for discrete flow "
+                        f"(got {num_categories})"
+                    )
             world_model_config = VectorWorldModelConfig(
-                state_dim=int(prefit_batch.states.shape[-1]),
+                state_dim=state_dim,
                 num_agents=adapter.num_agents,
                 action_dim=adapter.action_dim,
                 hidden_dims=(args.wm_hidden_dim, args.wm_hidden_dim),
                 learning_rate=args.wm_learning_rate,
                 integration_steps=args.wm_integration_steps,
                 flow_type=args.wm_flow_type,
+                num_categories=num_categories,
             )
             rng, world_model_key = jax.random.split(rng)
             world_model_state = create_world_model_state(
