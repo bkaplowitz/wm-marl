@@ -598,6 +598,11 @@ def run_training(
                     rollout_steps=args.rollout_steps,
                     gamma=config.gamma,
                     gae_lambda=config.gae_lambda,
+                    **(
+                        {"observation_mode": observation_mode}
+                        if args.algorithm == "mappo"
+                        else {}
+                    ),
                 )
                 observations = rollout.next_observations
             update_metrics: dict[str, Any] = {}

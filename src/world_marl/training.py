@@ -152,6 +152,7 @@ def collect_mappo_rollout(
     rollout_steps: int,
     gamma: float = 0.99,
     gae_lambda: float = 0.95,
+    observation_mode: ObservationMode = "image",
 ) -> RolloutResult:
     """Collect a rollout for MAPPO with centralized critic observations."""
     if rollout_steps < 1:
@@ -179,7 +180,10 @@ def collect_mappo_rollout(
 
     current_observations = observations
     for _ in range(rollout_steps):
-        central_observations = build_central_observations(current_observations)
+        central_observations = build_central_observations(
+            current_observations,
+            observation_mode=observation_mode,
+        )
         flat_observations = flatten_agent_batch(current_observations)
         flat_central_observations = flatten_agent_batch(central_observations)
         rng, action_rng = jax.random.split(rng)
@@ -209,7 +213,10 @@ def collect_mappo_rollout(
         completed_lengths.extend(step.completed_lengths)
         current_observations = step.observations
 
-    last_central_observations = build_central_observations(current_observations)
+    last_central_observations = build_central_observations(
+        current_observations,
+        observation_mode=observation_mode,
+    )
     last_flat_observations = flatten_agent_batch(current_observations)
     last_flat_central_observations = flatten_agent_batch(last_central_observations)
     last_values = value_fn(
