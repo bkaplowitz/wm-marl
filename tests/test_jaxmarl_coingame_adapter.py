@@ -1,9 +1,33 @@
 from __future__ import annotations
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 
-from world_marl.envs.jaxmarl_coin_adapter import JaxMARLCoinGameVectorAdapter
+from world_marl.envs.jaxmarl_coin_adapter import (
+    JaxMARLCoinGameVectorAdapter,
+    coin_game_reward_done,
+)
+
+_STAY = 4  # MOVES[4] == [0, 0]; post-move cell equals the player's cell
+
+
+def _coin_state(red, blue, red_coin, blue_coin) -> jnp.ndarray:
+    """Build a ``(1, 2, 36)`` CoinGame state from four ``(row, col)`` positions.
+
+    Only agent 0's grid is populated; ``coin_game_reward_done`` reads
+    ``states[:, 0]`` and ignores agent 1's view, so it is left zeroed.
+    Channel order mirrors ``_abs_position``: [red_player, blue_player,
+    red_coin, blue_coin].
+    """
+    grid = np.zeros((3, 3, 4), dtype=np.float32)
+    grid[red[0], red[1], 0] = 1.0
+    grid[blue[0], blue[1], 1] = 1.0
+    grid[red_coin[0], red_coin[1], 2] = 1.0
+    grid[blue_coin[0], blue_coin[1], 3] = 1.0
+    state = np.zeros((1, 2, 36), dtype=np.float32)
+    state[0, 0] = grid.reshape(-1)
+    return jnp.asarray(state)
 
 
 def test_jaxmarl_coin_adapter_reset_step_shapes_and_random_actions():
@@ -95,5 +119,85 @@ def test_jaxmarl_coin_adapter_completes_episode_and_trusts_internal_reset():
             [np.asarray(ref_obs[a], dtype=np.float32) for a in adapter.agents], axis=1
         )
         np.testing.assert_allclose(step.observations, expected_obs)
+    finally:
+        adapter.close()
+
+
+def test_coin_game_reward_done_payoff_branches_are_exact():
+    # Both players "stay" so the post-move cell is the player's own cell; each
+    # scenario triggers exactly one pickup branch with all other entities on
+    # distinct cells. Expected rewards read straight off [[1, 1, -2], [1, 1, -2]].
+    actions = jnp.asarray([[_STAY, _STAY]], dtype=jnp.int32)
+    cases = {
+        # red picks up red coin -> red +1, blue 0
+        "red_takes_red": (
+            _coin_state(red=(0, 0), blue=(1, 1), red_coin=(0, 0), blue_coin=(2, 2)),
+            [1.0, 0.0],
+        ),
+        # red picks up blue coin -> red +1 (rb), blue -2 (penalty)
+        "red_takes_blue": (
+            _coin_state(red=(0, 0), blue=(1, 1), red_coin=(2, 2), blue_coin=(0, 0)),
+            [1.0, -2.0],
+        ),
+        # blue picks up red coin -> red -2 (penalty), blue +1 (br)
+        "blue_takes_red": (
+            _coin_state(red=(1, 1), blue=(0, 0), red_coin=(0, 0), blue_coin=(2, 2)),
+            [-2.0, 1.0],
+        ),
+        # blue picks up blue coin -> red 0, blue +1
+        "blue_takes_blue": (
+            _coin_state(red=(1, 1), blue=(0, 0), red_coin=(2, 2), blue_coin=(0, 0)),
+            [0.0, 1.0],
+        ),
+        # no overlap -> no reward
+        "neither": (
+            _coin_state(red=(0, 0), blue=(1, 1), red_coin=(2, 2), blue_coin=(0, 2)),
+            [0.0, 0.0],
+        ),
+    }
+    for name, (state, expected) in cases.items():
+        rewards, dones = coin_game_reward_done(state, actions, state)
+        np.testing.assert_allclose(
+            np.asarray(rewards), np.asarray([expected]), err_msg=name
+        )
+        np.testing.assert_array_equal(np.asarray(dones), np.zeros((1, 2)))
+
+
+def test_coin_game_reward_done_applies_move_before_matching():
+    # Red is NOT on the coin initially; action 0 (right -> [0, 1]) moves it onto
+    # the coin. A fn that ignored env_actions would score this 0 and fail.
+    state = _coin_state(red=(0, 0), blue=(1, 1), red_coin=(0, 1), blue_coin=(2, 2))
+    actions = jnp.asarray([[0, _STAY]], dtype=jnp.int32)  # red moves right, blue stays
+    rewards, _ = coin_game_reward_done(state, actions, state)
+    np.testing.assert_allclose(np.asarray(rewards), np.asarray([[1.0, 0.0]]))
+
+
+def test_coin_game_reward_done_matches_real_env_reward():
+    # Validate the analytic oracle against CoinGame's emitted reward over real
+    # transitions, away from the episode boundary (large max_cycles) where the
+    # env zeros reward but the analytic fn does not. This pins channel order,
+    # the agent-0 absolute frame, and the action-column convention.
+    adapter = JaxMARLCoinGameVectorAdapter(
+        num_envs=1, max_cycles=100, seed=0, auto_reset=False
+    )
+    try:
+        observations = adapter.reset()
+        rng = np.random.default_rng(0)
+        nonzero_seen = False
+        for _ in range(50):
+            actions = adapter.sample_actions(rng)
+            step = adapter.step(actions)
+            rewards, dones = coin_game_reward_done(
+                jnp.asarray(observations),
+                jnp.asarray(actions),
+                jnp.asarray(step.observations),
+            )
+            np.testing.assert_allclose(
+                np.asarray(rewards), step.rewards, err_msg="reward mismatch"
+            )
+            np.testing.assert_array_equal(np.asarray(dones), step.dones)
+            nonzero_seen = nonzero_seen or bool(np.any(step.rewards != 0.0))
+            observations = step.observations
+        assert nonzero_seen, "test never exercised a nonzero reward"
     finally:
         adapter.close()
