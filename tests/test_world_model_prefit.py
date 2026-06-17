@@ -13,6 +13,7 @@ from world_marl.world_model import (
     VectorWorldModelConfig,
     _pack_cond_vars,
     _pack_transition,
+    _sanitize_predicted_states,
     _transition_dim,
     _unpack_transition,
     create_world_model_state,
@@ -123,6 +124,35 @@ def test_world_model_pack_transition_round_trips_next_state_only():
     assert packed.shape == (2, _transition_dim(config))
     assert packed.shape == (2, 4)
     np.testing.assert_allclose(np.asarray(unpacked), np.asarray(next_states))
+
+
+def test_world_model_sanitizes_generated_states_to_finite_clip_range():
+    config = VectorWorldModelConfig(
+        state_dim=4,
+        num_agents=2,
+        action_dim=3,
+        state_clip_min=0.0,
+        state_clip_max=1.0,
+    )
+    states = jnp.asarray(
+        [
+            [
+                [jnp.nan, jnp.inf, -jnp.inf, -0.25],
+                [0.25, 0.75, 1.25, 2.0],
+            ]
+        ],
+        dtype=jnp.float32,
+    )
+
+    sanitized = _sanitize_predicted_states(states, config)
+
+    assert bool(jnp.all(jnp.isfinite(sanitized)))
+    assert float(jnp.min(sanitized)) >= 0.0
+    assert float(jnp.max(sanitized)) <= 1.0
+    np.testing.assert_allclose(
+        np.asarray(sanitized),
+        np.asarray([[[0.0, 1.0, 0.0, 0.0], [0.25, 0.75, 1.0, 1.0]]]),
+    )
 
 
 def test_world_model_loss_ignores_reward_and_done_fields():

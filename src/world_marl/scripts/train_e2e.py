@@ -133,6 +133,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wm-learning-rate", type=float, default=1e-3)
     parser.add_argument("--wm-hidden-dim", type=int, default=128)
     parser.add_argument("--wm-integration-steps", type=int, default=10)
+    parser.add_argument("--wm-state-clip-min", type=float, default=0.0)
+    parser.add_argument("--wm-state-clip-max", type=float, default=1.0)
     parser.add_argument(
         "--wm-policy-warmup-updates",
         type=int,
@@ -174,6 +176,8 @@ def parse_args() -> argparse.Namespace:
             parser.error("--wm-hidden-dim must be >= 1")
         if args.wm_integration_steps < 1:
             parser.error("--wm-integration-steps must be >= 1")
+        if args.wm_state_clip_min >= args.wm_state_clip_max:
+            parser.error("--wm-state-clip-min must be less than --wm-state-clip-max")
         if args.wm_policy_warmup_updates < 0:
             parser.error("--wm-policy-warmup-updates must be >= 0")
     elif args.wm_policy_warmup_updates:
@@ -634,6 +638,8 @@ def run_training(
                 learning_rate=args.wm_learning_rate,
                 integration_steps=args.wm_integration_steps,
                 flow_type=args.wm_flow_type,
+                state_clip_min=args.wm_state_clip_min,
+                state_clip_max=args.wm_state_clip_max,
             )
             rng, world_model_key = jax.random.split(rng)
             world_model_state = create_world_model_state(

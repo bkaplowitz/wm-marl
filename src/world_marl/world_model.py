@@ -46,6 +46,8 @@ class VectorWorldModelConfig:
     learning_rate: float = 1e-3
     integration_steps: int = 8
     flow_type: str = "gaussian"
+    state_clip_min: float | None = 0.0
+    state_clip_max: float | None = 1.0
 
 
 def create_world_model_state(
@@ -105,7 +107,7 @@ def predict_next(
         dim=_transition_dim(config),
         steps=config.integration_steps,
     )
-    return _unpack_transition(transition, config)
+    return _sanitize_predicted_states(_unpack_transition(transition, config), config)
 
 
 def simulate_ippo_model_rollout(
@@ -204,6 +206,15 @@ def _simulate_model_rollout(
         metrics={
             "rollout_mean_reward": mean_reward,
             "model_rollout_mean_reward": mean_reward,
+            "model_rollout_observation_finite_fraction": _finite_fraction(
+                batch.observations
+            ),
+            "model_rollout_observation_abs_max": _abs_max(batch.observations),
+            "model_rollout_value_finite_fraction": _finite_fraction(batch.values),
+            "model_rollout_last_value_finite_fraction": _finite_fraction(last_values),
+            "model_rollout_log_prob_finite_fraction": _finite_fraction(
+                batch.log_probs
+            ),
         },
     )
 
@@ -342,6 +353,30 @@ def _unpack_transition(
     return transition.reshape(
         (transition.shape[0], config.num_agents, config.state_dim)
     )
+
+
+def _sanitize_predicted_states(
+    states: jnp.ndarray,
+    config: VectorWorldModelConfig,
+) -> jnp.ndarray:
+    posinf = 1e6 if config.state_clip_max is None else config.state_clip_max
+    neginf = -1e6 if config.state_clip_min is None else config.state_clip_min
+    states = jnp.nan_to_num(states, nan=0.0, posinf=posinf, neginf=neginf)
+    if config.state_clip_min is not None:
+        states = jnp.maximum(states, config.state_clip_min)
+    if config.state_clip_max is not None:
+        states = jnp.minimum(states, config.state_clip_max)
+    return states
+
+
+def _finite_fraction(values: jnp.ndarray) -> float:
+    finite = jnp.isfinite(values)
+    return float(jnp.mean(finite.astype(jnp.float32)))
+
+
+def _abs_max(values: jnp.ndarray) -> float:
+    finite_values = jnp.where(jnp.isfinite(values), values, 0.0)
+    return float(jnp.max(jnp.abs(finite_values)))
 
 
 def _flat_state_dim(config: VectorWorldModelConfig) -> int:
