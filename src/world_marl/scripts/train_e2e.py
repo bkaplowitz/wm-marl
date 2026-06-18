@@ -134,6 +134,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wm-hidden-dim", type=int, default=128)
     parser.add_argument("--wm-integration-steps", type=int, default=10)
     parser.add_argument(
+        "--wm-policy-warmup-updates",
+        type=int,
+        default=0,
+        help=(
+            "With --prefit-world-model, run this many real-env PPO/MAPPO "
+            "updates before collecting policy rollouts for the world model."
+        ),
+    )
+    parser.add_argument(
         "--wm-flow-type",
         choices=("gaussian", "linear", "discrete"),
         default="linear",
@@ -176,6 +185,10 @@ def parse_args() -> argparse.Namespace:
             parser.error("--wm-hidden-dim must be >= 1")
         if args.wm_integration_steps < 1:
             parser.error("--wm-integration-steps must be >= 1")
+        if args.wm_policy_warmup_updates < 0:
+            parser.error("--wm-policy-warmup-updates must be >= 0")
+    elif args.wm_policy_warmup_updates:
+        parser.error("--wm-policy-warmup-updates requires --prefit-world-model")
     return args
 
 
@@ -184,6 +197,9 @@ def algorithm_config_from_args(
     control: str | None = None,
 ) -> IPPOConfig | MAPPOConfig:
     config_cls = MAPPOConfig if args.algorithm == "mappo" else IPPOConfig
+    uses_vector_policy = args.substrate == "coins" or getattr(
+        args, "prefit_world_model", False
+    )
     config = config_cls(
         learning_rate=args.learning_rate,
         gamma=args.gamma,
@@ -195,7 +211,7 @@ def algorithm_config_from_args(
         update_epochs=args.update_epochs,
         num_minibatches=args.num_minibatches,
         activation=args.activation,
-        network_arch="mlp" if getattr(args, "prefit_world_model", False) else "cnn",
+        network_arch="mlp" if uses_vector_policy else "cnn",
     )
     if control == "shuffle-rewards":
         return replace(config, shuffle_rewards=True)
@@ -402,6 +418,82 @@ def evaluate_checkpoint_subprocess(
     return json.loads(result.stdout.strip())
 
 
+def _collect_real_env_rollout(
+    args: argparse.Namespace,
+    collect_fn,
+    adapter: TrainingAdapter,
+    train_state,
+    observations: np.ndarray,
+    rollout_key: jax.Array,
+    config: IPPOConfig | MAPPOConfig,
+    observation_mode: ObservationMode,
+) -> Any:
+    kwargs: dict[str, Any] = {}
+    if args.algorithm == "mappo":
+        kwargs["observation_mode"] = observation_mode
+    return collect_fn(
+        adapter,
+        train_state,
+        observations,
+        rollout_key,
+        rollout_steps=args.rollout_steps,
+        gamma=config.gamma,
+        gae_lambda=config.gae_lambda,
+        **kwargs,
+    )
+
+
+def _warmup_policy_before_world_model(
+    args: argparse.Namespace,
+    *,
+    adapter: TrainingAdapter,
+    train_state,
+    observations: np.ndarray,
+    rng: jax.Array,
+    config: IPPOConfig | MAPPOConfig,
+    update_fn,
+    collect_fn,
+    observation_mode: ObservationMode,
+    freeze_policy: bool,
+) -> tuple[Any, np.ndarray, jax.Array, list[dict[str, Any]]]:
+    rows: list[dict[str, Any]] = []
+    env_steps = 0
+    for update in range(1, args.wm_policy_warmup_updates + 1):
+        rng, rollout_key, update_key = jax.random.split(rng, 3)
+        rollout = _collect_real_env_rollout(
+            args,
+            collect_fn,
+            adapter,
+            train_state,
+            observations,
+            rollout_key,
+            config,
+            observation_mode,
+        )
+        observations = rollout.next_observations
+        update_metrics: dict[str, Any] = {}
+        if not freeze_policy:
+            train_state, update_metrics = update_fn(
+                train_state,
+                rollout.batch,
+                rollout.last_values,
+                update_key,
+            )
+            jax.block_until_ready(jnp.asarray(update_metrics["total_loss"]))
+        env_steps += args.num_envs * args.rollout_steps
+        rows.append(
+            to_jsonable(
+                {
+                    "update": update,
+                    "env_steps": env_steps,
+                    **rollout.metrics,
+                    **{f"ppo/{key}": value for key, value in update_metrics.items()},
+                }
+            )
+        )
+    return train_state, observations, rng, rows
+
+
 def run_training(
     args: argparse.Namespace,
     *,
@@ -415,7 +507,9 @@ def run_training(
     rng = jax.random.PRNGKey(seed)
     config = algorithm_config_from_args(args, control)
     freeze_policy = control == "freeze-policy"
-    observation_mode: ObservationMode = "vector" if args.prefit_world_model else "image"
+    observation_mode: ObservationMode = (
+        "vector" if args.substrate == "coins" or args.prefit_world_model else "image"
+    )
 
     logger.write_json(
         "config.json",
@@ -467,7 +561,58 @@ def run_training(
         world_model_prefit_loss = None
         reward_done_fn = None
 
+        if args.algorithm == "mappo":
+            update_fn = jax.jit(
+                lambda state, batch, last_values, update_rng: mappo_update(
+                    state,
+                    batch,
+                    last_values,
+                    update_rng,
+                    config,
+                )
+            )
+            collect_fn = collect_mappo_rollout
+        else:
+            update_fn = jax.jit(
+                lambda state, batch, last_values, update_rng: ppo_update(
+                    state,
+                    batch,
+                    last_values,
+                    update_rng,
+                    config,
+                )
+            )
+            collect_fn = collect_rollout
+
         if args.prefit_world_model:
+            if args.wm_policy_warmup_updates:
+                train_state, observations, rng, warmup_rows = (
+                    _warmup_policy_before_world_model(
+                        args,
+                        adapter=adapter,
+                        train_state=train_state,
+                        observations=observations,
+                        rng=rng,
+                        config=config,
+                        update_fn=update_fn,
+                        collect_fn=collect_fn,
+                        observation_mode=observation_mode,
+                        freeze_policy=freeze_policy,
+                    )
+                )
+                logger.write_json(
+                    "world_model_policy_warmup.json",
+                    {
+                        "updates": args.wm_policy_warmup_updates,
+                        "real_env_steps": (
+                            args.wm_policy_warmup_updates
+                            * args.num_envs
+                            * args.rollout_steps
+                        ),
+                        "rows": warmup_rows,
+                    },
+                )
+
             reward_done_fn = _make_reward_done_fn(args)
             random_batch, observations, random_start_states = (
                 collect_random_transition_batch(
@@ -539,6 +684,12 @@ def run_training(
                 {
                     "random_rollouts": args.wm_random_rollouts,
                     "initial_policy_rollouts": args.wm_initial_rollouts,
+                    "policy_warmup_updates": args.wm_policy_warmup_updates,
+                    "policy_warmup_real_env_steps": (
+                        args.wm_policy_warmup_updates
+                        * args.num_envs
+                        * args.rollout_steps
+                    ),
                     "fit_steps": args.wm_fit_steps,
                     "transition_count": int(prefit_batch.states.shape[0]),
                     "loss": float(world_model_prefit_loss),
@@ -548,29 +699,6 @@ def run_training(
             )
             logger.plot_world_model_loss(loss_history)
             observations = adapter.reset()
-
-        if args.algorithm == "mappo":
-            update_fn = jax.jit(
-                lambda state, batch, last_values, update_rng: mappo_update(
-                    state,
-                    batch,
-                    last_values,
-                    update_rng,
-                    config,
-                )
-            )
-            collect_fn = collect_mappo_rollout
-        else:
-            update_fn = jax.jit(
-                lambda state, batch, last_values, update_rng: ppo_update(
-                    state,
-                    batch,
-                    last_values,
-                    update_rng,
-                    config,
-                )
-            )
-            collect_fn = collect_rollout
 
         updates = max(1, args.total_env_steps // (args.num_envs * args.rollout_steps))
         env_steps = 0
@@ -610,14 +738,15 @@ def run_training(
                     )
             else:
                 rng, rollout_key, update_key = jax.random.split(rng, 3)
-                rollout = collect_fn(
+                rollout = _collect_real_env_rollout(
+                    args,
+                    collect_fn,
                     adapter,
                     train_state,
                     observations,
                     rollout_key,
-                    rollout_steps=args.rollout_steps,
-                    gamma=config.gamma,
-                    gae_lambda=config.gae_lambda,
+                    config,
+                    observation_mode,
                 )
                 observations = rollout.next_observations
             update_metrics: dict[str, Any] = {}

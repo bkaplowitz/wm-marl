@@ -57,6 +57,8 @@ def _tiny_coins_args(out_dir: Path, monkeypatch) -> argparse.Namespace:
         "1",
         "--wm-hidden-dim",
         "8",
+        "--wm-policy-warmup-updates",
+        "1",
         "--out-dir",
         str(out_dir),
     ]
@@ -87,3 +89,4 @@ def test_coins_prefit_run_training_completes_and_writes_artifacts(
     assert (run_dir / "reload_evaluation.json").exists()
     assert (run_dir / "outcome.json").exists()
     assert (run_dir / "world_model_prefit.json").exists()
+    assert (run_dir / "world_model_policy_warmup.json").exists()

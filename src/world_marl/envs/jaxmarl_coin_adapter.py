@@ -50,6 +50,7 @@ class JaxMARLCoinGameVectorAdapter:
         if max_cycles < 1:
             raise ValueError("max_cycles must be >= 1")
 
+        self.substrate = "coins"
         self.num_envs = num_envs
         self.max_cycles = max_cycles
         self.auto_reset = auto_reset

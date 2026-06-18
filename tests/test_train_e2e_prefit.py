@@ -52,6 +52,13 @@ def test_prefit_world_model_selects_mlp_policy_config():
     assert algorithm_config_from_args(_args(algorithm="mappo")).network_arch == "mlp"
 
 
+def test_coins_selects_mlp_policy_config_without_prefit():
+    args = _args(algorithm="ippo")
+    args.prefit_world_model = False
+
+    assert algorithm_config_from_args(args).network_arch == "mlp"
+
+
 def test_prefit_ippo_policy_uses_flat_vector_observations(dummy_env_factory):
     adapter = MeltingPotVectorAdapter(num_envs=1, env_factory=dummy_env_factory)
     try:
