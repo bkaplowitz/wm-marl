@@ -1,21 +1,9 @@
-"""Discrete CoinGame dynamics modeling.
-
-This module validates the first explicit world-model target:
-
-    p(next_joint_state, reward | state, joint_action)
-
-The state is the native JaxMARL CoinGame vector observation. Each agent observes
-a flattened ``3 x 3 x 4`` one-hot grid, so the model predicts each next entity
-cell with a categorical head instead of treating grid positions as continuous
-numbers. Deterministic next positions use one-hot targets; stochastic coin
-respawns and terminal resets use distributional targets.
-"""
+"""Small categorical next-state baseline for JaxMARL CoinGame diagnostics."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
@@ -23,53 +11,25 @@ import numpy as np
 import optax
 from flax import linen as nn
 from flax.training.train_state import TrainState
+from jaxmarl.environments.coin_game.coin_game import MOVES
 
-from world_marl.evaluation import PolicyFn
+from world_marl.envs.jaxmarl_coin_adapter import coin_game_reward_done
+from world_marl.world_model import VectorTransitionBatch
 
 GRID_SIZE = 3
 NUM_CELLS = GRID_SIZE * GRID_SIZE
 NUM_ENTITIES = 4
 DEFAULT_ACTION_DIM = 5
 
-# JaxMARL CoinGame actions: right, left, up, down, stay.
-MOVES = np.asarray(
-    [
-        [0, 1],
-        [0, -1],
-        [1, 0],
-        [-1, 0],
-        [0, 0],
-    ],
-    dtype=np.int32,
-)
-PAYOFF_MATRIX = np.asarray([[1, 1, -2], [1, 1, -2]], dtype=np.float32)
-
 
 @dataclass(frozen=True)
-class CoinDynamicsDataset:
-    """Collected CoinGame transition rows."""
+class SoftmaxBaselineData:
+    """CoinGame transitions decoded into categorical entity-cell targets."""
 
-    observations: np.ndarray
-    actions: np.ndarray
-    rewards: np.ndarray
-    dones: np.ndarray
-    next_observations: np.ndarray
-    action_dim: int
-    num_agents: int
-    num_envs: int
-    rollout_steps: int
-
-    @property
-    def num_transitions(self) -> int:
-        return int(self.actions.shape[0])
-
-
-@dataclass(frozen=True)
-class CoinDynamicsData:
-    """CoinGame transitions decoded into entity-cell targets."""
-
+    states: np.ndarray
     positions: np.ndarray
     actions: np.ndarray
+    next_states: np.ndarray
     next_positions: np.ndarray
     rewards: np.ndarray
     dones: np.ndarray
@@ -82,8 +42,8 @@ class CoinDynamicsData:
 
 
 @dataclass(frozen=True)
-class CoinDynamicsConfig:
-    """Training config for the categorical CoinGame dynamics model."""
+class SoftmaxBaselineConfig:
+    """Training config for the categorical next-state baseline."""
 
     hidden_dims: tuple[int, ...] = (256, 256)
     learning_rate: float = 1e-3
@@ -94,7 +54,7 @@ class CoinDynamicsConfig:
 
 
 @dataclass(frozen=True)
-class CoinDynamicsPredictions:
+class SoftmaxBaselinePredictions:
     """Model logits for next entity positions."""
 
     next_position_logits: np.ndarray
@@ -105,7 +65,7 @@ class CoinDynamicsPredictions:
 
 
 @dataclass(frozen=True)
-class CoinDynamicsTargets:
+class SoftmaxBaselineTargets:
     """Categorical supervision for next entity positions."""
 
     distributions: np.ndarray
@@ -117,124 +77,78 @@ class CoinDynamicsTargets:
         return float(-np.sum(self.distributions * np.log(clipped), axis=-1).mean())
 
 
-@dataclass(frozen=True)
-class _MovedCoinPositions:
-    """Player and coin coordinates after applying a joint action."""
+class DiscreteCoinSoftmaxModel(nn.Module):
+    """MLP predicting categorical next-cell logits for each entity."""
 
-    red_player: np.ndarray
-    blue_player: np.ndarray
-    red_coin: np.ndarray
-    blue_coin: np.ndarray
-
-
-class DiscreteCoinDynamicsModel(nn.Module):
-    """Predict next CoinGame entity cells from state and joint action."""
-
-    num_agents: int = 2
-    action_dim: int = DEFAULT_ACTION_DIM
-    hidden_dims: tuple[int, ...] = (256, 256)
+    num_agents: int
+    action_dim: int
+    hidden_dims: tuple[int, ...]
 
     @nn.compact
     def __call__(self, positions: jax.Array, actions: jax.Array) -> jax.Array:
-        position_features = jax.nn.one_hot(
-            positions.astype(jnp.int32),
-            NUM_CELLS,
-        ).reshape((positions.shape[0], -1))
-        action_features = jax.nn.one_hot(
-            actions.astype(jnp.int32),
-            self.action_dim,
-        ).reshape((actions.shape[0], -1))
+        batch_size = positions.shape[0]
+        position_features = jax.nn.one_hot(positions, NUM_CELLS).reshape(
+            (batch_size, -1)
+        )
+        action_features = jax.nn.one_hot(actions, self.action_dim).reshape(
+            (batch_size, -1)
+        )
         x = jnp.concatenate([position_features, action_features], axis=-1)
-        for hidden_dim in self.hidden_dims:
-            x = nn.Dense(hidden_dim)(x)
-            x = nn.silu(x)
+        for width in self.hidden_dims:
+            x = nn.relu(nn.Dense(width)(x))
         logits = nn.Dense(self.num_agents * NUM_ENTITIES * NUM_CELLS)(x)
-        return logits.reshape(
-            (positions.shape[0], self.num_agents, NUM_ENTITIES, NUM_CELLS)
-        )
+        return logits.reshape((batch_size, self.num_agents, NUM_ENTITIES, NUM_CELLS))
 
 
-def collect_coin_dynamics_dataset(
-    adapter,
-    rng: np.random.Generator,
+def prepare_softmax_data(
+    batch: VectorTransitionBatch,
     *,
-    rollout_steps: int,
-    policy_fn: PolicyFn | None = None,
-    progress_callback: Callable[[int], None] | None = None,
-) -> CoinDynamicsDataset:
-    """Collect ``(state, joint_action, reward, done, next_state)`` transitions."""
-    if rollout_steps < 1:
-        raise ValueError("rollout_steps must be >= 1")
+    action_dim: int = DEFAULT_ACTION_DIM,
+) -> SoftmaxBaselineData:
+    """Decode a shared vector transition batch for the categorical baseline."""
+    states = np.asarray(batch.states, dtype=np.float32)
+    actions = np.asarray(batch.actions, dtype=np.int32)
+    next_states = np.asarray(batch.next_states, dtype=np.float32)
+    rewards = np.asarray(batch.rewards, dtype=np.float32)
+    dones = np.asarray(batch.dones, dtype=np.float32)
 
-    observations = adapter.reset()
-    obs_rows: list[np.ndarray] = []
-    action_rows: list[np.ndarray] = []
-    reward_rows: list[np.ndarray] = []
-    done_rows: list[np.ndarray] = []
-    next_obs_rows: list[np.ndarray] = []
-    expected_shape = (adapter.num_envs, adapter.num_agents)
+    if states.ndim != 3 or tuple(states.shape[1:]) != (2, 36):
+        raise ValueError(
+            "CoinGame softmax baseline expects states shaped [N, 2, 36], "
+            f"got {states.shape}"
+        )
+    if next_states.shape != states.shape:
+        raise ValueError(
+            f"next state shape mismatch: {next_states.shape} vs {states.shape}"
+        )
+    if actions.shape != states.shape[:2]:
+        raise ValueError(
+            f"action shape mismatch: {actions.shape} vs {states.shape[:2]}"
+        )
+    if rewards.shape != states.shape[:2] or dones.shape != states.shape[:2]:
+        raise ValueError("rewards and dones must be shaped [N, 2]")
+    if action_dim != DEFAULT_ACTION_DIM:
+        raise ValueError("CoinGame softmax baseline currently expects five actions")
 
-    for step_index in range(rollout_steps):
-        if policy_fn is None:
-            actions = adapter.sample_actions(rng)
-        else:
-            actions = np.asarray(policy_fn(observations), dtype=np.int32)
-        if actions.shape != expected_shape:
-            raise ValueError(
-                f"actions must have shape {expected_shape}, got {actions.shape}"
-            )
-
-        step = adapter.step(actions)
-        obs_rows.append(np.asarray(observations, dtype=np.float32).copy())
-        action_rows.append(actions.copy())
-        reward_rows.append(step.rewards.copy())
-        done_rows.append(step.dones.copy())
-        next_obs_rows.append(np.asarray(step.observations, dtype=np.float32).copy())
-        observations = step.observations
-        if progress_callback is not None:
-            progress_callback(step_index + 1)
-
-    return CoinDynamicsDataset(
-        observations=np.concatenate(obs_rows, axis=0).astype(np.float32),
-        actions=np.concatenate(action_rows, axis=0).astype(np.int32),
-        rewards=np.concatenate(reward_rows, axis=0).astype(np.float32),
-        dones=np.concatenate(done_rows, axis=0).astype(np.float32),
-        next_observations=np.concatenate(next_obs_rows, axis=0).astype(np.float32),
-        action_dim=int(adapter.action_dim),
-        num_agents=int(adapter.num_agents),
-        num_envs=int(adapter.num_envs),
-        rollout_steps=int(rollout_steps),
+    return SoftmaxBaselineData(
+        states=states,
+        positions=decode_coin_positions(states),
+        actions=actions,
+        next_states=next_states,
+        next_positions=decode_coin_positions(next_states),
+        rewards=rewards,
+        dones=dones,
+        action_dim=action_dim,
+        num_agents=states.shape[1],
     )
 
 
-def prepare_coin_dynamics_data(dataset: CoinDynamicsDataset) -> CoinDynamicsData:
-    """Decode native CoinGame vector observations into categorical positions."""
-    if dataset.num_agents != 2 or dataset.action_dim != DEFAULT_ACTION_DIM:
-        raise ValueError(
-            "CoinGame dynamics currently expects two agents and five actions"
-        )
-    if tuple(dataset.observations.shape[1:]) != (2, 36):
-        raise ValueError(
-            "CoinGame dynamics expects observations shaped [N, 2, 36], "
-            f"got {dataset.observations.shape}"
-        )
-    return CoinDynamicsData(
-        positions=decode_coin_positions(dataset.observations),
-        actions=dataset.actions,
-        next_positions=decode_coin_positions(dataset.next_observations),
-        rewards=dataset.rewards,
-        dones=dataset.dones,
-        action_dim=dataset.action_dim,
-        num_agents=dataset.num_agents,
-    )
-
-
-def split_coin_dynamics_data(
-    data: CoinDynamicsData,
+def split_softmax_data(
+    data: SoftmaxBaselineData,
     *,
     validation_fraction: float,
     seed: int,
-) -> tuple[CoinDynamicsData, CoinDynamicsData]:
+) -> tuple[SoftmaxBaselineData, SoftmaxBaselineData]:
     """Shuffle transitions into train and validation splits."""
     if not 0.0 < validation_fraction < 1.0:
         raise ValueError("validation_fraction must be between 0 and 1")
@@ -246,67 +160,54 @@ def split_coin_dynamics_data(
     indices = np.random.default_rng(seed).permutation(data.num_transitions)
     validation_indices = indices[:validation_size]
     train_indices = indices[validation_size:]
-    return _take_coin_dynamics(data, train_indices), _take_coin_dynamics(
-        data, validation_indices
+    return _take_softmax_data(data, train_indices), _take_softmax_data(
+        data,
+        validation_indices,
     )
 
 
 def decode_coin_positions(observations: np.ndarray) -> np.ndarray:
-    """Decode ``[N, 2, 36]`` or ``[N, 2, 3, 3, 4]`` observations to cell ids."""
+    """Decode flat CoinGame vectors into entity cell ids.
+
+    The return shape is ``[transition, agent, entity]``. Entity order is
+    red player, blue player, red coin, blue coin in each agent's observation
+    frame.
+    """
     observations = np.asarray(observations, dtype=np.float32)
-    if observations.ndim == 3 and observations.shape[-1] == 36:
-        grids = observations.reshape(
-            (
-                observations.shape[0],
-                observations.shape[1],
-                GRID_SIZE,
-                GRID_SIZE,
-                NUM_ENTITIES,
-            )
-        )
-    elif observations.ndim == 5 and observations.shape[2:] == (
-        GRID_SIZE,
-        GRID_SIZE,
-        NUM_ENTITIES,
-    ):
-        grids = observations
-    else:
+    if observations.ndim != 3 or observations.shape[1:] != (2, 36):
         raise ValueError(
-            "expected CoinGame observations shaped [N, 2, 36] or [N, 2, 3, 3, 4], "
-            f"got {observations.shape}"
+            f"CoinGame observations must be shaped [N, 2, 36], got {observations.shape}"
         )
-    flat = grids.reshape((grids.shape[0], grids.shape[1], NUM_CELLS, NUM_ENTITIES))
+    grids = observations.reshape((observations.shape[0], 2, GRID_SIZE, GRID_SIZE, 4))
+    flat = grids.reshape((observations.shape[0], 2, NUM_CELLS, 4))
     return np.argmax(flat, axis=2).astype(np.int32)
 
 
 def encode_coin_positions(positions: np.ndarray) -> np.ndarray:
-    """Encode entity-cell ids back into flattened CoinGame observations."""
+    """Encode entity cell ids into flat CoinGame vector observations."""
     positions = np.asarray(positions, dtype=np.int32)
     if positions.ndim != 3 or positions.shape[1:] != (2, NUM_ENTITIES):
-        raise ValueError(f"expected positions shaped [N, 2, 4], got {positions.shape}")
-    if np.any(positions < 0) or np.any(positions >= NUM_CELLS):
-        raise ValueError("CoinGame positions must be in [0, 8]")
+        raise ValueError(f"positions must be shaped [N, 2, 4], got {positions.shape}")
+    if np.any((positions < 0) | (positions >= NUM_CELLS)):
+        raise ValueError("positions must be valid grid cell ids")
+
     observations = np.zeros(
-        (positions.shape[0], 2, NUM_CELLS, NUM_ENTITIES), dtype=np.float32
+        (positions.shape[0], 2, NUM_CELLS, NUM_ENTITIES),
+        dtype=np.float32,
     )
-    rows = np.arange(positions.shape[0])[:, None, None]
-    agents = np.arange(2)[None, :, None]
-    entities = np.arange(NUM_ENTITIES)[None, None, :]
-    observations[rows, agents, positions, entities] = 1.0
+    transition_index = np.arange(positions.shape[0])[:, None, None]
+    agent_index = np.arange(2)[None, :, None]
+    entity_index = np.arange(NUM_ENTITIES)[None, None, :]
+    observations[transition_index, agent_index, positions, entity_index] = 1.0
     return observations.reshape((positions.shape[0], 2, 36))
 
 
-def coin_dynamics_target_distributions(
-    data: CoinDynamicsData,
+def softmax_target_distributions(
+    data: SoftmaxBaselineData,
     *,
     stochastic_target_weight: float = 1.0,
-) -> CoinDynamicsTargets:
-    """Build categorical targets for deterministic and stochastic transitions.
-
-    Most entities have an exact next cell. If a coin is collected, its respawn
-    location is sampled by the environment RNG, so that coin's target is uniform
-    over cells. Terminal resets are also treated as uniform over all entities.
-    """
+) -> SoftmaxBaselineTargets:
+    """Build categorical targets for deterministic and stochastic transitions."""
     if stochastic_target_weight <= 0.0:
         raise ValueError("stochastic_target_weight must be positive")
     distributions = np.eye(NUM_CELLS, dtype=np.float32)[data.next_positions]
@@ -328,18 +229,18 @@ def coin_dynamics_target_distributions(
     weights[blue_respawn, 1, 2] = stochastic_target_weight
     distributions[terminal, :, :, :] = uniform
     weights[terminal, :, :] = stochastic_target_weight
-    return CoinDynamicsTargets(distributions=distributions, weights=weights)
+    return SoftmaxBaselineTargets(distributions=distributions, weights=weights)
 
 
-def create_coin_dynamics_train_state(
+def create_softmax_train_state(
     rng: jax.Array,
     *,
-    config: CoinDynamicsConfig,
+    config: SoftmaxBaselineConfig,
     num_agents: int = 2,
     action_dim: int = DEFAULT_ACTION_DIM,
 ) -> TrainState:
-    """Initialize a discrete dynamics train state."""
-    model = DiscreteCoinDynamicsModel(
+    """Initialize the categorical baseline train state."""
+    model = DiscreteCoinSoftmaxModel(
         num_agents=num_agents,
         action_dim=action_dim,
         hidden_dims=config.hidden_dims,
@@ -359,7 +260,7 @@ def create_coin_dynamics_train_state(
     )
 
 
-def coin_dynamics_loss(
+def softmax_baseline_loss(
     params: Any,
     apply_fn: Any,
     positions: jax.Array,
@@ -395,7 +296,7 @@ def coin_dynamics_loss(
 
 
 @jax.jit
-def coin_dynamics_train_step(
+def softmax_baseline_train_step(
     state: TrainState,
     positions: jax.Array,
     actions: jax.Array,
@@ -406,7 +307,7 @@ def coin_dynamics_train_step(
     """Run one optimizer update on an already sampled minibatch."""
 
     def loss_fn(params):
-        return coin_dynamics_loss(
+        return softmax_baseline_loss(
             params,
             state.apply_fn,
             positions,
@@ -420,21 +321,21 @@ def coin_dynamics_train_step(
     return state.apply_gradients(grads=grads), metrics
 
 
-def train_coin_dynamics_model(
+def train_softmax_baseline(
     rng: jax.Array,
-    train_data: CoinDynamicsData,
+    train_data: SoftmaxBaselineData,
     *,
-    config: CoinDynamicsConfig,
+    config: SoftmaxBaselineConfig,
     progress_callback: Callable[[int, dict[str, float]], None] | None = None,
 ) -> tuple[TrainState, list[dict[str, float]]]:
-    """Train the categorical dynamics model."""
+    """Train the categorical next-state baseline."""
     if config.train_steps < 1:
         raise ValueError("train_steps must be >= 1")
     if config.batch_size < 1:
         raise ValueError("batch_size must be >= 1")
 
     rng, init_key = jax.random.split(rng)
-    state = create_coin_dynamics_train_state(
+    state = create_softmax_train_state(
         init_key,
         config=config,
         num_agents=train_data.num_agents,
@@ -443,7 +344,7 @@ def train_coin_dynamics_model(
     positions = jnp.asarray(train_data.positions, dtype=jnp.int32)
     actions = jnp.asarray(train_data.actions, dtype=jnp.int32)
     next_positions = jnp.asarray(train_data.next_positions, dtype=jnp.int32)
-    targets = coin_dynamics_target_distributions(
+    targets = softmax_target_distributions(
         train_data,
         stochastic_target_weight=config.stochastic_target_weight,
     )
@@ -460,7 +361,7 @@ def train_coin_dynamics_model(
             minval=0,
             maxval=train_size,
         )
-        state, metrics = coin_dynamics_train_step(
+        state, metrics = softmax_baseline_train_step(
             state,
             positions[indices],
             actions[indices],
@@ -477,27 +378,27 @@ def train_coin_dynamics_model(
     return state, rows
 
 
-def predict_coin_dynamics(
+def predict_softmax_baseline(
     train_state: TrainState,
-    data: CoinDynamicsData,
-) -> CoinDynamicsPredictions:
+    data: SoftmaxBaselineData,
+) -> SoftmaxBaselinePredictions:
     """Predict next-position logits for a dataset."""
     logits = train_state.apply_fn(
         {"params": train_state.params},
         jnp.asarray(data.positions, dtype=jnp.int32),
         jnp.asarray(data.actions, dtype=jnp.int32),
     )
-    return CoinDynamicsPredictions(
+    return SoftmaxBaselinePredictions(
         next_position_logits=np.asarray(logits, dtype=np.float32)
     )
 
 
-def evaluate_coin_dynamics(
-    train_data: CoinDynamicsData,
-    validation_data: CoinDynamicsData,
-    predictions: CoinDynamicsPredictions,
+def evaluate_softmax_baseline(
+    train_data: SoftmaxBaselineData,
+    validation_data: SoftmaxBaselineData,
+    predictions: SoftmaxBaselinePredictions,
 ) -> dict[str, Any]:
-    """Evaluate next-state and reward prediction against simple baselines."""
+    """Evaluate next-state prediction against simple categorical baselines."""
     predicted = predictions.next_positions
     target = validation_data.next_positions
     entity_matches = predicted == target
@@ -518,12 +419,8 @@ def evaluate_coin_dynamics(
     analytic_matches = np.all(expected_deterministic == target, axis=(1, 2))
     marginal_exact = np.all(marginal == target, axis=(1, 2))
     persistence_exact = np.all(persistence == target, axis=(1, 2))
-    derived_rewards = derive_coin_rewards(
-        validation_data.positions, validation_data.actions
-    )
-    reward_metrics = reward_prediction_metrics(validation_data, derived_rewards)
     respawn_metrics = stochastic_respawn_metrics(validation_data, predictions)
-    target_distributions = coin_dynamics_target_distributions(validation_data)
+    target_distributions = softmax_target_distributions(validation_data)
     distributional_ce = distributional_cross_entropy_positions(
         predictions.next_position_logits,
         target_distributions.distributions,
@@ -544,14 +441,17 @@ def evaluate_coin_dynamics(
         "full_state_exact_accuracy": float(full_matches.mean()),
         "deterministic_transition_fraction": float(deterministic_mask.mean()),
         "deterministic_entity_accuracy": masked_mean(
-            entity_matches, deterministic_mask
+            entity_matches,
+            deterministic_mask,
         ),
         "deterministic_full_state_exact_accuracy": masked_mean(
-            full_matches, deterministic_mask
+            full_matches,
+            deterministic_mask,
         ),
         "stochastic_transition_fraction": float(stochastic_mask.mean()),
         "stochastic_full_state_exact_accuracy": masked_mean(
-            full_matches, stochastic_mask
+            full_matches,
+            stochastic_mask,
         ),
         "marginal_full_state_exact_accuracy": float(marginal_exact.mean()),
         "persistence_full_state_exact_accuracy": float(persistence_exact.mean()),
@@ -562,7 +462,7 @@ def evaluate_coin_dynamics(
         "model_beats_marginal": bool(full_matches.mean() > marginal_exact.mean()),
         "model_beats_persistence": bool(full_matches.mean() > persistence_exact.mean()),
         "valid_prediction_fraction": valid_position_fraction(predicted),
-        "reward": reward_metrics,
+        "reward": reward_prediction_metrics(validation_data),
         "respawn": respawn_metrics,
         "reward_event_fraction": float(
             np.any(np.abs(validation_data.rewards) > 1e-6, axis=1).mean()
@@ -571,18 +471,16 @@ def evaluate_coin_dynamics(
     }
 
 
-def summarize_coin_dynamics_outcome(
+def summarize_softmax_outcome(
     metrics: dict[str, Any],
     *,
     finite_losses: bool,
     reload_passed: bool,
     min_deterministic_exact: float,
-    min_reward_exact: float = 0.99,
     max_respawn_uniform_kl: float = 0.25,
 ) -> tuple[bool, dict[str, bool]]:
-    """Build pass/fail criteria for the first dynamics milestone."""
+    """Build pass/fail criteria for the diagnostic baseline test."""
     deterministic_exact = metrics["deterministic_full_state_exact_accuracy"]
-    reward_exact = metrics["reward"]["nonterminal_transition_exact_accuracy"]
     respawn_kl = metrics["respawn"]["uniform_target_kl"]
     criteria = {
         "finite_losses": bool(finite_losses),
@@ -594,9 +492,6 @@ def summarize_coin_dynamics_outcome(
             deterministic_exact is not None
             and deterministic_exact >= min_deterministic_exact
         ),
-        "reward_exact_high": bool(
-            reward_exact is not None and reward_exact >= min_reward_exact
-        ),
         "respawn_distribution_calibrated": bool(
             respawn_kl is None or respawn_kl <= max_respawn_uniform_kl
         ),
@@ -605,108 +500,55 @@ def summarize_coin_dynamics_outcome(
 
 
 def categorical_cross_entropy_positions(
-    logits: np.ndarray, targets: np.ndarray
+    logits: np.ndarray,
+    targets: np.ndarray,
 ) -> float:
-    """Mean CE for ``[..., class]`` logits and integer position targets."""
     logits = np.asarray(logits, dtype=np.float64)
     targets = np.asarray(targets, dtype=np.int32)
-    shifted = logits - logits.max(axis=-1, keepdims=True)
-    log_probs = shifted - np.log(np.exp(shifted).sum(axis=-1, keepdims=True))
-    rows = np.arange(targets.shape[0])[:, None, None]
-    agents = np.arange(targets.shape[1])[None, :, None]
-    entities = np.arange(targets.shape[2])[None, None, :]
-    selected = log_probs[rows, agents, entities, targets]
-    return float(-selected.mean())
+    probs = softmax_np(logits, axis=-1)
+    flat_targets = targets.reshape(-1)
+    flat_probs = probs.reshape((-1, NUM_CELLS))
+    selected = flat_probs[np.arange(flat_targets.shape[0]), flat_targets]
+    return float(-np.log(np.clip(selected, 1e-12, 1.0)).mean())
 
 
 def distributional_cross_entropy_positions(
     logits: np.ndarray,
-    target_distributions: np.ndarray,
+    targets: np.ndarray,
 ) -> float:
-    """Mean CE for categorical target distributions."""
     logits = np.asarray(logits, dtype=np.float64)
-    target_distributions = np.asarray(target_distributions, dtype=np.float64)
-    if logits.shape != target_distributions.shape:
-        raise ValueError(
-            "logits and target distributions must have the same shape, "
-            f"got {logits.shape} and {target_distributions.shape}"
-        )
-    shifted = logits - logits.max(axis=-1, keepdims=True)
-    log_probs = shifted - np.log(np.exp(shifted).sum(axis=-1, keepdims=True))
-    return float(-np.sum(target_distributions * log_probs, axis=-1).mean())
+    targets = np.asarray(targets, dtype=np.float64)
+    probs = softmax_np(logits, axis=-1)
+    return float(-(targets * np.log(np.clip(probs, 1e-12, 1.0))).sum(axis=-1).mean())
 
 
 def position_marginal_modes(next_positions: np.ndarray) -> np.ndarray:
-    """Most frequent next cell for each agent/entity in the training data."""
-    next_positions = np.asarray(next_positions, dtype=np.int32)
     modes = np.zeros(next_positions.shape[1:], dtype=np.int32)
-    for agent in range(next_positions.shape[1]):
-        for entity in range(next_positions.shape[2]):
-            counts = np.bincount(next_positions[:, agent, entity], minlength=NUM_CELLS)
-            modes[agent, entity] = int(np.argmax(counts))
+    for index in np.ndindex(next_positions.shape[1:]):
+        values = next_positions[(slice(None), *index)]
+        counts = np.bincount(values, minlength=NUM_CELLS)
+        modes[index] = int(np.argmax(counts))
     return modes
 
 
-def deterministic_transition_mask(data: CoinDynamicsData) -> np.ndarray:
+def deterministic_transition_mask(data: SoftmaxBaselineData) -> np.ndarray:
     """Transitions whose next state is deterministic from state/action alone."""
     collected = coin_collected(data.positions, data.actions)
     done = np.any(data.dones > 0.0, axis=1)
     return np.logical_not(np.logical_or(collected, done))
 
 
-def _moved_player_and_coin_positions(
-    positions: np.ndarray,
-    actions: np.ndarray,
-) -> _MovedCoinPositions:
-    """Return wrapped player coordinates and current coin coordinates."""
-    agent0 = np.asarray(positions, dtype=np.int32)[:, 0]
-    actions = np.asarray(actions, dtype=np.int32)
-    red_pos = cell_to_row_col(agent0[:, 0])
-    blue_pos = cell_to_row_col(agent0[:, 1])
-    return _MovedCoinPositions(
-        red_player=(red_pos + MOVES[actions[:, 0]]) % GRID_SIZE,
-        blue_player=(blue_pos + MOVES[actions[:, 1]]) % GRID_SIZE,
-        red_coin=cell_to_row_col(agent0[:, 2]),
-        blue_coin=cell_to_row_col(agent0[:, 3]),
-    )
-
-
-def derive_coin_rewards(
-    positions: np.ndarray,
-    actions: np.ndarray,
-    *,
-    payoff_matrix: np.ndarray = PAYOFF_MATRIX,
-) -> np.ndarray:
-    """Derive CoinGame rewards from state and joint action.
-
-    Reward is deterministic before terminal time-limit handling: move both
-    players, check whether either player lands on either coin, then apply the
-    default JaxMARL CoinGame payoff matrix.
-    """
-    payoff = np.asarray(payoff_matrix, dtype=np.float32)
-    moved = _moved_player_and_coin_positions(positions, actions)
-
-    red_red = np.all(moved.red_player == moved.red_coin, axis=-1).astype(np.float32)
-    red_blue = np.all(moved.red_player == moved.blue_coin, axis=-1).astype(np.float32)
-    blue_red = np.all(moved.blue_player == moved.red_coin, axis=-1).astype(np.float32)
-    blue_blue = np.all(moved.blue_player == moved.blue_coin, axis=-1).astype(np.float32)
-
-    red_reward = (
-        payoff[0, 0] * red_red + payoff[0, 1] * red_blue + payoff[0, 2] * blue_red
-    )
-    blue_reward = (
-        payoff[1, 0] * blue_red + payoff[1, 1] * blue_blue + payoff[1, 2] * red_blue
-    )
-    return np.stack([red_reward, blue_reward], axis=1).astype(np.float32)
-
-
 def reward_prediction_metrics(
-    data: CoinDynamicsData,
-    predicted_rewards: np.ndarray,
+    data: SoftmaxBaselineData,
     *,
     atol: float = 1e-6,
 ) -> dict[str, Any]:
-    """Evaluate derived reward predictions against environment rewards."""
+    """Check environment reward helper consistency on the same transitions."""
+    predicted_rewards, _ = coin_game_reward_done(
+        jnp.asarray(data.states, dtype=jnp.float32),
+        jnp.asarray(data.actions, dtype=jnp.int32),
+        jnp.asarray(data.next_states, dtype=jnp.float32),
+    )
     predicted = np.asarray(predicted_rewards, dtype=np.float32)
     target = np.asarray(data.rewards, dtype=np.float32)
     if predicted.shape != target.shape:
@@ -735,15 +577,10 @@ def reward_prediction_metrics(
 
 
 def stochastic_respawn_metrics(
-    data: CoinDynamicsData,
-    predictions: CoinDynamicsPredictions,
+    data: SoftmaxBaselineData,
+    predictions: SoftmaxBaselinePredictions,
 ) -> dict[str, Any]:
-    """Evaluate predicted distributions for random coin respawn targets.
-
-    Coin respawn locations are sampled from environment RNG after collection.
-    Exact argmax accuracy is therefore the wrong target; a good model should
-    represent uncertainty over possible cells.
-    """
+    """Evaluate predicted distributions for random coin respawn targets."""
     logits = np.asarray(predictions.next_position_logits, dtype=np.float64)
     targets = np.asarray(data.next_positions, dtype=np.int32)
     nonterminal = ~np.any(data.dones > 0.0, axis=1)
@@ -858,15 +695,15 @@ def expected_deterministic_next_positions(
 
 
 def sample_predictions(
-    data: CoinDynamicsData,
-    predictions: CoinDynamicsPredictions,
+    data: SoftmaxBaselineData,
+    predictions: SoftmaxBaselinePredictions,
     *,
     count: int,
 ) -> list[dict[str, Any]]:
     """Small JSON-friendly prediction table."""
     count = min(max(0, count), data.num_transitions)
     predicted = predictions.next_positions
-    predicted_rewards = derive_coin_rewards(data.positions, data.actions)
+    reward_metrics = reward_prediction_metrics(data)
     rows = []
     deterministic = deterministic_transition_mask(data)
     for index in range(count):
@@ -884,21 +721,20 @@ def sample_predictions(
                 ),
                 "deterministic_transition": bool(deterministic[index]),
                 "rewards": data.rewards[index].astype(float).tolist(),
-                "derived_rewards": predicted_rewards[index].astype(float).tolist(),
-                "reward_exact": bool(
-                    np.allclose(
-                        predicted_rewards[index], data.rewards[index], atol=1e-6
-                    )
-                ),
                 "dones": data.dones[index].astype(float).tolist(),
             }
         )
+    if rows:
+        rows[0]["reward_helper_nonterminal_exact_accuracy"] = reward_metrics[
+            "nonterminal_transition_exact_accuracy"
+        ]
     return rows
 
 
 def valid_position_fraction(positions: np.ndarray) -> float:
-    positions = np.asarray(positions, dtype=np.int32)
-    return float(((positions >= 0) & (positions < NUM_CELLS)).mean())
+    positions = np.asarray(positions)
+    valid = (positions >= 0) & (positions < NUM_CELLS)
+    return float(valid.mean())
 
 
 def masked_mean(values: np.ndarray, mask: np.ndarray) -> float | None:
@@ -909,28 +745,30 @@ def masked_mean(values: np.ndarray, mask: np.ndarray) -> float | None:
     return float(values[mask].mean())
 
 
-def mse(prediction: np.ndarray, target: np.ndarray) -> float:
-    prediction = np.asarray(prediction, dtype=np.float32)
-    target = np.asarray(target, dtype=np.float32)
-    return float(np.mean(np.square(prediction - target)))
+def mse(predicted: np.ndarray, target: np.ndarray) -> float:
+    diff = np.asarray(predicted, dtype=np.float32) - np.asarray(
+        target, dtype=np.float32
+    )
+    return float(np.square(diff).mean())
 
 
 def masked_mse(
-    prediction: np.ndarray, target: np.ndarray, mask: np.ndarray
+    predicted: np.ndarray, target: np.ndarray, mask: np.ndarray
 ) -> float | None:
-    prediction = np.asarray(prediction, dtype=np.float32)
-    target = np.asarray(target, dtype=np.float32)
     mask = np.asarray(mask, dtype=bool)
     if not bool(mask.any()):
         return None
-    return float(np.mean(np.square(prediction[mask] - target[mask])))
+    diff = np.asarray(predicted, dtype=np.float32) - np.asarray(
+        target, dtype=np.float32
+    )
+    return float(np.square(diff[mask]).mean())
 
 
-def softmax_np(values: np.ndarray, axis: int = -1) -> np.ndarray:
-    values = np.asarray(values, dtype=np.float64)
-    shifted = values - values.max(axis=axis, keepdims=True)
+def softmax_np(logits: np.ndarray, *, axis: int = -1) -> np.ndarray:
+    logits = np.asarray(logits, dtype=np.float64)
+    shifted = logits - np.max(logits, axis=axis, keepdims=True)
     exp = np.exp(shifted)
-    return exp / exp.sum(axis=axis, keepdims=True)
+    return exp / np.sum(exp, axis=axis, keepdims=True)
 
 
 def cell_to_row_col(cells: np.ndarray) -> np.ndarray:
@@ -940,15 +778,53 @@ def cell_to_row_col(cells: np.ndarray) -> np.ndarray:
 
 def row_col_to_cell(row_col: np.ndarray) -> np.ndarray:
     row_col = np.asarray(row_col, dtype=np.int32)
-    return row_col[..., 0] * GRID_SIZE + row_col[..., 1]
+    return (row_col[..., 0] % GRID_SIZE) * GRID_SIZE + (row_col[..., 1] % GRID_SIZE)
 
 
-def _take_coin_dynamics(
-    data: CoinDynamicsData, indices: np.ndarray
-) -> CoinDynamicsData:
-    return CoinDynamicsData(
+@dataclass(frozen=True)
+class _MovedCoinPositions:
+    red_player: np.ndarray
+    blue_player: np.ndarray
+    red_coin: np.ndarray
+    blue_coin: np.ndarray
+
+
+def _moved_player_and_coin_positions(
+    positions: np.ndarray,
+    actions: np.ndarray,
+) -> _MovedCoinPositions:
+    positions = np.asarray(positions, dtype=np.int32)
+    actions = np.asarray(actions, dtype=np.int32)
+    if positions.ndim != 3 or positions.shape[1:] != (2, NUM_ENTITIES):
+        raise ValueError(f"positions must be shaped [N, 2, 4], got {positions.shape}")
+    if actions.shape != positions.shape[:2]:
+        raise ValueError(f"actions must be shaped [N, 2], got {actions.shape}")
+
+    agent0 = positions[:, 0]
+    red_player = cell_to_row_col(agent0[:, 0])
+    blue_player = cell_to_row_col(agent0[:, 1])
+    red_coin = cell_to_row_col(agent0[:, 2])
+    blue_coin = cell_to_row_col(agent0[:, 3])
+    moves = np.asarray(MOVES, dtype=np.int32)
+    moved_red = (red_player + moves[actions[:, 0]]) % GRID_SIZE
+    moved_blue = (blue_player + moves[actions[:, 1]]) % GRID_SIZE
+    return _MovedCoinPositions(
+        red_player=moved_red,
+        blue_player=moved_blue,
+        red_coin=red_coin,
+        blue_coin=blue_coin,
+    )
+
+
+def _take_softmax_data(
+    data: SoftmaxBaselineData,
+    indices: np.ndarray,
+) -> SoftmaxBaselineData:
+    return SoftmaxBaselineData(
+        states=data.states[indices],
         positions=data.positions[indices],
         actions=data.actions[indices],
+        next_states=data.next_states[indices],
         next_positions=data.next_positions[indices],
         rewards=data.rewards[indices],
         dones=data.dones[indices],

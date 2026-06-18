@@ -10,7 +10,7 @@ Current focus is the native JaxMARL `coin_game`, not Melting Pot `coins`.
 - CoinGame observations are flat vector states with shape `(36,)` per agent.
 - CoinGame has 5 discrete actions per agent.
 - JAX / Flax / Distrax / Optax: IPPO/MAPPO policies, GAE, PPO updates, and
-  categorical CoinGame dynamics models.
+  world-model fitting diagnostics.
 
 ## Setup
 
@@ -70,36 +70,36 @@ uv run world-marl-train-e2e \
   --wm-flow-type linear
 ```
 
-### Discrete CoinGame Dynamics
+### CoinGame Softmax Diagnostic
 
-The first actual world-model milestone predicts the environment transition and
-reward:
+The MVP world-model path is `world-marl-train-e2e --prefit-world-model`. The
+softmax diagnostic is a separate baseline that checks whether a simple
+categorical model can fit CoinGame next-state transitions from the same vector
+transition data:
 
 ```text
-p(next_joint_state_{t+1}, reward_t | state_t, joint_action_t)
+p(next_joint_state_{t+1} | state_t, joint_action_t)
 ```
 
 This uses the native JaxMARL CoinGame vector state. Each agent observes a
 flattened `3 x 3 x 4` grid, so the model decodes every entity position into a
 categorical cell id and predicts the next cell for each entity with softmax
-heads. This is intentionally discrete rather than flow matching, because
-CoinGame positions and actions are discrete. Reward is derived analytically from
-the same `state_t, joint_action_t` pair and validated against the environment
-reward.
+heads. It is a diagnostic baseline, not the PPO/MAPPO world model used by
+`train_e2e.py`.
 
 ```bash
-uv run world-marl-train-coin-dynamics \
+uv run python -m world_marl.scripts.diagnostics.train_simple_categorical_policy \
   --num-envs 128 \
   --collect-steps 4096 \
   --train-steps 5000 \
   --batch-size 1024 \
   --max-cycles 100 \
-  --out-dir runs/coin_dynamics
+  --out-dir runs/coin_softmax
 ```
 
 The run writes `transition_dataset.json`, `metrics.jsonl`,
 `training_summary.json`, `prediction_metrics.json`, `sample_predictions.json`,
-`dynamics_training.png`, `checkpoint/`, `reload_evaluation.json`, and
+`softmax_training.png`, `checkpoint/`, `reload_evaluation.json`, and
 `outcome.json`.
 
 The main validation metric is exact heldout next-state prediction. Metrics are

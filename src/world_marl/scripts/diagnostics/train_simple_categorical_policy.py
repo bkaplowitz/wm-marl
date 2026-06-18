@@ -1,4 +1,4 @@
-"""Train and validate a discrete CoinGame next-state world model."""
+"""Train a simple categorical CoinGame next-state diagnostic baseline."""
 
 from __future__ import annotations
 
@@ -11,21 +11,21 @@ import jax
 import numpy as np
 from tqdm import tqdm
 
-from world_marl.checkpoint.train_state import load_params, save_checkpoint
 from baselines.softmax_model import (
-    CoinDynamicsConfig,
-    collect_coin_dynamics_dataset,
-    create_coin_dynamics_train_state,
-    evaluate_coin_dynamics,
-    predict_coin_dynamics,
-    prepare_coin_dynamics_data,
+    SoftmaxBaselineConfig,
+    create_softmax_train_state,
+    evaluate_softmax_baseline,
+    predict_softmax_baseline,
+    prepare_softmax_data,
     sample_predictions,
-    split_coin_dynamics_data,
-    summarize_coin_dynamics_outcome,
-    train_coin_dynamics_model,
+    split_softmax_data,
+    summarize_softmax_outcome,
+    train_softmax_baseline,
 )
+from world_marl.checkpoint.train_state import load_params, save_checkpoint
 from world_marl.envs.jaxmarl_coin_adapter import JaxMARLCoinGameVectorAdapter
 from world_marl.logging import RunLogger, dependency_versions, timestamp
+from world_marl.world_model_training import collect_random_transition_batch
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,14 +33,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--substrate", default="coins")
     parser.add_argument("--num-envs", type=int, default=64)
     parser.add_argument("--max-cycles", type=int, default=100)
-    parser.add_argument(
-        "--target-source",
-        choices=("random", "checkpoint"),
-        default="random",
-        help="Policy used to collect transition actions. Random is best for coverage.",
-    )
-    parser.add_argument("--policy-checkpoint", default=None)
-    parser.add_argument("--source-stochastic", action="store_true")
     parser.add_argument("--collect-steps", type=int, default=2048)
     parser.add_argument("--validation-fraction", type=float, default=0.25)
     parser.add_argument("--train-steps", type=int, default=2000)
@@ -61,16 +53,10 @@ def parse_args() -> argparse.Namespace:
         help="Pass threshold for exact next-state accuracy on deterministic transitions.",
     )
     parser.add_argument(
-        "--min-reward-exact",
-        type=float,
-        default=0.99,
-        help="Pass threshold for exact reward accuracy on non-terminal transitions.",
-    )
-    parser.add_argument(
         "--max-respawn-uniform-kl",
         type=float,
         default=0.25,
-        help="Pass threshold for KL(uniform respawn target || model respawn distribution).",
+        help="Pass threshold for KL(uniform respawn target || model distribution).",
     )
     parser.add_argument("--sample-predictions", type=int, default=16)
     parser.add_argument("--seed", type=int, default=0)
@@ -79,10 +65,8 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.substrate != "coins":
         parser.error(
-            "world-marl-train-coin-dynamics currently targets --substrate coins"
+            "simple categorical diagnostic currently targets --substrate coins"
         )
-    if args.target_source == "checkpoint" and args.policy_checkpoint is None:
-        parser.error("--policy-checkpoint is required with --target-source checkpoint")
     if args.collect_steps < 1:
         parser.error("--collect-steps must be >= 1")
     if args.train_steps < 1:
@@ -93,8 +77,6 @@ def parse_args() -> argparse.Namespace:
         parser.error("--validation-fraction must be between 0 and 1")
     if not 0.0 <= args.min_deterministic_exact <= 1.0:
         parser.error("--min-deterministic-exact must be in [0, 1]")
-    if not 0.0 <= args.min_reward_exact <= 1.0:
-        parser.error("--min-reward-exact must be in [0, 1]")
     if args.max_respawn_uniform_kl < 0.0:
         parser.error("--max-respawn-uniform-kl must be non-negative")
     if args.stochastic_target_weight <= 0.0:
@@ -113,13 +95,13 @@ def parse_hidden_dims(value: str) -> tuple[int, ...]:
 
 def log_stage(args: argparse.Namespace, message: str) -> None:
     if not args.quiet:
-        print(f"[coin-dynamics] {message}", flush=True)
+        print(f"[coin-softmax] {message}", flush=True)
 
 
 def main() -> None:
     args = parse_args()
     hidden_dims = parse_hidden_dims(args.hidden_dims)
-    config = CoinDynamicsConfig(
+    config = SoftmaxBaselineConfig(
         hidden_dims=hidden_dims,
         learning_rate=args.learning_rate,
         batch_size=args.batch_size,
@@ -127,7 +109,7 @@ def main() -> None:
         max_grad_norm=args.max_grad_norm,
         stochastic_target_weight=args.stochastic_target_weight,
     )
-    run_dir = Path(args.out_dir) / f"coin_dynamics_{timestamp()}"
+    run_dir = Path(args.out_dir) / f"coin_softmax_{timestamp()}"
     log_stage(args, f"writing artifacts to {run_dir}")
     logger = RunLogger(run_dir)
     logger.write_json(
@@ -135,11 +117,11 @@ def main() -> None:
         {
             "args": vars(args),
             "model_config": dataclasses.asdict(config),
-            "target": "p(next_joint_state, reward | state, joint_action)",
+            "target": "p(next_joint_state | state, joint_action)",
             "purpose": (
-                "Validate a discrete categorical CoinGame dynamics model before using "
-                "learned dynamics for model-based policy improvement. Stochastic "
-                "coin respawns and terminal resets are trained as distributions."
+                "Diagnostic categorical next-state baseline for CoinGame. "
+                "Stochastic coin respawns and terminal resets are trained as "
+                "distributions."
             ),
         },
     )
@@ -151,47 +133,25 @@ def main() -> None:
         seed=args.seed,
     )
     try:
-        policy_fn, source_metadata = _make_source_policy(args, adapter)
-        logger.write_json(
-            "source_policy.json",
-            {
-                "target_source": args.target_source,
-                "policy_checkpoint": args.policy_checkpoint,
-                "source_metadata": source_metadata,
-            },
-        )
-
+        observations = adapter.reset()
         log_stage(
             args,
             (
-                f"collecting {args.collect_steps} transition steps "
-                f"({args.collect_steps * args.num_envs} samples) from {args.target_source}"
+                f"collecting {args.collect_steps} random transition steps "
+                f"({args.collect_steps * args.num_envs} samples)"
             ),
         )
-        collect_bar = (
-            tqdm(total=args.collect_steps, desc="collect transitions", unit="step")
-            if not args.quiet
-            else None
-        )
-
-        def on_collect(_step: int) -> None:
-            if collect_bar is not None:
-                collect_bar.update(1)
-
-        dataset = collect_coin_dynamics_dataset(
+        batch, _, _ = collect_random_transition_batch(
             adapter,
+            observations,
             np.random.default_rng(args.seed),
             rollout_steps=args.collect_steps,
-            policy_fn=policy_fn,
-            progress_callback=on_collect,
         )
-        if collect_bar is not None:
-            collect_bar.close()
     finally:
         adapter.close()
 
-    data = prepare_coin_dynamics_data(dataset)
-    train_data, validation_data = split_coin_dynamics_data(
+    data = prepare_softmax_data(batch)
+    train_data, validation_data = split_softmax_data(
         data,
         validation_fraction=args.validation_fraction,
         seed=args.seed,
@@ -199,21 +159,21 @@ def main() -> None:
     logger.write_json(
         "transition_dataset.json",
         {
-            "num_transitions": dataset.num_transitions,
+            "num_transitions": data.num_transitions,
             "train_transitions": train_data.num_transitions,
             "validation_transitions": validation_data.num_transitions,
-            "num_envs": dataset.num_envs,
-            "rollout_steps": dataset.rollout_steps,
-            "action_dim": dataset.action_dim,
-            "num_agents": dataset.num_agents,
-            "mean_reward_by_agent": dataset.rewards.mean(axis=0).astype(float).tolist(),
-            "done_fraction": float(np.any(dataset.dones > 0.0, axis=1).mean()),
+            "num_envs": args.num_envs,
+            "rollout_steps": args.collect_steps,
+            "action_dim": data.action_dim,
+            "num_agents": data.num_agents,
+            "mean_reward_by_agent": data.rewards.mean(axis=0).astype(float).tolist(),
+            "done_fraction": float(np.any(data.dones > 0.0, axis=1).mean()),
         },
     )
 
-    log_stage(args, f"training discrete dynamics model for {args.train_steps} steps")
+    log_stage(args, f"training categorical baseline for {args.train_steps} steps")
     train_bar = (
-        tqdm(total=args.train_steps, desc="train dynamics", unit="step")
+        tqdm(total=args.train_steps, desc="train softmax", unit="step")
         if not args.quiet
         else None
     )
@@ -227,7 +187,7 @@ def main() -> None:
             )
             train_bar.update(1)
 
-    train_state, rows = train_coin_dynamics_model(
+    train_state, rows = train_softmax_baseline(
         jax.random.PRNGKey(args.seed),
         train_data,
         config=config,
@@ -246,11 +206,11 @@ def main() -> None:
             "finite_losses": finite_losses,
         },
     )
-    plot_training(run_dir / "dynamics_training.png", rows)
+    plot_training(run_dir / "softmax_training.png", rows)
 
     log_stage(args, "evaluating heldout next-state predictions")
-    predictions = predict_coin_dynamics(train_state, validation_data)
-    metrics = evaluate_coin_dynamics(train_data, validation_data, predictions)
+    predictions = predict_softmax_baseline(train_state, validation_data)
+    metrics = evaluate_softmax_baseline(train_data, validation_data, predictions)
     logger.write_json("prediction_metrics.json", metrics)
     logger.write_json(
         "sample_predictions.json",
@@ -262,15 +222,15 @@ def main() -> None:
     )
 
     checkpoint_metadata = {
-        "kind": "coingame_discrete_dynamics",
-        "target": "p(next_joint_state, reward | state, joint_action)",
+        "kind": "coingame_softmax_baseline",
+        "target": "p(next_joint_state | state, joint_action)",
         "config": dataclasses.asdict(config),
         "action_dim": data.action_dim,
         "num_agents": data.num_agents,
     }
     save_checkpoint(run_dir / "checkpoint", train_state, metadata=checkpoint_metadata)
 
-    reload_state = create_coin_dynamics_train_state(
+    reload_state = create_softmax_train_state(
         jax.random.PRNGKey(args.seed + 1),
         config=config,
         num_agents=data.num_agents,
@@ -281,7 +241,7 @@ def main() -> None:
         reload_state.params,
     )
     reload_state = reload_state.replace(params=reload_params)
-    reload_predictions = predict_coin_dynamics(reload_state, validation_data)
+    reload_predictions = predict_softmax_baseline(reload_state, validation_data)
     reload_max_abs_diff = float(
         np.max(
             np.abs(
@@ -299,23 +259,22 @@ def main() -> None:
         },
     )
 
-    passed, criteria = summarize_coin_dynamics_outcome(
+    passed, criteria = summarize_softmax_outcome(
         metrics,
         finite_losses=finite_losses,
         reload_passed=reload_passed,
         min_deterministic_exact=args.min_deterministic_exact,
-        min_reward_exact=args.min_reward_exact,
         max_respawn_uniform_kl=args.max_respawn_uniform_kl,
     )
     outcome: dict[str, Any] = {
-        "milestone": "discrete_coingame_next_state_dynamics",
-        "target": "p(next_joint_state, reward | state, joint_action)",
+        "milestone": "coingame_softmax_next_state_diagnostic",
+        "target": "p(next_joint_state | state, joint_action)",
         "passed": passed,
         "criteria": criteria,
         "prediction_metrics": metrics,
         "artifacts": {
             "checkpoint": str(run_dir / "checkpoint"),
-            "training_plot": str(run_dir / "dynamics_training.png"),
+            "training_plot": str(run_dir / "softmax_training.png"),
         },
     }
     logger.write_json("outcome.json", outcome)
@@ -324,27 +283,11 @@ def main() -> None:
         (
             "done; deterministic exact="
             f"{metrics['deterministic_full_state_exact_accuracy']}, "
-            f"reward exact={metrics['reward']['nonterminal_transition_exact_accuracy']}, "
             f"respawn KL={metrics['respawn']['uniform_target_kl']}, "
             f"full exact={metrics['full_state_exact_accuracy']:.4f}"
         ),
     )
     print_json(outcome)
-
-
-def _make_source_policy(
-    args: argparse.Namespace, adapter: JaxMARLCoinGameVectorAdapter
-):
-    if args.target_source == "random":
-        return None, None
-    from world_marl.checkpoints.policy_loading import load_checkpoint_policy
-
-    return load_checkpoint_policy(
-        args.policy_checkpoint,
-        adapter,
-        deterministic=not args.source_stochastic,
-        seed=args.seed + 10,
-    )
 
 
 def plot_training(path: Path, rows: list[dict[str, float]]) -> None:
