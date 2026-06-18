@@ -43,7 +43,9 @@ def test_mixture_path_rates_is_posterior_over_one_minus_t():
     posterior = jnp.asarray([[[0.1, 0.2, 0.7]]])
     t = jnp.asarray(0.5)
     rates = mixture_path_rates(posterior, t)
-    np.testing.assert_allclose(np.asarray(rates), np.asarray(posterior) / 0.5, rtol=1e-6)
+    np.testing.assert_allclose(
+        np.asarray(rates), np.asarray(posterior) / 0.5, rtol=1e-6
+    )
 
 
 def _toy_discrete_setup(key, *, num_factors=3, num_categories=4, batch=8):
@@ -126,7 +128,9 @@ def test_discrete_sampler_scan_matches_python_loop():
     _, cond_vars, state = _toy_discrete_setup(
         jax.random.PRNGKey(5), num_factors=num_factors, num_categories=num_categories
     )
-    cond_vars = jax.random.normal(jax.random.PRNGKey(9), (batch, num_factors * num_categories))
+    cond_vars = jax.random.normal(
+        jax.random.PRNGKey(9), (batch, num_factors * num_categories)
+    )
     key = jax.random.PRNGKey(2)
 
     scan_tokens = sample_conditioned_discrete_flow(

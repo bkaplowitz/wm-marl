@@ -145,9 +145,7 @@ def main() -> None:
             learning_rate=args.learning_rate,
             integration_steps=args.integration_steps,
             flow_type=args.flow_type,
-            num_categories=(
-                args.num_categories if args.flow_type == "discrete" else 0
-            ),
+            num_categories=(args.num_categories if args.flow_type == "discrete" else 0),
         )
         rng, model_key = jax.random.split(rng)
         model_state = create_world_model_state(model_key, config)
@@ -354,7 +352,9 @@ def _categorical_accuracy(
     if num_categories <= 0 or transition_dim % num_categories != 0:
         return None
     decode_config = dataclasses.replace(config, num_categories=num_categories)
-    pred_tokens = _pack_discrete_tokens(jnp.asarray(predicted_next_states), decode_config)
+    pred_tokens = _pack_discrete_tokens(
+        jnp.asarray(predicted_next_states), decode_config
+    )
     true_tokens = _pack_discrete_tokens(jnp.asarray(true_next_states), decode_config)
     return float(np.mean(np.asarray(pred_tokens) == np.asarray(true_tokens)))
 

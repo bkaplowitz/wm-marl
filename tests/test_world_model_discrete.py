@@ -171,7 +171,9 @@ def test_discrete_fit_world_model_steps_matches_python_loop():
         jax.tree_util.tree_leaves(ref_state.params),
         strict=True,
     ):
-        np.testing.assert_allclose(np.asarray(new_leaf), np.asarray(ref_leaf), atol=1e-5)
+        np.testing.assert_allclose(
+            np.asarray(new_leaf), np.asarray(ref_leaf), atol=1e-5
+        )
 
     assert not bool(jnp.allclose(new_history[0], new_history[-1]))
 

@@ -303,11 +303,12 @@ def evaluate_checkpoint_mode(args: argparse.Namespace) -> None:
     args.substrate = args.substrate or metadata["substrate"]
     if args.observation_size is None:
         args.observation_size = metadata.get("observation_size")
-    args.include_observation_scalars = (
-        args.include_observation_scalars
-        or metadata.get("include_observation_scalars", False)
+    args.include_observation_scalars = args.include_observation_scalars or metadata.get(
+        "include_observation_scalars", False
     )
-    args.append_agent_id = args.append_agent_id or metadata.get("append_agent_id", False)
+    args.append_agent_id = args.append_agent_id or metadata.get(
+        "append_agent_id", False
+    )
     adapter = _make_training_adapter(args, seed=args.seed)
     try:
         config_payload = metadata.get("algorithm_config", metadata.get("ippo_config"))
