@@ -22,32 +22,53 @@ from world_marl.scripts import train_e2e
 def _tiny_coins_args(out_dir: Path, monkeypatch) -> argparse.Namespace:
     argv = [
         "train_e2e",
-        "--substrate", "coins",
+        "--substrate",
+        "coins",
         "--prefit-world-model",
-        "--algorithm", "ippo",
-        "--num-envs", "1",
-        "--rollout-steps", "4",
-        "--total-env-steps", "8",
-        "--num-runs", "1",
-        "--max-cycles", "4",
-        "--negative-control", "none",
-        "--eval-episodes", "1",
-        "--eval-max-steps", "4",
-        "--num-minibatches", "1",
-        "--update-epochs", "1",
-        "--wm-random-rollouts", "1",
-        "--wm-initial-rollouts", "1",
-        "--wm-fit-steps", "2",
-        "--wm-integration-steps", "1",
-        "--wm-hidden-dim", "8",
-        "--wm-policy-warmup-updates", "1",
-        "--out-dir", str(out_dir),
+        "--algorithm",
+        "ippo",
+        "--num-envs",
+        "1",
+        "--rollout-steps",
+        "4",
+        "--total-env-steps",
+        "8",
+        "--num-runs",
+        "1",
+        "--max-cycles",
+        "4",
+        "--negative-control",
+        "none",
+        "--eval-episodes",
+        "1",
+        "--eval-max-steps",
+        "4",
+        "--num-minibatches",
+        "1",
+        "--update-epochs",
+        "1",
+        "--wm-random-rollouts",
+        "1",
+        "--wm-initial-rollouts",
+        "1",
+        "--wm-fit-steps",
+        "2",
+        "--wm-integration-steps",
+        "1",
+        "--wm-hidden-dim",
+        "8",
+        "--wm-policy-warmup-updates",
+        "1",
+        "--out-dir",
+        str(out_dir),
     ]
     monkeypatch.setattr(sys, "argv", argv)
     return train_e2e.parse_args()
 
 
-def test_coins_prefit_run_training_completes_and_writes_artifacts(tmp_path, monkeypatch):
+def test_coins_prefit_run_training_completes_and_writes_artifacts(
+    tmp_path, monkeypatch
+):
     args = _tiny_coins_args(tmp_path, monkeypatch)
     run_dir = tmp_path / "run_000"
 

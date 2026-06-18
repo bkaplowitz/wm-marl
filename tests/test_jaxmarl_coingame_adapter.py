@@ -72,10 +72,14 @@ def test_jaxmarl_coin_adapter_rewards_and_dones_match_direct_env_step():
 
         step = adapter.step(actions)
 
-        np.testing.assert_array_equal(np.asarray(adapter._keys[0]), np.asarray(next_key))
+        np.testing.assert_array_equal(
+            np.asarray(adapter._keys[0]), np.asarray(next_key)
+        )
         np.testing.assert_allclose(
             step.rewards,
-            np.asarray([[expected_rewards["0"], expected_rewards["1"]]], dtype=np.float32),
+            np.asarray(
+                [[expected_rewards["0"], expected_rewards["1"]]], dtype=np.float32
+            ),
         )
         np.testing.assert_allclose(
             step.dones,

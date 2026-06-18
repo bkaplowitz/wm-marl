@@ -212,9 +212,7 @@ def _simulate_model_rollout(
             "model_rollout_observation_abs_max": _abs_max(batch.observations),
             "model_rollout_value_finite_fraction": _finite_fraction(batch.values),
             "model_rollout_last_value_finite_fraction": _finite_fraction(last_values),
-            "model_rollout_log_prob_finite_fraction": _finite_fraction(
-                batch.log_probs
-            ),
+            "model_rollout_log_prob_finite_fraction": _finite_fraction(batch.log_probs),
         },
     )
 
