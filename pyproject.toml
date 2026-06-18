@@ -25,7 +25,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "pre-commit>=4.3",
   "pytest>=8",
+  "ruff==0.15.18",
 ]
 cuda12 = [
   "jax[cuda12]==0.4.36",
@@ -44,3 +46,16 @@ testpaths = ["tests"]
 markers = [
   "integration: tests requiring installed Melting Pot/dmlab2d runtime",
 ]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+indent-width = 4
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
