@@ -11,8 +11,8 @@ import jax
 import numpy as np
 from tqdm import tqdm
 
-from world_marl.checkpointing import load_params, save_checkpoint
-from world_marl.coingame_dynamics import (
+from world_marl.checkpoint.train_state import load_params, save_checkpoint
+from baselines.softmax_model import (
     CoinDynamicsConfig,
     collect_coin_dynamics_dataset,
     create_coin_dynamics_train_state,
@@ -337,7 +337,7 @@ def _make_source_policy(
 ):
     if args.target_source == "random":
         return None, None
-    from world_marl.policy_loading import load_checkpoint_policy
+    from world_marl.checkpoints.policy_loading import load_checkpoint_policy
 
     return load_checkpoint_policy(
         args.policy_checkpoint,

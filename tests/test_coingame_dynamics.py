@@ -3,8 +3,8 @@ from __future__ import annotations
 import jax
 import numpy as np
 
-from world_marl.checkpointing import load_params, save_checkpoint
-from world_marl.coingame_dynamics import (
+from world_marl.checkpoint.train_state import load_params, save_checkpoint
+from baselines.softmax_model import (
     CoinDynamicsConfig,
     CoinDynamicsData,
     CoinDynamicsPredictions,
@@ -314,7 +314,7 @@ def test_discrete_dynamics_training_metrics_and_reload(tmp_path):
 
 
 def test_train_coin_dynamics_cli_smoke(tmp_path, monkeypatch):
-    from world_marl.scripts import train_coin_dynamics
+    from world_marl.scripts.diagnostics import train_simple_categorical_policy
 
     monkeypatch.setattr(
         "sys.argv",
@@ -336,7 +336,7 @@ def test_train_coin_dynamics_cli_smoke(tmp_path, monkeypatch):
         ],
     )
 
-    train_coin_dynamics.main()
+    train_simple_categorical_policy.main()
 
     run_dirs = list(tmp_path.glob("coin_dynamics_*"))
     assert len(run_dirs) == 1

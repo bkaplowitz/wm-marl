@@ -1,4 +1,4 @@
-"""Checkpoint policy loading helpers shared by validation CLIs."""
+"""Checkpoint policy loading helpers."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import jax
 
 from world_marl.algs.ippo import IPPOConfig
 from world_marl.algs.mappo import MAPPOConfig
-from world_marl.checkpointing import load_metadata, load_params
+from world_marl.checkpoint.train_state import load_metadata, load_params
 from world_marl.scripts.train_e2e import (
     create_algorithm_train_state,
     policy_from_train_state,

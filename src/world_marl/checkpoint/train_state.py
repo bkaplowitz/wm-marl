@@ -1,4 +1,4 @@
-"""Checkpoint save/load helpers."""
+"""Train-state checkpoint save/load helpers."""
 
 from __future__ import annotations
 

@@ -3,7 +3,11 @@ from __future__ import annotations
 import jax
 
 from world_marl.algs.ippo import IPPOConfig, create_train_state, tree_l2_distance
-from world_marl.checkpointing import load_metadata, load_params, save_checkpoint
+from world_marl.checkpoint.train_state import (
+    load_metadata,
+    load_params,
+    save_checkpoint,
+)
 
 
 def test_checkpoint_save_load_equality(tmp_path):
