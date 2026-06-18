@@ -17,7 +17,7 @@ from world_marl.world_model import (
     _transition_dim,
     _unpack_transition,
     assert_states_in_bounds,
-    create_world_model_state,
+    make_world_model_train_state,
     simulate_mappo_model_rollout,
     train_world_model_step,
     world_model_loss,
@@ -80,7 +80,7 @@ def test_create_world_model_state_uses_mlp_vector_field():
         integration_steps=1,
     )
 
-    model_state = create_world_model_state(jax.random.PRNGKey(0), config)
+    model_state = make_world_model_train_state(jax.random.PRNGKey(0), config)
     model = model_state.apply_fn.__self__
     target_dim = config.num_agents * config.state_dim
     cond_dim = config.num_agents * config.state_dim + (
@@ -148,7 +148,7 @@ def test_world_model_loss_ignores_reward_and_done_fields():
         hidden_dims=(8,),
         integration_steps=1,
     )
-    model_state = create_world_model_state(jax.random.PRNGKey(0), config)
+    model_state = make_world_model_train_state(jax.random.PRNGKey(0), config)
     batch = VectorTransitionBatch(
         states=jnp.zeros((4, 2, 2), dtype=jnp.float32),
         actions=jnp.zeros((4, 2), dtype=jnp.int32),
@@ -188,7 +188,7 @@ def test_train_world_model_step_returns_finite_loss():
         hidden_dims=(8,),
         integration_steps=1,
     )
-    model_state = create_world_model_state(jax.random.PRNGKey(0), config)
+    model_state = make_world_model_train_state(jax.random.PRNGKey(0), config)
     batch = VectorTransitionBatch(
         states=jnp.zeros((4, 2, 2), dtype=jnp.float32),
         actions=jnp.zeros((4, 2), dtype=jnp.int32),
@@ -215,7 +215,7 @@ def test_simulate_mappo_model_rollout_returns_vector_central_batches():
         hidden_dims=(8,),
         integration_steps=1,
     )
-    model_state = create_world_model_state(jax.random.PRNGKey(0), config)
+    model_state = make_world_model_train_state(jax.random.PRNGKey(0), config)
     policy_config = MAPPOConfig(network_arch="mlp", num_minibatches=1)
     policy_state = create_mappo_state(
         jax.random.PRNGKey(1),
@@ -262,7 +262,7 @@ def test_simulate_ippo_model_rollout_supports_mlp_vector_policy():
         hidden_dims=(8,),
         integration_steps=1,
     )
-    model_state = create_world_model_state(jax.random.PRNGKey(0), config)
+    model_state = make_world_model_train_state(jax.random.PRNGKey(0), config)
     policy_state = create_ippo_state(
         jax.random.PRNGKey(1),
         (4,),
@@ -304,7 +304,7 @@ def test_simulate_ippo_model_rollout_uses_reward_done_provider():
         hidden_dims=(8,),
         integration_steps=1,
     )
-    model_state = create_world_model_state(jax.random.PRNGKey(0), config)
+    model_state = make_world_model_train_state(jax.random.PRNGKey(0), config)
     policy_state = create_ippo_state(
         jax.random.PRNGKey(1),
         (4,),
@@ -350,7 +350,7 @@ def test_simulate_ippo_model_rollout_jits_with_multiple_integration_steps():
         hidden_dims=(8,),
         integration_steps=3,
     )
-    model_state = create_world_model_state(jax.random.PRNGKey(0), config)
+    model_state = make_world_model_train_state(jax.random.PRNGKey(0), config)
     policy_state = create_ippo_state(
         jax.random.PRNGKey(1),
         (4,),
@@ -383,7 +383,7 @@ def test_simulate_ippo_model_rollout_jits_with_multiple_integration_steps():
 
 
 def test_fit_world_model_steps_returns_per_step_loss_history():
-    from world_marl.world_model import create_world_model_state
+    from world_marl.world_model import make_world_model_train_state
     from world_marl.world_model_training import fit_world_model_steps
 
     config = VectorWorldModelConfig(
@@ -393,7 +393,7 @@ def test_fit_world_model_steps_returns_per_step_loss_history():
         hidden_dims=(8,),
         integration_steps=1,
     )
-    model_state = create_world_model_state(jax.random.PRNGKey(0), config)
+    model_state = make_world_model_train_state(jax.random.PRNGKey(0), config)
     n = 6
     batch = VectorTransitionBatch(
         states=jnp.zeros((n, 2, 4), dtype=jnp.float32),
@@ -423,7 +423,7 @@ def test_fit_world_model_steps_matches_explicit_python_loop():
     # The flow-matching loss samples a fresh time/noise per key, so splitting the
     # rng inside the scan body must reproduce the loop's exact key sequence,
     # final optimizer state, and per-step loss history.
-    from world_marl.world_model import create_world_model_state
+    from world_marl.world_model import make_world_model_train_state
     from world_marl.world_model_training import fit_world_model_steps
 
     config = VectorWorldModelConfig(
@@ -433,7 +433,7 @@ def test_fit_world_model_steps_matches_explicit_python_loop():
         hidden_dims=(8,),
         integration_steps=2,
     )
-    model_state = create_world_model_state(jax.random.PRNGKey(0), config)
+    model_state = make_world_model_train_state(jax.random.PRNGKey(0), config)
     n, steps = 6, 7
     batch = VectorTransitionBatch(
         states=jax.random.normal(jax.random.PRNGKey(3), (n, 2, 4)),
@@ -548,7 +548,7 @@ def _explicit_imagined_unroll(
 
 def test_simulate_ippo_model_rollout_matches_explicit_python_loop():
     from world_marl.world_model import (
-        create_world_model_state,
+        make_world_model_train_state,
         simulate_ippo_model_rollout,
     )
 
@@ -559,7 +559,7 @@ def test_simulate_ippo_model_rollout_matches_explicit_python_loop():
         hidden_dims=(8,),
         integration_steps=2,
     )
-    model_state = create_world_model_state(jax.random.PRNGKey(0), config)
+    model_state = make_world_model_train_state(jax.random.PRNGKey(0), config)
     policy_state = create_ippo_state(
         jax.random.PRNGKey(1),
         (4,),
@@ -631,7 +631,7 @@ def test_simulate_mappo_model_rollout_matches_explicit_python_loop():
         hidden_dims=(8,),
         integration_steps=2,
     )
-    model_state = create_world_model_state(jax.random.PRNGKey(0), config)
+    model_state = make_world_model_train_state(jax.random.PRNGKey(0), config)
     policy_state = create_mappo_state(
         jax.random.PRNGKey(1),
         (4,),

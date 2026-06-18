@@ -52,7 +52,7 @@ from world_marl.training import (
 )
 from world_marl.world_model import (
     VectorWorldModelConfig,
-    create_world_model_state,
+    make_world_model_train_state,
     simulate_ippo_model_rollout,
     simulate_mappo_model_rollout,
 )
@@ -641,7 +641,7 @@ def run_training(
                 flow_type=args.wm_flow_type,
             )
             rng, world_model_key = jax.random.split(rng)
-            world_model_state = create_world_model_state(
+            world_model_state = make_world_model_train_state(
                 world_model_key,
                 world_model_config,
             )

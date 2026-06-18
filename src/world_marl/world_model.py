@@ -48,7 +48,7 @@ class VectorWorldModelConfig:
     flow_type: str = "gaussian"
 
 
-def create_world_model_state(
+def make_world_model_train_state(
     key: jax.Array,
     config: VectorWorldModelConfig,
 ) -> TrainState:
