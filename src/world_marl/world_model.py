@@ -344,6 +344,15 @@ def _unpack_transition(
     )
 
 
+def assert_states_in_bounds(states: jnp.ndarray) -> None:
+    """Raise if any predicted state leaves the assumed ``[0.0, 1.0]`` range.
+
+    Eager-only: it calls ``bool`` on the array, so it must not run under
+    ``jit`` (use it on concrete outputs, e.g. in tests/eval). The single
+    comparison also rejects NaN/inf, which never satisfy ``>=``/``<=``.
+    """
+    if not bool(jnp.all((states >= 0.0) & (states <= 1.0))):
+        raise ValueError("predicted states must lie within [0.0, 1.0]")
 
 
 def _flat_state_dim(config: VectorWorldModelConfig) -> int:

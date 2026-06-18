@@ -3,6 +3,7 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from flow_matching.models import MLPVectorField
 from world_marl.algs.ippo import IPPOConfig, create_train_state as create_ippo_state
@@ -15,6 +16,7 @@ from world_marl.world_model import (
     _pack_transition,
     _transition_dim,
     _unpack_transition,
+    assert_states_in_bounds,
     create_world_model_state,
     simulate_mappo_model_rollout,
     train_world_model_step,
@@ -123,6 +125,19 @@ def test_world_model_pack_transition_round_trips_next_state_only():
     assert packed.shape == (2, _transition_dim(config))
     assert packed.shape == (2, 4)
     np.testing.assert_allclose(np.asarray(unpacked), np.asarray(next_states))
+
+
+def test_assert_states_in_bounds_rejects_states_outside_unit_range():
+    assert_states_in_bounds(jnp.asarray([[[0.0, 0.5, 1.0]]], dtype=jnp.float32))
+
+    for bad in (
+        jnp.asarray([[[1.25]]], dtype=jnp.float32),  # above 1.0
+        jnp.asarray([[[-0.25]]], dtype=jnp.float32),  # below 0.0
+        jnp.asarray([[[jnp.nan]]], dtype=jnp.float32),  # non-finite
+        jnp.asarray([[[jnp.inf]]], dtype=jnp.float32),
+    ):
+        with pytest.raises(ValueError):
+            assert_states_in_bounds(bad)
 
 
 def test_world_model_loss_ignores_reward_and_done_fields():
