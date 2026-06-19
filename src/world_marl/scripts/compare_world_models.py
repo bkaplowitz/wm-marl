@@ -60,16 +60,9 @@ PLAYER_ACTION_COL = {0: 0, 1: 1, 4: 1, 5: 0}
 AGENT0_CHANNEL_LABELS = ("red_player", "blue_player", "red_coin", "blue_coin")
 
 
-# --------------------------------------------------------------------------------------
 # Dumb categorical baseline: one-shot MLP classifier trained with cross-entropy.
-# --------------------------------------------------------------------------------------
 class CategoricalBaseline(nn.Module):
-    """One-shot per-factor classifier: ``cond_vars -> (d*V)`` logits.
-
-    Mirrors :class:`MLPVectorField`'s trunk (Dense + SiLU) for capacity parity with
-    the flow models, but takes only the conditioning (no ``x``/``t``) and emits
-    ``d*V`` logits reshaped to ``(B, d, V)`` -- a plain classifier, not a vector field.
-    """
+    """Per-factor classifier ``cond_vars -> (d*V)`` logits; mirrors MLPVectorField's trunk for capacity parity (no ``x``/``t``)."""
 
     hidden_dims: Sequence[int]
     output_dim: int
@@ -97,11 +90,8 @@ def create_baseline_state(
 
 
 def _baseline_loss(params, apply_fn, batch: VectorTransitionBatch, config) -> jax.Array:
-    """Cross-entropy of the clean next-state tokens, summed over factors then meaned.
-
-    Identical reduction to ``conditioned_discrete_flow_matching_loss`` so the curves
-    are co-plottable on one nats axis (both start at ``d*ln(V)``).
-    """
+    """CE of next-state tokens, summed over factors then meaned -- same reduction as
+    ``conditioned_discrete_flow_matching_loss`` so both curves start at ``d*ln(V)``."""
     cond_vars = _pack_cond_vars(batch.states, batch.actions, config)
     z = _pack_discrete_tokens(batch.next_states, config)  # (B, d)
     logits = apply_fn({"params": params}, cond_vars).reshape(
@@ -151,13 +141,11 @@ def chunk_sizes(total: int, chunk: int) -> list[int]:
     return [chunk] * full + ([rem] if rem else [])
 
 
-def fit_fm_chunked(model_state, rng, batch, config, total_steps, chunk, label):
-    """Fit a flow model in jitted-scan chunks, returning the full per-step history."""
+def fit_chunked(carry, step_fn, total_steps, chunk, label):
+    """Drive any scan-based fitter in jitted chunks; ``step_fn(carry, n) -> (carry, hist)``."""
     history, done, t0 = [], 0, time.time()
     for n in chunk_sizes(total_steps, chunk):
-        model_state, rng, _, hist = fit_world_model_steps(
-            model_state, rng, batch, config, steps=n
-        )
+        carry, hist = step_fn(carry, n)
         hist = np.asarray(jax.block_until_ready(hist))
         history.append(hist)
         done += n
@@ -166,28 +154,11 @@ def fit_fm_chunked(model_state, rng, batch, config, total_steps, chunk, label):
             f"[{label}] step {done}/{total_steps} loss={hist[-1]:.4f} ({rate:.1f} it/s)",
             flush=True,
         )
-    return model_state, rng, np.concatenate(history)
+    return carry, np.concatenate(history)
 
 
-def fit_baseline_chunked(state, batch, config, total_steps, chunk, label):
-    history, done, t0 = [], 0, time.time()
-    for n in chunk_sizes(total_steps, chunk):
-        state, hist = fit_categorical_baseline_steps(state, batch, config, steps=n)
-        hist = np.asarray(jax.block_until_ready(hist))
-        history.append(hist)
-        done += n
-        rate = done / max(time.time() - t0, 1e-9)
-        print(
-            f"[{label}] step {done}/{total_steps} loss={hist[-1]:.4f} ({rate:.1f} it/s)",
-            flush=True,
-        )
-    return state, np.concatenate(history)
-
-
-# --------------------------------------------------------------------------------------
-# Rollout fidelity (ported from the memory-validated throwaway, generalized over
-# an arbitrary predict_fn so discrete / linear / baseline share one code path).
-# --------------------------------------------------------------------------------------
+# Rollout fidelity, generalized over an arbitrary predict_fn so discrete/linear/baseline
+# share one code path.
 def pack(states, decode_config) -> np.ndarray:
     return np.asarray(_pack_discrete_tokens(jnp.asarray(states), decode_config))
 
@@ -286,6 +257,17 @@ def imagined_trajectory(predict_fn, s0, actions_seq, decode_config, key):
     return np.stack(tokens)  # (H+1, B, 8)
 
 
+def _norm_hist(v) -> np.ndarray:
+    """9-cell occupancy distribution of token values (all-zeros if empty)."""
+    hh = np.bincount(v, minlength=9)[:9].astype(float)
+    return hh / hh.sum() if hh.sum() else hh
+
+
+def _entropy(p) -> float:
+    nz = p[p > 0]
+    return float(-(nz * np.log(nz)).sum())
+
+
 def compute_metrics(real, img, cum, step_reset):
     """Per-step match curves + aggregate reset-cell distribution."""
     horizon = step_reset.shape[0]
@@ -328,25 +310,16 @@ def compute_metrics(real, img, cum, step_reset):
     img_vals = np.concatenate(img_vals) if img_vals else np.array([], dtype=int)
     real_vals = np.concatenate(real_vals) if real_vals else np.array([], dtype=int)
 
-    def hist(v):
-        hh = np.bincount(v, minlength=9)[:9].astype(float)
-        return (hh / hh.sum()).tolist() if hh.sum() else [0.0] * 9
-
-    def entropy(v):
-        hh = np.bincount(v, minlength=9)[:9].astype(float)
-        hh = hh / hh.sum() if hh.sum() else hh
-        nz = hh[hh > 0]
-        return float(-(nz * np.log(nz)).sum())
-
+    img_p, real_p = _norm_hist(img_vals), _norm_hist(real_vals)
     out["reset_distribution"] = {
         "num_events": int(img_vals.size),
         "argmax_match_rate": (
             float(np.mean(img_vals == real_vals)) if img_vals.size else float("nan")
         ),
-        "imagined_cell_hist": hist(img_vals),
-        "real_cell_hist": hist(real_vals),
-        "imagined_entropy": entropy(img_vals),
-        "real_entropy": entropy(real_vals),
+        "imagined_cell_hist": img_p.tolist(),
+        "real_cell_hist": real_p.tolist(),
+        "imagined_entropy": _entropy(img_p),
+        "real_entropy": _entropy(real_p),
         "uniform_entropy": float(np.log(9)),
     }
     return out
@@ -519,9 +492,7 @@ def plot_occupancy(
 
     def occ(tokens, factor):
         vals = tokens[1 : horizon + 1, :, factor].ravel()
-        h = np.bincount(vals, minlength=9)[:9].astype(float)
-        h = h / h.sum() if h.sum() else h
-        return h.reshape(3, 3)
+        return _norm_hist(vals).reshape(3, 3)
 
     for factor, label in enumerate(AGENT0_CHANNEL_LABELS):
         fig, axes = plt.subplots(
@@ -686,6 +657,18 @@ def main() -> None:
 
         loss_histories, results, imagined_tokens, heldout_acc = {}, {}, {}, {}
 
+        def evaluate_predictor(name, predict_fn, history):
+            loss_histories[name] = history
+            img = imagined_trajectory(
+                predict_fn, real_states[0], actions_seq, decode_config, roll_key
+            )
+            results[name] = compute_metrics(real_tokens, img, cum, step_reset)
+            imagined_tokens[name] = img
+            heldout_acc[name] = token_accuracy_breakdown(
+                predict_fn, heldout_batch, decode_config, heldout_key
+            )
+            _report(name, results[name], heldout_acc[name], history)
+
         for flow in args.flow_types:
             config = dataclasses.replace(
                 decode_config,
@@ -693,49 +676,40 @@ def main() -> None:
                 num_categories=(args.num_categories if flow == "discrete" else 0),
             )
             model_state = create_world_model_state(model_key, config)
-            model_state, _, history = fit_fm_chunked(
-                model_state, fit_rng, train_batch, config,
-                args.fit_steps, args.chunk_steps, flow,
+
+            def fit_step(carry, n, cfg=config):
+                ms, r = carry
+                ms, r, _, hist = fit_world_model_steps(ms, r, train_batch, cfg, steps=n)
+                return (ms, r), hist
+
+            (model_state, _), history = fit_chunked(
+                (model_state, fit_rng), fit_step, args.fit_steps, args.chunk_steps, flow
             )
-            loss_histories[flow] = history
 
             def predict_fn(s, a, k, st=model_state, cfg=config):
                 return predict_next(st, k, s, a, cfg)
 
-            img = imagined_trajectory(
-                predict_fn, real_states[0], actions_seq, decode_config, roll_key
-            )
-            results[flow] = compute_metrics(real_tokens, img, cum, step_reset)
-            imagined_tokens[flow] = img
-            heldout_acc[flow] = token_accuracy_breakdown(
-                predict_fn, heldout_batch, decode_config, heldout_key
-            )
-            _report(flow, results[flow], heldout_acc[flow], history)
+            evaluate_predictor(flow, predict_fn, history)
 
-        # --- dumb categorical baseline ---
         baseline_state = create_baseline_state(
             model_key, decode_config, hidden_dims, args.learning_rate
         )
-        baseline_state, history = fit_baseline_chunked(
-            baseline_state, train_batch, decode_config,
-            args.fit_steps, args.chunk_steps, "baseline",
+
+        def baseline_step(state, n):
+            return fit_categorical_baseline_steps(
+                state, train_batch, decode_config, steps=n
+            )
+
+        baseline_state, history = fit_chunked(
+            baseline_state, baseline_step, args.fit_steps, args.chunk_steps, "baseline"
         )
-        loss_histories["baseline"] = history
 
         def predict_fn_baseline(s, a, k):
             return predict_next_baseline(
                 baseline_state, k, s, a, decode_config, args.baseline_inference
             )
 
-        img = imagined_trajectory(
-            predict_fn_baseline, real_states[0], actions_seq, decode_config, roll_key
-        )
-        results["baseline"] = compute_metrics(real_tokens, img, cum, step_reset)
-        imagined_tokens["baseline"] = img
-        heldout_acc["baseline"] = token_accuracy_breakdown(
-            predict_fn_baseline, heldout_batch, decode_config, heldout_key
-        )
-        _report("baseline", results["baseline"], heldout_acc["baseline"], history)
+        evaluate_predictor("baseline", predict_fn_baseline, history)
 
         # --- plots + artifacts ---
         plot_loss_curves(out_dir, loss_histories, uniform_ce)
