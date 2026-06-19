@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 
 from flow_matching.distributions import sample_standard_normal
-from flow_matching.paths import mixture_path_rates
+from flow_matching.paths import factorized_mixture_path_rates
 
 
 def euler_integrate(
@@ -64,21 +64,12 @@ def sample_conditioned_discrete_flow(
     num_categories: int,
     steps: int,
 ) -> jax.Array:
-    """Sample tokens from the factorized CTMC (discrete.md Alg 7, Euler/tau-leaping).
+    """Sample tokens from the factorized CTMC.
 
     The discrete twin of :func:`sample_conditioned_flow`: start from the uniform
     source ``X_0 ~ Uniform(V)^d`` and take ``steps`` Euler/tau-leaping updates of
     the per-factor jump process. Each step one-hots the current tokens into the
-    ``(B, d*V)`` model input, reads per-factor logits, forms the denoising
-    posterior, converts it to jump rates, and samples the next tokens from the
-    Euler transition probabilities.
-
-    Rates are evaluated only at the LEFT endpoints ``t_i = i/steps`` (i = 0..n-1),
-    mirroring :func:`euler_integrate`. There ``h * q = posterior / (steps - i) <=
-    1`` so the self-probability ``1 - sum_{v != x} h*q`` is automatically valid
-    (>= posterior(x) >= 0) with no clamping, and the final step (``i = n-1``)
-    degenerates to sampling straight from the posterior. Returns integer tokens
-    ``X_1`` of shape ``(B, d)``; the caller owns any one-hot/layout conversion.
+    ``(B, d*V)`` model input  (TODO: Is this valid???? Seems not legit/appropriate.), reads per-factor logits, forms x_t, estimates Q_t(y|x), samples next tokens from this.
     """
     batch = cond_vars.shape[0]
     h = 1.0 / steps
@@ -91,16 +82,23 @@ def sample_conditioned_discrete_flow(
     ) -> tuple[tuple[jax.Array, jax.Array], jax.Array]:
         xt, step_key = carry
         step_key, sample_key = jax.random.split(step_key)
+        # Convert xt to one-hot encoded. TODO: This seems wrong... should be a token value? FIXME.
         xt_onehot = jax.nn.one_hot(xt, num_categories).reshape(batch, -1)
         tt = jnp.full((batch, 1), t)
         logits = apply_fn({"params": params}, xt_onehot, tt, cond_vars)
         logits = logits.reshape(batch, num_factors, num_categories)
+        # Value of token position j
         posterior = jax.nn.softmax(logits, axis=-1)  # p_{1|t}(.|x_t), (B, d, V)
-        rates = mixture_path_rates(posterior, t)  # q_j(v), (B, d, V)
+        rates = factorized_mixture_path_rates(posterior, t)  # q_j(v), (B, d, V)
+        # This is δ_{x=y} needed in algorithm.
         current = jax.nn.one_hot(xt, num_categories)  # (B, d, V)
-        off_diag = h * rates * (1.0 - current)  # h*q for v != x, 0 at v = x
+        # h * q_j(y) for y ≠ x ( 1- δ_{y=x})
+        off_diag = h * rates * (1.0 - current)
+        # 1 - h ∑_{y ≠x} (q_j (y)) for y = x ( δ_{y=x})
         self_prob = 1.0 - jnp.sum(off_diag, axis=-1, keepdims=True)
-        probs = off_diag + current * self_prob  # Euler transition probs (B, d, V)
+        # p(x_{t+h}|z,t) = 1_(y=x) (1-h sum_{y' \in S \{x}}q_j(y'))
+        probs = current * self_prob + off_diag
+        # Sample x_{t+h} ∼ Categorical(p_{x_{t+h}|z,t})
         next_x = jax.random.categorical(sample_key, jnp.log(probs), axis=-1)
         return (next_x, step_key), next_x
 

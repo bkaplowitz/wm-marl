@@ -146,12 +146,19 @@ def conditioned_discrete_flow_matching_loss(
     """
     num_factors = z.shape[1]
     key_t, key_path = jax.random.split(key)
+    # Uniformly sample time t. Alternative following LLaDA2 (2025, https://arxiv.org/pdf/2512.15745) would be to sample t  in [t_min, t_max].
     t = jax.random.uniform(key_t, shape=(z.shape[0], 1))
+    # Sample x_t from p(x_t | z, t) = m  * z_t + (1 - m) * x_0, where x_0 ~ Uniform(0, 1) and m ~ Bernoulli(alpha(t)). Goes from fully noise to fully values.
+    # Alternative would be to mask tokens directly with [[mask]] value (n_category + 1), as in a MDLM.
     xt = sample_discrete_conditional_path(key_path, z, t, num_categories)
+    # One hot encode for model. TODO: Verify if this is this valid???
     xt_onehot = jax.nn.one_hot(xt, num_categories).reshape(z.shape[0], -1)
+    # Model output logits
     logits = apply_fn({"params": params}, xt_onehot, t, cond_vars)
     logits = logits.reshape(z.shape[0], num_factors, num_categories)
+    # Compute cross-entropy loss (nll) for each factor.
     token_ce = optax.softmax_cross_entropy_with_integer_labels(logits, z)
+    # Sum over factors and average over batch.
     return jnp.mean(jnp.sum(token_ce, axis=-1))
 
 

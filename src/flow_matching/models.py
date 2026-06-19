@@ -8,7 +8,11 @@ import jax.numpy as jnp
 
 
 class MLPVectorField(nn.Module):
-    """A small MLP that predicts u_theta(x, t). Uses SiLU activation."""
+    """A small MLP that predicts flow u_theta(x, t). Uses SiLU activation. Represents both conditional and unconditional vector fields.
+
+    Conditional vector field: u_theta(x, t, cond_vars)
+    Unconditional vector field: u_theta(x, t)
+    """
 
     hidden_dims: Sequence[int] = (64, 64, 64, 64)
 
