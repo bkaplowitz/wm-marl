@@ -6,10 +6,10 @@ import numpy as np
 
 from flow_matching.models import MLPVectorField
 from flow_matching.paths import (
-    factorized_mixture_path_rates,
+    factorized_jump_rates,
     sample_discrete_conditional_path,
 )
-from flow_matching.simulate import sample_conditioned_discrete_flow
+from flow_matching.simulate import sample_conditioned_discrete_flow_model
 from flow_matching.train import (
     conditioned_discrete_train_step,
     create_conditioned_train_state,
@@ -42,7 +42,7 @@ def test_corruption_is_uniform_source_at_t_zero():
 def test_mixture_path_rates_is_posterior_over_one_minus_t():
     posterior = jnp.asarray([[[0.1, 0.2, 0.7]]])
     t = jnp.asarray(0.5)
-    rates = factorized_mixture_path_rates(posterior, t)
+    rates = factorized_jump_rates(posterior, t)
     np.testing.assert_allclose(
         np.asarray(rates), np.asarray(posterior) / 0.5, rtol=1e-6
     )
@@ -79,7 +79,7 @@ def test_discrete_denoiser_learns_toy_map_and_sampler_recovers_it():
 
     assert losses[-1] < losses[0]  # the fit actually moved the loss
 
-    tokens = sample_conditioned_discrete_flow(
+    tokens = sample_conditioned_discrete_flow_model(
         state.apply_fn,
         state.params,
         jax.random.PRNGKey(11),
@@ -114,7 +114,7 @@ def _explicit_discrete_sample(
         logits = apply_fn({"params": params}, xt_onehot, tt, cond_vars)
         logits = logits.reshape(batch, num_factors, num_categories)
         posterior = jax.nn.softmax(logits, axis=-1)
-        rates = factorized_mixture_path_rates(posterior, t)
+        rates = factorized_jump_rates(posterior, t)
         current = jax.nn.one_hot(xt, num_categories)
         off_diag = h * rates * (1.0 - current)
         self_prob = 1.0 - jnp.sum(off_diag, axis=-1, keepdims=True)
@@ -133,7 +133,7 @@ def test_discrete_sampler_scan_matches_python_loop():
     )
     key = jax.random.PRNGKey(2)
 
-    scan_tokens = sample_conditioned_discrete_flow(
+    scan_tokens = sample_conditioned_discrete_flow_model(
         state.apply_fn,
         state.params,
         key,

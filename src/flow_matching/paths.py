@@ -122,19 +122,20 @@ def sample_discrete_conditional_path(
 # Sampling from 1_{y=x} + h * Q_t(y|x) is exactly the mixture path sampling step.
 
 
-def factorized_mixture_path_rates(
+def factorized_jump_rates(
     posterior: jax.Array,
     t: jax.Array,
     eps: float = 1e-4,
     alpha=alpha,
     alpha_dt=alpha_dt,
 ) -> jax.Array:
-    """Off-diagonal CTMC jump rates q_j(v) from the denoising posterior.
+    """Off-diagonal CTMC jump rates q_j(v) using the model.
 
-    With linear schedule, ``α_t = t``, this is ``p(x_t | z, t) / (1 - t)``. The
+    With linear schedule, ``α_t = t``, this is ``p_{1|t}(z_j=v_i | z, t) / (1 - t) the probability of drawing the data token v_i at position j. The
     ``eps`` floor mirrors the schedule guards in this module and is inert on the
     left-endpoint sampling grid where ``1 - t >= 1/steps``. Discrete twin of
     :func:`conditional_vector_field`.
+
 
     With $a_t = t$ (and hence $\dot{a_t} = 1$) the agent stays on the clean token $z_t$. With probability $1 - a_t$ (and hence rate $-1$) the agent samples a noise token from the uniform source.
 

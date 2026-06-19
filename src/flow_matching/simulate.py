@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 
 from flow_matching.distributions import sample_standard_normal
-from flow_matching.paths import factorized_mixture_path_rates
+from flow_matching.paths import factorized_jump_rates
 
 
 def euler_integrate(
@@ -30,7 +30,7 @@ def euler_integrate(
     return jnp.concatenate((x0[None, ...], xs))  # prepend the initial x0
 
 
-def sample_conditioned_flow(
+def sample_conditioned_flow_model(
     apply_fn: Any,
     params: Any,
     key: jax.Array,
@@ -54,7 +54,7 @@ def sample_conditioned_flow(
     return euler_integrate(drift, x0, ts)[-1]
 
 
-def sample_conditioned_discrete_flow(
+def sample_conditioned_discrete_flow_model(
     apply_fn: Any,
     params: Any,
     key: jax.Array,
@@ -64,7 +64,7 @@ def sample_conditioned_discrete_flow(
     num_categories: int,
     steps: int,
 ) -> jax.Array:
-    """Sample tokens from the factorized CTMC.
+    """Sample tokens from the simulated CTMC, where the model is used to predict the data.
 
     The discrete twin of :func:`sample_conditioned_flow`: start from the uniform
     source ``X_0 ~ Uniform(V)^d`` and take ``steps`` Euler/tau-leaping updates of
@@ -86,10 +86,10 @@ def sample_conditioned_discrete_flow(
         xt_onehot = jax.nn.one_hot(xt, num_categories).reshape(batch, -1)
         tt = jnp.full((batch, 1), t)
         logits = apply_fn({"params": params}, xt_onehot, tt, cond_vars)
-        logits = logits.reshape(batch, num_factors, num_categories)
-        # Value of token position j
-        posterior = jax.nn.softmax(logits, axis=-1)  # p_{1|t}(.|x_t), (B, d, V)
-        rates = factorized_mixture_path_rates(posterior, t)  # q_j(v), (B, d, V)
+        logits = logits.reshape(batch, num_factors, num_categories)  # (B, d, V)
+        # Predicted probability of x1, aka drawing from data.
+        p_x1 = jax.nn.softmax(logits, axis=-1)  # p_{1|t}(.|x_t), (B, d, V)
+        rates = factorized_jump_rates(p_x1, t)  # q_j(v), (B, d, V)
         # This is δ_{x=y} needed in algorithm.
         current = jax.nn.one_hot(xt, num_categories)  # (B, d, V)
         # h * q_j(y) for y ≠ x ( 1- δ_{y=x})

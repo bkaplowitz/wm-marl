@@ -13,8 +13,8 @@ from flax.training.train_state import TrainState
 
 from flow_matching.models import MLPVectorField
 from flow_matching.simulate import (
-    sample_conditioned_discrete_flow,
-    sample_conditioned_flow,
+    sample_conditioned_discrete_flow_model,
+    sample_conditioned_flow_model,
 )
 from flow_matching.train import (
     conditioned_discrete_flow_matching_loss,
@@ -116,7 +116,7 @@ def predict_next(
     """Sample next-states from the conditioned flow (next-state only)."""
     cond_vars = _pack_cond_vars(states, actions, config)
     if config.flow_type == "discrete":
-        tokens = sample_conditioned_discrete_flow(
+        tokens = sample_conditioned_discrete_flow_model(
             state.apply_fn,
             state.params,
             key,
@@ -126,7 +126,7 @@ def predict_next(
             steps=config.integration_steps,
         )
         return _unpack_discrete_onehot(tokens, config)
-    transition = sample_conditioned_flow(
+    transition = sample_conditioned_flow_model(
         state.apply_fn,
         state.params,
         key,
