@@ -211,19 +211,17 @@ def _deterministic_accuracy(
 
     ``predicted_samples`` is ``[K, N, 2, 4]`` of predicted next-cell ids.
     """
-    accuracy = np.full((NUM_CELLS,), np.nan, dtype=np.float64)
     if not bool(det_mask.any()):
-        return _as_grid(accuracy), float("nan")
+        return _as_grid(np.full((NUM_CELLS,), np.nan, dtype=np.float64)), float("nan")
 
     det_true = true_next[det_mask]
     det_pred = predicted_samples[:, det_mask]
     true_broadcast = np.broadcast_to(det_true[None, ...], det_pred.shape)
-    correct = (det_pred == true_broadcast).reshape(-1)
+    correct = (det_pred == true_broadcast).reshape(-1).astype(np.float64)
     true_flat = true_broadcast.reshape(-1)
-    for cell in range(NUM_CELLS):
-        selector = true_flat == cell
-        if bool(selector.any()):
-            accuracy[cell] = float(correct[selector].mean())
+    counts = np.bincount(true_flat, minlength=NUM_CELLS).astype(np.float64)
+    hits = np.bincount(true_flat, weights=correct, minlength=NUM_CELLS)
+    accuracy = np.divide(hits, counts, out=np.full(NUM_CELLS, np.nan), where=counts > 0)
 
     full_exact = np.all(det_pred == det_true[None, ...], axis=(2, 3))
     return _as_grid(accuracy), float(full_exact.mean())
