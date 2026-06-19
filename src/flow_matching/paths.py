@@ -131,10 +131,10 @@ def factorized_jump_rates(
 ) -> jax.Array:
     """Off-diagonal CTMC jump rates q_j(v) using the model.
 
-    With linear schedule, ``α_t = t``, this is ``p_{1|t}(z_j=v_i | z, t) / (1 - t) the probability of drawing the data token v_i at position j. The
+    With linear schedule, ``α_t = t``, this is ``(p_{1|t}(z_j=v_i | z, t)  - δ_{z_j=v_i})/ (1 - t) the probability of drawing the data token v_i at position j. The
     ``eps`` floor mirrors the schedule guards in this module and is inert on the
     left-endpoint sampling grid where ``1 - t >= 1/steps``. Discrete twin of
-    :func:`conditional_vector_field`.
+    :func:`conditional_vector_field`. We are off diagonal, so $\delta_{z_j=v_i}$ is 0.
 
 
     With $a_t = t$ (and hence $\dot{a_t} = 1$) the agent stays on the clean token $z_t$. With probability $1 - a_t$ (and hence rate $-1$) the agent samples a noise token from the uniform source.
