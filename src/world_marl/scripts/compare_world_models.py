@@ -1,13 +1,30 @@
 """Compare next-state predictors on CoinGame: discrete + linear flow vs a dumb baseline.
 
-Fits three next-state predictors on the same held-out-fair env data and compares
-them on training convergence, single-step held-out accuracy, on 25-step
-autoregressive rollout:
+Fits three next-state predictors on identical env data and scores them on training
+convergence plus two evaluation regimes. Every number reported is one (factor kind ×
+regime) cell, so the metric names below are organized around those two axes.
 
+FACTOR KINDS -- what the true next value looks like, given (state, action):
+  * DETERMINISTIC -- players move ``(pos + MOVES[a]) % 3`` and uncollected coins stay put,
+    so there is exactly one correct next cell. The score is ACCURACY (fraction of cells
+    matching the single truth): a perfect model reaches 1.0, and COPY_THROUGH (freeze the
+    current state and predict no change) is the baseline to beat.
+  * STOCHASTIC -- a collected coin RESPAWNS uniformly over the 9 grid cells, so there is no
+    single truth and per-cell accuracy is meaningless (ceiling 1/9). We instead compare the
+    predicted respawn-cell DISTRIBUTION (histogram + entropy) against the real draws and the
+    uniform reference.
+
+REGIMES -- how far ahead we predict:
+  * SINGLE_STEP (``single_step_accuracy``) -- one step ahead on a held-out batch.
+  * ROLLOUT (``rollout_fidelity``) -- an H-step autoregressive rollout that feeds each
+    prediction back as the next input: per-step player / uncollected-coin accuracy plus the
+    aggregate respawn distribution.
+
+Predictors compared:
   * ``discrete`` -- conditional discrete flow matching (CTMC tau-leaping, per-factor
     cross-entropy).
   * ``linear``   -- conditional continuous (OT/linear) flow matching (MSE).
-  * ``baseline`` -- a simple one-shot categorical MLP classifier with cross-entropy loss.
+  * ``baseline`` -- a dumb one-shot categorical MLP classifier with cross-entropy loss.
 """
 
 from __future__ import annotations
@@ -123,7 +140,14 @@ def fit_categorical_baseline_steps(state, batch, config, *, steps):
     return state, loss_history
 
 
-def predict_next_baseline(state, key, states, actions, config, inference):
+def predict_next_baseline(
+    state: TrainState,
+    key: jax.Array,
+    states: jnp.ndarray,
+    actions: jnp.ndarray,
+    config: VectorWorldModelConfig,
+    inference: str,
+) -> jnp.ndarray:
     """Baseline next-state: sample (or argmax) per-factor tokens, return one-hot grids."""
     cond_vars = _pack_cond_vars(states, actions, config)
     logits = state.apply_fn({"params": state.params}, cond_vars).reshape(
@@ -157,8 +181,8 @@ def fit_chunked(carry, step_fn, total_steps, chunk, label):
     return carry, np.concatenate(history)
 
 
-# Rollout fidelity, generalized over an arbitrary predict_fn so discrete/linear/baseline
-# share one code path.
+# Token packing + rollout helpers, generalized over an arbitrary predict_fn so the
+# discrete / linear / baseline predictors share one code path.
 def pack(states, decode_config) -> np.ndarray:
     return np.asarray(_pack_discrete_tokens(jnp.asarray(states), decode_config))
 
@@ -174,12 +198,12 @@ def _move_player_tokens(prev_tokens: np.ndarray, actions: np.ndarray) -> dict:
     return out
 
 
-def coin_reset_mask(
+def coin_respawn_mask(
     states: np.ndarray | jnp.ndarray, env_actions: np.ndarray
 ) -> np.ndarray:
     """Per-factor ``(B, 8)`` bool: which coin factors respawn this step.
 
-    Mirrors the collision predicate in ``coin_game_reward_done``: a coin resets iff
+    Mirrors the collision predicate in ``coin_game_reward_done``: a coin respawns iff
     either player's *new* position lands on it. Player factors are always False.
     """
     states = jnp.asarray(states)
@@ -201,37 +225,40 @@ def coin_reset_mask(
     return np.asarray(mask)
 
 
-def collect_real_trajectory(adapter, args, decode_config):
-    """Fixed-action real rollout. Returns real tokens, states, action seq, reset mask."""
+def collect_real_rollout(adapter, args, decode_config):
+    """Fixed-action real rollout. Returns real tokens, states, action seq, per-step respawn mask."""
     num_agents = adapter.num_agents
     rng = np.random.default_rng(args.seed + 100)
     s0 = adapter.reset()  # (B, A, 36)
     real_states = [np.asarray(s0)]
-    actions_seq, step_reset = [], []
+    actions_seq, step_respawn = [], []
     for _ in range(args.horizon):
         a = rng.integers(
             0, adapter.action_dim, size=(args.num_envs, num_agents)
         ).astype(np.int32)
         actions_seq.append(a)
-        step_reset.append(coin_reset_mask(real_states[-1], a))
+        step_respawn.append(coin_respawn_mask(real_states[-1], a))
         step = adapter.step(a)
         real_states.append(np.asarray(step.observations))
     real_tokens = np.stack([pack(s, decode_config) for s in real_states])
-    return real_tokens, real_states, np.stack(actions_seq), np.stack(step_reset)
+    return real_tokens, real_states, np.stack(actions_seq), np.stack(step_respawn)
 
 
-def validate_real(real_tokens, actions_seq, step_reset):
-    """Layout + episode-boundary guardrails. Raises on violation; returns cum mask."""
-    horizon = step_reset.shape[0]
-    cum = np.zeros_like(real_tokens, dtype=bool)
+def validate_real_rollout(real_tokens, actions_seq, step_respawn):
+    """Layout + episode-boundary guardrails. Raises on violation; returns the cumulative
+    respawn mask (True once a coin factor has respawned by step h)."""
+    horizon = step_respawn.shape[0]
+    respawned = np.zeros_like(real_tokens, dtype=bool)
     coin_sel = np.zeros(real_tokens.shape[-1], dtype=bool)
     coin_sel[list(COIN_FACTORS)] = True
     for h in range(1, horizon + 1):
-        cum[h] = cum[h - 1] | step_reset[h - 1]
-        not_reset_coin = (~cum[h]) & coin_sel[None, :]
-        if not np.all(real_tokens[h][not_reset_coin] == real_tokens[0][not_reset_coin]):
+        respawned[h] = respawned[h - 1] | step_respawn[h - 1]
+        uncollected_coin = (~respawned[h]) & coin_sel[None, :]
+        if not np.all(
+            real_tokens[h][uncollected_coin] == real_tokens[0][uncollected_coin]
+        ):
             raise AssertionError(
-                f"non-reset coin changed at step {h} -- reset mask or layout is wrong"
+                f"uncollected coin changed at step {h} -- respawn mask or layout is wrong"
             )
     teleports = 0
     for h in range(1, horizon + 1):
@@ -243,17 +270,17 @@ def validate_real(real_tokens, actions_seq, step_reset):
             f"{teleports} player teleports -- episode boundary fired within horizon; "
             "reduce horizon below max_cycles"
         )
-    return cum
+    return respawned
 
 
-def imagined_trajectory(predict_fn, s0, actions_seq, decode_config, key):
-    """Autoregressive rollout feeding each predicted state back as the next input."""
-    imagined = jnp.asarray(s0)
-    tokens = [pack(imagined, decode_config)]
+def predicted_rollout(predict_fn, s0, actions_seq, decode_config, key):
+    """Autoregressive rollout feeding each predicted state back as the next input. (H+1, B, 8)."""
+    predicted = jnp.asarray(s0)
+    tokens = [pack(predicted, decode_config)]
     for h in range(actions_seq.shape[0]):
         key, k = jax.random.split(key)
-        imagined = predict_fn(imagined, jnp.asarray(actions_seq[h]), k)
-        tokens.append(pack(imagined, decode_config))
+        predicted = predict_fn(predicted, jnp.asarray(actions_seq[h]), k)
+        tokens.append(pack(predicted, decode_config))
     return np.stack(tokens)  # (H+1, B, 8)
 
 
@@ -268,69 +295,80 @@ def _entropy(p) -> float:
     return float(-(nz * np.log(nz)).sum())
 
 
-def compute_metrics(real, img, cum, step_reset):
-    """Per-step match curves + aggregate reset-cell distribution."""
-    horizon = step_reset.shape[0]
+def rollout_fidelity_metrics(real, predicted, respawned, step_respawn):
+    """Score an autoregressive rollout against the real one.
+
+    Deterministic factors (players, uncollected coins) get per-step ACCURACY curves plus
+    their copy-through baseline; the just-respawned (stochastic) coins instead feed the
+    aggregate respawn-cell DISTRIBUTION. ``real``/``predicted`` are token arrays ``(H+1, B,
+    8)``; ``respawned`` is the cumulative respawn mask, ``step_respawn`` the per-step one.
+    """
+    horizon = step_respawn.shape[0]
     p, c = list(PLAYER_FACTORS), list(COIN_FACTORS)
     out = {
         "step": list(range(1, horizon + 1)),
-        "player_imagined": [],
-        "player_persistence": [],
-        "coin_nonreset_imagined": [],
-        "coin_nonreset_persistence": [],
-        "coin_nonreset_count": [],
-        "predictable_all_imagined": [],
+        "player_accuracy": [],
+        "player_copy_through": [],
+        "uncollected_coin_accuracy": [],
+        "uncollected_coin_copy_through": [],
+        "uncollected_coin_count": [],
+        "deterministic_accuracy": [],
     }
     for h in range(1, horizon + 1):
-        out["player_imagined"].append(float(np.mean(img[h][:, p] == real[h][:, p])))
-        out["player_persistence"].append(float(np.mean(real[h][:, p] == real[0][:, p])))
-        coin_ok = ~cum[h][:, c]
-        n = int(coin_ok.sum())
-        out["coin_nonreset_count"].append(n)
-        ci = np.array([])
-        if n:
-            ci = (img[h][:, c] == real[h][:, c])[coin_ok]
-            cp = (real[h][:, c] == real[0][:, c])[coin_ok]
-            out["coin_nonreset_imagined"].append(float(np.mean(ci)))
-            out["coin_nonreset_persistence"].append(float(np.mean(cp)))
-        else:
-            out["coin_nonreset_imagined"].append(float("nan"))
-            out["coin_nonreset_persistence"].append(float("nan"))
-        pred_ok = np.concatenate(
-            [(img[h][:, p] == real[h][:, p]).reshape(-1), ci if n else np.array([])]
+        out["player_accuracy"].append(
+            float(np.mean(predicted[h][:, p] == real[h][:, p]))
         )
-        out["predictable_all_imagined"].append(float(np.mean(pred_ok)))
+        out["player_copy_through"].append(
+            float(np.mean(real[h][:, p] == real[0][:, p]))
+        )
+        uncollected = ~respawned[h][:, c]
+        n = int(uncollected.sum())
+        out["uncollected_coin_count"].append(n)
+        coin_hit = np.array([])
+        if n:
+            coin_hit = (predicted[h][:, c] == real[h][:, c])[uncollected]
+            coin_copy = (real[h][:, c] == real[0][:, c])[uncollected]
+            out["uncollected_coin_accuracy"].append(float(np.mean(coin_hit)))
+            out["uncollected_coin_copy_through"].append(float(np.mean(coin_copy)))
+        else:
+            out["uncollected_coin_accuracy"].append(float("nan"))
+            out["uncollected_coin_copy_through"].append(float("nan"))
+        deterministic_hit = np.concatenate(
+            [
+                (predicted[h][:, p] == real[h][:, p]).reshape(-1),
+                coin_hit if n else np.array([]),
+            ]
+        )
+        out["deterministic_accuracy"].append(float(np.mean(deterministic_hit)))
 
-    img_vals, real_vals = [], []
+    pred_vals, real_vals = [], []
     for t in range(horizon):
-        m = step_reset[t][:, c]
+        m = step_respawn[t][:, c]
         if m.any():
-            img_vals.append(img[t + 1][:, c][m])
+            pred_vals.append(predicted[t + 1][:, c][m])
             real_vals.append(real[t + 1][:, c][m])
-    img_vals = np.concatenate(img_vals) if img_vals else np.array([], dtype=int)
+    pred_vals = np.concatenate(pred_vals) if pred_vals else np.array([], dtype=int)
     real_vals = np.concatenate(real_vals) if real_vals else np.array([], dtype=int)
 
-    img_p, real_p = _norm_hist(img_vals), _norm_hist(real_vals)
-    out["reset_distribution"] = {
-        "num_events": int(img_vals.size),
-        "argmax_match_rate": (
-            float(np.mean(img_vals == real_vals)) if img_vals.size else float("nan")
-        ),
-        "imagined_cell_hist": img_p.tolist(),
+    pred_p, real_p = _norm_hist(pred_vals), _norm_hist(real_vals)
+    out["respawn_distribution"] = {
+        "num_respawn_events": int(pred_vals.size),
+        "predicted_cell_hist": pred_p.tolist(),
         "real_cell_hist": real_p.tolist(),
-        "imagined_entropy": _entropy(img_p),
+        "predicted_entropy": _entropy(pred_p),
         "real_entropy": _entropy(real_p),
         "uniform_entropy": float(np.log(9)),
     }
     return out
 
 
-def token_accuracy_breakdown(predict_fn, batch, decode_config, key):
-    """Single-step held-out per-factor accuracy, split player/coin, vs copy-through."""
+def single_step_accuracy(predict_fn, batch, decode_config, key):
+    """One-step-ahead per-factor accuracy on a held-out batch, split player/coin, against
+    the copy-through (freeze current state) baseline."""
     pred_next = predict_fn(jnp.asarray(batch.states), jnp.asarray(batch.actions), key)
-    pred = pack(pred_next, decode_config)
-    true = pack(batch.next_states, decode_config)
-    cur = pack(batch.states, decode_config)
+    predicted = pack(pred_next, decode_config)
+    real = pack(batch.next_states, decode_config)
+    current = pack(batch.states, decode_config)
     p, c = list(PLAYER_FACTORS), list(COIN_FACTORS)
 
     def acc(a, b, cols=None):
@@ -341,12 +379,12 @@ def token_accuracy_breakdown(predict_fn, batch, decode_config, key):
         )
 
     return {
-        "overall": acc(pred, true),
-        "player": acc(pred, true, p),
-        "coin": acc(pred, true, c),
-        "copy_through_overall": acc(cur, true),
-        "copy_through_player": acc(cur, true, p),
-        "copy_through_coin": acc(cur, true, c),
+        "overall": acc(predicted, real),
+        "player": acc(predicted, real, p),
+        "coin": acc(predicted, real, c),
+        "copy_through_overall": acc(current, real),
+        "copy_through_player": acc(current, real, p),
+        "copy_through_coin": acc(current, real, c),
     }
 
 
@@ -403,7 +441,7 @@ def plot_loss_curves(out_dir: Path, loss_histories: dict, uniform_ce: float) -> 
         0.5,
         0.005,
         "Discrete FM CE is averaged over corruption levels t~U(0,1), NOT a clean-conditioned NLL; "
-        "use held-out accuracy + rollout fidelity to rank models.",
+        "use single-step accuracy + rollout fidelity to rank models.",
         ha="center",
         fontsize=8,
         style="italic",
@@ -413,82 +451,90 @@ def plot_loss_curves(out_dir: Path, loss_histories: dict, uniform_ce: float) -> 
     plt.close(fig)
 
 
-def plot_curves(out_dir: Path, results: dict, horizon: int) -> None:
+def _plot_rollout_accuracy(ax, steps, rollout_metrics, key, copy_key, *, chance_line):
+    """One per-step accuracy panel: each predictor's curve plus the shared copy-through bar."""
+    for name, m in rollout_metrics.items():
+        ax.plot(steps, m[key], marker="o", ms=3, label=f"{name} predicted")
+    any_m = next(iter(rollout_metrics.values()))
+    ax.plot(steps, any_m[copy_key], "k--", label="copy-through")
+    if chance_line:
+        ax.axhline(1 / 9, color="red", alpha=0.3, label="1/9 chance")
+    ax.set_xlabel("rollout step")
+    ax.set_ylim(0, 1.02)
+    ax.legend()
+    ax.grid(True, alpha=0.25)
+
+
+def plot_rollout_fidelity(out_dir: Path, rollout_metrics: dict, horizon: int) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     steps = list(range(1, horizon + 1))
-    any_m = next(iter(results.values()))
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    for name, m in results.items():
-        ax.plot(steps, m["player_imagined"], marker="o", ms=3, label=f"{name} imagined")
-    ax.plot(
-        steps, any_m["player_persistence"], "k--", label="persistence (copy-through)"
+    _plot_rollout_accuracy(
+        ax,
+        steps,
+        rollout_metrics,
+        "player_accuracy",
+        "player_copy_through",
+        chance_line=True,
     )
-    ax.axhline(1 / 9, color="red", alpha=0.3, label="1/9 chance")
-    ax.set_xlabel("rollout step")
-    ax.set_ylabel("player-factor match")
-    ax.set_title("Player trajectory fidelity (deterministic; should stay ~1.0)")
-    ax.set_ylim(0, 1.02)
-    ax.legend()
-    ax.grid(True, alpha=0.25)
+    ax.set_ylabel("player-factor cell accuracy")
+    ax.set_title("Rollout player accuracy (deterministic target; should stay ~1.0)")
     fig.tight_layout()
-    fig.savefig(out_dir / "player_drift.png")
+    fig.savefig(out_dir / "rollout_player_accuracy.png")
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    for name, m in results.items():
-        ax.plot(
-            steps,
-            m["coin_nonreset_imagined"],
-            marker="o",
-            ms=3,
-            label=f"{name} imagined",
-        )
-    ax.plot(steps, any_m["coin_nonreset_persistence"], "k--", label="persistence")
-    ax.set_xlabel("rollout step")
-    ax.set_ylabel("non-reset coin match")
-    ax.set_title("Non-reset coin fidelity (copy-through is the bar)")
-    ax.set_ylim(0, 1.02)
-    ax.legend()
-    ax.grid(True, alpha=0.25)
+    _plot_rollout_accuracy(
+        ax,
+        steps,
+        rollout_metrics,
+        "uncollected_coin_accuracy",
+        "uncollected_coin_copy_through",
+        chance_line=False,
+    )
+    ax.set_ylabel("uncollected-coin cell accuracy")
+    ax.set_title("Rollout uncollected-coin accuracy (copy-through is the bar)")
     fig.tight_layout()
-    fig.savefig(out_dir / "coin_nonreset.png")
+    fig.savefig(out_dir / "rollout_uncollected_coin_accuracy.png")
     plt.close(fig)
 
     fig, axes = plt.subplots(
-        1, len(results), figsize=(5 * len(results), 4), squeeze=False
+        1, len(rollout_metrics), figsize=(5 * len(rollout_metrics), 4), squeeze=False
     )
     cells = np.arange(9)
-    for ax, (name, m) in zip(axes[0], results.items()):
-        rd = m["reset_distribution"]
+    for ax, (name, m) in zip(axes[0], rollout_metrics.items()):
+        rd = m["respawn_distribution"]
         ax.bar(cells - 0.2, rd["real_cell_hist"], width=0.4, label="real (uniform)")
-        ax.bar(cells + 0.2, rd["imagined_cell_hist"], width=0.4, label=f"{name} sample")
+        ax.bar(
+            cells + 0.2, rd["predicted_cell_hist"], width=0.4, label=f"{name} sample"
+        )
         ax.axhline(1 / 9, color="k", ls=":", alpha=0.6)
         ax.set_title(
-            f"{name} reset cells (n={rd['num_events']})\n"
-            f"H_img={rd['imagined_entropy']:.2f} vs H_unif={rd['uniform_entropy']:.2f}"
+            f"{name} respawn cells (n={rd['num_respawn_events']})\n"
+            f"H_pred={rd['predicted_entropy']:.2f} vs H_unif={rd['uniform_entropy']:.2f}"
         )
         ax.set_xlabel("grid cell")
         ax.set_ylabel("frequency")
         ax.legend()
     fig.tight_layout()
-    fig.savefig(out_dir / "reset_distribution.png")
+    fig.savefig(out_dir / "respawn_distribution.png")
     plt.close(fig)
 
 
 def plot_occupancy(
-    out_dir: Path, real_tokens, imagined_tokens: dict, horizon: int
+    out_dir: Path, real_tokens, predicted_tokens: dict, horizon: int
 ) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    sources = {"real": real_tokens, **imagined_tokens}
+    sources = {"real": real_tokens, **predicted_tokens}
 
     def occ(tokens, factor):
         vals = tokens[1 : horizon + 1, :, factor].ravel()
@@ -519,7 +565,7 @@ def _board_from_tokens(row: np.ndarray) -> np.ndarray:
 
 
 def plot_example_rollout(
-    out_dir: Path, real_tokens, imagined_tokens: dict, horizon: int, env: int = 0
+    out_dir: Path, real_tokens, predicted_tokens: dict, horizon: int, env: int = 0
 ) -> None:
     import matplotlib
 
@@ -528,7 +574,7 @@ def plot_example_rollout(
     import matplotlib.patches as mpatches
     import matplotlib.pyplot as plt
 
-    sources = {"real": real_tokens, **imagined_tokens}
+    sources = {"real": real_tokens, **predicted_tokens}
     rows = list(sources)
     cols = sorted(
         set(np.linspace(0, horizon, min(horizon + 1, 8)).astype(int).tolist())
@@ -638,13 +684,13 @@ def main() -> None:
             flush=True,
         )
 
-        real_tokens, real_states, actions_seq, step_reset = collect_real_trajectory(
+        real_tokens, real_states, actions_seq, step_respawn = collect_real_rollout(
             adapter, args, decode_config
         )
-        cum = validate_real(real_tokens, actions_seq, step_reset)
-        total_resets = int(step_reset[:, :, list(COIN_FACTORS)].sum())
+        respawned = validate_real_rollout(real_tokens, actions_seq, step_respawn)
+        total_respawn_events = int(step_respawn[:, :, list(COIN_FACTORS)].sum())
         print(
-            f"guardrails OK | horizon={args.horizon} | coin reset events={total_resets} "
+            f"guardrails OK | horizon={args.horizon} | coin respawn events={total_respawn_events} "
             f"| 0 player teleports",
             flush=True,
         )
@@ -655,19 +701,26 @@ def main() -> None:
         roll_key = jax.random.PRNGKey(args.seed + 200)
         heldout_key = jax.random.PRNGKey(args.seed + 300)
 
-        loss_histories, results, imagined_tokens, heldout_acc = {}, {}, {}, {}
+        loss_histories, rollout_metrics, predicted_tokens, single_step_acc = (
+            {},
+            {},
+            {},
+            {},
+        )
 
         def evaluate_predictor(name, predict_fn, history):
             loss_histories[name] = history
-            img = imagined_trajectory(
+            predicted = predicted_rollout(
                 predict_fn, real_states[0], actions_seq, decode_config, roll_key
             )
-            results[name] = compute_metrics(real_tokens, img, cum, step_reset)
-            imagined_tokens[name] = img
-            heldout_acc[name] = token_accuracy_breakdown(
+            rollout_metrics[name] = rollout_fidelity_metrics(
+                real_tokens, predicted, respawned, step_respawn
+            )
+            predicted_tokens[name] = predicted
+            single_step_acc[name] = single_step_accuracy(
                 predict_fn, heldout_batch, decode_config, heldout_key
             )
-            _report(name, results[name], heldout_acc[name], history)
+            _report(name, rollout_metrics[name], single_step_acc[name], history)
 
         for flow in args.flow_types:
             config = dataclasses.replace(
@@ -713,9 +766,9 @@ def main() -> None:
 
         # --- plots + artifacts ---
         plot_loss_curves(out_dir, loss_histories, uniform_ce)
-        plot_curves(out_dir, results, args.horizon)
-        plot_occupancy(out_dir, real_tokens, imagined_tokens, args.horizon)
-        plot_example_rollout(out_dir, real_tokens, imagined_tokens, args.horizon)
+        plot_rollout_fidelity(out_dir, rollout_metrics, args.horizon)
+        plot_occupancy(out_dir, real_tokens, predicted_tokens, args.horizon)
+        plot_example_rollout(out_dir, real_tokens, predicted_tokens, args.horizon)
         for name, history in loss_histories.items():
             _write_loss_csv(out_dir / f"loss_{name}.csv", history.tolist())
 
@@ -725,7 +778,7 @@ def main() -> None:
             "uniform_cross_entropy": uniform_ce,
             "train_transition_count": int(train_batch.states.shape[0]),
             "heldout_transition_count": int(heldout_batch.states.shape[0]),
-            "total_coin_reset_events": total_resets,
+            "total_respawn_events": total_respawn_events,
             "loss_summary": {
                 name: {
                     "first": float(h[0]),
@@ -735,8 +788,8 @@ def main() -> None:
                 }
                 for name, h in loss_histories.items()
             },
-            "heldout_accuracy": heldout_acc,
-            "rollout_results": results,
+            "single_step_accuracy": single_step_acc,
+            "rollout_fidelity": rollout_metrics,
         }
         (out_dir / "compare_world_models.json").write_text(
             json.dumps(summary, indent=2), encoding="utf-8"
@@ -747,18 +800,18 @@ def main() -> None:
 
 
 def _report(name, metrics, acc, history):
-    rd = metrics["reset_distribution"]
+    rd = metrics["respawn_distribution"]
     print(
         f"[{name}] fit loss first={history[0]:.4f} last={history[-1]:.4f} "
         f"min={np.min(history):.4f}",
         flush=True,
     )
     print(
-        f"[{name}] heldout acc overall={acc['overall']:.3f} player={acc['player']:.3f} "
-        f"coin={acc['coin']:.3f} (copy-through overall={acc['copy_through_overall']:.3f}) | "
-        f"rollout player step1={metrics['player_imagined'][0]:.3f} "
-        f"stepH={metrics['player_imagined'][-1]:.3f} | reset H_img="
-        f"{rd['imagined_entropy']:.2f}/{rd['uniform_entropy']:.2f}",
+        f"[{name}] 1-step heldout: overall={acc['overall']:.3f} player={acc['player']:.3f} "
+        f"coin={acc['coin']:.3f} (copy-through={acc['copy_through_overall']:.3f}) | "
+        f"rollout player accuracy step1={metrics['player_accuracy'][0]:.3f} "
+        f"stepH={metrics['player_accuracy'][-1]:.3f} | respawn H_pred="
+        f"{rd['predicted_entropy']:.2f}/{rd['uniform_entropy']:.2f}",
         flush=True,
     )
 
