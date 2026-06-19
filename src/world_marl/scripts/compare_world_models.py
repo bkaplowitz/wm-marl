@@ -1,41 +1,13 @@
 """Compare next-state predictors on CoinGame: discrete + linear flow vs a dumb baseline.
 
 Fits three next-state predictors on the same held-out-fair env data and compares
-them on training convergence, single-step held-out accuracy, and 25-step
-autoregressive rollout fidelity:
+them on training convergence, single-step held-out accuracy, on 25-step
+autoregressive rollout:
 
   * ``discrete`` -- conditional discrete flow matching (CTMC tau-leaping, per-factor
     cross-entropy).
   * ``linear``   -- conditional continuous (OT/linear) flow matching (MSE).
-  * ``baseline`` -- a deliberately simple one-shot categorical MLP classifier
-    trained with cross-entropy: ``cond_vars (state, action) -> (d, V) logits``, no
-    flow integration. At rollout time it SAMPLES each factor from its predicted
-    categorical (parity with the flow samplers; ``--baseline-inference argmax`` for
-    the deterministic variant).
-
-The headline question: does generative flow matching actually buy anything over a
-plain classifier for next-state prediction?
-
-Loss curves are a CONVERGENCE DIAGNOSTIC, not a model ranking. The discrete FM loss
-is cross-entropy averaged over corruption levels ``t ~ U(0, 1)`` (predict the clean
-token from a corrupted ``x_t``), whereas the baseline CE is a clean-conditioned NLL.
-They share units (both start at ``d*ln(V) ~ 17.6``) and the same factorization, so
-co-plotting on one nats axis is fair as a convergence view -- but lower loss does NOT
-mean better predictor. The real head-to-head is held-out categorical accuracy + the
-25-step rollout fidelity (see ``discrete-wm-eval-methodology`` memory).
-
-Rollout fidelity methodology (ported, memory-validated): drive BOTH the real env and
-each imagined rollout with the SAME fixed action sequence from the same start. Player
-motion ``next = (pos + MOVES[a]) % 3`` is coin-independent -- the deterministic
-headline metric. Coin factors are masked once the collision predicate
-(``coin_reset_mask``, mirroring ``coin_game_reward_done``) fires, and respawn cells
-are scored DISTRIBUTIONALLY (entropy vs ``ln 9``), never by argmax. Guardrails
-(``validate_real``) assert non-reset coins never change and zero player teleports.
-
-Artifacts written to ``--out-dir`` (default ``runs/compare_world_models``):
-  loss_curves.png, loss_<predictor>.csv, player_drift.png, coin_nonreset.png,
-  reset_distribution.png, occupancy_<channel>.png (x4), example_rollout.png,
-  compare_world_models.json.
+  * ``baseline`` -- a simple one-shot categorical MLP classifier with cross-entropy loss.
 """
 
 from __future__ import annotations
@@ -174,9 +146,6 @@ def predict_next_baseline(state, key, states, actions, config, inference):
     return _unpack_discrete_onehot(tokens, config)
 
 
-# --------------------------------------------------------------------------------------
-# Chunked fitting drivers (jitted scan for speed + per-chunk heartbeat).
-# --------------------------------------------------------------------------------------
 def chunk_sizes(total: int, chunk: int) -> list[int]:
     full, rem = divmod(total, chunk)
     return [chunk] * full + ([rem] if rem else [])
@@ -234,7 +203,9 @@ def _move_player_tokens(prev_tokens: np.ndarray, actions: np.ndarray) -> dict:
     return out
 
 
-def coin_reset_mask(states: np.ndarray | jnp.ndarray, env_actions: np.ndarray) -> np.ndarray:
+def coin_reset_mask(
+    states: np.ndarray | jnp.ndarray, env_actions: np.ndarray
+) -> np.ndarray:
     """Per-factor ``(B, 8)`` bool: which coin factors respawn this step.
 
     Mirrors the collision predicate in ``coin_game_reward_done``: a coin resets iff
@@ -390,8 +361,10 @@ def token_accuracy_breakdown(predict_fn, batch, decode_config, key):
     p, c = list(PLAYER_FACTORS), list(COIN_FACTORS)
 
     def acc(a, b, cols=None):
-        return float(np.mean(a == b)) if cols is None else float(
-            np.mean(a[:, cols] == b[:, cols])
+        return (
+            float(np.mean(a == b))
+            if cols is None
+            else float(np.mean(a[:, cols] == b[:, cols]))
         )
 
     return {
@@ -404,9 +377,6 @@ def token_accuracy_breakdown(predict_fn, batch, decode_config, key):
     }
 
 
-# --------------------------------------------------------------------------------------
-# Plots.
-# --------------------------------------------------------------------------------------
 def _downsample(y, max_points=4000):
     y = np.asarray(y)
     if len(y) <= max_points:
@@ -431,10 +401,14 @@ def plot_loss_curves(out_dir: Path, loss_histories: dict, uniform_ce: float) -> 
     for name in ce_names:
         x, y = _downsample(loss_histories[name])
         ce_ax.plot(x, y, label=name)
-    ce_ax.axhline(uniform_ce, color="k", ls=":", alpha=0.6, label=f"uniform={uniform_ce:.2f}")
+    ce_ax.axhline(
+        uniform_ce, color="k", ls=":", alpha=0.6, label=f"uniform={uniform_ce:.2f}"
+    )
     ce_ax.set_xlabel("fit step")
     ce_ax.set_ylabel("cross-entropy (nats, sum over factors)")
-    ce_ax.set_title("Convergence DIAGNOSTIC (not a ranking):\nCE units, discrete vs baseline")
+    ce_ax.set_title(
+        "Convergence DIAGNOSTIC (not a ranking):\nCE units, discrete vs baseline"
+    )
     ce_ax.set_yscale("log")
     ce_ax.legend()
     ce_ax.grid(True, alpha=0.25)
@@ -478,7 +452,9 @@ def plot_curves(out_dir: Path, results: dict, horizon: int) -> None:
     fig, ax = plt.subplots(figsize=(8, 5))
     for name, m in results.items():
         ax.plot(steps, m["player_imagined"], marker="o", ms=3, label=f"{name} imagined")
-    ax.plot(steps, any_m["player_persistence"], "k--", label="persistence (copy-through)")
+    ax.plot(
+        steps, any_m["player_persistence"], "k--", label="persistence (copy-through)"
+    )
     ax.axhline(1 / 9, color="red", alpha=0.3, label="1/9 chance")
     ax.set_xlabel("rollout step")
     ax.set_ylabel("player-factor match")
@@ -492,7 +468,13 @@ def plot_curves(out_dir: Path, results: dict, horizon: int) -> None:
 
     fig, ax = plt.subplots(figsize=(8, 5))
     for name, m in results.items():
-        ax.plot(steps, m["coin_nonreset_imagined"], marker="o", ms=3, label=f"{name} imagined")
+        ax.plot(
+            steps,
+            m["coin_nonreset_imagined"],
+            marker="o",
+            ms=3,
+            label=f"{name} imagined",
+        )
     ax.plot(steps, any_m["coin_nonreset_persistence"], "k--", label="persistence")
     ax.set_xlabel("rollout step")
     ax.set_ylabel("non-reset coin match")
@@ -525,7 +507,9 @@ def plot_curves(out_dir: Path, results: dict, horizon: int) -> None:
     plt.close(fig)
 
 
-def plot_occupancy(out_dir: Path, real_tokens, imagined_tokens: dict, horizon: int) -> None:
+def plot_occupancy(
+    out_dir: Path, real_tokens, imagined_tokens: dict, horizon: int
+) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -575,7 +559,9 @@ def plot_example_rollout(
 
     sources = {"real": real_tokens, **imagined_tokens}
     rows = list(sources)
-    cols = sorted(set(np.linspace(0, horizon, min(horizon + 1, 8)).astype(int).tolist()))
+    cols = sorted(
+        set(np.linspace(0, horizon, min(horizon + 1, 8)).astype(int).tolist())
+    )
     cmap = mcolors.ListedColormap(["white", "#ffb3b3", "#b3b3ff", "#cc0000", "#0000cc"])
 
     fig, axes = plt.subplots(
@@ -605,9 +591,6 @@ def plot_example_rollout(
     plt.close(fig)
 
 
-# --------------------------------------------------------------------------------------
-# Entry point.
-# --------------------------------------------------------------------------------------
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--algorithm", choices=("ippo", "mappo"), default="ippo")
@@ -621,7 +604,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--train-initial-rollouts", type=int, default=64)
     p.add_argument("--heldout-random-rollouts", type=int, default=16)
     p.add_argument("--heldout-initial-rollouts", type=int, default=16)
-    p.add_argument("--hidden-dim", type=int, default=128)
+    p.add_argument("--hidden-dim", type=int, default=256)
     p.add_argument("--integration-steps", type=int, default=8)
     p.add_argument("--learning-rate", type=float, default=1e-3)
     p.add_argument("--num-categories", type=int, default=9)
@@ -649,8 +632,6 @@ def main() -> None:
     try:
         state_dim = adapter.observation_shape[0]
         hidden_dims = (args.hidden_dim, args.hidden_dim)
-        # Decode/baseline config: num_categories=9 ALWAYS (drives token decode + the
-        # baseline). Per-flow configs below set num_categories only for discrete.
         decode_config = VectorWorldModelConfig(
             state_dim=state_dim,
             num_agents=adapter.num_agents,
