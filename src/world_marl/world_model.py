@@ -11,10 +11,10 @@ import jax
 import jax.numpy as jnp
 from flax.training.train_state import TrainState
 
-from flow_matching.models import MLPVectorField
+from flow_matching.models import MLPVectorField, TokenizedDiscreteDenoiser
 from flow_matching.simulate import (
-    sample_conditioned_discrete_flow_model,
-    sample_conditioned_flow_model,
+    sample_marginal_discrete_flow_model,
+    sample_marginal_flow_model,
 )
 from flow_matching.train import (
     conditioned_discrete_flow_matching_loss,
@@ -22,6 +22,7 @@ from flow_matching.train import (
     conditioned_flow_matching_loss,
     conditioned_train_step,
     create_conditioned_train_state,
+    create_discrete_conditioned_train_state,
 )
 from world_marl.algs.ippo import RolloutBatch
 from world_marl.algs.mappo import MAPPORolloutBatch
@@ -60,6 +61,18 @@ def create_world_model_state(
     key: jax.Array,
     config: VectorWorldModelConfig,
 ) -> TrainState:
+    if config.flow_type == "discrete":
+        model = TokenizedDiscreteDenoiser(
+            num_categories=config.num_categories,
+            hidden_dims=config.hidden_dims,
+        )
+        return create_discrete_conditioned_train_state(
+            key,
+            model,
+            config.learning_rate,
+            num_factors=_num_factors(config),
+            cond_dim=_cond_dim(config),
+        )
     model = MLPVectorField(hidden_dims=config.hidden_dims)
     return create_conditioned_train_state(
         key,
@@ -116,7 +129,7 @@ def predict_next(
     """Sample next-states from the conditioned flow (next-state only)."""
     cond_vars = _pack_cond_vars(states, actions, config)
     if config.flow_type == "discrete":
-        tokens = sample_conditioned_discrete_flow_model(
+        tokens = sample_marginal_discrete_flow_model(
             state.apply_fn,
             state.params,
             key,
@@ -126,7 +139,7 @@ def predict_next(
             steps=config.integration_steps,
         )
         return _unpack_discrete_onehot(tokens, config)
-    transition = sample_conditioned_flow_model(
+    transition = sample_marginal_flow_model(
         state.apply_fn,
         state.params,
         key,

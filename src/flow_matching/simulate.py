@@ -30,7 +30,7 @@ def euler_integrate(
     return jnp.concatenate((x0[None, ...], xs))  # prepend the initial x0
 
 
-def sample_conditioned_flow_model(
+def sample_marginal_flow_model(
     apply_fn: Any,
     params: Any,
     key: jax.Array,
@@ -39,7 +39,7 @@ def sample_conditioned_flow_model(
     dim: int,
     steps: int,
 ) -> jax.Array:
-    """Euler-integrate the conditioned vector field from N(0, I) to t=1.
+    """Euler-integrate the marginal vector field from N(0, I) to t=1.
 
     Returns the terminal sample ``x1`` of shape ``(cond_vars.shape[0], dim)``.
     The conditioning is passed straight to the model at every drift evaluation.
@@ -54,7 +54,7 @@ def sample_conditioned_flow_model(
     return euler_integrate(drift, x0, ts)[-1]
 
 
-def sample_conditioned_discrete_flow_model(
+def sample_marginal_discrete_flow_model(
     apply_fn: Any,
     params: Any,
     key: jax.Array,
@@ -66,10 +66,11 @@ def sample_conditioned_discrete_flow_model(
 ) -> jax.Array:
     """Sample tokens from the simulated CTMC, where the model is used to predict the data.
 
-    The discrete twin of :func:`sample_conditioned_flow`: start from the uniform
+    The discrete twin of :func:`sample_marginal_flow_model`: start from the uniform
     source ``X_0 ~ Uniform(V)^d`` and take ``steps`` Euler/tau-leaping updates of
-    the per-factor jump process. Each step one-hots the current tokens into the
-    ``(B, d*V)`` model input  (TODO: Is this valid???? Seems not legit/appropriate.), reads per-factor logits, forms x_t, estimates Q_t(y|x), samples next tokens from this.
+    the per-factor jump process. Each step feeds the current integer tokens to the
+    tokenized denoiser, reads per-factor logits, estimates Q_t(y|x), and samples
+    the next tokens (Algorithm 7: the rate network is evaluated every step).
     """
     batch = cond_vars.shape[0]
     h = 1.0 / steps
@@ -82,11 +83,8 @@ def sample_conditioned_discrete_flow_model(
     ) -> tuple[tuple[jax.Array, jax.Array], jax.Array]:
         xt, step_key = carry
         step_key, sample_key = jax.random.split(step_key)
-        # Convert xt to one-hot encoded. TODO: This seems wrong... should be a token value? FIXME.
-        xt_onehot = jax.nn.one_hot(xt, num_categories).reshape(batch, -1)
         tt = jnp.full((batch, 1), t)
-        logits = apply_fn({"params": params}, xt_onehot, tt, cond_vars)
-        logits = logits.reshape(batch, num_factors, num_categories)  # (B, d, V)
+        logits = apply_fn({"params": params}, xt, tt, cond_vars)  # (B, d, V)
         # Predicted probability of x1, aka drawing from data.
         p_x1 = jax.nn.softmax(logits, axis=-1)  # p_{1|t}(.|x_t), (B, d, V)
         rates = factorized_jump_rates(p_x1, t)  # q_j(v), (B, d, V)

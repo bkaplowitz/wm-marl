@@ -4,15 +4,15 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from flow_matching.models import MLPVectorField
+from flow_matching.models import TokenizedDiscreteDenoiser
 from flow_matching.paths import (
     factorized_jump_rates,
     sample_discrete_conditional_path,
 )
-from flow_matching.simulate import sample_conditioned_discrete_flow_model
+from flow_matching.simulate import sample_marginal_discrete_flow_model
 from flow_matching.train import (
     conditioned_discrete_train_step,
-    create_conditioned_train_state,
+    create_discrete_conditioned_train_state,
 )
 
 
@@ -53,12 +53,12 @@ def _toy_discrete_setup(key, *, num_factors=3, num_categories=4, batch=8):
     # so a small denoiser can memorize it and the sampler should recover z.
     z = jax.random.randint(key, (batch, num_factors), 0, num_categories)
     cond_vars = jax.nn.one_hot(z, num_categories).reshape(batch, -1)
-    model = MLPVectorField(hidden_dims=(32, 32))
-    state = create_conditioned_train_state(
+    model = TokenizedDiscreteDenoiser(num_categories=num_categories)
+    state = create_discrete_conditioned_train_state(
         jax.random.PRNGKey(0),
         model,
         1e-2,
-        dim=num_factors * num_categories,
+        num_factors=num_factors,
         cond_dim=num_factors * num_categories,
     )
     return z, cond_vars, state
@@ -79,7 +79,7 @@ def test_discrete_denoiser_learns_toy_map_and_sampler_recovers_it():
 
     assert losses[-1] < losses[0]  # the fit actually moved the loss
 
-    tokens = sample_conditioned_discrete_flow_model(
+    tokens = sample_marginal_discrete_flow_model(
         state.apply_fn,
         state.params,
         jax.random.PRNGKey(11),
@@ -109,10 +109,8 @@ def _explicit_discrete_sample(
     for i in range(steps):
         t = ts[i]
         step_key, sample_key = jax.random.split(step_key)
-        xt_onehot = jax.nn.one_hot(xt, num_categories).reshape(batch, -1)
         tt = jnp.full((batch, 1), t)
-        logits = apply_fn({"params": params}, xt_onehot, tt, cond_vars)
-        logits = logits.reshape(batch, num_factors, num_categories)
+        logits = apply_fn({"params": params}, xt, tt, cond_vars)
         posterior = jax.nn.softmax(logits, axis=-1)
         rates = factorized_jump_rates(posterior, t)
         current = jax.nn.one_hot(xt, num_categories)
@@ -133,7 +131,7 @@ def test_discrete_sampler_scan_matches_python_loop():
     )
     key = jax.random.PRNGKey(2)
 
-    scan_tokens = sample_conditioned_discrete_flow_model(
+    scan_tokens = sample_marginal_discrete_flow_model(
         state.apply_fn,
         state.params,
         key,

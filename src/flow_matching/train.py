@@ -94,6 +94,31 @@ def create_conditioned_train_state(
     return TrainState.create(apply_fn=model.apply, params=params, tx=tx)
 
 
+def create_discrete_conditioned_train_state(
+    key: jax.Array,
+    model: flax.linen.Module,
+    learning_rate: float,
+    *,
+    num_factors: int,
+    cond_dim: int,
+) -> TrainState:
+    """Initialize a tokenized discrete denoiser and its Adam optimizer.
+
+    ``num_factors`` is the number of integer token positions ``d``; the model
+    takes ``(B, d)`` int tokens (``nn.Embed`` requires integer input) alongside
+    ``(t, cond_vars)``.
+    """
+    key, init_key = jax.random.split(key)
+    params = model.init(
+        init_key,
+        jnp.zeros((1, num_factors), dtype=jnp.int32),
+        jnp.zeros((1, 1)),
+        jnp.zeros((1, cond_dim)),
+    )["params"]
+    tx = optax.adam(learning_rate)
+    return TrainState.create(apply_fn=model.apply, params=params, tx=tx)
+
+
 def conditioned_flow_matching_loss(
     params: Any,
     apply_fn: Any,  # model.apply
@@ -135,30 +160,24 @@ def conditioned_discrete_flow_matching_loss(
     cond_vars: jax.Array,
     num_categories: int,
 ) -> jax.Array:
-    """Discrete FM token-wise cross-entropy loss (discrete.md Alg 8).
+    """Discrete FM token-wise NLL loss (discrete.md Alg 8).
 
-    Corrupt the clean tokens ``z`` ``(B, d)`` via the mixture path, one-hot the
-    noisy tokens into the ``(B, d*V)`` model input (same width the continuous
-    field uses), read per-factor logits back as ``(B, d, V)``, and sum the
-    cross-entropy of the clean tokens over factors. Discrete twin of
-    :func:`conditioned_flow_matching_loss` (MSE -> NLL); the model is reused
-    unchanged because ``d*V`` equals its target width.
+    Corrupt the clean tokens ``z`` ``(B, d)`` via the mixture path, read per-factor
+    logits ``(B, d, V)`` from the tokenized denoiser, and sum the token-wise NLL
+    of the clean tokens over factors. ``softmax_cross_entropy_with_integer_labels``
+    is exactly ``L_DFM = sum_j -log p_{1|t}(z_j | x)_j`` (Alg 8 line 47): the NLL of
+    a hard label is its integer-label cross-entropy. Discrete twin of
+    :func:`conditioned_flow_matching_loss` (MSE -> NLL).
     """
-    num_factors = z.shape[1]
     key_t, key_path = jax.random.split(key)
     # Uniformly sample time t. Alternative following LLaDA2 (2025, https://arxiv.org/pdf/2512.15745) would be to sample t  in [t_min, t_max].
     t = jax.random.uniform(key_t, shape=(z.shape[0], 1))
     # Sample x_t from p(x_t | z, t) = m  * z_t + (1 - m) * x_0, where x_0 ~ Uniform(0, 1) and m ~ Bernoulli(alpha(t)). Goes from fully noise to fully values.
     # Alternative would be to mask tokens directly with [[mask]] value (n_category + 1), as in a MDLM.
     xt = sample_discrete_conditional_path(key_path, z, t, num_categories)
-    # One hot encode for model. TODO: Verify if this is this valid???
-    xt_onehot = jax.nn.one_hot(xt, num_categories).reshape(z.shape[0], -1)
-    # Model output logits
-    logits = apply_fn({"params": params}, xt_onehot, t, cond_vars)
-    logits = logits.reshape(z.shape[0], num_factors, num_categories)
-    # Compute cross-entropy loss (nll) for each factor.
+    logits = apply_fn({"params": params}, xt, t, cond_vars)  # (B, d, V)
+    # Token-wise NLL per factor, summed over factors and averaged over batch.
     token_ce = optax.softmax_cross_entropy_with_integer_labels(logits, z)
-    # Sum over factors and average over batch.
     return jnp.mean(jnp.sum(token_ce, axis=-1))
 
 
