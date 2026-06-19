@@ -8,12 +8,14 @@ from pathlib import Path
 from typing import Any
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 from tqdm import tqdm
 
 from baselines.softmax_model import (
     SoftmaxBaselineConfig,
     create_softmax_train_state,
+    decode_coin_positions,
     evaluate_softmax_baseline,
     predict_softmax_baseline,
     prepare_softmax_data,
@@ -25,7 +27,20 @@ from baselines.softmax_model import (
 from world_marl.checkpoint.train_state import load_params, save_checkpoint
 from world_marl.envs.jaxmarl_coin_adapter import JaxMARLCoinGameVectorAdapter
 from world_marl.logging import RunLogger, dependency_versions, timestamp
-from world_marl.world_model_training import collect_random_transition_batch
+from world_marl.visualize import (
+    build_next_state_comparison,
+    plot_next_state_comparison,
+)
+from world_marl.world_model import (
+    VectorTransitionBatch,
+    VectorWorldModelConfig,
+    make_world_model_train_state,
+    predict_next,
+)
+from world_marl.world_model_training import (
+    collect_random_transition_batch,
+    fit_world_model_steps,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,6 +74,22 @@ def parse_args() -> argparse.Namespace:
         help="Pass threshold for KL(uniform respawn target || model distribution).",
     )
     parser.add_argument("--sample-predictions", type=int, default=16)
+    parser.add_argument(
+        "--flow-samples",
+        type=int,
+        default=8,
+        help="Flow next-state samples drawn per validation transition.",
+    )
+    parser.add_argument(
+        "--wm-fit-steps",
+        type=int,
+        default=800,
+        help="Full-batch fitting steps for the flow world model.",
+    )
+    parser.add_argument("--wm-hidden-dim", type=int, default=128)
+    parser.add_argument("--wm-integration-steps", type=int, default=8)
+    parser.add_argument("--wm-learning-rate", type=float, default=1e-3)
+    parser.add_argument("--wm-flow-type", default="gaussian")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out-dir", default="runs")
     parser.add_argument("--quiet", action="store_true")
@@ -81,6 +112,14 @@ def parse_args() -> argparse.Namespace:
         parser.error("--max-respawn-uniform-kl must be non-negative")
     if args.stochastic_target_weight <= 0.0:
         parser.error("--stochastic-target-weight must be positive")
+    if args.flow_samples < 1:
+        parser.error("--flow-samples must be >= 1")
+    if args.wm_fit_steps < 1:
+        parser.error("--wm-fit-steps must be >= 1")
+    if args.wm_hidden_dim < 1:
+        parser.error("--wm-hidden-dim must be >= 1")
+    if args.wm_integration_steps < 1:
+        parser.error("--wm-integration-steps must be >= 1")
     return args
 
 
@@ -259,6 +298,26 @@ def main() -> None:
         },
     )
 
+    log_stage(
+        args,
+        f"fitting flow world model ({args.wm_fit_steps} steps) for next-state comparison",
+    )
+    comparison = run_flow_comparison(
+        args, logger, run_dir, train_data, validation_data, predictions
+    )
+    log_stage(
+        args,
+        (
+            "next-state comparison: deterministic exact "
+            f"softmax={comparison.det_exact_softmax:.4f} "
+            f"flow={comparison.det_exact_flow:.4f}; "
+            "respawn KL(uniform->model) "
+            f"softmax={comparison.respawn_kl_softmax:.4f} "
+            f"flow={comparison.respawn_kl_flow:.4f} "
+            f"empirical={comparison.respawn_kl_empirical:.4f}"
+        ),
+    )
+
     passed, criteria = summarize_softmax_outcome(
         metrics,
         finite_losses=finite_losses,
@@ -275,6 +334,8 @@ def main() -> None:
         "artifacts": {
             "checkpoint": str(run_dir / "checkpoint"),
             "training_plot": str(run_dir / "softmax_training.png"),
+            "next_state_comparison": str(run_dir / "next_state_comparison.json"),
+            "next_state_comparison_plot": str(run_dir / "next_state_comparison.png"),
         },
     }
     logger.write_json("outcome.json", outcome)
@@ -288,6 +349,83 @@ def main() -> None:
         ),
     )
     print_json(outcome)
+
+
+def run_flow_comparison(
+    args: argparse.Namespace,
+    logger: RunLogger,
+    run_dir: Path,
+    train_data: Any,
+    validation_data: Any,
+    softmax_predictions: Any,
+):
+    """Fit a flow world model on the same transitions and compare next-state predictions.
+
+    The flow is trained on ``train_data`` and sampled on ``validation_data`` so it is
+    scored on the identical heldout split as the softmax baseline. ``predict_next``
+    yields continuous next-state samples that we decode back to entity cell ids,
+    giving softmax and flow a common regime-split (deterministic move accuracy vs.
+    stochastic respawn calibration against uniform).
+    """
+    flow_config = VectorWorldModelConfig(
+        state_dim=int(train_data.states.shape[-1]),
+        num_agents=train_data.num_agents,
+        action_dim=train_data.action_dim,
+        hidden_dims=(args.wm_hidden_dim, args.wm_hidden_dim),
+        learning_rate=args.wm_learning_rate,
+        integration_steps=args.wm_integration_steps,
+        flow_type=args.wm_flow_type,
+    )
+    train_batch = VectorTransitionBatch(
+        states=jnp.asarray(train_data.states, dtype=jnp.float32),
+        actions=jnp.asarray(train_data.actions, dtype=jnp.int32),
+        next_states=jnp.asarray(train_data.next_states, dtype=jnp.float32),
+        rewards=jnp.asarray(train_data.rewards, dtype=jnp.float32),
+        dones=jnp.asarray(train_data.dones, dtype=jnp.float32),
+    )
+    flow_key = jax.random.PRNGKey(args.seed + 2)
+    flow_state = make_world_model_train_state(flow_key, flow_config)
+    flow_state, sample_rng, _, loss_history = fit_world_model_steps(
+        flow_state,
+        flow_key,
+        train_batch,
+        flow_config,
+        steps=args.wm_fit_steps,
+    )
+    loss_history = np.asarray(loss_history, dtype=np.float64)
+
+    val_states = jnp.asarray(validation_data.states, dtype=jnp.float32)
+    val_actions = jnp.asarray(validation_data.actions, dtype=jnp.int32)
+    target_shape = validation_data.next_states.shape
+    samples = []
+    for _ in range(args.flow_samples):
+        sample_rng, draw_key = jax.random.split(sample_rng)
+        next_states = predict_next(
+            flow_state, draw_key, val_states, val_actions, flow_config
+        )
+        next_states = np.asarray(next_states, dtype=np.float32).reshape(target_shape)
+        samples.append(decode_coin_positions(next_states))
+    flow_position_samples = np.stack(samples, axis=0)
+
+    comparison = build_next_state_comparison(
+        validation_data, softmax_predictions, flow_position_samples
+    )
+    plot_next_state_comparison(comparison, run_dir / "next_state_comparison.png")
+    logger.write_json(
+        "next_state_comparison.json",
+        {
+            "artifact": str(run_dir / "next_state_comparison.png"),
+            "comparison": comparison.to_metrics(),
+            "flow_config": dataclasses.asdict(flow_config),
+            "flow_fit": {
+                "steps": args.wm_fit_steps,
+                "initial_loss": float(loss_history[0]),
+                "final_loss": float(loss_history[-1]),
+                "eval_samples": args.flow_samples,
+            },
+        },
+    )
+    return comparison
 
 
 def plot_training(path: Path, rows: list[dict[str, float]]) -> None:

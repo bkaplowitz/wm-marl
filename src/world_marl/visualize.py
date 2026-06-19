@@ -22,13 +22,13 @@ from typing import Any
 
 import numpy as np
 
-from baselines.softmax_model import SoftmaxBaselinePredictions, softmax_np
-from world_marl.envs.jaxmarl_coin_adapter import (
-    COIN_GRID_HEIGHT,
-    COIN_GRID_WIDTH,
-    COIN_NUM_CELLS,
-    coin_collection_masks,
-    coin_transition_is_deterministic,
+from baselines.softmax_model import (
+    GRID_SIZE,
+    NUM_CELLS,
+    SoftmaxBaselinePredictions,
+    collected_coin_masks,
+    deterministic_transition_mask,
+    softmax_np,
 )
 
 _RED_COIN_ENTITY = 2
@@ -89,46 +89,48 @@ class NextStateComparison:
 def build_next_state_comparison(
     validation_data: Any,
     softmax_predictions: SoftmaxBaselinePredictions,
-    flow_cell_samples: np.ndarray,
+    flow_position_samples: np.ndarray,
 ) -> NextStateComparison:
     """Aggregate softmax and flow next-state predictions into regime-split grids.
 
-    ``flow_cell_samples`` are decoded flow next-cell ids shaped ``[K, N, 2, 4]``
+    ``flow_position_samples`` are decoded flow next-position ids shaped ``[K, N, 2, 4]``
     (``K`` samples per validation transition). A trailing-only ``[N, 2, 4]``
     array is treated as a single sample.
     """
-    cell_ids = np.asarray(validation_data.categories, dtype=np.int32)
+    positions = np.asarray(validation_data.positions, dtype=np.int32)
     actions = np.asarray(validation_data.actions, dtype=np.int32)
     dones = np.asarray(validation_data.dones, dtype=np.float32)
-    true_next = np.asarray(validation_data.next_categories, dtype=np.int32)
-    softmax_logits = np.asarray(softmax_predictions.logits, dtype=np.float64)
-    softmax_pred = softmax_predictions.next_categories
+    true_next = np.asarray(validation_data.next_positions, dtype=np.int32)
+    softmax_logits = np.asarray(
+        softmax_predictions.next_position_logits, dtype=np.float64
+    )
+    softmax_pred = softmax_predictions.next_positions
 
-    flow_cell_samples = np.asarray(flow_cell_samples, dtype=np.int32)
-    if flow_cell_samples.ndim == 3:
-        flow_cell_samples = flow_cell_samples[None, ...]
-    if flow_cell_samples.ndim != 4 or flow_cell_samples.shape[1:] != true_next.shape:
+    flow_position_samples = np.asarray(flow_position_samples, dtype=np.int32)
+    if flow_position_samples.ndim == 3:
+        flow_position_samples = flow_position_samples[None, ...]
+    if flow_position_samples.ndim != 4 or flow_position_samples.shape[1:] != true_next.shape:
         raise ValueError(
-            "flow_cell_samples must be shaped [K, N, 2, 4] matching the "
-            f"validation set; got {flow_cell_samples.shape} vs {true_next.shape}"
+            "flow_position_samples must be shaped [K, N, 2, 4] matching the "
+            f"validation set; got {flow_position_samples.shape} vs {true_next.shape}"
         )
-    num_flow_samples = int(flow_cell_samples.shape[0])
+    num_flow_samples = int(flow_position_samples.shape[0])
 
     det_mask = np.asarray(
-        coin_transition_is_deterministic(cell_ids, actions, dones),
+        deterministic_transition_mask(validation_data),
         dtype=bool,
     )
     det_softmax_acc, det_exact_softmax = _deterministic_accuracy(
         true_next, softmax_pred[None, ...], det_mask
     )
     det_flow_acc, det_exact_flow = _deterministic_accuracy(
-        true_next, flow_cell_samples, det_mask
+        true_next, flow_position_samples, det_mask
     )
 
     respawn = _respawn_distributions(
-        cell_ids, actions, dones, true_next, softmax_logits, flow_cell_samples
+        positions, actions, dones, true_next, softmax_logits, flow_position_samples
     )
-    uniform = np.full((COIN_NUM_CELLS,), 1.0 / COIN_NUM_CELLS, dtype=np.float64)
+    uniform = np.full((NUM_CELLS,), 1.0 / NUM_CELLS, dtype=np.float64)
 
     return NextStateComparison(
         det_softmax_accuracy=det_softmax_acc,
@@ -209,7 +211,7 @@ def _deterministic_accuracy(
 
     ``predicted_samples`` is ``[K, N, 2, 4]`` of predicted next-cell ids.
     """
-    accuracy = np.full((COIN_NUM_CELLS,), np.nan, dtype=np.float64)
+    accuracy = np.full((NUM_CELLS,), np.nan, dtype=np.float64)
     if not bool(det_mask.any()):
         return _as_grid(accuracy), float("nan")
 
@@ -218,7 +220,7 @@ def _deterministic_accuracy(
     true_broadcast = np.broadcast_to(det_true[None, ...], det_pred.shape)
     correct = (det_pred == true_broadcast).reshape(-1)
     true_flat = true_broadcast.reshape(-1)
-    for cell in range(COIN_NUM_CELLS):
+    for cell in range(NUM_CELLS):
         selector = true_flat == cell
         if bool(selector.any()):
             accuracy[cell] = float(correct[selector].mean())
@@ -228,12 +230,12 @@ def _deterministic_accuracy(
 
 
 def _respawn_distributions(
-    cell_ids: np.ndarray,
+    positions: np.ndarray,
     actions: np.ndarray,
     dones: np.ndarray,
     true_next: np.ndarray,
     softmax_logits: np.ndarray,
-    flow_cell_samples: np.ndarray,
+    flow_position_samples: np.ndarray,
 ) -> dict[str, Any]:
     """Aggregate next-cell distributions over coin respawn events.
 
@@ -242,7 +244,7 @@ def _respawn_distributions(
     by collection events on non-terminal transitions.
     """
     nonterminal = ~np.any(dones > 0.0, axis=1)
-    red_collected, blue_collected = coin_collection_masks(cell_ids, actions)
+    red_collected, blue_collected = collected_coin_masks(positions, actions)
     red_collected = np.asarray(red_collected, dtype=bool)
     blue_collected = np.asarray(blue_collected, dtype=bool)
     selections = (
@@ -251,7 +253,7 @@ def _respawn_distributions(
     )
 
     softmax_probs = softmax_np(softmax_logits, axis=-1)
-    uniform = np.full((COIN_NUM_CELLS,), 1.0 / COIN_NUM_CELLS, dtype=np.float64)
+    uniform = np.full((NUM_CELLS,), 1.0 / NUM_CELLS, dtype=np.float64)
 
     softmax_rows: list[np.ndarray] = []
     flow_cells: list[np.ndarray] = []
@@ -261,7 +263,7 @@ def _respawn_distributions(
             continue
         softmax_rows.append(softmax_probs[mask, _OBSERVED_AGENT_FRAME, entity, :])
         flow_cells.append(
-            flow_cell_samples[:, mask, _OBSERVED_AGENT_FRAME, entity].reshape(-1)
+            flow_position_samples[:, mask, _OBSERVED_AGENT_FRAME, entity].reshape(-1)
         )
         empirical_cells.append(true_next[mask, _OBSERVED_AGENT_FRAME, entity])
 
@@ -285,7 +287,7 @@ def _respawn_distributions(
 
 
 def _normalized_histogram(cells: np.ndarray) -> np.ndarray:
-    counts = np.bincount(cells, minlength=COIN_NUM_CELLS).astype(np.float64)
+    counts = np.bincount(cells, minlength=NUM_CELLS).astype(np.float64)
     return counts / max(float(counts.sum()), 1.0)
 
 
@@ -300,13 +302,13 @@ def _kl_uniform_to(distribution: np.ndarray, uniform: np.ndarray) -> float:
 
 def _as_grid(values: np.ndarray) -> np.ndarray:
     return np.asarray(values, dtype=np.float64).reshape(
-        (COIN_GRID_HEIGHT, COIN_GRID_WIDTH)
+        (GRID_SIZE, GRID_SIZE)
     )
 
 
 def _deviation_from(grid: np.ndarray, ideal: float | None) -> np.ndarray:
     if ideal is None:
-        ideal = 1.0 / COIN_NUM_CELLS
+        ideal = 1.0 / NUM_CELLS
     return np.abs(grid - ideal)
 
 
