@@ -16,7 +16,7 @@ FACTOR KINDS -- what the true next value looks like, given (state, action):
 
 REGIMES -- how far ahead we predict:
   * SINGLE_STEP (``single_step_accuracy``) -- one step ahead on a held-out batch.
-  * ROLLOUT (``rollout_fidelity``) -- an H-step autoregressive rollout that feeds each
+  * ROLLOUT (``rollout_tracking``) -- an H-step autoregressive rollout that feeds each
     prediction back as the next input: per-step player / uncollected-coin accuracy plus the
     aggregate respawn distribution.
 
@@ -295,7 +295,7 @@ def _entropy(p) -> float:
     return float(-(nz * np.log(nz)).sum())
 
 
-def rollout_fidelity_metrics(real, predicted, respawned, step_respawn):
+def rollout_tracking_metrics(real, predicted, respawned, step_respawn):
     """Score an autoregressive rollout against the real one.
 
     Deterministic factors (players, uncollected coins) get per-step ACCURACY curves plus
@@ -441,7 +441,7 @@ def plot_loss_curves(out_dir: Path, loss_histories: dict, uniform_ce: float) -> 
         0.5,
         0.005,
         "Discrete FM CE is averaged over corruption levels t~U(0,1), NOT a clean-conditioned NLL; "
-        "use single-step accuracy + rollout fidelity to rank models.",
+        "use single-step accuracy + rollout tracking to rank models.",
         ha="center",
         fontsize=8,
         style="italic",
@@ -465,7 +465,7 @@ def _plot_rollout_accuracy(ax, steps, rollout_metrics, key, copy_key, *, chance_
     ax.grid(True, alpha=0.25)
 
 
-def plot_rollout_fidelity(out_dir: Path, rollout_metrics: dict, horizon: int) -> None:
+def plot_rollout_tracking(out_dir: Path, rollout_metrics: dict, horizon: int) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -713,7 +713,7 @@ def main() -> None:
             predicted = predicted_rollout(
                 predict_fn, real_states[0], actions_seq, decode_config, roll_key
             )
-            rollout_metrics[name] = rollout_fidelity_metrics(
+            rollout_metrics[name] = rollout_tracking_metrics(
                 real_tokens, predicted, respawned, step_respawn
             )
             predicted_tokens[name] = predicted
@@ -766,7 +766,7 @@ def main() -> None:
 
         # --- plots + artifacts ---
         plot_loss_curves(out_dir, loss_histories, uniform_ce)
-        plot_rollout_fidelity(out_dir, rollout_metrics, args.horizon)
+        plot_rollout_tracking(out_dir, rollout_metrics, args.horizon)
         plot_occupancy(out_dir, real_tokens, predicted_tokens, args.horizon)
         plot_example_rollout(out_dir, real_tokens, predicted_tokens, args.horizon)
         for name, history in loss_histories.items():
@@ -789,7 +789,7 @@ def main() -> None:
                 for name, h in loss_histories.items()
             },
             "single_step_accuracy": single_step_acc,
-            "rollout_fidelity": rollout_metrics,
+            "rollout_tracking": rollout_metrics,
         }
         (out_dir / "compare_world_models.json").write_text(
             json.dumps(summary, indent=2), encoding="utf-8"

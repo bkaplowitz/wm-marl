@@ -508,7 +508,7 @@ def _explicit_imagined_unroll(
         env_actions = actions.reshape((num_envs, config.num_agents))
         next_states = predict_next(model_state, model_key, current, env_actions, config)
         rewards, dones = _reward_done(
-            _reward_done_actions, current, env_actions, next_states, config
+            _reward_done_actions, current, env_actions, next_states
         )
         rows["observations"].append(flat)
         rows["actions"].append(actions)

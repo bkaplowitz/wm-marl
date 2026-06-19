@@ -301,7 +301,7 @@ def _imagined_rollout(
             model_state, model_key, current_states, env_actions, config
         )
         rewards, dones = _reward_done(
-            reward_done_fn, current_states, env_actions, next_states, config
+            reward_done_fn, current_states, env_actions, next_states
         )
         outputs = {
             "observations": flat_states,
@@ -347,7 +347,6 @@ def _reward_done(
     states: jnp.ndarray,
     env_actions: jnp.ndarray,
     next_states: jnp.ndarray,
-    config: VectorWorldModelConfig,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Rewards/dones from the callback. None is not acceptable"""
     rewards, dones = reward_done_fn(states, env_actions, next_states)
