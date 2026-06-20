@@ -129,7 +129,7 @@ class TokenizedDiscreteTransformer(nn.Module):
             )
             y = nn.LayerNorm()(h)
             y = nn.Dense(self.mlp_ratio * self.model_dim)(y)
-            y = nn.gelu(y)
+            y = nn.silu(y)
             h = h + nn.Dense(self.model_dim)(y)
 
         h = nn.LayerNorm()(h)[:, 1:, :]
