@@ -403,7 +403,9 @@ def plot_loss_curves(out_dir: Path, loss_histories: dict, uniform_ce: float) -> 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    ce_names = [n for n in loss_histories if n in ("discrete", "transformer", "baseline")]
+    ce_names = [
+        n for n in loss_histories if n in ("discrete", "transformer", "baseline")
+    ]
     mse_names = [
         n for n in loss_histories if n not in ("discrete", "transformer", "baseline")
     ]
@@ -677,14 +679,22 @@ def main() -> None:
 
         observations = adapter.reset()
         train_batch, observations, rng = _collect_combined_batch(
-            args, adapter, policy_state, observations, rng,
+            args,
+            adapter,
+            policy_state,
+            observations,
+            rng,
             random_seed=args.seed + 1,
             random_rollouts=args.train_random_rollouts,
             initial_rollouts=args.train_initial_rollouts,
         )
         observations = adapter.reset()
         heldout_batch, _, rng = _collect_combined_batch(
-            args, adapter, policy_state, observations, rng,
+            args,
+            adapter,
+            policy_state,
+            observations,
+            rng,
             random_seed=args.seed + 2,
             random_rollouts=args.heldout_random_rollouts,
             initial_rollouts=args.heldout_initial_rollouts,
