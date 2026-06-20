@@ -1,4 +1,4 @@
-"""Train a decoder-free isotropy-JEPA imagination actor-critic on Gymnax."""
+"""Train a decoder-free SIGReg/JEPA imagination actor-critic on Gymnax."""
 
 from __future__ import annotations
 
@@ -59,6 +59,14 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.05,
     )
+    parser.add_argument(
+        "--regularizer",
+        choices=("sigreg", "isotropy", "none"),
+        default="sigreg",
+        help="Latent collapse regularizer. 'sigreg' matches the LeWM sketched regularizer.",
+    )
+    parser.add_argument("--sigreg-knots", type=int, default=17)
+    parser.add_argument("--sigreg-num-proj", type=int, default=1024)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--actor-learning-rate", type=float, default=3e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
@@ -109,6 +117,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         "num_layers",
         "num_heads",
         "mlp_ratio",
+        "sigreg_knots",
+        "sigreg_num_proj",
         "eval_episodes",
         "eval_interval",
         "num_runs",
@@ -181,7 +191,10 @@ def run_one(
             context_window=args.context_window,
             learning_rate=args.learning_rate,
             actor_learning_rate=args.actor_learning_rate,
+            regularizer=args.regularizer,
             isotropy_weight=args.isotropy_weight,
+            sigreg_knots=args.sigreg_knots,
+            sigreg_num_proj=args.sigreg_num_proj,
             gamma=args.gamma,
             lambda_return=args.lambda_return,
             entropy_coef=args.entropy_coef,
@@ -516,7 +529,7 @@ def run_one(
             checkpoint_dir,
             state,
             metadata={
-                "algorithm": "isotropy_jepa",
+                "algorithm": "sigreg_jepa",
                 "env": args.env,
                 "control": control,
                 "jepa_config": dataclasses.asdict(config),

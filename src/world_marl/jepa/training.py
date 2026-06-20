@@ -1,4 +1,4 @@
-"""Training utilities for the decoder-free isotropy-JEPA agent."""
+"""Training utilities for the decoder-free SIGReg/JEPA agent."""
 
 from __future__ import annotations
 
@@ -144,7 +144,8 @@ def world_model_loss(
     chunk_length: int,
     control: ControlMode,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
-    actions = _controlled_actions(key, batch.actions, config, control)
+    action_key, regularizer_key = jax.random.split(key)
+    actions = _controlled_actions(action_key, batch.actions, config, control)
     outputs = apply_fn(
         {"params": params},
         batch.observations,
@@ -169,11 +170,15 @@ def world_model_loss(
     jepa_loss = masked_mean(1.0 - cosine, validity)
     jepa_cosine = masked_mean(cosine, validity)
 
-    isotropy_weight = _isotropy_weight(config, control)
-    isotropy, collapse = isotropy_loss(outputs["context_latents"])
+    regularizer_weight = _regularizer_weight(config, control)
+    regularizer, regularizer_name, collapse = representation_regularizer(
+        outputs["context_latents"],
+        regularizer_key,
+        config,
+    )
     total_loss = (
         jepa_loss
-        + isotropy_weight * isotropy
+        + regularizer_weight * regularizer
         + config.reward_weight * reward_loss
         + config.continue_weight * continue_loss
     )
@@ -184,7 +189,8 @@ def world_model_loss(
         "model/jepa_loss": jepa_loss,
         "model/jepa_pred_cosine": jepa_cosine,
         "model/jepa_valid_fraction": jnp.mean(validity),
-        "model/isotropy_loss": isotropy,
+        "model/regularizer_loss": regularizer,
+        f"model/{regularizer_name}_loss": regularizer,
         "model/reward_loss": reward_loss,
         "model/reward_constant_mse": jnp.mean(
             jnp.square(constant_reward - reward_targets)
@@ -489,6 +495,7 @@ def sample_categorical(logits: jax.Array, key: jax.Array):
 
 
 def isotropy_loss(latents: jax.Array) -> tuple[jax.Array, dict[str, jax.Array]]:
+    metrics = latent_collapse_metrics(latents)
     z = latents.reshape((-1, latents.shape[-1]))
     z = z - jnp.mean(z, axis=0, keepdims=True)
     std = jnp.sqrt(jnp.var(z, axis=0) + 1e-6)
@@ -498,7 +505,73 @@ def isotropy_loss(latents: jax.Array) -> tuple[jax.Array, dict[str, jax.Array]]:
     mean_loss = jnp.mean(jnp.square(jnp.mean(latents, axis=(0, 1))))
     std_loss = jnp.mean(jnp.square(std - 1.0))
     offdiag_loss = jnp.mean(jnp.square(offdiag))
-    loss = mean_loss + std_loss + offdiag_loss
+    return mean_loss + std_loss + offdiag_loss, metrics
+
+
+def representation_regularizer(
+    latents: jax.Array,
+    key: jax.Array,
+    config: JepaConfig,
+) -> tuple[jax.Array, str, dict[str, jax.Array]]:
+    collapse = latent_collapse_metrics(latents)
+    if config.regularizer == "none":
+        return jnp.asarray(0.0, dtype=latents.dtype), "none", collapse
+    if config.regularizer == "isotropy":
+        loss, collapse = isotropy_loss(latents)
+        return loss, "isotropy", collapse
+    return sigreg_loss(
+        latents,
+        key,
+        knots=config.sigreg_knots,
+        num_proj=config.sigreg_num_proj,
+    ), "sigreg", collapse
+
+
+def sigreg_loss(
+    latents: jax.Array,
+    key: jax.Array,
+    *,
+    knots: int = 17,
+    num_proj: int = 1024,
+) -> jax.Array:
+    """Sketch Isotropic Gaussian Regularizer from LeWM, in JAX.
+
+    The official PyTorch implementation expects embeddings shaped [time, batch, dim]
+    and compares random one-dimensional projections to a standard Gaussian
+    characteristic function. Our model stores [batch, time, dim], so we transpose
+    before applying the same statistic.
+    """
+
+    proj = jnp.swapaxes(latents, 0, 1)
+    dim = proj.shape[-1]
+    random_proj = jax.random.normal(key, (dim, num_proj), dtype=proj.dtype)
+    random_proj = random_proj / (
+        jnp.linalg.norm(random_proj, axis=0, keepdims=True) + 1e-6
+    )
+    t = jnp.linspace(0.0, 3.0, knots, dtype=proj.dtype)
+    dt = jnp.asarray(3.0 / (knots - 1), dtype=proj.dtype)
+    weights = jnp.full((knots,), 2.0 * dt, dtype=proj.dtype)
+    weights = weights.at[0].set(dt)
+    weights = weights.at[-1].set(dt)
+    phi = jnp.exp(-jnp.square(t) / 2.0)
+    weighted_window = weights * phi
+
+    x_t = (proj @ random_proj)[..., None] * t
+    err = (
+        jnp.square(jnp.mean(jnp.cos(x_t), axis=-3) - phi)
+        + jnp.square(jnp.mean(jnp.sin(x_t), axis=-3))
+    )
+    statistic = (err @ weighted_window) * proj.shape[-2]
+    return jnp.mean(statistic)
+
+
+def latent_collapse_metrics(latents: jax.Array) -> dict[str, jax.Array]:
+    z = latents.reshape((-1, latents.shape[-1]))
+    z = z - jnp.mean(z, axis=0, keepdims=True)
+    std = jnp.sqrt(jnp.var(z, axis=0) + 1e-6)
+    cov = (z.T @ z) / jnp.maximum(z.shape[0] - 1, 1)
+    cov_diag = jnp.diag(jnp.diag(cov))
+    offdiag = cov - cov_diag
     eigvals = jnp.clip(jnp.linalg.eigvalsh(cov), min=0.0)
     total_variance = jnp.sum(eigvals)
     probs = eigvals / (total_variance + 1e-12)
@@ -519,7 +592,7 @@ def isotropy_loss(latents: jax.Array) -> tuple[jax.Array, dict[str, jax.Array]]:
         "latent_norm_mean": jnp.mean(norms),
         "latent_norm_std": jnp.std(norms),
     }
-    return loss, metrics
+    return metrics
 
 
 def action_sensitivity(
@@ -719,7 +792,7 @@ def weighted_mean(values: jax.Array, weights: jax.Array) -> jax.Array:
     return jnp.sum(values * weights) / (jnp.sum(weights) + 1e-6)
 
 
-def _isotropy_weight(config: JepaConfig, control: ControlMode) -> float:
+def _regularizer_weight(config: JepaConfig, control: ControlMode) -> float:
     if control in ("no-sigreg", "no-isotropy"):
         return 0.0
     if control in ("weak-sigreg", "weak-isotropy"):

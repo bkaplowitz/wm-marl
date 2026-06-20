@@ -33,6 +33,7 @@ def _config() -> JepaConfig:
         num_heads=2,
         max_horizon=1,
         context_window=1,
+        sigreg_num_proj=32,
     )
 
 
@@ -110,6 +111,8 @@ def test_effective_rank_distinguishes_rank_one_and_isotropic_embeddings():
 
 
 def test_jepa_config_enforces_milestone_one_constraints():
+    with pytest.raises(ValueError, match="regularizer"):
+        JepaConfig(observation_dim=4, action_dim=2, regularizer="made-up")
     with pytest.raises(ValueError, match="max_horizon=1"):
         JepaConfig(observation_dim=4, action_dim=2, max_horizon=2)
     with pytest.raises(ValueError, match="context_window=1"):

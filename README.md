@@ -84,19 +84,20 @@ uv run world-marl-train-e2e \
   --min-improvement 0.0
 ```
 
-### Isotropy-JEPA CartPole Milestone
+### SIGReg-JEPA CartPole Milestone
 
-The `world-marl-train-jepa` command trains a minimal decoder-free isotropy-JEPA
+The `world-marl-train-jepa` command trains a minimal decoder-free SIGReg-JEPA
 imagination actor-critic on single-agent Gymnax tasks. For milestone 1, the
 target is CartPole and the model learns latent prediction, reward prediction,
 continue prediction, and actor/critic updates from imagined latent rollouts.
 
 The JEPA target branch uses `stopgrad(encoder(o_t+k))`, the model has no
 observation decoder, and actor/critic updates freeze the encoder/world-model
-backbone. The current regularizer is second-order isotropy/whitening rather
-than sketched SIGReg proper. Controls such as `no-action-world-model`,
-`shuffled-action-replay`, `no-isotropy`, and `weak-isotropy` are first-class
-CLI modes.
+backbone. The default regularizer is a JAX implementation of the sketched
+SIGReg objective used by LeWorldModel; the older second-order isotropy penalty
+is still available with `--regularizer isotropy` for ablations. Controls such as
+`no-action-world-model`, `shuffled-action-replay`, `no-policy-update`,
+`no-sigreg`, and `weak-sigreg` are first-class CLI modes.
 
 ```bash
 uv run world-marl-train-jepa \
@@ -111,15 +112,16 @@ uv run world-marl-train-jepa \
   --imag-horizon 5 \
   --context-window 1 \
   --latent-dim 128 \
-  --isotropy-weight 0.05 \
-  --eval-episodes 20 \
-  --num-runs 3 \
-  --controls none no-action-world-model \
+  --regularizer sigreg \
+  --sigreg-weight 0.05 \
+  --eval-episodes 100 \
+  --num-runs 5 \
+  --controls none no-action-world-model shuffled-action-replay no-policy-update \
   --out-dir runs/jepa_cartpole
 ```
 
 Each run writes JEPA model metrics, open-loop latent rollout metrics,
-collapse/isotropy diagnostics, evaluation returns, a checkpoint, and reload
+collapse/SIGReg diagnostics, evaluation returns, a checkpoint, and reload
 evaluation artifacts.
 
 Each run writes:

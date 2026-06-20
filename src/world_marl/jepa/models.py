@@ -1,4 +1,4 @@
-"""Decoder-free isotropy-JEPA model for vector observations."""
+"""Decoder-free SIGReg/JEPA model for vector observations."""
 
 from __future__ import annotations
 
@@ -23,7 +23,10 @@ class JepaConfig:
     context_window: int = 1
     learning_rate: float = 3e-4
     actor_learning_rate: float = 3e-4
+    regularizer: str = "sigreg"
     isotropy_weight: float = 0.05
+    sigreg_knots: int = 17
+    sigreg_num_proj: int = 1024
     reward_weight: float = 1.0
     continue_weight: float = 1.0
     gamma: float = 0.99
@@ -31,6 +34,12 @@ class JepaConfig:
     entropy_coef: float = 0.01
 
     def __post_init__(self) -> None:
+        if self.regularizer not in ("sigreg", "isotropy", "none"):
+            raise ValueError("regularizer must be one of: sigreg, isotropy, none")
+        if self.sigreg_knots < 2:
+            raise ValueError("sigreg_knots must be >= 2")
+        if self.sigreg_num_proj < 1:
+            raise ValueError("sigreg_num_proj must be >= 1")
         if self.max_horizon != 1:
             raise ValueError(
                 "Milestone 1 supports max_horizon=1 only; "
