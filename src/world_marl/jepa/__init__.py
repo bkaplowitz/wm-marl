@@ -5,6 +5,7 @@ from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
     JepaTrainState,
     create_jepa_train_state,
+    enumerated_policy_train_step,
     evaluate_open_loop,
     evaluate_world_model,
     isotropy_loss,
@@ -21,6 +22,7 @@ __all__ = [
     "ReplayBatch",
     "SequenceReplayBuffer",
     "create_jepa_train_state",
+    "enumerated_policy_train_step",
     "evaluate_open_loop",
     "evaluate_world_model",
     "isotropy_loss",

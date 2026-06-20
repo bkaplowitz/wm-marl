@@ -289,6 +289,76 @@ def policy_train_step(
     return state.apply_policy_gradients(grads), metrics
 
 
+@partial(jax.jit, static_argnames=("config", "control"))
+def enumerated_policy_train_step(
+    state: JepaTrainState,
+    key: jax.Array,
+    start_observations: jax.Array,
+    config: JepaConfig,
+    *,
+    control: ControlMode = "none",
+) -> tuple[JepaTrainState, dict[str, jax.Array]]:
+    del key
+
+    def loss_fn(params):
+        flat_obs = start_observations.reshape((-1, config.observation_dim))
+        z = state.apply_fn({"params": params}, flat_obs, method=JepaWorldModel.encode)
+        logits, values = state.apply_fn(
+            {"params": params},
+            z,
+            method=JepaWorldModel.actor_value_from_latent,
+        )
+        q_values, rewards, continues, next_values = enumerated_action_values_from_latent(
+            params,
+            state.apply_fn,
+            z,
+            config,
+            control=control,
+        )
+        q_targets = jax.lax.stop_gradient(q_values)
+        advantages = q_targets - jnp.mean(q_targets, axis=-1, keepdims=True)
+        probs = jax.nn.softmax(logits, axis=-1)
+        log_probs = jax.nn.log_softmax(logits, axis=-1)
+        entropy = jnp.mean(-jnp.sum(probs * log_probs, axis=-1))
+        actor_loss = -jnp.mean(jnp.sum(probs * advantages, axis=-1))
+        value_targets = jax.lax.stop_gradient(jnp.max(q_values, axis=-1))
+        value_loss = 0.5 * jnp.mean(jnp.square(values - value_targets))
+        total = actor_loss + value_loss
+        q_gap = jnp.mean(jnp.max(q_values, axis=-1) - jnp.min(q_values, axis=-1))
+        best_actions = jnp.argmax(q_values, axis=-1)
+        finite_fraction = _all_finite_fraction(
+            logits,
+            values,
+            q_values,
+            rewards,
+            continues,
+            next_values,
+            actor_loss,
+            value_loss,
+            total,
+        )
+        metrics = {
+            "policy/total_loss": total,
+            "policy/actor_loss": actor_loss,
+            "policy/value_loss": value_loss,
+            "policy/entropy": entropy,
+            "policy/enumerated_q_mean": jnp.mean(q_values),
+            "policy/enumerated_q_gap": q_gap,
+            "policy/enumerated_reward": jnp.mean(rewards),
+            "policy/enumerated_continue": jnp.mean(continues),
+            "policy/enumerated_next_value": jnp.mean(next_values),
+            "policy/enumerated_best_action_mean": jnp.mean(
+                best_actions.astype(jnp.float32)
+            ),
+            "policy/finite_fraction": finite_fraction,
+        }
+        return total, metrics
+
+    (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
+    del loss
+    return state.apply_policy_gradients(grads), metrics
+
+
 def imagine_rollout(
     params: FrozenDict,
     apply_fn,
@@ -632,25 +702,55 @@ def action_value_gap(
 ) -> jax.Array:
     flat_obs = observations.reshape((-1, config.observation_dim))
     z = state.apply_fn({"params": state.params}, flat_obs, method=JepaWorldModel.encode)
-    context = z[:, None, :]
+    q_values, _, _, _ = enumerated_action_values_from_latent(
+        state.params,
+        state.apply_fn,
+        z,
+        config,
+        control=control,
+    )
+    return jnp.mean(jnp.max(q_values, axis=-1) - jnp.min(q_values, axis=-1))
+
+
+def enumerated_action_values_from_latent(
+    params: FrozenDict,
+    apply_fn,
+    latents: jax.Array,
+    config: JepaConfig,
+    *,
+    control: ControlMode = "none",
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    context = latents[:, None, :]
     values = []
+    rewards = []
+    continues = []
+    next_values = []
     for action in range(config.action_dim):
         model_action = 0 if control == "no-action-world-model" else action
-        actions = jnp.full((z.shape[0], 1), model_action, dtype=jnp.int32)
-        z_next, reward, continue_logit = state.apply_fn(
-            {"params": state.params},
+        actions = jnp.full((latents.shape[0], 1), model_action, dtype=jnp.int32)
+        z_next, reward, continue_logit = apply_fn(
+            {"params": params},
             context,
             actions,
             method=JepaWorldModel.predict_next_from_history,
         )
-        _, next_value = state.apply_fn(
-            {"params": state.params},
+        _, next_value = apply_fn(
+            {"params": params},
             z_next,
             method=JepaWorldModel.actor_value_from_latent,
         )
-        values.append(reward + config.gamma * jax.nn.sigmoid(continue_logit) * next_value)
+        continue_prob = jax.nn.sigmoid(continue_logit)
+        values.append(reward + config.gamma * continue_prob * next_value)
+        rewards.append(reward)
+        continues.append(continue_prob)
+        next_values.append(next_value)
     q_values = jnp.stack(values, axis=-1)
-    return jnp.mean(jnp.max(q_values, axis=-1) - jnp.min(q_values, axis=-1))
+    return (
+        q_values,
+        jnp.stack(rewards, axis=-1),
+        jnp.stack(continues, axis=-1),
+        jnp.stack(next_values, axis=-1),
+    )
 
 
 def policy_diagnostics(

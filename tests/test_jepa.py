@@ -12,6 +12,7 @@ from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
     action_value_gap,
     create_jepa_train_state,
+    enumerated_policy_train_step,
     evaluate_open_loop,
     isotropy_loss,
     lambda_returns,
@@ -189,6 +190,62 @@ def test_policy_update_does_not_change_world_model_parameters():
         after_leaves = jax.tree_util.tree_leaves(state.params[group])
         for left, right in zip(before_leaves, after_leaves, strict=True):
             np.testing.assert_allclose(np.asarray(left), np.asarray(right))
+
+
+def test_enumerated_policy_update_does_not_change_world_model_parameters():
+    config = _config()
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    before = state.params
+    batch = _batch(config)
+    state, metrics = enumerated_policy_train_step(
+        state,
+        jax.random.PRNGKey(1),
+        batch.observations[:, 0],
+        config,
+    )
+
+    assert jnp.isfinite(metrics["policy/total_loss"])
+    for group in (
+        "encoder",
+        "latent_proj",
+        "action_embed",
+        "dynamics_norm",
+        "predictor",
+        "predictor_norm",
+        "reward_head",
+        "continue_head",
+    ):
+        before_leaves = jax.tree_util.tree_leaves(before[group])
+        after_leaves = jax.tree_util.tree_leaves(state.params[group])
+        for left, right in zip(before_leaves, after_leaves, strict=True):
+            np.testing.assert_allclose(np.asarray(left), np.asarray(right))
+
+
+def test_enumerated_no_action_control_leaves_actor_head_unchanged():
+    config = _config()
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    before = state.params
+    observations = jnp.ones((8, config.observation_dim), dtype=jnp.float32)
+
+    updated, metrics = enumerated_policy_train_step(
+        state,
+        jax.random.PRNGKey(1),
+        observations,
+        config,
+        control="no-action-world-model",
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(metrics["policy/enumerated_q_gap"]),
+        0.0,
+        atol=1e-6,
+    )
+    for left, right in zip(
+        jax.tree_util.tree_leaves(before["actor_head"]),
+        jax.tree_util.tree_leaves(updated.params["actor_head"]),
+        strict=True,
+    ):
+        np.testing.assert_allclose(np.asarray(left), np.asarray(right), atol=1e-7)
 
 
 def test_reset_policy_heads_preserves_model_and_reinitializes_policy_heads():

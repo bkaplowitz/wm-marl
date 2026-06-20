@@ -22,6 +22,7 @@ from world_marl.jepa.training import (
     ControlMode,
     action_value_gap,
     create_jepa_train_state,
+    enumerated_policy_train_step,
     evaluate_open_loop,
     evaluate_world_model,
     policy_train_step,
@@ -44,6 +45,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--model-updates-per-iter", type=int, default=2)
     parser.add_argument("--policy-updates-per-iter", type=int, default=1)
+    parser.add_argument(
+        "--policy-update-mode",
+        choices=("enumerated", "sampled"),
+        default="enumerated",
+        help="Use exact discrete action enumeration or sampled imagined rollouts for actor updates.",
+    )
     parser.add_argument("--imag-horizon", type=int, default=5)
     parser.add_argument("--model-horizon", type=int, default=1)
     parser.add_argument("--context-window", type=int, default=1)
@@ -276,6 +283,7 @@ def run_one(
                 "random_replay_steps_per_env": random_replay_steps,
                 "world_model_fit_steps": world_model_fit_steps,
                 "policy_fit_steps": policy_fit_steps,
+                "policy_update_mode": args.policy_update_mode,
                 "policy_updates_enabled": control != "no-policy-update",
             },
         )
@@ -399,14 +407,24 @@ def run_one(
                 max_horizon=max(args.model_horizon, args.imag_horizon),
             )
             rng, policy_key = jax.random.split(rng)
-            state, policy_metrics = policy_train_step(
-                state,
-                policy_key,
-                batch.observations[:, 0],
-                config,
-                imag_horizon=args.imag_horizon,
-                control=control,
-            )
+            if args.policy_update_mode == "enumerated":
+                state, policy_metrics = enumerated_policy_train_step(
+                    state,
+                    policy_key,
+                    batch.observations[:, 0],
+                    config,
+                    control=control,
+                )
+            else:
+                state, policy_metrics = policy_train_step(
+                    state,
+                    policy_key,
+                    batch.observations[:, 0],
+                    config,
+                    imag_horizon=args.imag_horizon,
+                    control=control,
+                )
+            policy_metrics["policy/update_mode"] = args.policy_update_mode
             policy_metrics["policy/updates_applied"] = policy_step
             if (
                 policy_step == 1

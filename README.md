@@ -99,6 +99,11 @@ is still available with `--regularizer isotropy` for ablations. Controls such as
 `no-action-world-model`, `shuffled-action-replay`, `no-policy-update`,
 `no-sigreg`, and `weak-sigreg` are first-class CLI modes.
 
+By default, CartPole policy updates use exact discrete-action enumeration
+(`--policy-update-mode enumerated`) instead of sampled policy gradients. This
+removes a noisy failure mode where the no-action control could drift even when
+both actions had identical imagined value.
+
 ```bash
 uv run world-marl-train-jepa \
   --env gymnax:CartPole-v1 \
@@ -108,6 +113,7 @@ uv run world-marl-train-jepa \
   --chunk-length 32 \
   --batch-size 128 \
   --model-updates-per-iter 2 \
+  --policy-update-mode enumerated \
   --model-horizon 1 \
   --imag-horizon 5 \
   --context-window 1 \
