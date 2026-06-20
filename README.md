@@ -7,6 +7,8 @@
 - `world_marl.envs.MeltingPotVectorAdapter`: batching, RGB normalization, reset,
   optional scalar-observation channels, step, auto-reset, and rollout-friendly
   tensors.
+- `world_marl.envs.GymnaxVectorAdapter`: single-agent Gymnax environments exposed
+  as one-agent vector tasks via `--substrate gymnax:<env-id>`.
 - JAX / Flax / Distrax / Optax: IPPO and MAPPO policies, GAE, and PPO updates.
 
 ## Setup
@@ -64,6 +66,61 @@ uv run world-marl-train-e2e \
   --eval-episodes 50 \
   --num-runs 3
 ```
+
+Single-agent Gymnax environments use the same trainer with a singleton agent
+axis:
+
+```bash
+uv run world-marl-train-e2e \
+  --algorithm ippo \
+  --substrate gymnax:CartPole-v1 \
+  --num-envs 16 \
+  --rollout-steps 128 \
+  --total-env-steps 50000 \
+  --eval-episodes 20 \
+  --num-runs 1 \
+  --max-cycles 500 \
+  --negative-control none \
+  --min-improvement 0.0
+```
+
+### Isotropy-JEPA CartPole Milestone
+
+The `world-marl-train-jepa` command trains a minimal decoder-free isotropy-JEPA
+imagination actor-critic on single-agent Gymnax tasks. For milestone 1, the
+target is CartPole and the model learns latent prediction, reward prediction,
+continue prediction, and actor/critic updates from imagined latent rollouts.
+
+The JEPA target branch uses `stopgrad(encoder(o_t+k))`, the model has no
+observation decoder, and actor/critic updates freeze the encoder/world-model
+backbone. The current regularizer is second-order isotropy/whitening rather
+than sketched SIGReg proper. Controls such as `no-action-world-model`,
+`shuffled-action-replay`, `no-isotropy`, and `weak-isotropy` are first-class
+CLI modes.
+
+```bash
+uv run world-marl-train-jepa \
+  --env gymnax:CartPole-v1 \
+  --num-envs 32 \
+  --total-env-steps 25000 \
+  --replay-capacity 50000 \
+  --chunk-length 32 \
+  --batch-size 128 \
+  --model-updates-per-iter 2 \
+  --model-horizon 1 \
+  --imag-horizon 5 \
+  --context-window 1 \
+  --latent-dim 128 \
+  --isotropy-weight 0.05 \
+  --eval-episodes 20 \
+  --num-runs 3 \
+  --controls none no-action-world-model \
+  --out-dir runs/jepa_cartpole
+```
+
+Each run writes JEPA model metrics, open-loop latent rollout metrics,
+collapse/isotropy diagnostics, evaluation returns, a checkpoint, and reload
+evaluation artifacts.
 
 Each run writes:
 

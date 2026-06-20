@@ -12,6 +12,7 @@ dependencies = [
   "jax==0.4.36",
   "jaxlib==0.4.36",
   "jaxmarl[algs]==0.1.0",
+  "gymnax==0.0.9",
   "dm-meltingpot==2.4.0",
   "dmlab2d==1.0.0",
   "shimmy[meltingpot]==2.0.1",
@@ -36,6 +37,7 @@ cuda12 = [
 [project.scripts]
 world-marl-verify-install = "world_marl.scripts.verify_install:main"
 world-marl-train-e2e = "world_marl.scripts.train_e2e:main"
+world-marl-train-jepa = "world_marl.scripts.train_jepa:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
