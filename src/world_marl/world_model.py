@@ -11,7 +11,11 @@ import jax
 import jax.numpy as jnp
 from flax.training.train_state import TrainState
 
-from flow_matching.models import MLPVectorField, TokenizedDiscreteDenoiser
+from flow_matching.models import (
+    MLPVectorField,
+    TokenizedDiscreteDenoiser,
+    TokenizedDiscreteTransformer,
+)
 from flow_matching.simulate import (
     sample_marginal_discrete_flow_model,
     sample_marginal_flow_model,
@@ -55,6 +59,8 @@ class VectorWorldModelConfig:
     # Categorical cardinality V for discrete flow matching (0 = continuous). For
     # CoinGame each (3, 3, 4) grid is 4 channels one-hot over 9 cells, so V = 9.
     num_categories: int = 0
+    # Discrete denoiser architecture (only consulted when flow_type == "discrete").
+    discrete_arch: str = "mlp"
 
 
 def create_world_model_state(
@@ -62,10 +68,13 @@ def create_world_model_state(
     config: VectorWorldModelConfig,
 ) -> TrainState:
     if config.flow_type == "discrete":
-        model = TokenizedDiscreteDenoiser(
-            num_categories=config.num_categories,
-            hidden_dims=config.hidden_dims,
-        )
+        if config.discrete_arch == "transformer":
+            model = TokenizedDiscreteTransformer(num_categories=config.num_categories)
+        else:
+            model = TokenizedDiscreteDenoiser(
+                num_categories=config.num_categories,
+                hidden_dims=config.hidden_dims,
+            )
         return create_discrete_conditioned_train_state(
             key,
             model,

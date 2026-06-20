@@ -3,6 +3,7 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from world_marl.algs.ippo import IPPOConfig
 from world_marl.algs.ippo import create_train_state as create_ippo_state
@@ -97,7 +98,7 @@ def test_unpack_discrete_onehot_produces_valid_onehot_grids():
     )
 
 
-def _toy_discrete_world_config() -> VectorWorldModelConfig:
+def _toy_discrete_world_config(arch: str = "mlp") -> VectorWorldModelConfig:
     # state_dim = V*C = 2*2, so transition_dim = num_agents*state_dim = 8 = d*V.
     return VectorWorldModelConfig(
         state_dim=4,
@@ -107,11 +108,13 @@ def _toy_discrete_world_config() -> VectorWorldModelConfig:
         integration_steps=2,
         flow_type="discrete",
         num_categories=2,
+        discrete_arch=arch,
     )
 
 
-def test_discrete_predict_next_returns_valid_onehot_grids():
-    config = _toy_discrete_world_config()
+@pytest.mark.parametrize("arch", ["mlp", "transformer"])
+def test_discrete_predict_next_returns_valid_onehot_grids(arch):
+    config = _toy_discrete_world_config(arch)
     model_state = create_world_model_state(jax.random.PRNGKey(0), config)
     states = jax.random.normal(jax.random.PRNGKey(2), (5, config.num_agents, 4))
     actions = jnp.zeros((5, config.num_agents), dtype=jnp.int32)

@@ -403,8 +403,10 @@ def plot_loss_curves(out_dir: Path, loss_histories: dict, uniform_ce: float) -> 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    ce_names = [n for n in loss_histories if n in ("discrete", "baseline")]
-    mse_names = [n for n in loss_histories if n not in ("discrete", "baseline")]
+    ce_names = [n for n in loss_histories if n in ("discrete", "transformer", "baseline")]
+    mse_names = [
+        n for n in loss_histories if n not in ("discrete", "transformer", "baseline")
+    ]
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
     ce_ax, mse_ax = axes
@@ -625,7 +627,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--integration-steps", type=int, default=8)
     p.add_argument("--learning-rate", type=float, default=1e-3)
     p.add_argument("--num-categories", type=int, default=9)
-    p.add_argument("--flow-types", nargs="+", default=["discrete", "linear"])
+    p.add_argument(
+        "--flow-types",
+        nargs="+",
+        default=["discrete", "linear"],
+        help=(
+            "predictor arms: 'discrete'/'transformer' are token denoisers (MLP vs "
+            "transformer), 'gaussian'/'linear' are continuous flows. "
+            "Pass 'discrete transformer linear' for the full token-architecture ablation."
+        ),
+    )
     p.add_argument(
         "--baseline-inference", choices=("sample", "argmax"), default="sample"
     )
@@ -723,10 +734,12 @@ def main() -> None:
             _report(name, rollout_metrics[name], single_step_acc[name], history)
 
         for flow in args.flow_types:
+            is_discrete = flow in ("discrete", "transformer")
             config = dataclasses.replace(
                 decode_config,
-                flow_type=flow,
-                num_categories=(args.num_categories if flow == "discrete" else 0),
+                flow_type=("discrete" if is_discrete else flow),
+                num_categories=(args.num_categories if is_discrete else 0),
+                discrete_arch=("transformer" if flow == "transformer" else "mlp"),
             )
             model_state = create_world_model_state(model_key, config)
 
