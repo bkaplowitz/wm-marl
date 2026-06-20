@@ -114,6 +114,16 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
             parser.error(f"--{name.replace('_', '-')} must be >= 1")
     if not args.env.startswith("gymnax:"):
         parser.error("--env must be formatted as gymnax:<env-id> for milestone 1")
+    if args.model_horizon != 1:
+        parser.error(
+            "--model-horizon must be 1 for milestone 1; "
+            "multi-step action-conditioned overshooting is not implemented"
+        )
+    if args.context_window != 1:
+        parser.error(
+            "--context-window must be 1 for milestone 1; "
+            "real-history imagination initialization is not implemented"
+        )
 
 
 def main() -> None:

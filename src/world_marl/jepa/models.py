@@ -30,6 +30,18 @@ class JepaConfig:
     lambda_return: float = 0.95
     entropy_coef: float = 0.01
 
+    def __post_init__(self) -> None:
+        if self.max_horizon != 1:
+            raise ValueError(
+                "Milestone 1 supports max_horizon=1 only; "
+                "multi-step action-conditioned overshooting is not implemented."
+            )
+        if self.context_window != 1:
+            raise ValueError(
+                "Milestone 1 supports context_window=1 only; "
+                "real-history imagination initialization is not implemented."
+            )
+
 
 class MLPEncoder(nn.Module):
     latent_dim: int

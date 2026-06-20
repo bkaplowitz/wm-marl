@@ -164,9 +164,9 @@ def world_model_loss(
         optax.sigmoid_binary_cross_entropy(continue_logits, continue_targets)
     )
     validity = prediction_validity(batch.dones, chunk_length, config.max_horizon)
-    pred_error = jnp.mean(jnp.square(pred - target), axis=-1)
-    jepa_loss = masked_mean(pred_error, validity)
-    jepa_cosine = masked_mean(jnp.sum(pred * target, axis=-1), validity)
+    cosine = jnp.sum(pred * target, axis=-1)
+    jepa_loss = masked_mean(1.0 - cosine, validity)
+    jepa_cosine = masked_mean(cosine, validity)
 
     isotropy_weight = _isotropy_weight(config, control)
     isotropy, collapse = isotropy_loss(outputs["context_latents"])
@@ -291,8 +291,7 @@ def imagine_rollout(
             current_z,
             method=JepaWorldModel.actor_value_from_latent,
         )
-        action_key, model_key = jax.random.split(step_key)
-        actions, log_probs, entropies = sample_categorical(logits, action_key)
+        actions, log_probs, entropies = sample_categorical(logits, step_key)
         model_actions = (
             jnp.zeros_like(actions) if control == "no-action-world-model" else actions
         )
@@ -306,7 +305,6 @@ def imagine_rollout(
             action_context,
             method=JepaWorldModel.predict_next_from_history,
         )
-        del model_key
         continues = jax.nn.sigmoid(continue_logits)
         next_context = jnp.concatenate([context[:, 1:], next_z[:, None, :]], axis=1)
         return (next_context, action_context), {
@@ -382,6 +380,7 @@ def evaluate_world_model(
         state.apply_fn,
         batch.observations[:, 0],
         config,
+        control=control,
     )
     return metrics
 
@@ -426,10 +425,14 @@ def evaluate_open_loop(
         context = jnp.concatenate([context[:, 1:], next_z[:, None, :]], axis=1)
     pred = _normalize(jnp.stack(preds, axis=1))
     target = _normalize(jax.lax.stop_gradient(target_z[:, 1 : horizon + 1]))
+    validity = jnp.cumprod(1.0 - batch.dones[:, :horizon], axis=1)
+    cosine = jnp.sum(pred * target, axis=-1)
+    error = 1.0 - cosine
     return {
-        "model/open_loop_loss": jnp.mean(jnp.square(pred - target)),
-        "model/open_loop_cosine": jnp.mean(jnp.sum(pred * target, axis=-1)),
-        "model/open_loop_finite_fraction": _finite_fraction(pred),
+        "model/open_loop_loss": masked_mean(error, validity),
+        "model/open_loop_cosine": masked_mean(cosine, validity),
+        "model/open_loop_valid_fraction": jnp.mean(validity),
+        "model/open_loop_finite_fraction": _all_finite_fraction(pred, target),
     }
 
 
@@ -478,10 +481,17 @@ def isotropy_loss(latents: jax.Array) -> tuple[jax.Array, dict[str, jax.Array]]:
     std_loss = jnp.mean(jnp.square(std - 1.0))
     offdiag_loss = jnp.mean(jnp.square(offdiag))
     loss = mean_loss + std_loss + offdiag_loss
-    eigvals = jnp.maximum(jnp.linalg.eigvalsh(cov), 1e-8)
-    probs = eigvals / jnp.sum(eigvals)
-    entropy = -jnp.sum(probs * jnp.log(probs + 1e-8))
-    effective_rank = jnp.exp(entropy)
+    eigvals = jnp.clip(jnp.linalg.eigvalsh(cov), min=0.0)
+    total_variance = jnp.sum(eigvals)
+    probs = eigvals / (total_variance + 1e-12)
+    entropy = -jnp.sum(
+        jnp.where(
+            probs > 0.0,
+            probs * jnp.log(probs + 1e-12),
+            0.0,
+        )
+    )
+    effective_rank = jnp.where(total_variance > 1e-8, jnp.exp(entropy), 0.0)
     norms = jnp.linalg.norm(latents, axis=-1)
     metrics = {
         "latent_std_mean": jnp.mean(std),
@@ -499,7 +509,11 @@ def action_sensitivity(
     apply_fn,
     observations: jax.Array,
     config: JepaConfig,
+    *,
+    control: ControlMode = "none",
 ) -> jax.Array:
+    if control == "no-action-world-model":
+        return jnp.asarray(0.0, dtype=jnp.float32)
     z = apply_fn({"params": params}, observations, method=JepaWorldModel.encode)
     context = jnp.repeat(z[:, None, :], repeats=config.context_window, axis=1)
     preds = []

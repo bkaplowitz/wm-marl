@@ -17,7 +17,7 @@ class ReplayBatch:
 
 
 class SequenceReplayBuffer:
-    """Ring buffer that samples contiguous per-env trajectory chunks."""
+    """Ring buffer that samples contiguous per-env stream windows."""
 
     def __init__(
         self,

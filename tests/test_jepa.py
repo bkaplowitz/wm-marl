@@ -5,11 +5,13 @@ import sys
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from world_marl.jepa.models import JepaConfig, JepaWorldModel
-from world_marl.jepa.replay import SequenceReplayBuffer
+from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
     create_jepa_train_state,
+    evaluate_open_loop,
     isotropy_loss,
     lambda_returns,
     policy_train_step,
@@ -27,8 +29,8 @@ def _config() -> JepaConfig:
         model_dim=16,
         num_layers=1,
         num_heads=2,
-        max_horizon=2,
-        context_window=2,
+        max_horizon=1,
+        context_window=1,
     )
 
 
@@ -70,8 +72,8 @@ def test_jepa_model_forward_and_model_step_are_finite():
         method=JepaWorldModel.sequence_outputs,
     )
 
-    assert outputs["predicted_latents"].shape == (3, 2, 2, 8)
-    assert outputs["target_latents"].shape == (3, 2, 2, 8)
+    assert outputs["predicted_latents"].shape == (3, 2, 1, 8)
+    assert outputs["target_latents"].shape == (3, 2, 1, 8)
 
     replay_batch = _batch(config)
     state, metrics = train_model_step(
@@ -89,7 +91,27 @@ def test_isotropy_detects_collapsed_embeddings():
     _, metrics = isotropy_loss(collapsed)
 
     assert metrics["latent_std_min"] <= 1.1e-3
-    assert metrics["latent_effective_rank"] <= 8.0
+    assert metrics["latent_effective_rank"] <= 1e-6
+
+
+def test_effective_rank_distinguishes_rank_one_and_isotropic_embeddings():
+    dim = 8
+    scalars = jnp.linspace(-1.0, 1.0, 16)
+    rank_one = scalars[:, None] * jnp.ones((1, dim))
+    _, rank_one_metrics = isotropy_loss(rank_one.reshape(4, 4, dim))
+
+    isotropic = jnp.concatenate([jnp.eye(dim), -jnp.eye(dim)], axis=0)
+    _, isotropic_metrics = isotropy_loss(isotropic.reshape(4, 4, dim))
+
+    assert rank_one_metrics["latent_effective_rank"] <= 1.01
+    assert isotropic_metrics["latent_effective_rank"] >= dim - 0.1
+
+
+def test_jepa_config_enforces_milestone_one_constraints():
+    with pytest.raises(ValueError, match="max_horizon=1"):
+        JepaConfig(observation_dim=4, action_dim=2, max_horizon=2)
+    with pytest.raises(ValueError, match="context_window=1"):
+        JepaConfig(observation_dim=4, action_dim=2, context_window=2)
 
 
 def test_lambda_returns_bootstrap_from_next_values():
@@ -116,6 +138,25 @@ def test_prediction_validity_masks_terminal_crossing_targets():
 
     expected = np.asarray([[[1.0, 0.0], [0.0, 0.0]]], dtype=np.float32)
     np.testing.assert_allclose(np.asarray(validity), expected)
+
+
+def test_open_loop_evaluation_masks_terminal_crossing_predictions():
+    config = _config()
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    batch = ReplayBatch(
+        observations=jnp.zeros((2, 2, config.observation_dim), dtype=jnp.float32),
+        actions=jnp.zeros((2, 1), dtype=jnp.int32),
+        rewards=jnp.ones((2, 1), dtype=jnp.float32),
+        dones=jnp.asarray([[0.0], [1.0]], dtype=jnp.float32),
+    )
+
+    metrics = evaluate_open_loop(state, batch, config, horizon=1)
+
+    np.testing.assert_allclose(
+        np.asarray(metrics["model/open_loop_valid_fraction"]),
+        0.5,
+    )
+    assert metrics["model/open_loop_finite_fraction"] == 1.0
 
 
 def test_policy_update_does_not_change_world_model_parameters():
