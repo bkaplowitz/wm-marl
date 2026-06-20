@@ -967,8 +967,20 @@ def _run_passed(
         <= initial_metrics["model/open_loop_loss"]
         and final_metrics["model/reward_loss"]
         < final_metrics["model/reward_constant_mse"]
-        and final_metrics["model/continue_loss"]
-        < final_metrics["model/continue_constant_bce"]
+        and _continue_criterion_passed(final_metrics)
+    )
+
+
+def _continue_criterion_passed(final_metrics: dict[str, Any]) -> bool:
+    terminal_fraction = final_metrics.get("model/terminal_positive_fraction", 0.0)
+    if terminal_fraction > 0.0:
+        return (
+            final_metrics["model/continue_loss"]
+            < final_metrics["model/continue_constant_bce"]
+        )
+    return (
+        math.isfinite(final_metrics["model/continue_loss"])
+        and final_metrics.get("model/nonterminal_recall", 0.0) >= 0.95
     )
 
 

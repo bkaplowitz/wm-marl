@@ -21,7 +21,10 @@ from world_marl.jepa.training import (
     select_continuous_actions,
     train_model_step,
 )
-from world_marl.scripts.train_dmc_jepa import summarize as summarize_dmc_jepa
+from world_marl.scripts.train_dmc_jepa import (
+    _run_passed as dmc_run_passed,
+    summarize as summarize_dmc_jepa,
+)
 
 
 def _config() -> JepaConfig:
@@ -473,6 +476,26 @@ def test_dmc_jepa_summary_requires_main_to_beat_controls():
     assert good["main_beats_controls_open_loop"]
     assert good["main_beats_controls_jepa"]
     assert not bad["passed"]
+
+
+def test_dmc_run_passes_when_continue_targets_have_no_terminals():
+    initial = {
+        "model/jepa_loss": 1.0,
+        "model/open_loop_loss": 1.0,
+    }
+    final = {
+        "model/jepa_loss": 0.1,
+        "model/open_loop_loss": 0.1,
+        "model/open_loop_finite_fraction": 1.0,
+        "model/reward_loss": 0.01,
+        "model/reward_constant_mse": 0.1,
+        "model/continue_loss": 0.001,
+        "model/continue_constant_bce": 0.000001,
+        "model/terminal_positive_fraction": 0.0,
+        "model/nonterminal_recall": 1.0,
+    }
+
+    assert dmc_run_passed(initial, final, reload_diff=0.0)
 
 
 def test_dmc_jepa_summary_tracks_policy_rung():
