@@ -121,9 +121,13 @@ uv run world-marl-validate-dmc-world-model \
   --collect-steps 4096 \
   --validation-steps 1024 \
   --train-steps 5000 \
+  --critic-warmup-steps 1000 \
+  --critic-horizon 32 \
   --policy-train-steps 3000 \
+  --policy-return-mode reward-only \
   --imag-horizon 5 \
   --policy-eval-episodes 50 \
+  --value-clip 100 \
   --batch-size 256 \
   --chunk-length 32 \
   --open-loop-horizon 5 \
@@ -139,6 +143,7 @@ policy returns:
 
 - random policy return;
 - freshly reset actor return before imagination training;
+- real-return critic warmup diagnostics;
 - trained actor return after frozen-model imagination training;
 - paired no-action and shuffled-action controls.
 

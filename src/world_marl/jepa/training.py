@@ -26,6 +26,7 @@ ControlMode = Literal[
     "weak-isotropy",
     "no-policy-update",
 ]
+PolicyReturnMode = Literal["reward-only", "lambda"]
 
 MODEL_GROUPS = frozenset(
     {
@@ -368,7 +369,10 @@ def enumerated_policy_train_step(
     return state.apply_policy_gradients(grads), metrics
 
 
-@partial(jax.jit, static_argnames=("config", "imag_horizon", "control"))
+@partial(
+    jax.jit,
+    static_argnames=("config", "imag_horizon", "control", "policy_return_mode"),
+)
 def continuous_policy_train_step(
     state: JepaTrainState,
     key: jax.Array,
@@ -379,6 +383,9 @@ def continuous_policy_train_step(
     *,
     imag_horizon: int,
     control: ControlMode = "none",
+    policy_return_mode: PolicyReturnMode = "reward-only",
+    value_clip: float = 100.0,
+    action_saturation_threshold: float = 0.95,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     if config.action_mode != "continuous":
         raise ValueError("continuous_policy_train_step requires continuous actions")
@@ -395,21 +402,34 @@ def continuous_policy_train_step(
             imag_horizon=imag_horizon,
             control=control,
         )
-        actor_returns = lambda_returns(
-            rollout["rewards"],
-            rollout["continues"],
-            rollout["fixed_values"],
-            rollout["fixed_last_value"],
-            gamma=config.gamma,
-            lambda_return=config.lambda_return,
-        )
+        if policy_return_mode == "reward-only":
+            actor_returns = reward_only_returns(
+                rollout["rewards"],
+                rollout["continues"],
+                gamma=config.gamma,
+            )
+        else:
+            actor_returns = lambda_returns(
+                rollout["rewards"],
+                rollout["continues"],
+                rollout["fixed_values"],
+                rollout["fixed_last_value"],
+                gamma=config.gamma,
+                lambda_return=config.lambda_return,
+            )
+        clipped_returns = jnp.clip(actor_returns, -value_clip, value_clip)
         weights = survival_weights(rollout["continues"], gamma=config.gamma)
-        actor_loss = -weighted_mean(actor_returns, weights)
+        actor_loss = -weighted_mean(clipped_returns, weights)
         value_loss = 0.5 * weighted_mean(
-            jnp.square(rollout["values"] - jax.lax.stop_gradient(actor_returns)),
+            jnp.square(rollout["values"] - jax.lax.stop_gradient(clipped_returns)),
             weights,
         )
         total = actor_loss + value_loss
+        action_saturation = jnp.mean(
+            (
+                jnp.abs(rollout["normalized_actions"]) >= action_saturation_threshold
+            ).astype(jnp.float32)
+        )
         finite_fraction = _all_finite_fraction(
             rollout["latents"],
             rollout["actions"],
@@ -419,6 +439,7 @@ def continuous_policy_train_step(
             rollout["values"],
             rollout["fixed_values"],
             actor_returns,
+            clipped_returns,
             actor_loss,
             value_loss,
             total,
@@ -428,18 +449,72 @@ def continuous_policy_train_step(
             "policy/actor_loss": actor_loss,
             "policy/value_loss": value_loss,
             "policy/imagined_return": weighted_mean(actor_returns, weights),
+            "policy/clipped_imagined_return": weighted_mean(clipped_returns, weights),
             "policy/imagined_reward": weighted_mean(rollout["rewards"], weights),
             "policy/imagined_continue": weighted_mean(rollout["continues"], weights),
             "policy/survival_weight_mean": jnp.mean(weights),
+            "policy/return_abs_mean": jnp.mean(jnp.abs(actor_returns)),
+            "policy/return_abs_max": jnp.max(jnp.abs(actor_returns)),
+            "policy/value_target_abs_mean": jnp.mean(jnp.abs(clipped_returns)),
+            "policy/value_target_abs_max": jnp.max(jnp.abs(clipped_returns)),
             "policy/action_mean": jnp.mean(rollout["actions"]),
             "policy/action_std": jnp.std(rollout["actions"]),
             "policy/action_abs_mean": jnp.mean(jnp.abs(rollout["actions"])),
             "policy/normalized_action_abs_mean": jnp.mean(
                 jnp.abs(rollout["normalized_actions"])
             ),
+            "policy/action_saturation_fraction": action_saturation,
             "policy/finite_fraction": finite_fraction,
         }
         return total, metrics
+
+    (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
+    del loss
+    return state.apply_policy_gradients(grads), metrics
+
+
+@partial(jax.jit, static_argnames=("config", "horizon"))
+def continuous_critic_warmup_step(
+    state: JepaTrainState,
+    batch: ReplayBatch,
+    config: JepaConfig,
+    *,
+    horizon: int,
+    value_clip: float = 100.0,
+) -> tuple[JepaTrainState, dict[str, jax.Array]]:
+    if config.action_mode != "continuous":
+        raise ValueError("continuous_critic_warmup_step requires continuous actions")
+
+    def loss_fn(params):
+        rewards = jnp.swapaxes(batch.rewards[:, :horizon], 0, 1)
+        dones = jnp.swapaxes(batch.dones[:, :horizon], 0, 1)
+        continues = 1.0 - dones
+        returns = reward_only_returns(rewards, continues, gamma=config.gamma)[0]
+        targets = jax.lax.stop_gradient(jnp.clip(returns, -value_clip, value_clip))
+        model_params = jax.tree_util.tree_map(jax.lax.stop_gradient, params)
+        z = state.apply_fn(
+            {"params": model_params},
+            batch.observations[:, 0],
+            method=JepaWorldModel.encode,
+        )
+        _, values = state.apply_fn(
+            {"params": params},
+            z,
+            method=JepaWorldModel.actor_value_from_latent,
+        )
+        value_loss = 0.5 * jnp.mean(jnp.square(values - targets))
+        finite_fraction = _all_finite_fraction(values, targets, value_loss)
+        metrics = {
+            "critic/total_loss": value_loss,
+            "critic/value_loss": value_loss,
+            "critic/target_mean": jnp.mean(targets),
+            "critic/target_abs_mean": jnp.mean(jnp.abs(targets)),
+            "critic/target_abs_max": jnp.max(jnp.abs(targets)),
+            "critic/value_mean": jnp.mean(values),
+            "critic/value_abs_mean": jnp.mean(jnp.abs(values)),
+            "critic/finite_fraction": finite_fraction,
+        }
+        return value_loss, metrics
 
     (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
     del loss
@@ -633,6 +708,25 @@ def lambda_returns(
         scan_fn,
         last_value,
         (rewards[::-1], continues[::-1], next_values[::-1]),
+    )
+    return returns[::-1]
+
+
+def reward_only_returns(
+    rewards: jax.Array,
+    continues: jax.Array,
+    *,
+    gamma: float,
+) -> jax.Array:
+    def scan_fn(next_return, inputs):
+        reward, cont = inputs
+        ret = reward + gamma * cont * next_return
+        return ret, ret
+
+    _, returns = jax.lax.scan(
+        scan_fn,
+        jnp.zeros_like(rewards[-1]),
+        (rewards[::-1], continues[::-1]),
     )
     return returns[::-1]
 

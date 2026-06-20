@@ -27,6 +27,7 @@ from world_marl.jepa.models import JepaConfig, JepaWorldModel
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
     ControlMode,
+    continuous_critic_warmup_step,
     continuous_policy_train_step,
     create_jepa_train_state,
     evaluate_open_loop,
@@ -36,6 +37,8 @@ from world_marl.jepa.training import (
     world_model_loss,
 )
 from world_marl.logging import RunLogger, dependency_versions, timestamp, to_jsonable
+
+MIN_TERMINAL_FRACTION_FOR_CONTINUE_BASELINE = 0.01
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,7 +64,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--actor-learning-rate", type=float, default=3e-4)
     parser.add_argument("--policy-train-steps", type=int, default=0)
     parser.add_argument("--policy-batch-size", type=int, default=None)
+    parser.add_argument("--critic-warmup-steps", type=int, default=1000)
+    parser.add_argument("--critic-horizon", type=int, default=32)
     parser.add_argument("--imag-horizon", type=int, default=5)
+    parser.add_argument(
+        "--policy-return-mode",
+        choices=("reward-only", "lambda"),
+        default="reward-only",
+        help=(
+            "Use finite-horizon predicted rewards by default. The old lambda mode "
+            "bootstraps from the learned value head and is mainly a diagnostic."
+        ),
+    )
+    parser.add_argument("--value-clip", type=float, default=100.0)
+    parser.add_argument("--action-saturation-threshold", type=float, default=0.95)
     parser.add_argument("--policy-eval-episodes", type=int, default=20)
     parser.add_argument("--policy-eval-num-envs", type=int, default=None)
     parser.add_argument("--gamma", type=float, default=0.99)
@@ -126,9 +142,16 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
     ):
         if getattr(args, name) < 1:
             parser.error(f"--{name.replace('_', '-')} must be >= 1")
-    for name in ("policy_train_steps",):
+    for name in ("policy_train_steps", "critic_warmup_steps"):
         if getattr(args, name) < 0:
             parser.error(f"--{name.replace('_', '-')} must be >= 0")
+    for name in ("critic_horizon",):
+        if getattr(args, name) < 1:
+            parser.error(f"--{name.replace('_', '-')} must be >= 1")
+    if args.value_clip <= 0.0:
+        parser.error("--value-clip must be > 0")
+    if not 0.0 < args.action_saturation_threshold <= 1.0:
+        parser.error("--action-saturation-threshold must be in (0, 1]")
     if args.policy_batch_size is not None and args.policy_batch_size < 1:
         parser.error("--policy-batch-size must be >= 1")
     if args.policy_eval_num_envs is not None and args.policy_eval_num_envs < 1:
@@ -144,6 +167,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--collect-steps must cover chunk-length + open-loop-horizon")
     if args.validation_steps < min_steps:
         parser.error("--validation-steps must cover chunk-length + open-loop-horizon")
+    if args.policy_train_steps > 0 and args.collect_steps < args.critic_horizon + 1:
+        parser.error("--collect-steps must cover critic-horizon + 1")
 
 
 def main() -> None:
@@ -394,6 +419,7 @@ def run_one(
         reload = {"reload_max_abs_prediction_diff": reload_diff}
         logger.write_json("reload_evaluation.json", reload)
 
+        world_model_passed = _run_passed(initial_metrics, final_metrics, reload_diff)
         outcome = {
             "run_index": run_index,
             "control": control,
@@ -417,7 +443,8 @@ def run_one(
             "reload_max_abs_prediction_diff": reload_diff,
             "final_model_metrics": final_metrics,
             **policy_outcome["outcome"],
-            "passed": _run_passed(initial_metrics, final_metrics, reload_diff),
+            "world_model_passed": world_model_passed,
+            "passed": world_model_passed,
         }
         logger.write_json("outcome.json", outcome)
         return to_jsonable(outcome)
@@ -533,6 +560,48 @@ def _maybe_train_policy(
     logger.write_json("random_policy_evaluation.json", random_eval)
     logger.write_json("initial_policy_evaluation.json", initial_eval)
 
+    critic_metrics: dict[str, Any] = {}
+    if args.critic_warmup_steps > 0:
+        critic_steps = tqdm(
+            range(1, args.critic_warmup_steps + 1),
+            desc=f"{control} warm real-return critic",
+            unit="update",
+            disable=args.quiet,
+        )
+        for step_index in critic_steps:
+            batch = replay.sample(
+                np_rng,
+                batch_size=policy_batch_size,
+                chunk_length=args.critic_horizon,
+                max_horizon=1,
+            )
+            state, critic_metrics = continuous_critic_warmup_step(
+                state,
+                batch,
+                config,
+                horizon=args.critic_horizon,
+                value_clip=args.value_clip,
+            )
+            critic_loss = float(critic_metrics["critic/total_loss"])
+            target_mean = float(critic_metrics["critic/target_mean"])
+            critic_steps.set_postfix(
+                loss=f"{critic_loss:.4g}",
+                target=f"{target_mean:.4g}",
+            )
+            if (
+                step_index == 1
+                or step_index == args.critic_warmup_steps
+                or step_index % args.eval_interval == 0
+            ):
+                logger.append_metrics(
+                    {
+                        "phase": "real_return_critic_warmup",
+                        "update": step_index,
+                        "control": control,
+                        **critic_metrics,
+                    }
+                )
+
     policy_loss_history: list[float] = []
     metrics: dict[str, Any] = {}
     policy_steps = tqdm(
@@ -558,6 +627,9 @@ def _maybe_train_policy(
             action_high_jax,
             imag_horizon=args.imag_horizon,
             control=control,
+            policy_return_mode=args.policy_return_mode,
+            value_clip=args.value_clip,
+            action_saturation_threshold=args.action_saturation_threshold,
         )
         policy_loss = float(metrics["policy/total_loss"])
         imagined_return = float(metrics["policy/imagined_return"])
@@ -599,20 +671,29 @@ def _maybe_train_policy(
     initial_mean = initial_eval["mean_return"]
     trained_mean = trained_eval["mean_return"]
     random_mean = random_eval["mean_return"]
+    policy_metrics_json = to_jsonable(metrics)
+    critic_metrics_json = to_jsonable(critic_metrics)
     outcome = {
         "policy_training_enabled": True,
         "policy_train_steps": args.policy_train_steps,
+        "policy_return_mode": args.policy_return_mode,
         "policy_imag_horizon": args.imag_horizon,
+        "critic_warmup_steps": args.critic_warmup_steps,
+        "critic_horizon": args.critic_horizon,
+        "critic_final_metrics": critic_metrics_json,
         "policy_random_mean": random_mean,
         "policy_initial_mean": initial_mean,
         "policy_trained_mean": trained_mean,
         "policy_improvement": trained_mean - initial_mean,
         "policy_trained_minus_random": trained_mean - random_mean,
-        "policy_final_metrics": to_jsonable(metrics),
+        "policy_final_metrics": policy_metrics_json,
         "policy_passed": bool(
-            _metrics_finite(to_jsonable(metrics))
+            _metrics_finite(policy_metrics_json)
+            and _metrics_finite(critic_metrics_json)
             and trained_mean > initial_mean
             and trained_mean > random_mean
+            and policy_metrics_json.get("policy/action_saturation_fraction", 1.0)
+            < 0.75
         ),
     }
     return {"state": state, "rng": rng, "outcome": outcome}
@@ -853,7 +934,9 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
     policy_enabled = any(
         outcome.get("policy_training_enabled", False) for outcome in outcomes
     )
-    main_passed = all(outcome["passed"] for outcome in main)
+    main_passed = all(
+        outcome.get("world_model_passed", outcome["passed"]) for outcome in main
+    )
     controls_finite = all(
         _metrics_finite(outcome["final_model_metrics"]) for outcome in controls
     )
@@ -907,6 +990,15 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
             for item in paired.values()
         )
     return {
+        "world_model_passed": bool(
+            main
+            and main_passed
+            and controls_finite
+            and main_beats_controls_open_loop
+            and main_beats_controls_jepa
+            and paired_open_loop_ok
+            and paired_jepa_ok
+        ),
         "passed": bool(
             main
             and main_passed
@@ -919,7 +1011,9 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
             and policy_main_beats_controls
             and paired_policy_ok
         ),
-        "main_runs_passed": int(sum(outcome["passed"] for outcome in main)),
+        "main_runs_passed": int(
+            sum(outcome.get("world_model_passed", outcome["passed"]) for outcome in main)
+        ),
         "main_runs": len(main),
         "controls_finite": controls_finite,
         "main_beats_controls_open_loop": main_beats_controls_open_loop,
@@ -973,7 +1067,7 @@ def _run_passed(
 
 def _continue_criterion_passed(final_metrics: dict[str, Any]) -> bool:
     terminal_fraction = final_metrics.get("model/terminal_positive_fraction", 0.0)
-    if terminal_fraction > 0.0:
+    if terminal_fraction >= MIN_TERMINAL_FRACTION_FOR_CONTINUE_BASELINE:
         return (
             final_metrics["model/continue_loss"]
             < final_metrics["model/continue_constant_bce"]

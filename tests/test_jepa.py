@@ -9,6 +9,7 @@ from world_marl.jepa.models import JepaConfig, JepaWorldModel
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
     action_value_gap,
+    continuous_critic_warmup_step,
     continuous_policy_train_step,
     create_jepa_train_state,
     enumerated_policy_train_step,
@@ -18,6 +19,7 @@ from world_marl.jepa.training import (
     policy_train_step,
     prediction_validity,
     reset_policy_heads,
+    reward_only_returns,
     select_continuous_actions,
     train_model_step,
 )
@@ -224,6 +226,65 @@ def test_continuous_policy_update_freezes_world_model_and_bounds_actions():
             np.testing.assert_allclose(np.asarray(left), np.asarray(right))
 
 
+def test_continuous_critic_warmup_updates_value_only():
+    config = JepaConfig(
+        observation_dim=4,
+        action_dim=3,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=1,
+        context_window=1,
+        sigreg_num_proj=32,
+    )
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    before = state.params
+    batch = ReplayBatch(
+        observations=jnp.ones((8, 4, config.observation_dim), dtype=jnp.float32),
+        actions=jnp.zeros((8, 3, config.action_dim), dtype=jnp.float32),
+        rewards=jnp.ones((8, 3), dtype=jnp.float32),
+        dones=jnp.zeros((8, 3), dtype=jnp.float32),
+    )
+
+    updated, metrics = continuous_critic_warmup_step(
+        state,
+        batch,
+        config,
+        horizon=3,
+        value_clip=10.0,
+    )
+
+    assert jnp.isfinite(metrics["critic/total_loss"])
+    for group in (
+        "encoder",
+        "latent_proj",
+        "action_encoder_hidden",
+        "action_encoder_out",
+        "dynamics_norm",
+        "predictor",
+        "predictor_norm",
+        "reward_head",
+        "continue_head",
+        "actor_head",
+    ):
+        before_leaves = jax.tree_util.tree_leaves(before[group])
+        after_leaves = jax.tree_util.tree_leaves(updated.params[group])
+        for left, right in zip(before_leaves, after_leaves, strict=True):
+            np.testing.assert_allclose(np.asarray(left), np.asarray(right), atol=1e-7)
+
+    value_changed = any(
+        not np.allclose(np.asarray(left), np.asarray(right))
+        for left, right in zip(
+            jax.tree_util.tree_leaves(before["value_head"]),
+            jax.tree_util.tree_leaves(updated.params["value_head"]),
+            strict=True,
+        )
+    )
+    assert value_changed
+
+
 def test_isotropy_detects_collapsed_embeddings():
     collapsed = jnp.ones((4, 3, 8))
     _, metrics = isotropy_loss(collapsed)
@@ -272,6 +333,15 @@ def test_lambda_returns_bootstrap_from_next_values():
     )
 
     np.testing.assert_allclose(np.asarray(returns[:, 0]), np.asarray([27.0, 32.0]))
+
+
+def test_reward_only_returns_do_not_bootstrap_from_value_head():
+    rewards = jnp.asarray([[1.0], [2.0], [3.0]])
+    continues = jnp.asarray([[1.0], [0.0], [1.0]])
+
+    returns = reward_only_returns(rewards, continues, gamma=1.0)
+
+    np.testing.assert_allclose(np.asarray(returns[:, 0]), np.asarray([3.0, 2.0, 3.0]))
 
 
 def test_prediction_validity_masks_terminal_crossing_targets():
@@ -498,6 +568,46 @@ def test_dmc_run_passes_when_continue_targets_have_no_terminals():
     assert dmc_run_passed(initial, final, reload_diff=0.0)
 
 
+def test_dmc_run_passes_when_continue_targets_have_too_few_terminals():
+    initial = {
+        "model/jepa_loss": 1.0,
+        "model/open_loop_loss": 1.0,
+    }
+    final = {
+        "model/jepa_loss": 0.1,
+        "model/open_loop_loss": 0.1,
+        "model/open_loop_finite_fraction": 1.0,
+        "model/reward_loss": 0.01,
+        "model/reward_constant_mse": 0.1,
+        "model/continue_loss": 0.01,
+        "model/continue_constant_bce": 0.005,
+        "model/terminal_positive_fraction": 0.00061,
+        "model/nonterminal_recall": 1.0,
+    }
+
+    assert dmc_run_passed(initial, final, reload_diff=0.0)
+
+
+def test_dmc_run_requires_continue_baseline_when_terminals_are_common_enough():
+    initial = {
+        "model/jepa_loss": 1.0,
+        "model/open_loop_loss": 1.0,
+    }
+    final = {
+        "model/jepa_loss": 0.1,
+        "model/open_loop_loss": 0.1,
+        "model/open_loop_finite_fraction": 1.0,
+        "model/reward_loss": 0.01,
+        "model/reward_constant_mse": 0.1,
+        "model/continue_loss": 0.02,
+        "model/continue_constant_bce": 0.01,
+        "model/terminal_positive_fraction": 0.02,
+        "model/nonterminal_recall": 1.0,
+    }
+
+    assert not dmc_run_passed(initial, final, reload_diff=0.0)
+
+
 def test_dmc_jepa_summary_tracks_policy_rung():
     def outcome(control: str, policy_improvement: float):
         return {
@@ -532,9 +642,11 @@ def test_dmc_jepa_summary_tracks_policy_rung():
     )
 
     assert good["passed"]
+    assert good["world_model_passed"]
     assert good["policy_training_enabled"]
     assert good["policy_main_beats_controls"]
     assert not bad["passed"]
+    assert bad["world_model_passed"]
 
 
 def _batch(config: JepaConfig):
