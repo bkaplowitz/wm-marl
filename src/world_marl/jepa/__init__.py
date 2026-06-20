@@ -1,4 +1,4 @@
-"""Decoder-free SIGReg/JEPA world-model components."""
+"""Representation-space SIGReg/JEPA world-model components."""
 
 from world_marl.jepa.models import JepaConfig, JepaWorldModel
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer

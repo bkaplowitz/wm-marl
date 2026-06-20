@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import sys
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -11,6 +9,7 @@ from world_marl.jepa.models import JepaConfig, JepaWorldModel
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
     action_value_gap,
+    continuous_policy_train_step,
     create_jepa_train_state,
     enumerated_policy_train_step,
     evaluate_open_loop,
@@ -19,9 +18,9 @@ from world_marl.jepa.training import (
     policy_train_step,
     prediction_validity,
     reset_policy_heads,
+    select_continuous_actions,
     train_model_step,
 )
-from world_marl.scripts import train_jepa
 from world_marl.scripts.train_dmc_jepa import summarize as summarize_dmc_jepa
 
 
@@ -164,6 +163,62 @@ def test_continuous_action_jepa_model_step_is_finite():
         chunk_length=2,
     )
     assert jnp.isfinite(metrics["model/total_loss"])
+
+
+def test_continuous_policy_update_freezes_world_model_and_bounds_actions():
+    config = JepaConfig(
+        observation_dim=4,
+        action_dim=3,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=1,
+        context_window=1,
+        sigreg_num_proj=32,
+    )
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    before = state.params
+    observations = jnp.ones((8, config.observation_dim), dtype=jnp.float32)
+    action_low = -jnp.ones((config.action_dim,), dtype=jnp.float32)
+    action_high = jnp.ones((config.action_dim,), dtype=jnp.float32)
+
+    state, metrics = continuous_policy_train_step(
+        state,
+        jax.random.PRNGKey(1),
+        observations,
+        config,
+        action_low,
+        action_high,
+        imag_horizon=2,
+    )
+    actions = select_continuous_actions(
+        state,
+        observations,
+        config,
+        action_low,
+        action_high,
+    )
+
+    assert jnp.isfinite(metrics["policy/total_loss"])
+    assert jnp.all(actions <= action_high + 1e-6)
+    assert jnp.all(actions >= action_low - 1e-6)
+    for group in (
+        "encoder",
+        "latent_proj",
+        "action_encoder_hidden",
+        "action_encoder_out",
+        "dynamics_norm",
+        "predictor",
+        "predictor_norm",
+        "reward_head",
+        "continue_head",
+    ):
+        before_leaves = jax.tree_util.tree_leaves(before[group])
+        after_leaves = jax.tree_util.tree_leaves(state.params[group])
+        for left, right in zip(before_leaves, after_leaves, strict=True):
+            np.testing.assert_allclose(np.asarray(left), np.asarray(right))
 
 
 def test_isotropy_detects_collapsed_embeddings():
@@ -388,60 +443,10 @@ def test_no_action_control_has_zero_action_value_gap():
     np.testing.assert_allclose(np.asarray(gap), 0.0, atol=1e-6)
 
 
-def test_train_jepa_cli_smoke_writes_summary(tmp_path, monkeypatch):
-    argv = [
-        "train_jepa",
-        "--env",
-        "gymnax:CartPole-v1",
-        "--num-envs",
-        "1",
-        "--total-env-steps",
-        "4",
-        "--env-steps-per-iter",
-        "2",
-        "--replay-capacity",
-        "16",
-        "--chunk-length",
-        "2",
-        "--batch-size",
-        "2",
-        "--model-updates-per-iter",
-        "1",
-        "--policy-updates-per-iter",
-        "1",
-        "--imag-horizon",
-        "1",
-        "--latent-dim",
-        "8",
-        "--model-dim",
-        "16",
-        "--num-layers",
-        "1",
-        "--num-heads",
-        "2",
-        "--eval-episodes",
-        "1",
-        "--eval-interval",
-        "1",
-        "--num-runs",
-        "1",
-        "--max-cycles",
-        "5",
-        "--out-dir",
-        str(tmp_path),
-        "--allow-fail",
-    ]
-    monkeypatch.setattr(sys, "argv", argv)
-
-    train_jepa.main()
-
-    summaries = list(tmp_path.glob("jepa_*/summary.json"))
-    assert len(summaries) == 1
-
-
 def test_dmc_jepa_summary_requires_main_to_beat_controls():
     def outcome(control: str, jepa_loss: float, open_loop_loss: float):
         return {
+            "run_index": 0,
             "control": control,
             "passed": True,
             "initial_jepa_loss": 1.0,
@@ -467,6 +472,45 @@ def test_dmc_jepa_summary_requires_main_to_beat_controls():
     assert good["passed"]
     assert good["main_beats_controls_open_loop"]
     assert good["main_beats_controls_jepa"]
+    assert not bad["passed"]
+
+
+def test_dmc_jepa_summary_tracks_policy_rung():
+    def outcome(control: str, policy_improvement: float):
+        return {
+            "run_index": 0,
+            "control": control,
+            "passed": True,
+            "initial_jepa_loss": 1.0,
+            "final_jepa_loss": 0.1 if control == "none" else 0.2,
+            "initial_open_loop_loss": 1.0,
+            "final_open_loop_loss": 0.1 if control == "none" else 0.2,
+            "policy_training_enabled": True,
+            "policy_passed": control == "none",
+            "policy_random_mean": 0.0,
+            "policy_initial_mean": 1.0,
+            "policy_trained_mean": 1.0 + policy_improvement,
+            "policy_improvement": policy_improvement,
+            "policy_trained_minus_random": 1.0 + policy_improvement,
+            "final_model_metrics": {"model/jepa_loss": 0.1},
+        }
+
+    good = summarize_dmc_jepa(
+        [
+            outcome("none", 2.0),
+            outcome("no-action-world-model", 0.0),
+        ]
+    )
+    bad = summarize_dmc_jepa(
+        [
+            outcome("none", 0.1),
+            outcome("no-action-world-model", 0.2),
+        ]
+    )
+
+    assert good["passed"]
+    assert good["policy_training_enabled"]
+    assert good["policy_main_beats_controls"]
     assert not bad["passed"]
 
 

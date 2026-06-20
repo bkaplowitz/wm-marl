@@ -1,4 +1,4 @@
-"""Training utilities for the decoder-free SIGReg/JEPA agent."""
+"""Training utilities for representation-space SIGReg/JEPA models."""
 
 from __future__ import annotations
 
@@ -368,6 +368,157 @@ def enumerated_policy_train_step(
     return state.apply_policy_gradients(grads), metrics
 
 
+@partial(jax.jit, static_argnames=("config", "imag_horizon", "control"))
+def continuous_policy_train_step(
+    state: JepaTrainState,
+    key: jax.Array,
+    start_observations: jax.Array,
+    config: JepaConfig,
+    action_low: jax.Array,
+    action_high: jax.Array,
+    *,
+    imag_horizon: int,
+    control: ControlMode = "none",
+) -> tuple[JepaTrainState, dict[str, jax.Array]]:
+    if config.action_mode != "continuous":
+        raise ValueError("continuous_policy_train_step requires continuous actions")
+    del key
+
+    def loss_fn(params):
+        rollout = continuous_imagine_rollout(
+            params,
+            state.apply_fn,
+            start_observations,
+            config,
+            action_low,
+            action_high,
+            imag_horizon=imag_horizon,
+            control=control,
+        )
+        actor_returns = lambda_returns(
+            rollout["rewards"],
+            rollout["continues"],
+            rollout["fixed_values"],
+            rollout["fixed_last_value"],
+            gamma=config.gamma,
+            lambda_return=config.lambda_return,
+        )
+        weights = survival_weights(rollout["continues"], gamma=config.gamma)
+        actor_loss = -weighted_mean(actor_returns, weights)
+        value_loss = 0.5 * weighted_mean(
+            jnp.square(rollout["values"] - jax.lax.stop_gradient(actor_returns)),
+            weights,
+        )
+        total = actor_loss + value_loss
+        finite_fraction = _all_finite_fraction(
+            rollout["latents"],
+            rollout["actions"],
+            rollout["normalized_actions"],
+            rollout["rewards"],
+            rollout["continues"],
+            rollout["values"],
+            rollout["fixed_values"],
+            actor_returns,
+            actor_loss,
+            value_loss,
+            total,
+        )
+        metrics = {
+            "policy/total_loss": total,
+            "policy/actor_loss": actor_loss,
+            "policy/value_loss": value_loss,
+            "policy/imagined_return": weighted_mean(actor_returns, weights),
+            "policy/imagined_reward": weighted_mean(rollout["rewards"], weights),
+            "policy/imagined_continue": weighted_mean(rollout["continues"], weights),
+            "policy/survival_weight_mean": jnp.mean(weights),
+            "policy/action_mean": jnp.mean(rollout["actions"]),
+            "policy/action_std": jnp.std(rollout["actions"]),
+            "policy/action_abs_mean": jnp.mean(jnp.abs(rollout["actions"])),
+            "policy/normalized_action_abs_mean": jnp.mean(
+                jnp.abs(rollout["normalized_actions"])
+            ),
+            "policy/finite_fraction": finite_fraction,
+        }
+        return total, metrics
+
+    (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
+    del loss
+    return state.apply_policy_gradients(grads), metrics
+
+
+def continuous_imagine_rollout(
+    params: FrozenDict,
+    apply_fn,
+    start_observations: jax.Array,
+    config: JepaConfig,
+    action_low: jax.Array,
+    action_high: jax.Array,
+    *,
+    imag_horizon: int,
+    control: ControlMode,
+) -> dict[str, jax.Array]:
+    model_params = jax.tree_util.tree_map(jax.lax.stop_gradient, params)
+    flat_obs = start_observations.reshape((-1, config.observation_dim))
+    z0 = apply_fn({"params": model_params}, flat_obs, method=JepaWorldModel.encode)
+    context = jnp.repeat(z0[:, None, :], repeats=config.context_window, axis=1)
+    action_context = initial_action_context(z0.shape[0], config)
+
+    def step(carry, _):
+        context, action_context = carry
+        current_z = context[:, -1]
+        raw_actions, values = apply_fn(
+            {"params": params},
+            current_z,
+            method=JepaWorldModel.actor_value_from_latent,
+        )
+        normalized_actions = jnp.tanh(raw_actions)
+        actions = scale_normalized_actions(
+            normalized_actions,
+            action_low,
+            action_high,
+        )
+        model_actions = (
+            jnp.zeros_like(actions) if control == "no-action-world-model" else actions
+        )
+        action_context = append_action_context(action_context, model_actions, config)
+        next_z, rewards, continue_logits = apply_fn(
+            {"params": model_params},
+            context,
+            action_context,
+            method=JepaWorldModel.predict_next_from_history,
+        )
+        continues = jax.nn.sigmoid(continue_logits)
+        _, fixed_values = apply_fn(
+            {"params": model_params},
+            current_z,
+            method=JepaWorldModel.actor_value_from_latent,
+        )
+        next_context = jnp.concatenate([context[:, 1:], next_z[:, None, :]], axis=1)
+        return (next_context, action_context), {
+            "latents": current_z,
+            "actions": actions,
+            "normalized_actions": normalized_actions,
+            "values": values,
+            "fixed_values": fixed_values,
+            "rewards": rewards,
+            "continues": continues,
+        }
+
+    (final_context, _), rollout = jax.lax.scan(
+        step,
+        (context, action_context),
+        xs=None,
+        length=imag_horizon,
+    )
+    _, fixed_last_value = apply_fn(
+        {"params": model_params},
+        final_context[:, -1],
+        method=JepaWorldModel.actor_value_from_latent,
+    )
+    rollout["fixed_last_value"] = fixed_last_value
+    return rollout
+
+
 def imagine_rollout(
     params: FrozenDict,
     apply_fn,
@@ -423,6 +574,39 @@ def imagine_rollout(
     )
     rollout["last_value"] = last_value
     return rollout
+
+
+def select_continuous_actions(
+    state: JepaTrainState,
+    observations: jax.Array,
+    config: JepaConfig,
+    action_low: jax.Array,
+    action_high: jax.Array,
+) -> jax.Array:
+    if config.action_mode != "continuous":
+        raise ValueError("select_continuous_actions requires continuous actions")
+    flat_obs = observations.reshape((-1, config.observation_dim))
+    raw_actions, _ = state.apply_fn(
+        {"params": state.params},
+        flat_obs,
+        method=JepaWorldModel.actor_value_from_obs,
+    )
+    normalized_actions = jnp.tanh(raw_actions)
+    return scale_normalized_actions(
+        normalized_actions,
+        action_low,
+        action_high,
+    ).reshape((*observations.shape[:-1], config.action_dim))
+
+
+def scale_normalized_actions(
+    normalized_actions: jax.Array,
+    action_low: jax.Array,
+    action_high: jax.Array,
+) -> jax.Array:
+    low = jnp.asarray(action_low, dtype=normalized_actions.dtype)
+    high = jnp.asarray(action_high, dtype=normalized_actions.dtype)
+    return low + 0.5 * (normalized_actions + 1.0) * (high - low)
 
 
 def lambda_returns(

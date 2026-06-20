@@ -1,4 +1,4 @@
-"""Decoder-free SIGReg/JEPA model for vector observations."""
+"""Representation-space SIGReg/JEPA model for vector observations."""
 
 from __future__ import annotations
 

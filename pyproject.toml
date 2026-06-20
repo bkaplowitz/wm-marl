@@ -40,8 +40,8 @@ dmc = [
 [project.scripts]
 world-marl-verify-install = "world_marl.scripts.verify_install:main"
 world-marl-train-e2e = "world_marl.scripts.train_e2e:main"
-world-marl-train-jepa = "world_marl.scripts.train_jepa:main"
 world-marl-train-dmc-jepa = "world_marl.scripts.train_dmc_jepa:main"
+world-marl-validate-dmc-world-model = "world_marl.scripts.train_dmc_jepa:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

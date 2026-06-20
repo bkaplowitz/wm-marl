@@ -7,8 +7,6 @@
 - `world_marl.envs.MeltingPotVectorAdapter`: batching, RGB normalization, reset,
   optional scalar-observation channels, step, auto-reset, and rollout-friendly
   tensors.
-- `world_marl.envs.GymnaxVectorAdapter`: single-agent Gymnax environments exposed
-  as one-agent vector tasks via `--substrate gymnax:<env-id>`.
 - JAX / Flax / Distrax / Optax: IPPO and MAPPO policies, GAE, and PPO updates.
 
 ## Setup
@@ -67,98 +65,22 @@ uv run world-marl-train-e2e \
   --num-runs 3
 ```
 
-Single-agent Gymnax environments use the same trainer with a singleton agent
-axis:
+### DMC JEPA World-Model Validation
 
-```bash
-uv run world-marl-train-e2e \
-  --algorithm ippo \
-  --substrate gymnax:CartPole-v1 \
-  --num-envs 16 \
-  --rollout-steps 128 \
-  --total-env-steps 50000 \
-  --eval-episodes 20 \
-  --num-runs 1 \
-  --max-cycles 500 \
-  --negative-control none \
-  --min-improvement 0.0
-```
-
-### SIGReg-JEPA CartPole Milestone
-
-The `world-marl-train-jepa` command trains a minimal decoder-free SIGReg-JEPA
-imagination actor-critic on single-agent Gymnax tasks. For milestone 1, the
-target is CartPole and the model learns latent prediction, reward prediction,
-continue prediction, and actor/critic updates from imagined latent rollouts.
-
-The JEPA target branch uses `stopgrad(encoder(o_t+k))`, the model has no
-observation decoder, and actor/critic updates freeze the encoder/world-model
-backbone. The default regularizer is a JAX implementation of the sketched
-SIGReg objective used by LeWorldModel; the older second-order isotropy penalty
-is still available with `--regularizer isotropy` for ablations. Controls such as
-`no-action-world-model`, `shuffled-action-replay`, `no-policy-update`,
-`no-sigreg`, and `weak-sigreg` are first-class CLI modes.
-
-By default, CartPole policy updates use exact discrete-action enumeration
-(`--policy-update-mode enumerated`) instead of sampled policy gradients. This
-removes a noisy failure mode where the no-action control could drift even when
-both actions had identical imagined value.
-
-```bash
-uv run world-marl-train-jepa \
-  --env gymnax:CartPole-v1 \
-  --num-envs 32 \
-  --total-env-steps 25000 \
-  --replay-capacity 50000 \
-  --chunk-length 32 \
-  --batch-size 128 \
-  --model-updates-per-iter 2 \
-  --policy-update-mode enumerated \
-  --model-horizon 1 \
-  --imag-horizon 5 \
-  --context-window 1 \
-  --latent-dim 128 \
-  --regularizer sigreg \
-  --sigreg-weight 0.05 \
-  --eval-episodes 100 \
-  --num-runs 5 \
-  --controls none no-action-world-model shuffled-action-replay no-policy-update \
-  --out-dir runs/jepa_cartpole
-```
-
-Each run writes JEPA model metrics, open-loop latent rollout metrics,
-collapse/SIGReg diagnostics, evaluation returns, a checkpoint, and reload
-evaluation artifacts.
-
-Each run writes:
-
-- `config.json`
-- `versions.json`
-- `random_baseline.json`
-- `initial_policy_evaluation.json`
-- `metrics.jsonl`
-- `returns.png`
-- `checkpoint/checkpoint.msgpack`
-- `checkpoint/metadata.json`
-- `reload_evaluation.json`
-- `outcome.json`
-
-The top-level experiment directory also writes `summary.json`.
-
-### DeepMind Control JEPA World-Model Milestone
-
-The `world-marl-train-dmc-jepa` command is the first continuous-control rung.
-It collects random state-observation rollouts from DeepMind Control Suite tasks
-and fits the decoder-free JEPA world model to:
+The `world-marl-validate-dmc-world-model` command is the first
+continuous-control rung. It collects random state-observation rollouts from
+Google DeepMind Control Suite tasks and fits the SIGReg-JEPA latent world model
+to:
 
 ```text
 p(z_next, reward, continue | z, continuous_action)
 ```
 
-This command does **not** train a continuous actor yet. It is meant to answer
-the narrower question: can the latent dynamics, reward head, and continue head
-fit continuous-control transitions before we add tanh-Gaussian actors or latent
-planning?
+With the default `--policy-train-steps 0`, this command does **not** train a
+continuous actor and does not use MPC. It answers the narrower question: can the
+latent dynamics, reward head, and continue head fit action-conditioned
+continuous-control transitions better than no-action and shuffled-action
+controls?
 
 Install the optional DMC dependency first:
 
@@ -169,10 +91,11 @@ uv sync --extra dmc
 Then run a small CartPole Swingup fit:
 
 ```bash
-uv run world-marl-train-dmc-jepa \
+uv run world-marl-validate-dmc-world-model \
   --env dmc:cartpole/swingup \
   --num-envs 16 \
   --collect-steps 2048 \
+  --validation-steps 512 \
   --train-steps 5000 \
   --batch-size 256 \
   --chunk-length 32 \
@@ -185,8 +108,39 @@ uv run world-marl-train-dmc-jepa \
 ```
 
 Good first DMC tasks are `dmc:cartpole/swingup`, `dmc:pendulum/swingup`, and
-`dmc:reacher/easy`. Start with state observations; pixel observations and
-continuous actor training are later milestones.
+`dmc:reacher/easy`. Start with state observations; pixel observations, online
+data collection, and model/policy co-training are later milestones.
+
+To test the next rung, add frozen-world-model policy training. This still does
+not use MPC and does not update the JEPA backbone during actor/value training:
+
+```bash
+uv run world-marl-validate-dmc-world-model \
+  --env dmc:cartpole/swingup \
+  --num-envs 16 \
+  --collect-steps 4096 \
+  --validation-steps 1024 \
+  --train-steps 5000 \
+  --policy-train-steps 3000 \
+  --imag-horizon 5 \
+  --policy-eval-episodes 50 \
+  --batch-size 256 \
+  --chunk-length 32 \
+  --open-loop-horizon 5 \
+  --latent-dim 128 \
+  --regularizer sigreg \
+  --sigreg-weight 0.05 \
+  --controls none no-action-world-model shuffled-action-replay \
+  --out-dir runs/dmc_jepa_policy
+```
+
+This second mode reports both world-model fit metrics and real-environment
+policy returns:
+
+- random policy return;
+- freshly reset actor return before imagination training;
+- trained actor return after frozen-model imagination training;
+- paired no-action and shuffled-action controls.
 
 Each `metrics.jsonl` row includes rollout diagnostics for debugging learning
 failures:
