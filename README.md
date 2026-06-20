@@ -145,6 +145,49 @@ Each run writes:
 
 The top-level experiment directory also writes `summary.json`.
 
+### DeepMind Control JEPA World-Model Milestone
+
+The `world-marl-train-dmc-jepa` command is the first continuous-control rung.
+It collects random state-observation rollouts from DeepMind Control Suite tasks
+and fits the decoder-free JEPA world model to:
+
+```text
+p(z_next, reward, continue | z, continuous_action)
+```
+
+This command does **not** train a continuous actor yet. It is meant to answer
+the narrower question: can the latent dynamics, reward head, and continue head
+fit continuous-control transitions before we add tanh-Gaussian actors or latent
+planning?
+
+Install the optional DMC dependency first:
+
+```bash
+uv sync --extra dmc
+```
+
+Then run a small CartPole Swingup fit:
+
+```bash
+uv run world-marl-train-dmc-jepa \
+  --env dmc:cartpole/swingup \
+  --num-envs 16 \
+  --collect-steps 2048 \
+  --train-steps 5000 \
+  --batch-size 256 \
+  --chunk-length 32 \
+  --open-loop-horizon 5 \
+  --latent-dim 128 \
+  --regularizer sigreg \
+  --sigreg-weight 0.05 \
+  --controls none no-action-world-model shuffled-action-replay \
+  --out-dir runs/dmc_jepa
+```
+
+Good first DMC tasks are `dmc:cartpole/swingup`, `dmc:pendulum/swingup`, and
+`dmc:reacher/easy`. Start with state observations; pixel observations and
+continuous actor training are later milestones.
+
 Each `metrics.jsonl` row includes rollout diagnostics for debugging learning
 failures:
 

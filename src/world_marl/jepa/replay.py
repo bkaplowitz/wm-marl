@@ -25,6 +25,8 @@ class SequenceReplayBuffer:
         capacity: int,
         num_envs: int,
         observation_shape: tuple[int, ...],
+        action_shape: tuple[int, ...] = (),
+        action_dtype: np.dtype | type = np.int32,
     ) -> None:
         if capacity < 2:
             raise ValueError("capacity must be >= 2")
@@ -33,11 +35,16 @@ class SequenceReplayBuffer:
         self.capacity = int(capacity)
         self.num_envs = int(num_envs)
         self.observation_shape = tuple(int(dim) for dim in observation_shape)
+        self.action_shape = tuple(int(dim) for dim in action_shape)
+        self.action_dtype = np.dtype(action_dtype)
         self.observations = np.zeros(
             (self.capacity, self.num_envs, *self.observation_shape),
             dtype=np.float32,
         )
-        self.actions = np.zeros((self.capacity, self.num_envs), dtype=np.int32)
+        self.actions = np.zeros(
+            (self.capacity, self.num_envs, *self.action_shape),
+            dtype=self.action_dtype,
+        )
         self.rewards = np.zeros((self.capacity, self.num_envs), dtype=np.float32)
         self.dones = np.zeros((self.capacity, self.num_envs), dtype=np.float32)
         self._position = 0
@@ -59,8 +66,11 @@ class SequenceReplayBuffer:
             (self.num_envs, *self.observation_shape)
         )
         self.observations[self._position] = obs
-        self.actions[self._position] = np.asarray(actions, dtype=np.int32).reshape(
-            (self.num_envs,)
+        self.actions[self._position] = np.asarray(
+            actions,
+            dtype=self.action_dtype,
+        ).reshape(
+            (self.num_envs, *self.action_shape)
         )
         self.rewards[self._position] = np.asarray(rewards, dtype=np.float32).reshape(
             (self.num_envs,)
@@ -110,7 +120,14 @@ class SequenceReplayBuffer:
         done_batch = dones[trans_indices, envs[:, None]]
         return ReplayBatch(
             observations=jnp.asarray(obs_batch, dtype=jnp.float32),
-            actions=jnp.asarray(action_batch, dtype=jnp.int32),
+            actions=jnp.asarray(
+                action_batch,
+                dtype=(
+                    jnp.int32
+                    if np.issubdtype(self.action_dtype, np.integer)
+                    else jnp.float32
+                ),
+            ),
             rewards=jnp.asarray(reward_batch, dtype=jnp.float32),
             dones=jnp.asarray(done_batch, dtype=jnp.float32),
         )

@@ -63,6 +63,39 @@ def test_sequence_replay_samples_contiguous_chunks():
     )
 
 
+def test_sequence_replay_supports_continuous_action_vectors():
+    replay = SequenceReplayBuffer(
+        capacity=8,
+        num_envs=2,
+        observation_shape=(1,),
+        action_shape=(3,),
+        action_dtype=np.float32,
+    )
+    for step in range(6):
+        replay.add_step(
+            observations=np.asarray([[step], [step + 100]], dtype=np.float32),
+            actions=np.asarray(
+                [
+                    [step, step + 1, step + 2],
+                    [step + 100, step + 101, step + 102],
+                ],
+                dtype=np.float32,
+            ),
+            rewards=np.asarray([step, step + 100], dtype=np.float32),
+            dones=np.zeros((2,), dtype=np.float32),
+        )
+
+    batch = replay.sample(
+        np.random.default_rng(0),
+        batch_size=4,
+        chunk_length=3,
+        max_horizon=2,
+    )
+
+    assert batch.actions.shape == (4, 4, 3)
+    assert batch.actions.dtype == jnp.float32
+
+
 def test_jepa_model_forward_and_model_step_are_finite():
     config = _config()
     state = create_jepa_train_state(jax.random.PRNGKey(0), config)
@@ -80,6 +113,48 @@ def test_jepa_model_forward_and_model_step_are_finite():
     assert outputs["target_latents"].shape == (3, 2, 1, 8)
 
     replay_batch = _batch(config)
+    state, metrics = train_model_step(
+        state,
+        jax.random.PRNGKey(1),
+        replay_batch,
+        config,
+        chunk_length=2,
+    )
+    assert jnp.isfinite(metrics["model/total_loss"])
+
+
+def test_continuous_action_jepa_model_step_is_finite():
+    config = JepaConfig(
+        observation_dim=4,
+        action_dim=3,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=1,
+        context_window=1,
+        sigreg_num_proj=32,
+    )
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    observations = jnp.ones((3, 4, 4), dtype=jnp.float32)
+    actions = jnp.zeros((3, 3, 3), dtype=jnp.float32)
+    outputs = state.apply_fn(
+        {"params": state.params},
+        observations,
+        actions,
+        chunk_length=2,
+        method=JepaWorldModel.sequence_outputs,
+    )
+
+    assert outputs["predicted_latents"].shape == (3, 2, 1, 8)
+
+    replay_batch = ReplayBatch(
+        observations=observations,
+        actions=actions,
+        rewards=jnp.ones((3, 3), dtype=jnp.float32),
+        dones=jnp.zeros((3, 3), dtype=jnp.float32),
+    )
     state, metrics = train_model_step(
         state,
         jax.random.PRNGKey(1),
@@ -112,6 +187,8 @@ def test_effective_rank_distinguishes_rank_one_and_isotropic_embeddings():
 
 
 def test_jepa_config_enforces_milestone_one_constraints():
+    with pytest.raises(ValueError, match="action_mode"):
+        JepaConfig(observation_dim=4, action_dim=2, action_mode="mixed")
     with pytest.raises(ValueError, match="regularizer"):
         JepaConfig(observation_dim=4, action_dim=2, regularizer="made-up")
     with pytest.raises(ValueError, match="max_horizon=1"):

@@ -32,6 +32,8 @@ MODEL_GROUPS = frozenset(
         "encoder",
         "latent_proj",
         "action_embed",
+        "action_encoder_hidden",
+        "action_encoder_out",
         "horizon_embed",
         "dynamics_norm",
         "predictor",
@@ -86,10 +88,17 @@ def create_jepa_train_state(
     # JepaConfig deliberately does not store chunk_length as a model invariant.
     # Use max_horizon + 1 positions for init so every head/submodule is touched.
     init_length = max(config.max_horizon + 1, 2)
+    if config.action_mode == "discrete":
+        init_actions = jnp.zeros((1, init_length - 1), dtype=jnp.int32)
+    else:
+        init_actions = jnp.zeros(
+            (1, init_length - 1, config.action_dim),
+            dtype=jnp.float32,
+        )
     params = model.init(
         key,
         jnp.zeros((1, init_length, config.observation_dim), dtype=jnp.float32),
-        jnp.zeros((1, init_length - 1), dtype=jnp.int32),
+        init_actions,
         chunk_length=1,
         method=JepaWorldModel.initialize,
     )["params"]
@@ -372,10 +381,7 @@ def imagine_rollout(
     flat_obs = start_observations.reshape((-1, config.observation_dim))
     z0 = apply_fn({"params": params}, flat_obs, method=JepaWorldModel.encode)
     context = jnp.repeat(z0[:, None, :], repeats=config.context_window, axis=1)
-    action_context = jnp.zeros(
-        (z0.shape[0], config.context_window),
-        dtype=jnp.int32,
-    )
+    action_context = initial_action_context(z0.shape[0], config)
 
     def step(carry, step_key):
         context, action_context = carry
@@ -389,10 +395,7 @@ def imagine_rollout(
         model_actions = (
             jnp.zeros_like(actions) if control == "no-action-world-model" else actions
         )
-        action_context = jnp.concatenate(
-            [action_context[:, 1:], model_actions[:, None]],
-            axis=1,
-        )
+        action_context = append_action_context(action_context, model_actions, config)
         next_z, rewards, continue_logits = apply_fn(
             {"params": params},
             context,
@@ -496,19 +499,13 @@ def evaluate_open_loop(
         method=JepaWorldModel.encode,
     )
     context = jnp.repeat(z0[:, None, :], repeats=config.context_window, axis=1)
-    action_context = jnp.zeros(
-        (z0.shape[0], config.context_window),
-        dtype=jnp.int32,
-    )
+    action_context = initial_action_context(z0.shape[0], config)
     preds = []
     for t in range(horizon):
         actions = batch.actions[:, t]
         if control == "no-action-world-model":
             actions = jnp.zeros_like(actions)
-        action_context = jnp.concatenate(
-            [action_context[:, 1:], actions[:, None]],
-            axis=1,
-        )
+        action_context = append_action_context(action_context, actions, config)
         next_z, _, _ = state.apply_fn(
             {"params": state.params},
             context,
@@ -562,6 +559,28 @@ def sample_categorical(logits: jax.Array, key: jax.Array):
     )[:, 0]
     entropies = -jnp.sum(probs * log_probs_all, axis=-1)
     return actions.astype(jnp.int32), log_probs, entropies
+
+
+def initial_action_context(batch_size: int, config: JepaConfig) -> jax.Array:
+    if config.action_mode == "continuous":
+        return jnp.zeros(
+            (batch_size, config.context_window, config.action_dim),
+            dtype=jnp.float32,
+        )
+    return jnp.zeros((batch_size, config.context_window), dtype=jnp.int32)
+
+
+def append_action_context(
+    action_context: jax.Array,
+    actions: jax.Array,
+    config: JepaConfig,
+) -> jax.Array:
+    if config.action_mode == "continuous":
+        actions = actions.reshape((actions.shape[0], config.action_dim))
+    return jnp.concatenate(
+        [action_context[:, 1:], actions[:, None]],
+        axis=1,
+    )
 
 
 def isotropy_loss(latents: jax.Array) -> tuple[jax.Array, dict[str, jax.Array]]:
@@ -675,6 +694,8 @@ def action_sensitivity(
 ) -> jax.Array:
     if control == "no-action-world-model":
         return jnp.asarray(0.0, dtype=jnp.float32)
+    if config.action_mode != "discrete":
+        return jnp.asarray(jnp.nan, dtype=jnp.float32)
     z = apply_fn({"params": params}, observations, method=JepaWorldModel.encode)
     context = jnp.repeat(z[:, None, :], repeats=config.context_window, axis=1)
     preds = []
@@ -700,6 +721,8 @@ def action_value_gap(
     *,
     control: ControlMode = "none",
 ) -> jax.Array:
+    if config.action_mode != "discrete":
+        return jnp.asarray(jnp.nan, dtype=jnp.float32)
     flat_obs = observations.reshape((-1, config.observation_dim))
     z = state.apply_fn({"params": state.params}, flat_obs, method=JepaWorldModel.encode)
     q_values, _, _, _ = enumerated_action_values_from_latent(
@@ -720,6 +743,8 @@ def enumerated_action_values_from_latent(
     *,
     control: ControlMode = "none",
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    if config.action_mode != "discrete":
+        raise ValueError("enumerated action values require discrete actions")
     context = latents[:, None, :]
     values = []
     rewards = []
@@ -830,6 +855,9 @@ def _controlled_actions(
     if control == "no-action-world-model":
         return jnp.zeros_like(actions)
     if control == "shuffled-action-replay":
+        if config.action_mode == "continuous":
+            flat = actions.reshape((-1, actions.shape[-1]))
+            return jax.random.permutation(key, flat, axis=0).reshape(actions.shape)
         flat = actions.reshape((-1,))
         return jax.random.permutation(key, flat).reshape(actions.shape)
     del config

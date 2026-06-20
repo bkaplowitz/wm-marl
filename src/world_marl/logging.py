@@ -19,6 +19,7 @@ TRACKED_DISTRIBUTIONS = (
     "jaxlib",
     "jaxmarl",
     "gymnax",
+    "dm-control",
     "dm-meltingpot",
     "dmlab2d",
     "shimmy",

@@ -14,6 +14,7 @@ import jax.numpy as jnp
 class JepaConfig:
     observation_dim: int
     action_dim: int
+    action_mode: str = "discrete"
     latent_dim: int = 128
     model_dim: int = 128
     num_layers: int = 4
@@ -34,6 +35,8 @@ class JepaConfig:
     entropy_coef: float = 0.01
 
     def __post_init__(self) -> None:
+        if self.action_mode not in ("discrete", "continuous"):
+            raise ValueError("action_mode must be one of: discrete, continuous")
         if self.regularizer not in ("sigreg", "isotropy", "none"):
             raise ValueError("regularizer must be one of: sigreg, isotropy, none")
         if self.sigreg_knots < 2:
@@ -108,11 +111,21 @@ class JepaWorldModel(nn.Module):
             name="encoder",
         )
         self.latent_proj = nn.Dense(self.config.model_dim, name="latent_proj")
-        self.action_embed = nn.Embed(
-            self.config.action_dim,
-            self.config.model_dim,
-            name="action_embed",
-        )
+        if self.config.action_mode == "discrete":
+            self.action_embed = nn.Embed(
+                self.config.action_dim,
+                self.config.model_dim,
+                name="action_embed",
+            )
+        else:
+            self.action_encoder_hidden = nn.Dense(
+                self.config.model_dim,
+                name="action_encoder_hidden",
+            )
+            self.action_encoder_out = nn.Dense(
+                self.config.model_dim,
+                name="action_encoder_out",
+            )
         self.horizon_embed = nn.Embed(
             self.config.max_horizon + 1,
             self.config.model_dim,
@@ -240,7 +253,7 @@ class JepaWorldModel(nn.Module):
     ) -> jax.Array:
         if latents.ndim != 3:
             raise ValueError("latents must be shaped [batch, time, latent_dim]")
-        tokens = self.latent_proj(latents) + self.action_embed(actions)
+        tokens = self.latent_proj(latents) + self.action_tokens(actions)
         time = tokens.shape[1]
         positions = sinusoidal_position_embedding(time, self.config.model_dim)
         h = tokens + positions[None, :, :]
@@ -268,6 +281,18 @@ class JepaWorldModel(nn.Module):
         reward = jnp.squeeze(self.reward_head(last_h), axis=-1)
         continue_logit = jnp.squeeze(self.continue_head(last_h), axis=-1)
         return z_next, reward, continue_logit
+
+    def action_tokens(self, actions: jax.Array) -> jax.Array:
+        if self.config.action_mode == "discrete":
+            return self.action_embed(actions.astype(jnp.int32))
+        if actions.ndim != 3:
+            raise ValueError(
+                "continuous actions must be shaped [batch, time, action_dim]"
+            )
+        x = actions.astype(jnp.float32)
+        x = self.action_encoder_hidden(x)
+        x = nn.gelu(x)
+        return self.action_encoder_out(x)
 
 
 def causal_attention_mask(

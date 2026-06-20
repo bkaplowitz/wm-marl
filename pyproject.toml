@@ -33,11 +33,15 @@ dev = [
 cuda12 = [
   "jax[cuda12]==0.4.36",
 ]
+dmc = [
+  "dm-control>=1.0",
+]
 
 [project.scripts]
 world-marl-verify-install = "world_marl.scripts.verify_install:main"
 world-marl-train-e2e = "world_marl.scripts.train_e2e:main"
 world-marl-train-jepa = "world_marl.scripts.train_jepa:main"
+world-marl-train-dmc-jepa = "world_marl.scripts.train_dmc_jepa:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
