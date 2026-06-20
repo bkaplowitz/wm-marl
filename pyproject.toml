@@ -1,50 +1,44 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
+requires = ["setuptools>=69", "wheel"]
 
 [project]
-name = "world-marl"
-version = "0.1.0"
-description = "JaxMARL-style PPO validation on Melting Pot substrates through Shimmy."
-readme = "README.md"
-requires-python = ">=3.11,<3.12"
 dependencies = [
+  "distrax",
+  "dm-meltingpot==2.4.0",
+  "dmlab2d==1.0.0",
+  "flax",
   "jax==0.4.36",
   "jaxlib==0.4.36",
   "jaxmarl[algs]==0.1.0",
-  "dm-meltingpot==2.4.0",
-  "dmlab2d==1.0.0",
-  "shimmy[meltingpot]==2.0.1",
-  "flax",
-  "distrax",
-  "optax",
-  "numpy",
   "matplotlib",
+  "numpy",
+  "optax",
+  "shimmy[meltingpot]==2.0.1",
   "tqdm",
 ]
+description = "JaxMARL-style PPO validation on Melting Pot substrates through Shimmy."
+name = "world-marl"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+version = "0.1.0"
 
 [project.optional-dependencies]
-dev = [
-  "pre-commit>=4.3",
-  "pytest>=8",
-  "ruff==0.15.18",
-]
-cuda12 = [
-  "jax[cuda12]==0.4.36",
-]
+cuda12 = ["jax[cuda12]==0.4.36"]
+dev = ["pre-commit>=4.3", "pytest>=8", "ruff==0.15.18"]
 
 [project.scripts]
-world-marl-verify-install = "world_marl.scripts.verify_install:main"
 world-marl-train-e2e = "world_marl.scripts.train_e2e:main"
+world-marl-verify-install = "world_marl.scripts.verify_install:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
 markers = [
   "integration: tests requiring installed Melting Pot/dmlab2d runtime",
 ]
+testpaths = ["tests"]
 
 [tool.pyright]
 exclude = [".venv"]
@@ -53,14 +47,14 @@ exclude = [".venv"]
 exclude = [".venv"]
 
 [tool.ruff]
-target-version = "py311"
-line-length = 88
 indent-width = 4
+line-length = 88
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
 
 [tool.ruff.format]
-quote-style = "double"
 indent-style = "space"
 line-ending = "lf"
+quote-style = "double"
