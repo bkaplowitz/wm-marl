@@ -10,12 +10,14 @@ import pytest
 from world_marl.jepa.models import JepaConfig, JepaWorldModel
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
+    action_value_gap,
     create_jepa_train_state,
     evaluate_open_loop,
     isotropy_loss,
     lambda_returns,
     policy_train_step,
     prediction_validity,
+    reset_policy_heads,
     train_model_step,
 )
 from world_marl.scripts import train_jepa
@@ -184,6 +186,68 @@ def test_policy_update_does_not_change_world_model_parameters():
         after_leaves = jax.tree_util.tree_leaves(state.params[group])
         for left, right in zip(before_leaves, after_leaves, strict=True):
             np.testing.assert_allclose(np.asarray(left), np.asarray(right))
+
+
+def test_reset_policy_heads_preserves_model_and_reinitializes_policy_heads():
+    config = _config()
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    state, _ = train_model_step(
+        state,
+        jax.random.PRNGKey(1),
+        _batch(config),
+        config,
+        chunk_length=2,
+    )
+    reset = reset_policy_heads(state, jax.random.PRNGKey(2), config)
+
+    for group in (
+        "encoder",
+        "latent_proj",
+        "action_embed",
+        "dynamics_norm",
+        "predictor",
+        "predictor_norm",
+        "reward_head",
+        "continue_head",
+    ):
+        before_leaves = jax.tree_util.tree_leaves(state.params[group])
+        after_leaves = jax.tree_util.tree_leaves(reset.params[group])
+        for left, right in zip(before_leaves, after_leaves, strict=True):
+            np.testing.assert_allclose(np.asarray(left), np.asarray(right))
+
+    actor_changed = any(
+        not np.allclose(np.asarray(left), np.asarray(right))
+        for left, right in zip(
+            jax.tree_util.tree_leaves(state.params["actor_head"]),
+            jax.tree_util.tree_leaves(reset.params["actor_head"]),
+            strict=True,
+        )
+    )
+    value_changed = any(
+        not np.allclose(np.asarray(left), np.asarray(right))
+        for left, right in zip(
+            jax.tree_util.tree_leaves(state.params["value_head"]),
+            jax.tree_util.tree_leaves(reset.params["value_head"]),
+            strict=True,
+        )
+    )
+    assert actor_changed
+    assert value_changed
+
+
+def test_no_action_control_has_zero_action_value_gap():
+    config = _config()
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    observations = jnp.ones((5, config.observation_dim), dtype=jnp.float32)
+
+    gap = action_value_gap(
+        state,
+        observations,
+        config,
+        control="no-action-world-model",
+    )
+
+    np.testing.assert_allclose(np.asarray(gap), 0.0, atol=1e-6)
 
 
 def test_train_jepa_cli_smoke_writes_summary(tmp_path, monkeypatch):

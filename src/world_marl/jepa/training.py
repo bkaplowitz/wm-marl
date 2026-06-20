@@ -24,6 +24,7 @@ ControlMode = Literal[
     "weak-sigreg",
     "no-isotropy",
     "weak-isotropy",
+    "no-policy-update",
 ]
 
 MODEL_GROUPS = frozenset(
@@ -195,9 +196,26 @@ def world_model_loss(
                 continue_targets,
             )
         ),
+        **terminal_prediction_metrics(continue_logits, batch.dones[:, :chunk_length]),
         **{f"collapse/{key}": value for key, value in collapse.items()},
     }
     return total_loss, metrics
+
+
+def reset_policy_heads(
+    state: JepaTrainState,
+    key: jax.Array,
+    config: JepaConfig,
+) -> JepaTrainState:
+    fresh = create_jepa_train_state(key, config)
+    raw = unfreeze(state.params)
+    raw["actor_head"] = unfreeze(fresh.params["actor_head"])
+    raw["value_head"] = unfreeze(fresh.params["value_head"])
+    params = freeze(raw)
+    return state.replace(
+        params=params,
+        policy_opt_state=state.policy_tx.init(params),
+    )
 
 
 @partial(jax.jit, static_argnames=("config", "imag_horizon", "control"))
@@ -532,6 +550,100 @@ def action_sensitivity(
     return jnp.mean(jnp.linalg.norm(stacked - center, axis=-1))
 
 
+def action_value_gap(
+    state: JepaTrainState,
+    observations: jax.Array,
+    config: JepaConfig,
+    *,
+    control: ControlMode = "none",
+) -> jax.Array:
+    flat_obs = observations.reshape((-1, config.observation_dim))
+    z = state.apply_fn({"params": state.params}, flat_obs, method=JepaWorldModel.encode)
+    context = z[:, None, :]
+    values = []
+    for action in range(config.action_dim):
+        model_action = 0 if control == "no-action-world-model" else action
+        actions = jnp.full((z.shape[0], 1), model_action, dtype=jnp.int32)
+        z_next, reward, continue_logit = state.apply_fn(
+            {"params": state.params},
+            context,
+            actions,
+            method=JepaWorldModel.predict_next_from_history,
+        )
+        _, next_value = state.apply_fn(
+            {"params": state.params},
+            z_next,
+            method=JepaWorldModel.actor_value_from_latent,
+        )
+        values.append(reward + config.gamma * jax.nn.sigmoid(continue_logit) * next_value)
+    q_values = jnp.stack(values, axis=-1)
+    return jnp.mean(jnp.max(q_values, axis=-1) - jnp.min(q_values, axis=-1))
+
+
+def policy_diagnostics(
+    reference_state: JepaTrainState,
+    current_state: JepaTrainState,
+    observations: jax.Array,
+    config: JepaConfig,
+    *,
+    prefix: str,
+) -> dict[str, jax.Array]:
+    flat_obs = observations.reshape((-1, config.observation_dim))
+    ref_logits, _ = reference_state.apply_fn(
+        {"params": reference_state.params},
+        flat_obs,
+        method=JepaWorldModel.actor_value_from_obs,
+    )
+    cur_logits, _ = current_state.apply_fn(
+        {"params": current_state.params},
+        flat_obs,
+        method=JepaWorldModel.actor_value_from_obs,
+    )
+    ref_log_probs = jax.nn.log_softmax(ref_logits, axis=-1)
+    cur_log_probs = jax.nn.log_softmax(cur_logits, axis=-1)
+    ref_probs = jnp.exp(ref_log_probs)
+    cur_probs = jnp.exp(cur_log_probs)
+    ref_actions = jnp.argmax(ref_logits, axis=-1)
+    cur_actions = jnp.argmax(cur_logits, axis=-1)
+    sorted_logits = jnp.sort(cur_logits, axis=-1)
+    frequencies = jnp.bincount(
+        cur_actions,
+        length=config.action_dim,
+    ).astype(jnp.float32) / jnp.maximum(cur_actions.shape[0], 1)
+    ref_z = reference_state.apply_fn(
+        {"params": reference_state.params},
+        flat_obs,
+        method=JepaWorldModel.encode,
+    )
+    cur_z = current_state.apply_fn(
+        {"params": current_state.params},
+        flat_obs,
+        method=JepaWorldModel.encode,
+    )
+    metrics = {
+        f"{prefix}/policy_kl": jnp.mean(
+            jnp.sum(ref_probs * (ref_log_probs - cur_log_probs), axis=-1)
+        ),
+        f"{prefix}/action_flip_rate": jnp.mean((ref_actions != cur_actions).astype(jnp.float32)),
+        f"{prefix}/entropy": jnp.mean(-jnp.sum(cur_probs * cur_log_probs, axis=-1)),
+        f"{prefix}/logit_margin": jnp.mean(sorted_logits[:, -1] - sorted_logits[:, -2]),
+        f"{prefix}/actor_param_delta": tree_l2_delta(
+            reference_state.params["actor_head"],
+            current_state.params["actor_head"],
+        ),
+        f"{prefix}/value_param_delta": tree_l2_delta(
+            reference_state.params["value_head"],
+            current_state.params["value_head"],
+        ),
+        f"{prefix}/encoder_latent_drift": jnp.mean(
+            jnp.linalg.norm(cur_z - ref_z, axis=-1)
+        ),
+    }
+    for action in range(config.action_dim):
+        metrics[f"{prefix}/action_frequency_{action}"] = frequencies[action]
+    return metrics
+
+
 def _normalize(x: jax.Array) -> jax.Array:
     return x / (jnp.linalg.norm(x, axis=-1, keepdims=True) + 1e-6)
 
@@ -567,6 +679,30 @@ def prediction_validity(
     return jnp.stack(validity, axis=2)
 
 
+def terminal_prediction_metrics(
+    continue_logits: jax.Array,
+    dones: jax.Array,
+) -> dict[str, jax.Array]:
+    terminal_targets = dones.astype(jnp.float32)
+    terminal_probs = 1.0 - jax.nn.sigmoid(continue_logits)
+    terminal_pred = terminal_probs >= 0.5
+    terminal_true = terminal_targets >= 0.5
+    nonterminal_true = ~terminal_true
+    terminal_recall = jnp.sum((terminal_pred & terminal_true).astype(jnp.float32)) / (
+        jnp.sum(terminal_true.astype(jnp.float32)) + 1e-6
+    )
+    nonterminal_recall = jnp.sum(
+        ((~terminal_pred) & nonterminal_true).astype(jnp.float32)
+    ) / (jnp.sum(nonterminal_true.astype(jnp.float32)) + 1e-6)
+    return {
+        "model/terminal_positive_fraction": jnp.mean(terminal_targets),
+        "model/terminal_recall": terminal_recall,
+        "model/nonterminal_recall": nonterminal_recall,
+        "model/terminal_balanced_accuracy": 0.5
+        * (terminal_recall + nonterminal_recall),
+    }
+
+
 def masked_mean(values: jax.Array, mask: jax.Array) -> jax.Array:
     return jnp.sum(values * mask) / (jnp.sum(mask) + 1e-6)
 
@@ -589,6 +725,15 @@ def _isotropy_weight(config: JepaConfig, control: ControlMode) -> float:
     if control in ("weak-sigreg", "weak-isotropy"):
         return config.isotropy_weight * 0.1
     return config.isotropy_weight
+
+
+def tree_l2_delta(reference, current) -> jax.Array:
+    ref_leaves = jax.tree_util.tree_leaves(reference)
+    cur_leaves = jax.tree_util.tree_leaves(current)
+    total = jnp.asarray(0.0)
+    for ref, cur in zip(ref_leaves, cur_leaves, strict=True):
+        total = total + jnp.sum(jnp.square(cur - ref))
+    return jnp.sqrt(total)
 
 
 def _masked_adam(

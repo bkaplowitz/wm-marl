@@ -20,10 +20,13 @@ from world_marl.jepa.models import JepaConfig
 from world_marl.jepa.replay import SequenceReplayBuffer
 from world_marl.jepa.training import (
     ControlMode,
+    action_value_gap,
     create_jepa_train_state,
     evaluate_open_loop,
     evaluate_world_model,
     policy_train_step,
+    policy_diagnostics,
+    reset_policy_heads,
     select_actions,
     train_model_step,
 )
@@ -78,6 +81,7 @@ def parse_args() -> argparse.Namespace:
             "weak-sigreg",
             "no-isotropy",
             "weak-isotropy",
+            "no-policy-update",
         ),
         default=("none",),
     )
@@ -214,6 +218,10 @@ def run_one(
             args.model_horizon,
             args.imag_horizon,
         )
+        random_replay_steps = max(
+            min_replay_steps,
+            math.ceil(args.total_env_steps / args.num_envs),
+        )
         observations, rng, env_steps = _collect_steps(
             adapter,
             state,
@@ -222,109 +230,286 @@ def run_one(
             rng,
             np_rng,
             replay,
-            steps=min_replay_steps,
+            steps=random_replay_steps,
             random_actions=True,
         )
+        del observations
 
-        updates = max(
+        fixed_batch = replay.sample(
+            np_rng,
+            batch_size=args.batch_size,
+            chunk_length=1,
+            max_horizon=1,
+        )
+        fixed_observations = fixed_batch.observations[:, 0]
+        training_iterations = max(
             1,
             args.total_env_steps // (args.num_envs * args.env_steps_per_iter),
         )
-        last_model_metrics: dict[str, Any] = {}
-        eval_rows: list[dict[str, Any]] = []
-        for update in range(1, updates + 1):
-            observations, rng, collected = _collect_steps(
-                adapter,
-                state,
-                config,
-                observations,
-                rng,
-                np_rng,
-                replay,
-                steps=args.env_steps_per_iter,
-                random_actions=False,
-            )
-            env_steps += collected
+        world_model_fit_steps = max(
+            1,
+            training_iterations * args.model_updates_per_iter,
+        )
+        policy_fit_steps = (
+            0
+            if control == "no-policy-update"
+            else max(1, training_iterations * args.policy_updates_per_iter)
+        )
+        logger.write_json(
+            "staged_plan.json",
+            {
+                "mode": "staged_frozen_world_model",
+                "random_replay_env_steps": env_steps,
+                "random_replay_steps_per_env": random_replay_steps,
+                "world_model_fit_steps": world_model_fit_steps,
+                "policy_fit_steps": policy_fit_steps,
+                "policy_updates_enabled": control != "no-policy-update",
+            },
+        )
 
-            model_metrics = {}
-            for _ in range(args.model_updates_per_iter):
-                batch = replay.sample(
-                    np_rng,
-                    batch_size=args.batch_size,
-                    chunk_length=args.chunk_length,
-                    max_horizon=max(args.model_horizon, args.imag_horizon),
-                )
-                rng, model_key = jax.random.split(rng)
-                state, model_metrics = train_model_step(
-                    state,
-                    model_key,
-                    batch,
-                    config,
-                    chunk_length=args.chunk_length,
-                    control=control,
-                )
-            for _ in range(args.policy_updates_per_iter):
-                batch = replay.sample(
-                    np_rng,
-                    batch_size=args.batch_size,
-                    chunk_length=args.chunk_length,
-                    max_horizon=max(args.model_horizon, args.imag_horizon),
-                )
-                rng, policy_key = jax.random.split(rng)
-                state, policy_metrics = policy_train_step(
-                    state,
-                    policy_key,
-                    batch.observations[:, 0],
-                    config,
-                    imag_horizon=args.imag_horizon,
-                    control=control,
-                )
-
-            eval_batch = replay.sample(
+        pre_world_model_state = state
+        model_metrics: dict[str, Any] = {}
+        for model_step in range(1, world_model_fit_steps + 1):
+            batch = replay.sample(
                 np_rng,
                 batch_size=args.batch_size,
                 chunk_length=args.chunk_length,
                 max_horizon=max(args.model_horizon, args.imag_horizon),
             )
-            rng, eval_key = jax.random.split(rng)
-            eval_model_metrics = evaluate_world_model(
+            rng, model_key = jax.random.split(rng)
+            state, model_metrics = train_model_step(
                 state,
-                eval_key,
-                eval_batch,
+                model_key,
+                batch,
                 config,
                 chunk_length=args.chunk_length,
                 control=control,
             )
-            open_loop_metrics = evaluate_open_loop(
+            if (
+                model_step == 1
+                or model_step == world_model_fit_steps
+                or model_step % max(1, args.eval_interval * args.model_updates_per_iter)
+                == 0
+            ):
+                logger.append_metrics(
+                    {
+                        "phase": "world_model",
+                        "update": model_step,
+                        "env_steps": env_steps,
+                        "control": control,
+                        **model_metrics,
+                    }
+                )
+
+        after_world_model_eval = _evaluate_state(
+            args,
+            state,
+            config,
+            seed=seed + 2,
+            deterministic=True,
+        )
+        after_world_model_stochastic_eval = _evaluate_state(
+            args,
+            state,
+            config,
+            seed=seed + 4,
+            deterministic=False,
+        )
+        passive_drift = policy_diagnostics(
+            pre_world_model_state,
+            state,
+            fixed_observations,
+            config,
+            prefix="drift_after_world_model",
+        )
+        logger.write_json("after_world_model_evaluation.json", after_world_model_eval)
+        logger.write_json(
+            "after_world_model_stochastic_evaluation.json",
+            after_world_model_stochastic_eval,
+        )
+        logger.write_json("passive_policy_drift.json", passive_drift)
+
+        rng, reset_key = jax.random.split(rng)
+        state = reset_policy_heads(state, reset_key, config)
+        pre_imagination_state = state
+        pre_imagination_eval = _evaluate_state(
+            args,
+            state,
+            config,
+            seed=seed + 5,
+            deterministic=True,
+        )
+        pre_imagination_stochastic_eval = _evaluate_state(
+            args,
+            state,
+            config,
+            seed=seed + 6,
+            deterministic=False,
+        )
+        pre_imagination_metrics = {
+            **policy_diagnostics(
+                pre_imagination_state,
                 state,
-                eval_batch,
+                fixed_observations,
                 config,
-                horizon=args.imag_horizon,
+                prefix="drift_after_policy",
+            ),
+            "model/action_value_gap": action_value_gap(
+                state,
+                fixed_observations,
+                config,
+                control=control,
+            ),
+        }
+        logger.write_json("pre_imagination_evaluation.json", pre_imagination_eval)
+        logger.write_json(
+            "pre_imagination_stochastic_evaluation.json",
+            pre_imagination_stochastic_eval,
+        )
+        logger.write_json("pre_imagination_diagnostics.json", pre_imagination_metrics)
+
+        eval_rows: list[dict[str, Any]] = [
+            {
+                "update": 0,
+                "env_steps": env_steps,
+                **pre_imagination_eval,
+            }
+        ]
+        policy_metrics: dict[str, Any] = {
+            "policy/updates_applied": 0,
+        }
+        for policy_step in range(1, policy_fit_steps + 1):
+            batch = replay.sample(
+                np_rng,
+                batch_size=args.batch_size,
+                chunk_length=args.chunk_length,
+                max_horizon=max(args.model_horizon, args.imag_horizon),
+            )
+            rng, policy_key = jax.random.split(rng)
+            state, policy_metrics = policy_train_step(
+                state,
+                policy_key,
+                batch.observations[:, 0],
+                config,
+                imag_horizon=args.imag_horizon,
                 control=control,
             )
-            last_model_metrics = {
-                **model_metrics,
-                **policy_metrics,
-                **eval_model_metrics,
-                **open_loop_metrics,
-            }
-            row = {
-                "update": update,
-                "env_steps": env_steps,
-                "control": control,
-                **last_model_metrics,
-            }
-            logger.append_metrics(row)
+            policy_metrics["policy/updates_applied"] = policy_step
+            if (
+                policy_step == 1
+                or policy_step == policy_fit_steps
+                or policy_step % max(1, args.eval_interval * args.policy_updates_per_iter)
+                == 0
+            ):
+                logger.append_metrics(
+                    {
+                        "phase": "policy",
+                        "update": policy_step,
+                        "env_steps": env_steps,
+                        "control": control,
+                        **policy_metrics,
+                    }
+                )
 
-            if update % args.eval_interval == 0 or update == updates:
-                eval_result = _evaluate_state(args, state, config, seed=seed + 3 + update)
+            if policy_step % args.eval_interval == 0 or policy_step == policy_fit_steps:
+                eval_result = _evaluate_state(
+                    args,
+                    state,
+                    config,
+                    seed=seed + 1000 + policy_step,
+                    deterministic=True,
+                )
                 eval_row = {
-                    "update": update,
+                    "update": policy_step,
                     "env_steps": env_steps,
                     **eval_result,
                 }
                 eval_rows.append(eval_row)
-                logger.append_metrics({f"eval/{key}": value for key, value in eval_row.items()})
+                logger.append_metrics(
+                    {f"eval/{key}": value for key, value in eval_row.items()}
+                )
+
+        trained_eval = _evaluate_state(
+            args,
+            state,
+            config,
+            seed=seed + 5,
+            deterministic=True,
+        )
+        trained_stochastic_eval = _evaluate_state(
+            args,
+            state,
+            config,
+            seed=seed + 6,
+            deterministic=False,
+        )
+        eval_rows.append(
+            {
+                "update": policy_fit_steps,
+                "env_steps": env_steps,
+                **trained_eval,
+            }
+        )
+        eval_batch = replay.sample(
+            np_rng,
+            batch_size=args.batch_size,
+            chunk_length=args.chunk_length,
+            max_horizon=max(args.model_horizon, args.imag_horizon),
+        )
+        rng, eval_key = jax.random.split(rng)
+        eval_model_metrics = evaluate_world_model(
+            state,
+            eval_key,
+            eval_batch,
+            config,
+            chunk_length=args.chunk_length,
+            control=control,
+        )
+        open_loop_metrics = evaluate_open_loop(
+            state,
+            eval_batch,
+            config,
+            horizon=args.imag_horizon,
+            control=control,
+        )
+        post_imagination_diagnostics = {
+            **policy_diagnostics(
+                pre_imagination_state,
+                state,
+                fixed_observations,
+                config,
+                prefix="drift_after_policy",
+            ),
+            "model/action_value_gap": action_value_gap(
+                state,
+                fixed_observations,
+                config,
+                control=control,
+            ),
+        }
+        last_model_metrics = {
+            **model_metrics,
+            **policy_metrics,
+            **eval_model_metrics,
+            **open_loop_metrics,
+            **passive_drift,
+            **post_imagination_diagnostics,
+        }
+        logger.write_json("trained_policy_evaluation.json", trained_eval)
+        logger.write_json("trained_stochastic_evaluation.json", trained_stochastic_eval)
+        logger.write_json(
+            "post_imagination_diagnostics.json",
+            post_imagination_diagnostics,
+        )
+        logger.append_metrics(
+            {
+                "phase": "final",
+                "update": policy_fit_steps,
+                "env_steps": env_steps,
+                "control": control,
+                **last_model_metrics,
+            }
+        )
 
         checkpoint_dir = run_dir / "checkpoint"
         save_checkpoint(
@@ -359,23 +544,22 @@ def run_one(
             ]
         )
 
-        trained_eval = eval_rows[-1] if eval_rows else _evaluate_state(
-            args,
-            state,
-            config,
-            seed=seed + 4,
-        )
+        raw_initial_mean = initial_eval["mean_return_per_agent"]
+        after_world_model_mean = after_world_model_eval["mean_return_per_agent"]
+        pre_imagination_mean = pre_imagination_eval["mean_return_per_agent"]
+        trained_mean = trained_eval["mean_return_per_agent"]
         outcome = {
             "control": control,
             "run_dir": str(run_dir),
             "checkpoint_dir": str(checkpoint_dir),
             "random_mean": random_eval["mean_return_per_agent"],
-            "initial_mean": initial_eval["mean_return_per_agent"],
-            "trained_mean": trained_eval["mean_return_per_agent"],
-            "improvement": (
-                trained_eval["mean_return_per_agent"]
-                - initial_eval["mean_return_per_agent"]
-            ),
+            "raw_initial_mean": raw_initial_mean,
+            "after_world_model_mean": after_world_model_mean,
+            "passive_drift_return_delta": after_world_model_mean - raw_initial_mean,
+            "initial_mean": pre_imagination_mean,
+            "trained_mean": trained_mean,
+            "improvement": trained_mean - pre_imagination_mean,
+            "trained_stochastic_mean": trained_stochastic_eval["mean_return_per_agent"],
             "reload_mean": reload_eval["mean_return_per_agent"],
             "reload_abs_diff": reload_diff,
             "final_model_metrics": last_model_metrics,
@@ -447,6 +631,7 @@ def _evaluate_state(
     config: JepaConfig,
     *,
     seed: int,
+    deterministic: bool = True,
 ) -> dict[str, Any]:
     adapter = GymnaxVectorAdapter(
         gymnax_env_name(args.env),
@@ -458,14 +643,20 @@ def _evaluate_state(
     try:
         return evaluate_policy(
             adapter,
-            _state_policy(state, config, key),
+            _state_policy(state, config, key, deterministic=deterministic),
             episodes=args.eval_episodes,
         ).to_dict()
     finally:
         adapter.close()
 
 
-def _state_policy(state, config: JepaConfig, key: jax.Array):
+def _state_policy(
+    state,
+    config: JepaConfig,
+    key: jax.Array,
+    *,
+    deterministic: bool,
+):
     def act(observations: np.ndarray) -> np.ndarray:
         nonlocal key
         key, action_key = jax.random.split(key)
@@ -475,7 +666,7 @@ def _state_policy(state, config: JepaConfig, key: jax.Array):
                 jnp.asarray(observations),
                 action_key,
                 config,
-                deterministic=True,
+                deterministic=deterministic,
             ),
             dtype=np.int32,
         )
@@ -495,8 +686,8 @@ def _reload_and_evaluate(
     fresh = fresh.replace(
         params=load_params(checkpoint_dir / "checkpoint.msgpack", fresh.params)
     )
-    original = _evaluate_state(args, state, config, seed=seed)
-    reloaded = _evaluate_state(args, fresh, config, seed=seed)
+    original = _evaluate_state(args, state, config, seed=seed, deterministic=True)
+    reloaded = _evaluate_state(args, fresh, config, seed=seed, deterministic=True)
     diff = abs(original["mean_return_per_agent"] - reloaded["mean_return_per_agent"])
     return reloaded, diff
 
@@ -568,6 +759,7 @@ def _control_seed_offset(control: str) -> int:
         "weak-sigreg": 400_000,
         "no-isotropy": 300_000,
         "weak-isotropy": 400_000,
+        "no-policy-update": 500_000,
     }[control]
 
 
