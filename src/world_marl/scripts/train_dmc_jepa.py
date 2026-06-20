@@ -237,6 +237,8 @@ def run_one(
             chunk_length=args.chunk_length,
             open_loop_horizon=args.open_loop_horizon,
             control=control,
+            action_low=adapter.action_low,
+            action_high=adapter.action_high,
         )
         logger.write_json("initial_model_metrics.json", initial_metrics)
 
@@ -289,6 +291,8 @@ def run_one(
             chunk_length=args.chunk_length,
             open_loop_horizon=args.open_loop_horizon,
             control=control,
+            action_low=adapter.action_low,
+            action_high=adapter.action_high,
         )
         logger.write_json("model_metrics_final.json", final_metrics)
         logger.plot_world_model_loss(loss_history, filename="dmc_world_model_loss.png")
@@ -371,6 +375,8 @@ def _evaluate_model(
     chunk_length: int,
     open_loop_horizon: int,
     control: ControlMode,
+    action_low: np.ndarray,
+    action_high: np.ndarray,
 ) -> dict[str, Any]:
     _, metrics = world_model_loss(
         state.params,
@@ -390,7 +396,54 @@ def _evaluate_model(
             control=control,
         )
     )
+    metrics["model/continuous_action_low_high_sensitivity"] = (
+        _continuous_action_sensitivity(
+            state,
+            batch,
+            config,
+            action_low=action_low,
+            action_high=action_high,
+            control=control,
+        )
+    )
     return to_jsonable(metrics)
+
+
+def _continuous_action_sensitivity(
+    state,
+    batch: ReplayBatch,
+    config: JepaConfig,
+    *,
+    action_low: np.ndarray,
+    action_high: np.ndarray,
+    control: ControlMode,
+) -> jax.Array:
+    if control == "no-action-world-model":
+        return jnp.asarray(0.0, dtype=jnp.float32)
+    flat_obs = batch.observations[:, 0].reshape((-1, config.observation_dim))
+    z = state.apply_fn({"params": state.params}, flat_obs, method=JepaWorldModel.encode)
+    context = z[:, None, :]
+    low = jnp.broadcast_to(
+        jnp.asarray(action_low, dtype=jnp.float32),
+        (z.shape[0], config.action_dim),
+    )[:, None, :]
+    high = jnp.broadcast_to(
+        jnp.asarray(action_high, dtype=jnp.float32),
+        (z.shape[0], config.action_dim),
+    )[:, None, :]
+    z_low, _, _ = state.apply_fn(
+        {"params": state.params},
+        context,
+        low,
+        method=JepaWorldModel.predict_next_from_history,
+    )
+    z_high, _, _ = state.apply_fn(
+        {"params": state.params},
+        context,
+        high,
+        method=JepaWorldModel.predict_next_from_history,
+    )
+    return jnp.mean(jnp.linalg.norm(z_high - z_low, axis=-1))
 
 
 def _reload_prediction_diff(
@@ -429,16 +482,40 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
     main = [outcome for outcome in outcomes if outcome["control"] == "none"]
     controls = [outcome for outcome in outcomes if outcome["control"] != "none"]
     main_passed = all(outcome["passed"] for outcome in main)
-    controls_finite = all(_metrics_finite(outcome["final_model_metrics"]) for outcome in controls)
+    controls_finite = all(
+        _metrics_finite(outcome["final_model_metrics"]) for outcome in controls
+    )
+    main_open_loop = _mean(main, "final_open_loop_loss")
+    main_jepa = _mean(main, "final_jepa_loss")
+    control_open_loop = _mean(controls, "final_open_loop_loss")
+    control_jepa = _mean(controls, "final_jepa_loss")
+    main_beats_controls_open_loop = (
+        not controls
+        or (main_open_loop is not None and control_open_loop is not None and main_open_loop < control_open_loop)
+    )
+    main_beats_controls_jepa = (
+        not controls
+        or (main_jepa is not None and control_jepa is not None and main_jepa < control_jepa)
+    )
     return {
-        "passed": bool(main and main_passed and controls_finite),
+        "passed": bool(
+            main
+            and main_passed
+            and controls_finite
+            and main_beats_controls_open_loop
+            and main_beats_controls_jepa
+        ),
         "main_runs_passed": int(sum(outcome["passed"] for outcome in main)),
         "main_runs": len(main),
         "controls_finite": controls_finite,
+        "main_beats_controls_open_loop": main_beats_controls_open_loop,
+        "main_beats_controls_jepa": main_beats_controls_jepa,
         "aggregate_initial_jepa_loss": _mean(main, "initial_jepa_loss"),
-        "aggregate_final_jepa_loss": _mean(main, "final_jepa_loss"),
+        "aggregate_final_jepa_loss": main_jepa,
+        "aggregate_control_final_jepa_loss": control_jepa,
         "aggregate_initial_open_loop_loss": _mean(main, "initial_open_loop_loss"),
-        "aggregate_final_open_loop_loss": _mean(main, "final_open_loop_loss"),
+        "aggregate_final_open_loop_loss": main_open_loop,
+        "aggregate_control_final_open_loop_loss": control_open_loop,
         "runs": outcomes,
     }
 

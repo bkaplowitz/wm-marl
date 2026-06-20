@@ -22,6 +22,7 @@ from world_marl.jepa.training import (
     train_model_step,
 )
 from world_marl.scripts import train_jepa
+from world_marl.scripts.train_dmc_jepa import summarize as summarize_dmc_jepa
 
 
 def _config() -> JepaConfig:
@@ -436,6 +437,37 @@ def test_train_jepa_cli_smoke_writes_summary(tmp_path, monkeypatch):
 
     summaries = list(tmp_path.glob("jepa_*/summary.json"))
     assert len(summaries) == 1
+
+
+def test_dmc_jepa_summary_requires_main_to_beat_controls():
+    def outcome(control: str, jepa_loss: float, open_loop_loss: float):
+        return {
+            "control": control,
+            "passed": True,
+            "initial_jepa_loss": 1.0,
+            "final_jepa_loss": jepa_loss,
+            "initial_open_loop_loss": 1.0,
+            "final_open_loop_loss": open_loop_loss,
+            "final_model_metrics": {"model/jepa_loss": jepa_loss},
+        }
+
+    good = summarize_dmc_jepa(
+        [
+            outcome("none", 0.01, 0.02),
+            outcome("no-action-world-model", 0.03, 0.08),
+        ]
+    )
+    bad = summarize_dmc_jepa(
+        [
+            outcome("none", 0.05, 0.09),
+            outcome("no-action-world-model", 0.03, 0.08),
+        ]
+    )
+
+    assert good["passed"]
+    assert good["main_beats_controls_open_loop"]
+    assert good["main_beats_controls_jepa"]
+    assert not bad["passed"]
 
 
 def _batch(config: JepaConfig):
