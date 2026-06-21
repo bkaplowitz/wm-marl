@@ -95,6 +95,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--policy-action-l2-coef", type=float, default=1e-3)
     parser.add_argument("--policy-eval-episodes", type=int, default=20)
     parser.add_argument("--policy-eval-num-envs", type=int, default=None)
+    parser.add_argument(
+        "--policy-selection-interval",
+        type=int,
+        default=500,
+        help=(
+            "During frozen-model actor training, evaluate the actor every N "
+            "updates on a fixed real-env selection set and keep the best actor. "
+            "Use 0 to disable best-policy selection."
+        ),
+    )
+    parser.add_argument("--policy-selection-episodes", type=int, default=20)
+    parser.add_argument("--policy-selection-num-envs", type=int, default=None)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lambda-return", type=float, default=0.95)
     parser.add_argument(
@@ -155,10 +167,15 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         "max_cycles",
         "imag_horizon",
         "policy_eval_episodes",
+        "policy_selection_episodes",
     ):
         if getattr(args, name) < 1:
             parser.error(f"--{name.replace('_', '-')} must be >= 1")
-    for name in ("policy_train_steps", "critic_warmup_steps"):
+    for name in (
+        "policy_train_steps",
+        "critic_warmup_steps",
+        "policy_selection_interval",
+    ):
         if getattr(args, name) < 0:
             parser.error(f"--{name.replace('_', '-')} must be >= 0")
     for name in ("critic_horizon",):
@@ -178,6 +195,11 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--policy-batch-size must be >= 1")
     if args.policy_eval_num_envs is not None and args.policy_eval_num_envs < 1:
         parser.error("--policy-eval-num-envs must be >= 1")
+    if (
+        args.policy_selection_num_envs is not None
+        and args.policy_selection_num_envs < 1
+    ):
+        parser.error("--policy-selection-num-envs must be >= 1")
     if not args.env.startswith("dmc:"):
         parser.error("--env must be formatted as dmc:<domain>/<task>")
     if args.model_horizon != 1:
@@ -565,6 +587,12 @@ def _maybe_train_policy(
     action_low_jax = jnp.asarray(action_low, dtype=jnp.float32)
     action_high_jax = jnp.asarray(action_high, dtype=jnp.float32)
     policy_eval_seed = seed + 3_000_000
+    policy_selection_seed = seed + 5_000_000
+    selection_enabled = args.policy_selection_interval > 0
+    selection_num_envs = args.policy_selection_num_envs or min(
+        args.num_envs,
+        args.policy_selection_episodes,
+    )
 
     random_eval = _evaluate_random_policy(
         args,
@@ -584,6 +612,42 @@ def _maybe_train_policy(
     )
     logger.write_json("random_policy_evaluation.json", random_eval)
     logger.write_json("initial_policy_evaluation.json", initial_eval)
+
+    best_state = state
+    best_policy_step = 0
+    best_policy_metrics_json: dict[str, Any] = {}
+    selection_history: list[dict[str, Any]] = []
+    best_selection_eval: dict[str, Any] | None = None
+    best_selection_mean = -math.inf
+    if selection_enabled:
+        selection_eval = _evaluate_continuous_policy(
+            args,
+            state,
+            config,
+            seed=policy_selection_seed,
+            num_envs=selection_num_envs,
+            episodes=args.policy_selection_episodes,
+            action_low=action_low_jax,
+            action_high=action_high_jax,
+            desc=f"{control} select initial policy",
+        )
+        best_selection_eval = selection_eval
+        best_selection_mean = selection_eval["mean_return"]
+        selection_record = _policy_selection_record(
+            step=0,
+            evaluation=selection_eval,
+            selected=True,
+        )
+        selection_history.append(selection_record)
+        logger.append_metrics(
+            {
+                "phase": "policy_selection",
+                "update": 0,
+                "control": control,
+                **selection_record,
+            }
+        )
+        logger.write_json("policy_selection_initial.json", selection_eval)
 
     critic_metrics: dict[str, Any] = {}
     if args.critic_warmup_steps > 0:
@@ -697,7 +761,56 @@ def _maybe_train_policy(
                     **metrics,
                 }
             )
+        if selection_enabled and (
+            step_index == args.policy_train_steps
+            or step_index % args.policy_selection_interval == 0
+        ):
+            selection_eval = _evaluate_continuous_policy(
+                args,
+                state,
+                config,
+                seed=policy_selection_seed,
+                num_envs=selection_num_envs,
+                episodes=args.policy_selection_episodes,
+                action_low=action_low_jax,
+                action_high=action_high_jax,
+                desc=f"{control} select policy {step_index}",
+            )
+            selected = selection_eval["mean_return"] > best_selection_mean
+            if selected:
+                best_state = state
+                best_policy_step = step_index
+                best_policy_metrics_json = to_jsonable(metrics)
+                best_selection_eval = selection_eval
+                best_selection_mean = selection_eval["mean_return"]
+            selection_record = _policy_selection_record(
+                step=step_index,
+                evaluation=selection_eval,
+                selected=selected,
+            )
+            selection_history.append(selection_record)
+            logger.append_metrics(
+                {
+                    "phase": "policy_selection",
+                    "update": step_index,
+                    "control": control,
+                    **selection_record,
+                    "policy_selection_best_mean_return": best_selection_mean,
+                    "policy_selection_best_step": best_policy_step,
+                }
+            )
 
+    last_policy_metrics_json = to_jsonable(metrics)
+    if selection_enabled:
+        state = best_state
+        logger.write_json("policy_selection_history.json", selection_history)
+        logger.write_json(
+            "best_policy_selection_evaluation.json",
+            {
+                "best_policy_step": best_policy_step,
+                "evaluation": best_selection_eval,
+            },
+        )
     trained_eval = _evaluate_continuous_policy(
         args,
         state,
@@ -717,7 +830,9 @@ def _maybe_train_policy(
     initial_mean = initial_eval["mean_return"]
     trained_mean = trained_eval["mean_return"]
     random_mean = random_eval["mean_return"]
-    policy_metrics_json = to_jsonable(metrics)
+    policy_metrics_json = (
+        best_policy_metrics_json if selection_enabled else last_policy_metrics_json
+    )
     critic_metrics_json = to_jsonable(critic_metrics)
     outcome = {
         "policy_training_enabled": True,
@@ -729,6 +844,16 @@ def _maybe_train_policy(
         "candidate_min_gap": args.candidate_min_gap,
         "policy_action_l2_coef": args.policy_action_l2_coef,
         "policy_eval_seed": policy_eval_seed,
+        "policy_selection_enabled": selection_enabled,
+        "policy_selection_seed": policy_selection_seed,
+        "policy_selection_interval": args.policy_selection_interval,
+        "policy_selection_episodes": args.policy_selection_episodes,
+        "policy_selection_num_envs": selection_num_envs,
+        "best_policy_step": best_policy_step if selection_enabled else None,
+        "best_policy_selection_mean": (
+            best_selection_mean if selection_enabled else None
+        ),
+        "last_policy_metrics": last_policy_metrics_json,
         "critic_warmup_steps": args.critic_warmup_steps,
         "critic_horizon": args.critic_horizon,
         "critic_final_metrics": critic_metrics_json,
@@ -756,7 +881,9 @@ def _evaluate_random_policy(
     seed: int,
     num_envs: int,
     desc: str,
+    episodes: int | None = None,
 ) -> dict[str, Any]:
+    target_episodes = args.policy_eval_episodes if episodes is None else episodes
     adapter = DMCVectorAdapter(
         dmc_env_name(args.env),
         num_envs=num_envs,
@@ -771,19 +898,24 @@ def _evaluate_random_policy(
         returns = []
         lengths = []
         with tqdm(
-            total=args.policy_eval_episodes,
+            total=target_episodes,
             desc=desc,
             unit="episode",
             disable=args.quiet,
         ) as progress:
-            while len(returns) < args.policy_eval_episodes:
+            while len(returns) < target_episodes:
                 before = len(returns)
                 step = adapter.step(adapter.sample_actions(rng))
                 returns.extend(float(item[0]) for item in step.completed_returns)
                 lengths.extend(int(item) for item in step.completed_lengths)
-                _update_episode_progress(progress, before, len(returns), args)
-        returns = returns[: args.policy_eval_episodes]
-        lengths = lengths[: args.policy_eval_episodes]
+                _update_episode_progress(
+                    progress,
+                    before,
+                    len(returns),
+                    target_episodes,
+                )
+        returns = returns[:target_episodes]
+        lengths = lengths[:target_episodes]
         return {
             "episodes": len(returns),
             "mean_return": float(np.mean(returns)),
@@ -806,7 +938,9 @@ def _evaluate_continuous_policy(
     action_low: jax.Array,
     action_high: jax.Array,
     desc: str,
+    episodes: int | None = None,
 ) -> dict[str, Any]:
+    target_episodes = args.policy_eval_episodes if episodes is None else episodes
     adapter = DMCVectorAdapter(
         dmc_env_name(args.env),
         num_envs=num_envs,
@@ -819,12 +953,12 @@ def _evaluate_continuous_policy(
         returns = []
         lengths = []
         with tqdm(
-            total=args.policy_eval_episodes,
+            total=target_episodes,
             desc=desc,
             unit="episode",
             disable=args.quiet,
         ) as progress:
-            while len(returns) < args.policy_eval_episodes:
+            while len(returns) < target_episodes:
                 before = len(returns)
                 actions = np.asarray(
                     select_continuous_actions(
@@ -839,9 +973,14 @@ def _evaluate_continuous_policy(
                 returns.extend(float(item[0]) for item in step.completed_returns)
                 lengths.extend(int(item) for item in step.completed_lengths)
                 observations = step.observations
-                _update_episode_progress(progress, before, len(returns), args)
-        returns = returns[: args.policy_eval_episodes]
-        lengths = lengths[: args.policy_eval_episodes]
+                _update_episode_progress(
+                    progress,
+                    before,
+                    len(returns),
+                    target_episodes,
+                )
+        returns = returns[:target_episodes]
+        lengths = lengths[:target_episodes]
         return {
             "episodes": len(returns),
             "mean_return": float(np.mean(returns)),
@@ -858,15 +997,25 @@ def _update_episode_progress(
     progress: tqdm,
     before: int,
     after: int,
-    args: argparse.Namespace,
+    target_episodes: int,
 ) -> None:
-    progress.update(
-        max(
-            0,
-            min(after, args.policy_eval_episodes)
-            - min(before, args.policy_eval_episodes),
-        )
-    )
+    progress.update(max(0, min(after, target_episodes) - min(before, target_episodes)))
+
+
+def _policy_selection_record(
+    *,
+    step: int,
+    evaluation: dict[str, Any],
+    selected: bool,
+) -> dict[str, Any]:
+    return {
+        "policy_selection_step": step,
+        "policy_selection_selected": selected,
+        "policy_selection_mean_return": evaluation["mean_return"],
+        "policy_selection_std_return": evaluation["std_return"],
+        "policy_selection_mean_length": evaluation["mean_length"],
+        "policy_selection_episodes": evaluation["episodes"],
+    }
 
 
 def _evaluate_model(

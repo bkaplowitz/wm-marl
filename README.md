@@ -129,13 +129,15 @@ uv run world-marl-validate-dmc-world-model \
   --num-policy-candidates 64 \
   --candidate-min-gap 0.001 \
   --policy-return-mode reward-only \
-  --imag-horizon 5 \
+  --imag-horizon 15 \
+  --policy-selection-interval 500 \
+  --policy-selection-episodes 20 \
   --policy-eval-episodes 100 \
-  --policy-eval-num-envs 64 \
+  --policy-eval-num-envs 16 \
   --value-clip 100 \
   --batch-size 256 \
   --chunk-length 32 \
-  --open-loop-horizon 5 \
+  --open-loop-horizon 15 \
   --latent-dim 128 \
   --regularizer sigreg \
   --sigreg-weight 0.05 \
@@ -149,7 +151,8 @@ policy returns:
 - random policy return;
 - freshly reset actor return before imagination training;
 - real-return critic warmup diagnostics;
-- trained actor return after frozen-model imagination training;
+- trained actor return after frozen-model imagination training, using the best
+  actor selected by periodic paired real-environment validation;
 - paired no-action and shuffled-action controls.
 
 The default policy objective is training-only candidate distillation: the
