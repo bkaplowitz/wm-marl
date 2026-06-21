@@ -1402,7 +1402,109 @@ def _evaluate_model(
             control=control,
         )
     )
+    metrics.update(
+        _action_contrast_metrics(
+            state,
+            key,
+            batch,
+            config,
+            chunk_length=chunk_length,
+            control=control,
+        )
+    )
     return to_jsonable(metrics)
+
+
+def _action_contrast_metrics(
+    state,
+    key: jax.Array,
+    batch: ReplayBatch,
+    config: JepaConfig,
+    *,
+    chunk_length: int,
+    control: ControlMode,
+) -> dict[str, jax.Array]:
+    """Compare heldout next-latent prediction under true versus wrong actions."""
+    if config.action_mode != "continuous":
+        return {}
+
+    observations = batch.observations[:, : chunk_length + 1]
+    actions = batch.actions[:, :chunk_length]
+    validity = 1.0 - batch.dones[:, :chunk_length]
+
+    current_obs = observations[:, :chunk_length].reshape((-1, config.observation_dim))
+    next_obs = observations[:, 1 : chunk_length + 1].reshape(
+        (-1, config.observation_dim)
+    )
+    true_actions = actions.reshape((-1, config.action_dim))
+    if control == "no-action-world-model":
+        wrong_actions = jnp.zeros_like(true_actions)
+        true_actions = jnp.zeros_like(true_actions)
+    else:
+        wrong_actions = jax.random.permutation(key, true_actions, axis=0)
+
+    current_z = state.apply_fn(
+        {"params": state.params},
+        current_obs,
+        method=JepaWorldModel.encode,
+    )
+    target_z = jax.lax.stop_gradient(
+        state.apply_fn(
+            {"params": state.params},
+            next_obs,
+            method=JepaWorldModel.encode,
+        )
+    )
+    context = current_z[:, None, :]
+    true_pred, _, _ = state.apply_fn(
+        {"params": state.params},
+        context,
+        true_actions[:, None, :],
+        method=JepaWorldModel.predict_next_from_history,
+    )
+    wrong_pred, _, _ = state.apply_fn(
+        {"params": state.params},
+        context,
+        wrong_actions[:, None, :],
+        method=JepaWorldModel.predict_next_from_history,
+    )
+
+    target_z = _normalize_latents(target_z)
+    true_pred = _normalize_latents(true_pred)
+    wrong_pred = _normalize_latents(wrong_pred)
+    true_cosine = jnp.sum(true_pred * target_z, axis=-1).reshape(validity.shape)
+    wrong_cosine = jnp.sum(wrong_pred * target_z, axis=-1).reshape(validity.shape)
+    margin = true_cosine - wrong_cosine
+    return {
+        "model/action_contrast_true_cosine": _masked_mean_np(true_cosine, validity),
+        "model/action_contrast_wrong_cosine": _masked_mean_np(wrong_cosine, validity),
+        "model/action_contrast_margin": _masked_mean_np(margin, validity),
+        "model/action_contrast_accuracy": _masked_mean_np(
+            (margin > 0.0).astype(jnp.float32),
+            validity,
+        ),
+        "model/action_contrast_valid_fraction": jnp.mean(validity),
+        "model/action_contrast_finite_fraction": _finite_fraction_np(
+            true_cosine,
+            wrong_cosine,
+            margin,
+        ),
+    }
+
+
+def _normalize_latents(x: jax.Array) -> jax.Array:
+    return x / (jnp.linalg.norm(x, axis=-1, keepdims=True) + 1e-6)
+
+
+def _masked_mean_np(values: jax.Array, mask: jax.Array) -> jax.Array:
+    return jnp.sum(values * mask) / (jnp.sum(mask) + 1e-6)
+
+
+def _finite_fraction_np(*values: jax.Array) -> jax.Array:
+    fractions = [
+        jnp.mean(jnp.isfinite(value).astype(jnp.float32)) for value in values
+    ]
+    return jnp.min(jnp.stack(fractions))
 
 
 def _continuous_action_sensitivity(

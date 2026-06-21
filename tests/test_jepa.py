@@ -25,6 +25,7 @@ from world_marl.jepa.training import (
     train_model_step,
 )
 from world_marl.scripts.train_dmc_jepa import (
+    _action_contrast_metrics,
     _merge_online_policy_baseline,
     _run_passed as dmc_run_passed,
     summarize as summarize_dmc_jepa,
@@ -170,6 +171,54 @@ def test_continuous_action_jepa_model_step_is_finite():
         chunk_length=2,
     )
     assert jnp.isfinite(metrics["model/total_loss"])
+
+
+def test_action_contrast_no_action_control_has_zero_margin():
+    config = JepaConfig(
+        observation_dim=4,
+        action_dim=3,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=1,
+        context_window=1,
+        sigreg_num_proj=32,
+    )
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    batch = ReplayBatch(
+        observations=jnp.arange(4 * 3 * 4, dtype=jnp.float32).reshape((4, 3, 4)),
+        actions=jnp.ones((4, 2, 3), dtype=jnp.float32),
+        rewards=jnp.ones((4, 2), dtype=jnp.float32),
+        dones=jnp.zeros((4, 2), dtype=jnp.float32),
+    )
+
+    metrics = _action_contrast_metrics(
+        state,
+        jax.random.PRNGKey(1),
+        batch,
+        config,
+        chunk_length=2,
+        control="no-action-world-model",
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(metrics["model/action_contrast_margin"]),
+        0.0,
+        atol=1e-7,
+    )
+    np.testing.assert_allclose(
+        np.asarray(metrics["model/action_contrast_accuracy"]),
+        0.0,
+        atol=1e-7,
+    )
+    np.testing.assert_allclose(
+        np.asarray(metrics["model/action_contrast_valid_fraction"]),
+        1.0,
+        atol=1e-7,
+    )
+    assert np.asarray(metrics["model/action_contrast_finite_fraction"]) == 1.0
 
 
 def test_continuous_policy_update_freezes_world_model_and_bounds_actions():
