@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,15 @@ def main() -> int:
         default=0,
         help="DMC camera id passed to physics.render.",
     )
+    parser.add_argument(
+        "--mujoco-gl",
+        default="egl",
+        choices=("egl", "osmesa", "glfw"),
+        help=(
+            "MuJoCo rendering backend. RunPod/headless GPU pods usually want egl; "
+            "CPU-only headless machines may need osmesa."
+        ),
+    )
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
@@ -82,6 +92,7 @@ def main() -> int:
         height=args.height,
         fps=args.fps,
         camera_id=args.camera_id,
+        mujoco_gl=args.mujoco_gl,
         quiet=args.quiet,
     )
     print(output)
@@ -101,10 +112,12 @@ def render_policy_rollout(
     height: int = 360,
     fps: int = 30,
     camera_id: int = 0,
+    mujoco_gl: str = "egl",
     quiet: bool = False,
 ) -> tuple[Path, dict[str, Any]]:
     """Load a JEPA actor checkpoint, render one real DMC rollout, and save a GIF."""
 
+    configure_mujoco_rendering(mujoco_gl)
     selected = resolve_run_source(run_dir, control=control, run_index=run_index)
     if output_path is None:
         output = selected.run_dir / "policy_rollout.gif"
@@ -193,6 +206,7 @@ def render_policy_rollout(
             "width": width,
             "height": height,
             "camera_id": camera_id,
+            "mujoco_gl": os.environ.get("MUJOCO_GL"),
             "action_mean": (
                 np.asarray(actions, dtype=np.float32).mean(axis=0).tolist()
                 if actions
@@ -299,6 +313,18 @@ def save_gif(frames: list[np.ndarray], output: str | Path, *, fps: int) -> None:
         loop=0,
         optimize=False,
     )
+
+
+def configure_mujoco_rendering(mujoco_gl: str) -> None:
+    """Set MuJoCo's rendering backend before dm_control imports MuJoCo."""
+
+    if mujoco_gl not in ("egl", "osmesa", "glfw"):
+        raise ValueError("mujoco_gl must be one of: egl, osmesa, glfw")
+    os.environ["MUJOCO_GL"] = mujoco_gl
+    if os.environ["MUJOCO_GL"] == "egl":
+        os.environ["PYOPENGL_PLATFORM"] = "egl"
+    elif os.environ["MUJOCO_GL"] == "osmesa":
+        os.environ["PYOPENGL_PLATFORM"] = "osmesa"
 
 
 def _selection_score(run: dict[str, Any]) -> float:

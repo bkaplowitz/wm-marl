@@ -238,6 +238,10 @@ uv run world-marl-render-dmc-jepa-policy \
 The renderer loads the saved actor checkpoint and steps the actual DMC task. It
 does not use MPC or action search at evaluation time.
 
+On headless GPU pods the renderer defaults to `--mujoco-gl egl`. If MuJoCo
+cannot create an OpenGL context, install the EGL runtime libraries on the pod
+or retry with `--mujoco-gl osmesa` after installing `libosmesa6`.
+
 
 ## Tests
 
