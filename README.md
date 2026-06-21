@@ -222,6 +222,22 @@ The same command also accepts a single run directory containing `outcome.json`.
 The dashboard summarizes latent fit, control comparisons, policy improvement,
 online actor-replay returns, and action-conditioning diagnostics.
 
+Render a real-environment rollout GIF from the best main actor checkpoint in an
+experiment:
+
+```bash
+RUN=$(ls -td runs/dmc_jepa_online_cartpole/dmc_jepa_* | head -1)
+
+uv run world-marl-render-dmc-jepa-policy \
+  --run-dir "$RUN" \
+  --seed 0 \
+  --max-steps 500 \
+  --out "$RUN/policy_rollout.gif"
+```
+
+The renderer loads the saved actor checkpoint and steps the actual DMC task. It
+does not use MPC or action search at evaluation time.
+
 
 ## Tests
 
