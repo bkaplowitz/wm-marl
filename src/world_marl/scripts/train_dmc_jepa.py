@@ -27,6 +27,7 @@ from world_marl.jepa.models import JepaConfig, JepaWorldModel
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
     ControlMode,
+    continuous_candidate_distill_step,
     continuous_critic_warmup_step,
     continuous_policy_train_step,
     create_jepa_train_state,
@@ -68,6 +69,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--critic-horizon", type=int, default=32)
     parser.add_argument("--imag-horizon", type=int, default=5)
     parser.add_argument(
+        "--policy-objective",
+        choices=("candidate-distill", "direct"),
+        default="candidate-distill",
+        help=(
+            "candidate-distill scores sampled actions with the frozen latent model "
+            "and trains a direct actor toward the best candidates. direct "
+            "backpropagates reward-only or lambda returns through the model."
+        ),
+    )
+    parser.add_argument(
         "--policy-return-mode",
         choices=("reward-only", "lambda"),
         default="reward-only",
@@ -78,6 +89,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--value-clip", type=float, default=100.0)
     parser.add_argument("--action-saturation-threshold", type=float, default=0.95)
+    parser.add_argument("--num-policy-candidates", type=int, default=64)
+    parser.add_argument("--candidate-min-gap", type=float, default=1e-3)
+    parser.add_argument("--policy-action-l2-coef", type=float, default=1e-3)
     parser.add_argument("--policy-eval-episodes", type=int, default=20)
     parser.add_argument("--policy-eval-num-envs", type=int, default=None)
     parser.add_argument("--gamma", type=float, default=0.99)
@@ -148,6 +162,12 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
     for name in ("critic_horizon",):
         if getattr(args, name) < 1:
             parser.error(f"--{name.replace('_', '-')} must be >= 1")
+    if args.num_policy_candidates < 2:
+        parser.error("--num-policy-candidates must be >= 2")
+    if args.candidate_min_gap < 0.0:
+        parser.error("--candidate-min-gap must be >= 0")
+    if args.policy_action_l2_coef < 0.0:
+        parser.error("--policy-action-l2-coef must be >= 0")
     if args.value_clip <= 0.0:
         parser.error("--value-clip must be > 0")
     if not 0.0 < args.action_saturation_threshold <= 1.0:
@@ -540,10 +560,11 @@ def _maybe_train_policy(
     policy_batch_size = args.policy_batch_size or args.batch_size
     action_low_jax = jnp.asarray(action_low, dtype=jnp.float32)
     action_high_jax = jnp.asarray(action_high, dtype=jnp.float32)
+    policy_eval_seed = seed + 3_000_000
 
     random_eval = _evaluate_random_policy(
         args,
-        seed=seed + 2_000_000,
+        seed=policy_eval_seed,
         num_envs=eval_num_envs,
         desc=f"{control} eval random policy",
     )
@@ -551,7 +572,7 @@ def _maybe_train_policy(
         args,
         state,
         config,
-        seed=seed + 3_000_000,
+        seed=policy_eval_seed,
         num_envs=eval_num_envs,
         action_low=action_low_jax,
         action_high=action_high_jax,
@@ -618,25 +639,46 @@ def _maybe_train_policy(
             max_horizon=1,
         )
         rng, policy_key = jax.random.split(rng)
-        state, metrics = continuous_policy_train_step(
-            state,
-            policy_key,
-            batch.observations[:, 0],
-            config,
-            action_low_jax,
-            action_high_jax,
-            imag_horizon=args.imag_horizon,
-            control=control,
-            policy_return_mode=args.policy_return_mode,
-            value_clip=args.value_clip,
-            action_saturation_threshold=args.action_saturation_threshold,
-        )
+        if args.policy_objective == "candidate-distill":
+            state, metrics = continuous_candidate_distill_step(
+                state,
+                policy_key,
+                batch.observations[:, 0],
+                config,
+                action_low_jax,
+                action_high_jax,
+                imag_horizon=args.imag_horizon,
+                control=control,
+                num_candidates=args.num_policy_candidates,
+                candidate_min_gap=args.candidate_min_gap,
+                action_l2_coef=args.policy_action_l2_coef,
+                action_saturation_threshold=args.action_saturation_threshold,
+            )
+        else:
+            state, metrics = continuous_policy_train_step(
+                state,
+                policy_key,
+                batch.observations[:, 0],
+                config,
+                action_low_jax,
+                action_high_jax,
+                imag_horizon=args.imag_horizon,
+                control=control,
+                policy_return_mode=args.policy_return_mode,
+                value_clip=args.value_clip,
+                action_saturation_threshold=args.action_saturation_threshold,
+            )
         policy_loss = float(metrics["policy/total_loss"])
-        imagined_return = float(metrics["policy/imagined_return"])
+        progress_score = float(
+            metrics.get(
+                "policy/imagined_return",
+                metrics.get("policy/candidate_best_score", policy_loss),
+            )
+        )
         policy_loss_history.append(policy_loss)
         policy_steps.set_postfix(
             loss=f"{policy_loss:.4g}",
-            imagined_return=f"{imagined_return:.4g}",
+            score=f"{progress_score:.4g}",
         )
         if (
             step_index == 1
@@ -656,7 +698,7 @@ def _maybe_train_policy(
         args,
         state,
         config,
-        seed=seed + 4_000_000,
+        seed=policy_eval_seed,
         num_envs=eval_num_envs,
         action_low=action_low_jax,
         action_high=action_high_jax,
@@ -676,8 +718,13 @@ def _maybe_train_policy(
     outcome = {
         "policy_training_enabled": True,
         "policy_train_steps": args.policy_train_steps,
+        "policy_objective": args.policy_objective,
         "policy_return_mode": args.policy_return_mode,
         "policy_imag_horizon": args.imag_horizon,
+        "num_policy_candidates": args.num_policy_candidates,
+        "candidate_min_gap": args.candidate_min_gap,
+        "policy_action_l2_coef": args.policy_action_l2_coef,
+        "policy_eval_seed": policy_eval_seed,
         "critic_warmup_steps": args.critic_warmup_steps,
         "critic_horizon": args.critic_horizon,
         "critic_final_metrics": critic_metrics_json,

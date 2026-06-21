@@ -124,9 +124,12 @@ uv run world-marl-validate-dmc-world-model \
   --critic-warmup-steps 1000 \
   --critic-horizon 32 \
   --policy-train-steps 3000 \
+  --policy-objective candidate-distill \
+  --num-policy-candidates 64 \
+  --candidate-min-gap 0.001 \
   --policy-return-mode reward-only \
   --imag-horizon 5 \
-  --policy-eval-episodes 50 \
+  --policy-eval-episodes 100 \
   --value-clip 100 \
   --batch-size 256 \
   --chunk-length 32 \
@@ -146,6 +149,12 @@ policy returns:
 - real-return critic warmup diagnostics;
 - trained actor return after frozen-model imagination training;
 - paired no-action and shuffled-action controls.
+
+The default policy objective is training-only candidate distillation: the
+frozen latent model scores sampled action candidates for replay states, and the
+actor is trained toward the best candidate only when the predicted action-value
+gap is nontrivial. Evaluation still uses the direct actor; no MPC/search is used
+at evaluation time.
 
 Each `metrics.jsonl` row includes rollout diagnostics for debugging learning
 failures:

@@ -9,6 +9,7 @@ from world_marl.jepa.models import JepaConfig, JepaWorldModel
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
     action_value_gap,
+    continuous_candidate_distill_step,
     continuous_critic_warmup_step,
     continuous_policy_train_step,
     create_jepa_train_state,
@@ -283,6 +284,110 @@ def test_continuous_critic_warmup_updates_value_only():
         )
     )
     assert value_changed
+
+
+def test_continuous_candidate_distill_freezes_world_model_and_bounds_actions():
+    config = JepaConfig(
+        observation_dim=4,
+        action_dim=2,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=1,
+        context_window=1,
+        sigreg_num_proj=32,
+    )
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    before = state.params
+    observations = jnp.ones((8, config.observation_dim), dtype=jnp.float32)
+    action_low = -jnp.ones((config.action_dim,), dtype=jnp.float32)
+    action_high = jnp.ones((config.action_dim,), dtype=jnp.float32)
+
+    state, metrics = continuous_candidate_distill_step(
+        state,
+        jax.random.PRNGKey(1),
+        observations,
+        config,
+        action_low,
+        action_high,
+        imag_horizon=2,
+        num_candidates=8,
+        candidate_min_gap=0.0,
+    )
+    actions = select_continuous_actions(
+        state,
+        observations,
+        config,
+        action_low,
+        action_high,
+    )
+
+    assert jnp.isfinite(metrics["policy/total_loss"])
+    assert jnp.all(actions <= action_high + 1e-6)
+    assert jnp.all(actions >= action_low - 1e-6)
+    for group in (
+        "encoder",
+        "latent_proj",
+        "action_encoder_hidden",
+        "action_encoder_out",
+        "dynamics_norm",
+        "predictor",
+        "predictor_norm",
+        "reward_head",
+        "continue_head",
+        "value_head",
+    ):
+        before_leaves = jax.tree_util.tree_leaves(before[group])
+        after_leaves = jax.tree_util.tree_leaves(state.params[group])
+        for left, right in zip(before_leaves, after_leaves, strict=True):
+            np.testing.assert_allclose(np.asarray(left), np.asarray(right), atol=1e-7)
+
+
+def test_continuous_candidate_distill_no_action_control_keeps_actor_head():
+    config = JepaConfig(
+        observation_dim=4,
+        action_dim=2,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=1,
+        context_window=1,
+        sigreg_num_proj=32,
+    )
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    before = state.params
+    observations = jnp.ones((8, config.observation_dim), dtype=jnp.float32)
+    action_low = -jnp.ones((config.action_dim,), dtype=jnp.float32)
+    action_high = jnp.ones((config.action_dim,), dtype=jnp.float32)
+
+    updated, metrics = continuous_candidate_distill_step(
+        state,
+        jax.random.PRNGKey(1),
+        observations,
+        config,
+        action_low,
+        action_high,
+        imag_horizon=2,
+        control="no-action-world-model",
+        num_candidates=8,
+        candidate_min_gap=1e-6,
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(metrics["policy/candidate_active_fraction"]),
+        0.0,
+        atol=1e-7,
+    )
+    for left, right in zip(
+        jax.tree_util.tree_leaves(before["actor_head"]),
+        jax.tree_util.tree_leaves(updated.params["actor_head"]),
+        strict=True,
+    ):
+        np.testing.assert_allclose(np.asarray(left), np.asarray(right), atol=1e-7)
 
 
 def test_isotropy_detects_collapsed_embeddings():

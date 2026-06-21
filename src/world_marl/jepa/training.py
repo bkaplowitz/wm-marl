@@ -27,6 +27,7 @@ ControlMode = Literal[
     "no-policy-update",
 ]
 PolicyReturnMode = Literal["reward-only", "lambda"]
+ContinuousPolicyObjective = Literal["direct", "candidate-distill"]
 
 MODEL_GROUPS = frozenset(
     {
@@ -44,6 +45,8 @@ MODEL_GROUPS = frozenset(
     }
 )
 POLICY_GROUPS = frozenset({"actor_head", "value_head"})
+ACTOR_GROUPS = frozenset({"actor_head"})
+CRITIC_GROUPS = frozenset({"value_head"})
 
 
 @struct.dataclass
@@ -55,6 +58,10 @@ class JepaTrainState:
     model_opt_state: optax.OptState
     policy_tx: optax.GradientTransformation = struct.field(pytree_node=False)
     policy_opt_state: optax.OptState
+    actor_tx: optax.GradientTransformation = struct.field(pytree_node=False)
+    actor_opt_state: optax.OptState
+    critic_tx: optax.GradientTransformation = struct.field(pytree_node=False)
+    critic_opt_state: optax.OptState
 
     def apply_model_gradients(self, grads) -> "JepaTrainState":
         updates, opt_state = self.model_tx.update(
@@ -78,6 +85,30 @@ class JepaTrainState:
             step=self.step + 1,
             params=optax.apply_updates(self.params, updates),
             policy_opt_state=opt_state,
+        )
+
+    def apply_actor_gradients(self, grads) -> "JepaTrainState":
+        updates, opt_state = self.actor_tx.update(
+            grads,
+            self.actor_opt_state,
+            self.params,
+        )
+        return self.replace(
+            step=self.step + 1,
+            params=optax.apply_updates(self.params, updates),
+            actor_opt_state=opt_state,
+        )
+
+    def apply_critic_gradients(self, grads) -> "JepaTrainState":
+        updates, opt_state = self.critic_tx.update(
+            grads,
+            self.critic_opt_state,
+            self.params,
+        )
+        return self.replace(
+            step=self.step + 1,
+            params=optax.apply_updates(self.params, updates),
+            critic_opt_state=opt_state,
         )
 
 
@@ -106,6 +137,8 @@ def create_jepa_train_state(
     params = freeze(params)
     model_tx = _masked_adam(params, MODEL_GROUPS, config.learning_rate)
     policy_tx = _masked_adam(params, POLICY_GROUPS, config.actor_learning_rate)
+    actor_tx = _masked_adam(params, ACTOR_GROUPS, config.actor_learning_rate)
+    critic_tx = _masked_adam(params, CRITIC_GROUPS, config.actor_learning_rate)
     return JepaTrainState(
         step=0,
         apply_fn=model.apply,
@@ -114,6 +147,10 @@ def create_jepa_train_state(
         model_opt_state=model_tx.init(params),
         policy_tx=policy_tx,
         policy_opt_state=policy_tx.init(params),
+        actor_tx=actor_tx,
+        actor_opt_state=actor_tx.init(params),
+        critic_tx=critic_tx,
+        critic_opt_state=critic_tx.init(params),
     )
 
 
@@ -231,6 +268,8 @@ def reset_policy_heads(
     return state.replace(
         params=params,
         policy_opt_state=state.policy_tx.init(params),
+        actor_opt_state=state.actor_tx.init(params),
+        critic_opt_state=state.critic_tx.init(params),
     )
 
 
@@ -391,7 +430,7 @@ def continuous_policy_train_step(
         raise ValueError("continuous_policy_train_step requires continuous actions")
     del key
 
-    def loss_fn(params):
+    def actor_loss_fn(params):
         rollout = continuous_imagine_rollout(
             params,
             state.apply_fn,
@@ -420,11 +459,6 @@ def continuous_policy_train_step(
         clipped_returns = jnp.clip(actor_returns, -value_clip, value_clip)
         weights = survival_weights(rollout["continues"], gamma=config.gamma)
         actor_loss = -weighted_mean(clipped_returns, weights)
-        value_loss = 0.5 * weighted_mean(
-            jnp.square(rollout["values"] - jax.lax.stop_gradient(clipped_returns)),
-            weights,
-        )
-        total = actor_loss + value_loss
         action_saturation = jnp.mean(
             (
                 jnp.abs(rollout["normalized_actions"]) >= action_saturation_threshold
@@ -441,13 +475,9 @@ def continuous_policy_train_step(
             actor_returns,
             clipped_returns,
             actor_loss,
-            value_loss,
-            total,
         )
         metrics = {
-            "policy/total_loss": total,
             "policy/actor_loss": actor_loss,
-            "policy/value_loss": value_loss,
             "policy/imagined_return": weighted_mean(actor_returns, weights),
             "policy/clipped_imagined_return": weighted_mean(clipped_returns, weights),
             "policy/imagined_reward": weighted_mean(rollout["rewards"], weights),
@@ -466,11 +496,235 @@ def continuous_policy_train_step(
             "policy/action_saturation_fraction": action_saturation,
             "policy/finite_fraction": finite_fraction,
         }
+        critic_latents = jax.lax.stop_gradient(rollout["latents"])
+        critic_targets = jax.lax.stop_gradient(clipped_returns)
+        critic_weights = jax.lax.stop_gradient(weights)
+        return actor_loss, (metrics, critic_latents, critic_targets, critic_weights)
+
+    (actor_loss, actor_aux), actor_grads = jax.value_and_grad(
+        actor_loss_fn,
+        has_aux=True,
+    )(state.params)
+    del actor_loss
+    metrics, critic_latents, critic_targets, critic_weights = actor_aux
+    state = state.apply_actor_gradients(actor_grads)
+
+    def critic_loss_fn(params):
+        _, values = state.apply_fn(
+            {"params": params},
+            critic_latents,
+            method=JepaWorldModel.actor_value_from_latent,
+        )
+        value_loss = 0.5 * weighted_mean(
+            jnp.square(values - critic_targets),
+            critic_weights,
+        )
+        finite_fraction = _all_finite_fraction(values, critic_targets, value_loss)
+        critic_metrics = {
+            "policy/value_loss": value_loss,
+            "policy/value_finite_fraction": finite_fraction,
+        }
+        return value_loss, critic_metrics
+
+    (value_loss, critic_metrics), critic_grads = jax.value_and_grad(
+        critic_loss_fn,
+        has_aux=True,
+    )(state.params)
+    state = state.apply_critic_gradients(critic_grads)
+    total_loss = metrics["policy/actor_loss"] + value_loss
+    metrics = {
+        **metrics,
+        **critic_metrics,
+        "policy/total_loss": total_loss,
+        "policy/finite_fraction": jnp.minimum(
+            metrics["policy/finite_fraction"],
+            critic_metrics["policy/value_finite_fraction"],
+        ),
+    }
+    return state, metrics
+
+
+@partial(
+    jax.jit,
+    static_argnames=("config", "imag_horizon", "control", "num_candidates"),
+)
+def continuous_candidate_distill_step(
+    state: JepaTrainState,
+    key: jax.Array,
+    start_observations: jax.Array,
+    config: JepaConfig,
+    action_low: jax.Array,
+    action_high: jax.Array,
+    *,
+    imag_horizon: int,
+    control: ControlMode = "none",
+    num_candidates: int = 64,
+    candidate_min_gap: float = 1e-3,
+    action_l2_coef: float = 1e-3,
+    action_saturation_threshold: float = 0.95,
+) -> tuple[JepaTrainState, dict[str, jax.Array]]:
+    if config.action_mode != "continuous":
+        raise ValueError("continuous_candidate_distill_step requires continuous actions")
+    if num_candidates < 2:
+        raise ValueError("num_candidates must be >= 2")
+
+    def loss_fn(params):
+        model_params = jax.tree_util.tree_map(jax.lax.stop_gradient, params)
+        flat_obs = start_observations.reshape((-1, config.observation_dim))
+        z0 = state.apply_fn(
+            {"params": model_params},
+            flat_obs,
+            method=JepaWorldModel.encode,
+        )
+        candidates = jax.random.uniform(
+            key,
+            (z0.shape[0], num_candidates, config.action_dim),
+            minval=-1.0,
+            maxval=1.0,
+            dtype=jnp.float32,
+        )
+        scores = score_continuous_action_candidates(
+            params,
+            model_params,
+            state.apply_fn,
+            z0,
+            candidates,
+            config,
+            action_low,
+            action_high,
+            imag_horizon=imag_horizon,
+            control=control,
+        )
+        best_index = jnp.argmax(scores, axis=1)
+        best_action = jnp.take_along_axis(
+            candidates,
+            best_index[:, None, None],
+            axis=1,
+        )[:, 0]
+        sorted_scores = jnp.sort(scores, axis=1)
+        top_gap = sorted_scores[:, -1] - sorted_scores[:, -2]
+        score_range = sorted_scores[:, -1] - sorted_scores[:, 0]
+        weights = (top_gap > candidate_min_gap).astype(jnp.float32)
+
+        raw_actions, _ = state.apply_fn(
+            {"params": params},
+            z0,
+            method=JepaWorldModel.actor_value_from_latent,
+        )
+        normalized_actions = jnp.tanh(raw_actions)
+        imitation_error = jnp.mean(
+            jnp.square(normalized_actions - jax.lax.stop_gradient(best_action)),
+            axis=-1,
+        )
+        imitation_loss = jnp.sum(weights * imitation_error) / (
+            jnp.sum(weights) + 1e-6
+        )
+        active_fraction = jnp.mean(weights)
+        action_l2 = jnp.mean(jnp.square(normalized_actions))
+        total = imitation_loss + action_l2_coef * active_fraction * action_l2
+        action_saturation = jnp.mean(
+            (jnp.abs(normalized_actions) >= action_saturation_threshold).astype(
+                jnp.float32
+            )
+        )
+        finite_fraction = _all_finite_fraction(
+            z0,
+            candidates,
+            scores,
+            best_action,
+            normalized_actions,
+            imitation_loss,
+            total,
+        )
+        metrics = {
+            "policy/total_loss": total,
+            "policy/actor_loss": imitation_loss,
+            "policy/value_loss": jnp.asarray(0.0, dtype=total.dtype),
+            "policy/candidate_best_score": jnp.mean(jnp.max(scores, axis=1)),
+            "policy/candidate_mean_score": jnp.mean(scores),
+            "policy/candidate_top_gap": jnp.mean(top_gap),
+            "policy/candidate_score_range": jnp.mean(score_range),
+            "policy/candidate_active_fraction": active_fraction,
+            "policy/action_l2": action_l2,
+            "policy/action_mean": jnp.mean(
+                scale_normalized_actions(normalized_actions, action_low, action_high)
+            ),
+            "policy/action_std": jnp.std(
+                scale_normalized_actions(normalized_actions, action_low, action_high)
+            ),
+            "policy/action_abs_mean": jnp.mean(
+                jnp.abs(
+                    scale_normalized_actions(
+                        normalized_actions,
+                        action_low,
+                        action_high,
+                    )
+                )
+            ),
+            "policy/normalized_action_abs_mean": jnp.mean(
+                jnp.abs(normalized_actions)
+            ),
+            "policy/action_saturation_fraction": action_saturation,
+            "policy/finite_fraction": finite_fraction,
+        }
         return total, metrics
 
     (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
     del loss
-    return state.apply_policy_gradients(grads), metrics
+    return state.apply_actor_gradients(grads), metrics
+
+
+def score_continuous_action_candidates(
+    params: FrozenDict,
+    model_params: FrozenDict,
+    apply_fn,
+    z0: jax.Array,
+    normalized_candidates: jax.Array,
+    config: JepaConfig,
+    action_low: jax.Array,
+    action_high: jax.Array,
+    *,
+    imag_horizon: int,
+    control: ControlMode,
+) -> jax.Array:
+    batch_size, num_candidates, _ = normalized_candidates.shape
+    flat_z = jnp.repeat(z0[:, None, :], num_candidates, axis=1).reshape(
+        (-1, config.latent_dim)
+    )
+    flat_actions = normalized_candidates.reshape((-1, config.action_dim))
+    returns = jnp.zeros((flat_z.shape[0],), dtype=jnp.float32)
+    weights = jnp.ones_like(returns)
+    discount = jnp.asarray(1.0, dtype=jnp.float32)
+    context = flat_z[:, None, :]
+    actions = scale_normalized_actions(flat_actions, action_low, action_high)
+
+    for _ in range(imag_horizon):
+        model_actions = (
+            jnp.zeros_like(actions) if control == "no-action-world-model" else actions
+        )
+        next_z, rewards, continue_logits = apply_fn(
+            {"params": model_params},
+            context,
+            model_actions[:, None, :],
+            method=JepaWorldModel.predict_next_from_history,
+        )
+        continues = jax.nn.sigmoid(continue_logits)
+        returns = returns + discount * weights * rewards
+        weights = weights * continues
+        discount = discount * config.gamma
+        raw_actions, _ = apply_fn(
+            {"params": model_params},
+            next_z,
+            method=JepaWorldModel.actor_value_from_latent,
+        )
+        actions = scale_normalized_actions(
+            jnp.tanh(raw_actions),
+            action_low,
+            action_high,
+        )
+        context = next_z[:, None, :]
+
+    return jax.lax.stop_gradient(returns.reshape((batch_size, num_candidates)))
 
 
 @partial(jax.jit, static_argnames=("config", "horizon"))
@@ -518,7 +772,7 @@ def continuous_critic_warmup_step(
 
     (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
     del loss
-    return state.apply_policy_gradients(grads), metrics
+    return state.apply_critic_gradients(grads), metrics
 
 
 def continuous_imagine_rollout(
