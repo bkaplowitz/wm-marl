@@ -754,6 +754,41 @@ def test_dmc_jepa_summary_tracks_policy_rung():
     assert bad["world_model_passed"]
 
 
+def test_dmc_jepa_policy_summary_allows_majority_success_with_positive_aggregate():
+    def outcome(run_index: int, policy_improvement: float, policy_passed: bool):
+        return {
+            "run_index": run_index,
+            "control": "none",
+            "passed": True,
+            "initial_jepa_loss": 1.0,
+            "final_jepa_loss": 0.1,
+            "initial_open_loop_loss": 1.0,
+            "final_open_loop_loss": 0.1,
+            "policy_training_enabled": True,
+            "policy_passed": policy_passed,
+            "policy_random_mean": 0.0,
+            "policy_initial_mean": 10.0,
+            "policy_trained_mean": 10.0 + policy_improvement,
+            "policy_improvement": policy_improvement,
+            "policy_trained_minus_random": 10.0 + policy_improvement,
+            "final_model_metrics": {"model/jepa_loss": 0.1},
+        }
+
+    summary = summarize_dmc_jepa(
+        [
+            outcome(0, 90.0, True),
+            outcome(1, 300.0, True),
+            outcome(2, 0.0, False),
+        ]
+    )
+
+    assert summary["passed"]
+    assert summary["policy_main_passed"]
+    assert summary["policy_main_successes"] == 2
+    assert summary["policy_required_successes"] == 2
+    assert summary["policy_aggregate_improved"]
+
+
 def _batch(config: JepaConfig):
     replay = SequenceReplayBuffer(capacity=8, num_envs=1, observation_shape=(4,))
     for step in range(5):

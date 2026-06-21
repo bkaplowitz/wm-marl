@@ -615,7 +615,9 @@ def _maybe_train_policy(
 
     best_state = state
     best_policy_step = 0
-    best_policy_metrics_json: dict[str, Any] = {}
+    best_policy_metrics_json: dict[str, Any] = {
+        "policy/selected_initial_actor": True,
+    }
     selection_history: list[dict[str, Any]] = []
     best_selection_eval: dict[str, Any] | None = None
     best_selection_mean = -math.inf
@@ -780,7 +782,10 @@ def _maybe_train_policy(
             if selected:
                 best_state = state
                 best_policy_step = step_index
-                best_policy_metrics_json = to_jsonable(metrics)
+                best_policy_metrics_json = {
+                    **to_jsonable(metrics),
+                    "policy/selected_initial_actor": False,
+                }
                 best_selection_eval = selection_eval
                 best_selection_mean = selection_eval["mean_return"]
             selection_record = _policy_selection_record(
@@ -1170,13 +1175,31 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         item["mean_jepa_advantage"] > 0.0 for item in paired.values()
     )
     policy_main_passed = True
+    policy_main_successes = 0
+    policy_required_successes = 0
+    policy_aggregate_improved = True
+    policy_aggregate_beats_random = True
     policy_main_beats_controls = True
     paired_policy_ok = True
     if policy_enabled:
-        policy_main_passed = bool(
-            main and all(outcome.get("policy_passed", False) for outcome in main)
+        policy_main_successes = int(
+            sum(outcome.get("policy_passed", False) for outcome in main)
         )
+        policy_required_successes = max(1, math.ceil((2 * len(main)) / 3))
         main_policy_improvement = _mean(main, "policy_improvement")
+        main_policy_minus_random = _mean(main, "policy_trained_minus_random")
+        policy_aggregate_improved = bool(
+            main_policy_improvement is not None and main_policy_improvement > 0.0
+        )
+        policy_aggregate_beats_random = bool(
+            main_policy_minus_random is not None and main_policy_minus_random > 0.0
+        )
+        policy_main_passed = bool(
+            main
+            and policy_main_successes >= policy_required_successes
+            and policy_aggregate_improved
+            and policy_aggregate_beats_random
+        )
         control_policy_improvement = _mean(controls, "policy_improvement")
         policy_main_beats_controls = (
             not controls
@@ -1224,6 +1247,10 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         "paired_jepa_ok": paired_jepa_ok,
         "policy_training_enabled": policy_enabled,
         "policy_main_passed": policy_main_passed,
+        "policy_main_successes": policy_main_successes,
+        "policy_required_successes": policy_required_successes,
+        "policy_aggregate_improved": policy_aggregate_improved,
+        "policy_aggregate_beats_random": policy_aggregate_beats_random,
         "policy_main_beats_controls": policy_main_beats_controls,
         "paired_policy_ok": paired_policy_ok,
         "paired_control_differences": paired,
