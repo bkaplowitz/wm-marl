@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from world_marl.envs.dmc_adapter import DMCVectorAdapter, dmc_env_name
 
@@ -63,13 +64,15 @@ def test_dmc_env_name_parses_domain_task():
     assert dmc_env_name("dmc:cartpole/swingup") == "cartpole/swingup"
 
 
-def test_dmc_adapter_reset_step_and_completion():
+@pytest.mark.parametrize("num_workers", [1, 2])
+def test_dmc_adapter_reset_step_and_completion(num_workers):
     adapter = DMCVectorAdapter(
         "fake/task",
         num_envs=2,
         max_cycles=5,
         seed=10,
         env_factory=lambda seed: _FakeDMCEnv(seed),
+        num_workers=num_workers,
     )
     try:
         observations = adapter.reset()

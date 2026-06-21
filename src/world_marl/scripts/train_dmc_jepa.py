@@ -46,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env", default="dmc:cartpole/swingup")
     parser.add_argument("--num-envs", type=int, default=16)
+    parser.add_argument("--dmc-workers", type=int, default=1)
     parser.add_argument("--collect-steps", type=int, default=2048)
     parser.add_argument("--validation-steps", type=int, default=512)
     parser.add_argument("--replay-capacity", type=int, default=100_000)
@@ -132,6 +133,7 @@ def parse_args() -> argparse.Namespace:
 def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     for name in (
         "num_envs",
+        "dmc_workers",
         "collect_steps",
         "validation_steps",
         "replay_capacity",
@@ -227,6 +229,7 @@ def run_one(
         num_envs=args.num_envs,
         max_cycles=args.max_cycles,
         seed=seed,
+        num_workers=args.dmc_workers,
     )
     try:
         config = JepaConfig(
@@ -506,6 +509,7 @@ def _collect_validation_replay(
         num_envs=args.num_envs,
         max_cycles=args.max_cycles,
         seed=seed,
+        num_workers=args.dmc_workers,
     )
     try:
         replay = SequenceReplayBuffer(
@@ -758,6 +762,7 @@ def _evaluate_random_policy(
         num_envs=num_envs,
         max_cycles=args.max_cycles,
         seed=seed,
+        num_workers=min(args.dmc_workers, num_envs),
     )
     try:
         rng = np.random.default_rng(seed)
@@ -807,6 +812,7 @@ def _evaluate_continuous_policy(
         num_envs=num_envs,
         max_cycles=args.max_cycles,
         seed=seed,
+        num_workers=min(args.dmc_workers, num_envs),
     )
     try:
         observations = adapter.reset()

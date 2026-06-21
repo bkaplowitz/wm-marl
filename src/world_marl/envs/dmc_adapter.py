@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import numpy as np
@@ -42,6 +43,7 @@ class DMCVectorAdapter:
         seed: int = 0,
         env_factory: DMCEnvFactory | None = None,
         auto_reset: bool = True,
+        num_workers: int = 1,
     ) -> None:
         if num_envs < 1:
             raise ValueError("num_envs must be >= 1")
@@ -53,11 +55,19 @@ class DMCVectorAdapter:
         self.num_envs = int(num_envs)
         self.max_cycles = int(max_cycles)
         self.auto_reset = auto_reset
+        self.num_workers = int(num_workers)
+        if self.num_workers < 1:
+            raise ValueError("num_workers must be >= 1")
         self.agents = ("agent_0",)
         self.num_agents = 1
 
         factory = env_factory or (lambda env_seed: make_dmc_env(env_id, seed=env_seed))
         self._envs = [factory(seed + index) for index in range(self.num_envs)]
+        self._executor = (
+            ThreadPoolExecutor(max_workers=min(self.num_workers, self.num_envs))
+            if self.num_workers > 1
+            else None
+        )
 
         first_env = self._envs[0]
         self._observation_keys = _observation_keys(first_env.observation_spec())
@@ -89,12 +99,15 @@ class DMCVectorAdapter:
         self._episode_lengths = np.zeros((self.num_envs,), dtype=np.int32)
 
     def reset(self) -> np.ndarray:
-        observations = []
         self._episode_returns[:] = 0.0
         self._episode_lengths[:] = 0
-        for env in self._envs:
-            timestep = env.reset()
-            observations.append(self._flatten_observation(timestep.observation))
+        if self._executor is None:
+            timesteps = [env.reset() for env in self._envs]
+        else:
+            timesteps = list(self._executor.map(lambda env: env.reset(), self._envs))
+        observations = [
+            self._flatten_observation(timestep.observation) for timestep in timesteps
+        ]
         return np.asarray(observations, dtype=np.float32)[:, None, :]
 
     def step(self, actions: np.ndarray) -> VectorStep:
@@ -108,10 +121,22 @@ class DMCVectorAdapter:
         completed_lengths: list[int] = []
         infos: list[dict[str, Any]] = []
 
-        for env_index, (env, flat_action) in enumerate(
-            zip(self._envs, action_batch, strict=True)
+        if self._executor is None:
+            timesteps = [
+                env.step(flat_action.reshape(self.action_shape))
+                for env, flat_action in zip(self._envs, action_batch, strict=True)
+            ]
+        else:
+            timesteps = list(
+                self._executor.map(
+                    lambda item: item[0].step(item[1].reshape(self.action_shape)),
+                    zip(self._envs, action_batch, strict=True),
+                )
+            )
+
+        for env_index, (env, timestep) in enumerate(
+            zip(self._envs, timesteps, strict=True)
         ):
-            timestep = env.step(flat_action.reshape(self.action_shape))
             reward = 0.0 if timestep.reward is None else float(timestep.reward)
             self._episode_returns[env_index, 0] += reward
             self._episode_lengths[env_index] += 1
@@ -166,6 +191,9 @@ class DMCVectorAdapter:
             close = getattr(env, "close", None)
             if close is not None:
                 close()
+        if self._executor is not None:
+            self._executor.shutdown(wait=True)
+            self._executor = None
 
     def _flatten_observation(self, observation: Any) -> np.ndarray:
         return _flatten_observation(observation, self._observation_keys)

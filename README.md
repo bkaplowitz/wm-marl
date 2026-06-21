@@ -118,6 +118,7 @@ not use MPC and does not update the JEPA backbone during actor/value training:
 uv run world-marl-validate-dmc-world-model \
   --env dmc:cartpole/swingup \
   --num-envs 16 \
+  --dmc-workers 16 \
   --collect-steps 4096 \
   --validation-steps 1024 \
   --train-steps 5000 \
@@ -130,6 +131,7 @@ uv run world-marl-validate-dmc-world-model \
   --policy-return-mode reward-only \
   --imag-horizon 5 \
   --policy-eval-episodes 100 \
+  --policy-eval-num-envs 64 \
   --value-clip 100 \
   --batch-size 256 \
   --chunk-length 32 \
