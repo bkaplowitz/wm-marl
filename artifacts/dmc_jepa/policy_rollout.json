@@ -1,0 +1,22 @@
+{
+  "action_mean": [
+    0.05533546209335327
+  ],
+  "action_std": [
+    0.40124014019966125
+  ],
+  "camera_id": 0,
+  "checkpoint_dir": "runs/dmc_jepa_online_cartpole/dmc_jepa_20260621T125501Z/none/run_000/checkpoint",
+  "control": "none",
+  "env": "dmc:cartpole/swingup",
+  "episode_length": 500,
+  "episode_return": 124.10054487137596,
+  "fps": 30,
+  "height": 360,
+  "mujoco_gl": "egl",
+  "output": "runs/dmc_jepa_online_cartpole/dmc_jepa_20260621T125501Z/policy_rollout.gif",
+  "run_dir": "runs/dmc_jepa_online_cartpole/dmc_jepa_20260621T125501Z/none/run_000",
+  "run_index": 0,
+  "seed": 0,
+  "width": 480
+}
