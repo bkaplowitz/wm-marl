@@ -107,6 +107,24 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--policy-selection-episodes", type=int, default=20)
     parser.add_argument("--policy-selection-num-envs", type=int, default=None)
+    parser.add_argument(
+        "--online-iterations",
+        type=int,
+        default=0,
+        help=(
+            "After the initial offline world-model/policy fit, repeat: collect "
+            "real replay with the selected actor, update the world model, then "
+            "continue frozen-model policy training."
+        ),
+    )
+    parser.add_argument("--online-collect-steps", type=int, default=None)
+    parser.add_argument("--online-train-steps", type=int, default=None)
+    parser.add_argument("--online-policy-train-steps", type=int, default=None)
+    parser.add_argument(
+        "--online-reset-actor",
+        action="store_true",
+        help="Reset actor/value heads at the start of each online policy phase.",
+    )
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lambda-return", type=float, default=0.95)
     parser.add_argument(
@@ -175,8 +193,15 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         "policy_train_steps",
         "critic_warmup_steps",
         "policy_selection_interval",
+        "online_iterations",
     ):
         if getattr(args, name) < 0:
+            parser.error(f"--{name.replace('_', '-')} must be >= 0")
+    if args.online_collect_steps is not None and args.online_collect_steps < 1:
+        parser.error("--online-collect-steps must be >= 1")
+    for name in ("online_train_steps", "online_policy_train_steps"):
+        value = getattr(args, name)
+        if value is not None and value < 0:
             parser.error(f"--{name.replace('_', '-')} must be >= 0")
     for name in ("critic_horizon",):
         if getattr(args, name) < 1:
@@ -213,6 +238,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--validation-steps must cover chunk-length + open-loop-horizon")
     if args.policy_train_steps > 0 and args.collect_steps < args.critic_horizon + 1:
         parser.error("--collect-steps must cover critic-horizon + 1")
+    if args.online_iterations > 0 and args.policy_train_steps == 0:
+        parser.error("--online-iterations requires --policy-train-steps > 0")
 
 
 def main() -> None:
@@ -289,8 +316,8 @@ def run_one(
                 "action_high": adapter.action_high,
                 "jepa_config": dataclasses.asdict(config),
                 "protocol": (
-                    "heldout_random_replay_world_model_validation"
-                    "_with_optional_frozen_policy"
+                    "heldout_world_model_validation_with_optional_frozen_policy"
+                    "_and_online_actor_replay"
                 ),
             },
         )
@@ -318,7 +345,6 @@ def run_one(
             desc=f"{control} collect train replay",
             quiet=args.quiet,
         )
-        del observations
         logger.write_json(
             "train_replay.json",
             {
@@ -365,48 +391,21 @@ def run_one(
         )
         logger.write_json("initial_model_metrics.json", initial_metrics)
 
-        loss_history: list[float] = []
-        metrics = initial_metrics
-        fit_steps = tqdm(
-            range(1, args.train_steps + 1),
+        state, rng, _, loss_history = _fit_world_model(
+            args,
+            logger,
+            state,
+            rng,
+            replay,
+            config,
+            np_rng=np_rng,
+            steps=args.train_steps,
+            control=control,
+            phase="world_model",
             desc=f"{control} fit world model",
-            unit="update",
-            disable=args.quiet,
+            env_steps=env_steps,
         )
-        for step_index in fit_steps:
-            batch = replay.sample(
-                np_rng,
-                batch_size=args.batch_size,
-                chunk_length=args.chunk_length,
-                max_horizon=max(args.model_horizon, args.open_loop_horizon),
-            )
-            rng, train_key = jax.random.split(rng)
-            state, metrics = train_model_step(
-                state,
-                train_key,
-                batch,
-                config,
-                chunk_length=args.chunk_length,
-                control=control,
-            )
-            total_loss = float(metrics["model/total_loss"])
-            jepa_loss = float(metrics["model/jepa_loss"])
-            loss_history.append(total_loss)
-            fit_steps.set_postfix(loss=f"{total_loss:.4g}", jepa=f"{jepa_loss:.4g}")
-            if (
-                step_index == 1
-                or step_index == args.train_steps
-                or step_index % args.eval_interval == 0
-            ):
-                logger.append_metrics(
-                    {
-                        "phase": "world_model",
-                        "update": step_index,
-                        "env_steps": env_steps,
-                        "control": control,
-                        **metrics,
-                    }
-                )
+        logger.plot_world_model_loss(loss_history, filename="dmc_world_model_loss.png")
 
         rng, eval_key = jax.random.split(rng)
         final_batch = validation_batch
@@ -421,8 +420,7 @@ def run_one(
             action_low=adapter.action_low,
             action_high=adapter.action_high,
         )
-        logger.write_json("model_metrics_final.json", final_metrics)
-        logger.plot_world_model_loss(loss_history, filename="dmc_world_model_loss.png")
+        logger.write_json("model_metrics_initial_fit.json", final_metrics)
 
         policy_outcome = _maybe_train_policy(
             args,
@@ -439,6 +437,138 @@ def run_one(
         )
         state = policy_outcome["state"]
         rng = policy_outcome["rng"]
+        initial_policy_outcome = policy_outcome["outcome"]
+        online_history: list[dict[str, Any]] = []
+        for online_index in range(1, args.online_iterations + 1):
+            phase = f"online_{online_index:03d}"
+            online_collect_steps = args.online_collect_steps or args.collect_steps
+            observations, added_env_steps, collect_metrics = _collect_policy_steps(
+                adapter,
+                observations,
+                state,
+                config,
+                replay,
+                steps=online_collect_steps,
+                action_low=adapter.action_low,
+                action_high=adapter.action_high,
+                desc=f"{control} {phase} collect actor replay",
+                quiet=args.quiet,
+            )
+            env_steps += added_env_steps
+            collect_payload = {
+                **collect_metrics,
+                "total_env_steps": env_steps,
+                "replay_size_per_env": replay.size,
+            }
+            logger.write_json(f"{phase}_actor_replay.json", collect_payload)
+            logger.append_metrics(
+                {
+                    "phase": "online_actor_replay",
+                    "online_iteration": online_index,
+                    "control": control,
+                    **collect_payload,
+                }
+            )
+
+            online_train_steps = (
+                args.online_train_steps
+                if args.online_train_steps is not None
+                else max(1, args.train_steps // 2)
+            )
+            online_loss_history: list[float] = []
+            if online_train_steps > 0:
+                state, rng, _, online_loss_history = _fit_world_model(
+                    args,
+                    logger,
+                    state,
+                    rng,
+                    replay,
+                    config,
+                    np_rng=np_rng,
+                    steps=online_train_steps,
+                    control=control,
+                    phase=f"{phase}_world_model",
+                    desc=f"{control} {phase} fit world model",
+                    env_steps=env_steps,
+                )
+                logger.plot_world_model_loss(
+                    online_loss_history,
+                    filename=f"{phase}_world_model_loss.png",
+                )
+
+            rng, eval_key = jax.random.split(rng)
+            online_metrics = _evaluate_model(
+                state,
+                eval_key,
+                validation_batch,
+                config,
+                chunk_length=args.chunk_length,
+                open_loop_horizon=args.open_loop_horizon,
+                control=control,
+                action_low=adapter.action_low,
+                action_high=adapter.action_high,
+            )
+            logger.write_json(f"{phase}_model_metrics.json", online_metrics)
+
+            online_policy_train_steps = (
+                args.online_policy_train_steps
+                if args.online_policy_train_steps is not None
+                else args.policy_train_steps
+            )
+            if online_policy_train_steps > 0:
+                online_policy_outcome = _maybe_train_policy(
+                    args,
+                    logger,
+                    state,
+                    config,
+                    replay,
+                    control=control,
+                    seed=seed,
+                    np_rng=np_rng,
+                    rng=rng,
+                    action_low=adapter.action_low,
+                    action_high=adapter.action_high,
+                    phase=f"{phase}_policy",
+                    train_steps=online_policy_train_steps,
+                    reset_actor=args.online_reset_actor,
+                )
+                state = online_policy_outcome["state"]
+                rng = online_policy_outcome["rng"]
+                policy_outcome = online_policy_outcome
+                online_policy_payload = online_policy_outcome["outcome"]
+            else:
+                online_policy_payload = {"policy_training_enabled": False}
+            online_history.append(
+                {
+                    "iteration": online_index,
+                    "actor_replay": collect_payload,
+                    "model_metrics": online_metrics,
+                    "policy": online_policy_payload,
+                    "world_model_train_steps": online_train_steps,
+                    "policy_train_steps": online_policy_train_steps,
+                }
+            )
+        if online_history:
+            policy_outcome["outcome"] = _merge_online_policy_baseline(
+                policy_outcome["outcome"],
+                initial_policy_outcome,
+            )
+        if online_history:
+            logger.write_json("online_history.json", online_history)
+
+        rng, eval_key = jax.random.split(rng)
+        final_metrics = _evaluate_model(
+            state,
+            eval_key,
+            final_batch,
+            config,
+            chunk_length=args.chunk_length,
+            open_loop_horizon=args.open_loop_horizon,
+            control=control,
+            action_low=adapter.action_low,
+            action_high=adapter.action_high,
+        )
+        logger.write_json("model_metrics_final.json", final_metrics)
 
         checkpoint_dir = run_dir / "checkpoint"
         save_checkpoint(
@@ -487,6 +617,8 @@ def run_one(
             - final_metrics["model/open_loop_loss"],
             "reload_max_abs_prediction_diff": reload_diff,
             "final_model_metrics": final_metrics,
+            "online_iterations": args.online_iterations,
+            "online_history": online_history,
             **policy_outcome["outcome"],
             "world_model_passed": world_model_passed,
             "passed": world_model_passed,
@@ -518,6 +650,69 @@ def _collect_random_steps(
         )
         observations = step.observations
     return observations, steps * adapter.num_envs
+
+
+def _collect_policy_steps(
+    adapter: DMCVectorAdapter,
+    observations: np.ndarray,
+    state,
+    config: JepaConfig,
+    replay: SequenceReplayBuffer,
+    *,
+    steps: int,
+    action_low: np.ndarray,
+    action_high: np.ndarray,
+    desc: str,
+    quiet: bool,
+) -> tuple[np.ndarray, int, dict[str, Any]]:
+    action_low_jax = jnp.asarray(action_low, dtype=jnp.float32)
+    action_high_jax = jnp.asarray(action_high, dtype=jnp.float32)
+    completed_returns: list[float] = []
+    completed_lengths: list[int] = []
+    progress = tqdm(range(steps), desc=desc, unit="step", disable=quiet)
+    for _ in progress:
+        actions = np.asarray(
+            select_continuous_actions(
+                state,
+                jnp.asarray(observations[:, 0], dtype=jnp.float32),
+                config,
+                action_low_jax,
+                action_high_jax,
+            )
+        )
+        step = adapter.step(actions[:, None, :])
+        replay.add_step(
+            observations=observations[:, 0],
+            actions=actions,
+            rewards=step.rewards[:, 0],
+            dones=step.dones[:, 0],
+        )
+        completed_returns.extend(float(item[0]) for item in step.completed_returns)
+        completed_lengths.extend(int(item) for item in step.completed_lengths)
+        if completed_returns:
+            progress.set_postfix(
+                episodes=len(completed_returns),
+                mean_return=f"{np.mean(completed_returns):.3g}",
+            )
+        observations = step.observations
+
+    metrics = {
+        "env_steps": steps * adapter.num_envs,
+        "steps_per_env": steps,
+        "completed_episodes": len(completed_returns),
+        "mean_return": (
+            float(np.mean(completed_returns)) if completed_returns else None
+        ),
+        "std_return": (
+            float(np.std(completed_returns)) if completed_returns else None
+        ),
+        "mean_length": (
+            float(np.mean(completed_lengths)) if completed_lengths else None
+        ),
+        "returns": completed_returns,
+        "lengths": completed_lengths,
+    }
+    return observations, steps * adapter.num_envs, metrics
 
 
 def _collect_validation_replay(
@@ -556,6 +751,66 @@ def _collect_validation_replay(
         adapter.close()
 
 
+def _fit_world_model(
+    args: argparse.Namespace,
+    logger: RunLogger,
+    state,
+    rng: jax.Array,
+    replay: SequenceReplayBuffer,
+    config: JepaConfig,
+    *,
+    np_rng: np.random.Generator,
+    steps: int,
+    control: ControlMode,
+    phase: str,
+    desc: str,
+    env_steps: int,
+) -> tuple[Any, jax.Array, dict[str, Any], list[float]]:
+    loss_history: list[float] = []
+    metrics: dict[str, Any] = {}
+    fit_steps = tqdm(
+        range(1, steps + 1),
+        desc=desc,
+        unit="update",
+        disable=args.quiet,
+    )
+    for step_index in fit_steps:
+        batch = replay.sample(
+            np_rng,
+            batch_size=args.batch_size,
+            chunk_length=args.chunk_length,
+            max_horizon=max(args.model_horizon, args.open_loop_horizon),
+        )
+        rng, train_key = jax.random.split(rng)
+        state, metrics = train_model_step(
+            state,
+            train_key,
+            batch,
+            config,
+            chunk_length=args.chunk_length,
+            control=control,
+        )
+        total_loss = float(metrics["model/total_loss"])
+        jepa_loss = float(metrics["model/jepa_loss"])
+        loss_history.append(total_loss)
+        fit_steps.set_postfix(loss=f"{total_loss:.4g}", jepa=f"{jepa_loss:.4g}")
+        if (
+            step_index == 1
+            or step_index == steps
+            or step_index % args.eval_interval == 0
+        ):
+            logger.append_metrics(
+                {
+                    "phase": phase,
+                    "update": step_index,
+                    "env_steps": env_steps,
+                    "control": control,
+                    **metrics,
+                }
+            )
+    return state, rng, to_jsonable(metrics), loss_history
+
+
 def _maybe_train_policy(
     args: argparse.Namespace,
     logger: RunLogger,
@@ -569,16 +824,23 @@ def _maybe_train_policy(
     rng: jax.Array,
     action_low: np.ndarray,
     action_high: np.ndarray,
+    phase: str = "policy",
+    train_steps: int | None = None,
+    reset_actor: bool = True,
+    eval_seed_offset: int = 3_000_000,
+    selection_seed_offset: int = 5_000_000,
 ) -> dict[str, Any]:
-    if args.policy_train_steps == 0:
+    policy_train_steps = args.policy_train_steps if train_steps is None else train_steps
+    if policy_train_steps == 0:
         return {
             "state": state,
             "rng": rng,
             "outcome": {"policy_training_enabled": False},
         }
 
-    rng, reset_key = jax.random.split(rng)
-    state = reset_policy_heads(state, reset_key, config)
+    if reset_actor:
+        rng, reset_key = jax.random.split(rng)
+        state = reset_policy_heads(state, reset_key, config)
     eval_num_envs = args.policy_eval_num_envs or min(
         args.num_envs,
         args.policy_eval_episodes,
@@ -586,19 +848,21 @@ def _maybe_train_policy(
     policy_batch_size = args.policy_batch_size or args.batch_size
     action_low_jax = jnp.asarray(action_low, dtype=jnp.float32)
     action_high_jax = jnp.asarray(action_high, dtype=jnp.float32)
-    policy_eval_seed = seed + 3_000_000
-    policy_selection_seed = seed + 5_000_000
+    policy_eval_seed = seed + eval_seed_offset
+    policy_selection_seed = seed + selection_seed_offset
     selection_enabled = args.policy_selection_interval > 0
     selection_num_envs = args.policy_selection_num_envs or min(
         args.num_envs,
         args.policy_selection_episodes,
     )
+    artifact_prefix = "" if phase == "policy" else f"{phase}_"
+    metric_phase_prefix = "" if phase == "policy" else f"{phase}_"
 
     random_eval = _evaluate_random_policy(
         args,
         seed=policy_eval_seed,
         num_envs=eval_num_envs,
-        desc=f"{control} eval random policy",
+        desc=f"{control} {phase} eval random policy",
     )
     initial_eval = _evaluate_continuous_policy(
         args,
@@ -608,10 +872,10 @@ def _maybe_train_policy(
         num_envs=eval_num_envs,
         action_low=action_low_jax,
         action_high=action_high_jax,
-        desc=f"{control} eval initial policy",
+        desc=f"{control} {phase} eval initial policy",
     )
-    logger.write_json("random_policy_evaluation.json", random_eval)
-    logger.write_json("initial_policy_evaluation.json", initial_eval)
+    logger.write_json(f"{artifact_prefix}random_policy_evaluation.json", random_eval)
+    logger.write_json(f"{artifact_prefix}initial_policy_evaluation.json", initial_eval)
 
     best_state = state
     best_policy_step = 0
@@ -631,7 +895,7 @@ def _maybe_train_policy(
             episodes=args.policy_selection_episodes,
             action_low=action_low_jax,
             action_high=action_high_jax,
-            desc=f"{control} select initial policy",
+            desc=f"{control} {phase} select initial policy",
         )
         best_selection_eval = selection_eval
         best_selection_mean = selection_eval["mean_return"]
@@ -646,16 +910,17 @@ def _maybe_train_policy(
                 "phase": "policy_selection",
                 "update": 0,
                 "control": control,
+                "policy_phase": phase,
                 **selection_record,
             }
         )
-        logger.write_json("policy_selection_initial.json", selection_eval)
+        logger.write_json(f"{artifact_prefix}policy_selection_initial.json", selection_eval)
 
     critic_metrics: dict[str, Any] = {}
     if args.critic_warmup_steps > 0:
         critic_steps = tqdm(
             range(1, args.critic_warmup_steps + 1),
-            desc=f"{control} warm real-return critic",
+            desc=f"{control} {phase} warm real-return critic",
             unit="update",
             disable=args.quiet,
         )
@@ -686,9 +951,10 @@ def _maybe_train_policy(
             ):
                 logger.append_metrics(
                     {
-                        "phase": "real_return_critic_warmup",
+                        "phase": f"{metric_phase_prefix}real_return_critic_warmup",
                         "update": step_index,
                         "control": control,
+                        "policy_phase": phase,
                         **critic_metrics,
                     }
                 )
@@ -696,8 +962,8 @@ def _maybe_train_policy(
     policy_loss_history: list[float] = []
     metrics: dict[str, Any] = {}
     policy_steps = tqdm(
-        range(1, args.policy_train_steps + 1),
-        desc=f"{control} train frozen-policy",
+        range(1, policy_train_steps + 1),
+        desc=f"{control} {phase} train frozen-policy",
         unit="update",
         disable=args.quiet,
     )
@@ -752,19 +1018,20 @@ def _maybe_train_policy(
         )
         if (
             step_index == 1
-            or step_index == args.policy_train_steps
+            or step_index == policy_train_steps
             or step_index % args.eval_interval == 0
         ):
             logger.append_metrics(
                 {
-                    "phase": "frozen_model_policy",
+                    "phase": f"{metric_phase_prefix}frozen_model_policy",
                     "update": step_index,
                     "control": control,
+                    "policy_phase": phase,
                     **metrics,
                 }
             )
         if selection_enabled and (
-            step_index == args.policy_train_steps
+            step_index == policy_train_steps
             or step_index % args.policy_selection_interval == 0
         ):
             selection_eval = _evaluate_continuous_policy(
@@ -776,7 +1043,7 @@ def _maybe_train_policy(
                 episodes=args.policy_selection_episodes,
                 action_low=action_low_jax,
                 action_high=action_high_jax,
-                desc=f"{control} select policy {step_index}",
+                desc=f"{control} {phase} select policy {step_index}",
             )
             selected = selection_eval["mean_return"] > best_selection_mean
             if selected:
@@ -799,6 +1066,7 @@ def _maybe_train_policy(
                     "phase": "policy_selection",
                     "update": step_index,
                     "control": control,
+                    "policy_phase": phase,
                     **selection_record,
                     "policy_selection_best_mean_return": best_selection_mean,
                     "policy_selection_best_step": best_policy_step,
@@ -808,9 +1076,9 @@ def _maybe_train_policy(
     last_policy_metrics_json = to_jsonable(metrics)
     if selection_enabled:
         state = best_state
-        logger.write_json("policy_selection_history.json", selection_history)
+        logger.write_json(f"{artifact_prefix}policy_selection_history.json", selection_history)
         logger.write_json(
-            "best_policy_selection_evaluation.json",
+            f"{artifact_prefix}best_policy_selection_evaluation.json",
             {
                 "best_policy_step": best_policy_step,
                 "evaluation": best_selection_eval,
@@ -824,12 +1092,12 @@ def _maybe_train_policy(
         num_envs=eval_num_envs,
         action_low=action_low_jax,
         action_high=action_high_jax,
-        desc=f"{control} eval trained policy",
+        desc=f"{control} {phase} eval trained policy",
     )
-    logger.write_json("trained_policy_evaluation.json", trained_eval)
+    logger.write_json(f"{artifact_prefix}trained_policy_evaluation.json", trained_eval)
     logger.plot_world_model_loss(
         policy_loss_history,
-        filename="frozen_model_policy_loss.png",
+        filename=f"{artifact_prefix}frozen_model_policy_loss.png",
     )
 
     initial_mean = initial_eval["mean_return"]
@@ -841,7 +1109,9 @@ def _maybe_train_policy(
     critic_metrics_json = to_jsonable(critic_metrics)
     outcome = {
         "policy_training_enabled": True,
-        "policy_train_steps": args.policy_train_steps,
+        "policy_phase": phase,
+        "policy_reset_actor": reset_actor,
+        "policy_train_steps": policy_train_steps,
         "policy_objective": args.policy_objective,
         "policy_return_mode": args.policy_return_mode,
         "policy_imag_horizon": args.imag_horizon,
@@ -1021,6 +1291,37 @@ def _policy_selection_record(
         "policy_selection_mean_length": evaluation["mean_length"],
         "policy_selection_episodes": evaluation["episodes"],
     }
+
+
+def _merge_online_policy_baseline(
+    final_outcome: dict[str, Any],
+    initial_outcome: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(final_outcome)
+    phase_initial_mean = merged.get("policy_initial_mean")
+    phase_random_mean = merged.get("policy_random_mean")
+    phase_improvement = merged.get("policy_improvement")
+    merged["policy_online_phase_initial_mean"] = phase_initial_mean
+    merged["policy_online_phase_random_mean"] = phase_random_mean
+    merged["policy_online_phase_improvement"] = phase_improvement
+    merged["policy_initial_mean"] = initial_outcome["policy_initial_mean"]
+    merged["policy_random_mean"] = initial_outcome["policy_random_mean"]
+    merged["policy_improvement"] = (
+        merged["policy_trained_mean"] - merged["policy_initial_mean"]
+    )
+    merged["policy_trained_minus_random"] = (
+        merged["policy_trained_mean"] - merged["policy_random_mean"]
+    )
+    policy_metrics = merged.get("policy_final_metrics", {})
+    critic_metrics = merged.get("critic_final_metrics", {})
+    merged["policy_passed"] = bool(
+        _metrics_finite(policy_metrics)
+        and _metrics_finite(critic_metrics)
+        and merged["policy_trained_mean"] > merged["policy_initial_mean"]
+        and merged["policy_trained_mean"] > merged["policy_random_mean"]
+        and policy_metrics.get("policy/action_saturation_fraction", 1.0) < 0.75
+    )
+    return merged
 
 
 def _evaluate_model(

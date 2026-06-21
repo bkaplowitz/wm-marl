@@ -25,6 +25,7 @@ from world_marl.jepa.training import (
     train_model_step,
 )
 from world_marl.scripts.train_dmc_jepa import (
+    _merge_online_policy_baseline,
     _run_passed as dmc_run_passed,
     summarize as summarize_dmc_jepa,
 )
@@ -787,6 +788,35 @@ def test_dmc_jepa_policy_summary_allows_majority_success_with_positive_aggregate
     assert summary["policy_main_successes"] == 2
     assert summary["policy_required_successes"] == 2
     assert summary["policy_aggregate_improved"]
+
+
+def test_online_policy_outcome_keeps_original_baseline_for_summary():
+    initial = {
+        "policy_initial_mean": 10.0,
+        "policy_random_mean": 1.0,
+    }
+    final = {
+        "policy_initial_mean": 50.0,
+        "policy_random_mean": 2.0,
+        "policy_trained_mean": 40.0,
+        "policy_improvement": -10.0,
+        "policy_trained_minus_random": 38.0,
+        "policy_final_metrics": {
+            "policy/action_saturation_fraction": 0.1,
+        },
+        "critic_final_metrics": {
+            "critic/finite_fraction": 1.0,
+        },
+    }
+
+    merged = _merge_online_policy_baseline(final, initial)
+
+    assert merged["policy_initial_mean"] == 10.0
+    assert merged["policy_random_mean"] == 1.0
+    assert merged["policy_online_phase_initial_mean"] == 50.0
+    assert merged["policy_improvement"] == 30.0
+    assert merged["policy_trained_minus_random"] == 39.0
+    assert merged["policy_passed"]
 
 
 def _batch(config: JepaConfig):

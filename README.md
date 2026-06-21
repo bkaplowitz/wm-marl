@@ -161,6 +161,45 @@ actor is trained toward the best candidate only when the predicted action-value
 gap is nontrivial. Evaluation still uses the direct actor; no MPC/search is used
 at evaluation time.
 
+The next rung turns the offline validation into an online data loop. After the
+first frozen-model policy phase, the selected actor collects fresh real DMC
+transitions, the replay buffer is updated, the world model is refit, and the
+actor continues training in the updated latent model:
+
+```bash
+uv run world-marl-validate-dmc-world-model \
+  --env dmc:cartpole/swingup \
+  --num-envs 16 \
+  --dmc-workers 1 \
+  --collect-steps 8192 \
+  --validation-steps 2048 \
+  --train-steps 8000 \
+  --critic-warmup-steps 1000 \
+  --critic-horizon 32 \
+  --policy-train-steps 3000 \
+  --policy-objective candidate-distill \
+  --num-policy-candidates 64 \
+  --candidate-min-gap 0.001 \
+  --imag-horizon 15 \
+  --policy-selection-interval 500 \
+  --policy-selection-episodes 20 \
+  --policy-eval-episodes 30 \
+  --online-iterations 1 \
+  --online-collect-steps 2048 \
+  --online-train-steps 3000 \
+  --online-policy-train-steps 1500 \
+  --batch-size 256 \
+  --chunk-length 32 \
+  --open-loop-horizon 15 \
+  --latent-dim 128 \
+  --regularizer sigreg \
+  --sigreg-weight 0.05 \
+  --controls none \
+  --num-runs 3 \
+  --out-dir runs/dmc_jepa_online_cartpole \
+  --allow-fail
+```
+
 Each `metrics.jsonl` row includes rollout diagnostics for debugging learning
 failures:
 
