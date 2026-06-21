@@ -210,6 +210,18 @@ failures:
 - generic info/event counters, including coin-related and `coin_consumed` keys
   if the Melting Pot wrapper exposes them.
 
+Create a visual dashboard from any DMC JEPA experiment directory:
+
+```bash
+uv run world-marl-plot-dmc-jepa-run \
+  --run-dir runs/dmc_jepa_online_cartpole/dmc_jepa_YYYYMMDDTHHMMSSZ \
+  --out runs/dmc_jepa_online_cartpole/visual_report.png
+```
+
+The same command also accepts a single run directory containing `outcome.json`.
+The dashboard summarizes latent fit, control comparisons, policy improvement,
+online actor-replay returns, and action-conditioning diagnostics.
+
 
 ## Tests
 
