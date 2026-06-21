@@ -2152,7 +2152,6 @@ dependencies = [
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "optax" },
-    { name = "pillow" },
     { name = "shimmy", extra = ["meltingpot"] },
     { name = "tqdm" },
 ]
@@ -2185,7 +2184,6 @@ requires-dist = [
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "optax" },
-    { name = "pillow" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.18" },

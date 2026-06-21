@@ -103,7 +103,7 @@ uv run world-marl-validate-dmc-world-model \
   --latent-dim 128 \
   --regularizer sigreg \
   --sigreg-weight 0.05 \
-  --controls none no-action-world-model shuffled-action-replay \
+  --controls none no-action-world-model shuffled-action-replay frozen-random-world-model \
   --out-dir runs/dmc_jepa
 ```
 
@@ -141,7 +141,7 @@ uv run world-marl-validate-dmc-world-model \
   --latent-dim 128 \
   --regularizer sigreg \
   --sigreg-weight 0.05 \
-  --controls none no-action-world-model shuffled-action-replay \
+  --controls none no-action-world-model shuffled-action-replay frozen-random-world-model \
   --out-dir runs/dmc_jepa_policy
 ```
 
@@ -153,7 +153,7 @@ policy returns:
 - real-return critic warmup diagnostics;
 - trained actor return after frozen-model imagination training, using the best
   actor selected by periodic paired real-environment validation;
-- paired no-action and shuffled-action controls.
+- paired no-action, shuffled-action, and frozen-random-world-model controls.
 
 The default policy objective is training-only candidate distillation: the
 frozen latent model scores sampled action candidates for replay states, and the
@@ -209,38 +209,6 @@ failures:
 - value prediction mean/std, GAE target mean/std, and value explained variance;
 - generic info/event counters, including coin-related and `coin_consumed` keys
   if the Melting Pot wrapper exposes them.
-
-Create a visual dashboard from any DMC JEPA experiment directory:
-
-```bash
-uv run world-marl-plot-dmc-jepa-run \
-  --run-dir runs/dmc_jepa_online_cartpole/dmc_jepa_YYYYMMDDTHHMMSSZ \
-  --out runs/dmc_jepa_online_cartpole/visual_report.png
-```
-
-The same command also accepts a single run directory containing `outcome.json`.
-The dashboard summarizes latent fit, control comparisons, policy improvement,
-online actor-replay returns, and action-conditioning diagnostics.
-
-Render a real-environment rollout GIF from the best main actor checkpoint in an
-experiment:
-
-```bash
-RUN=$(ls -td runs/dmc_jepa_online_cartpole/dmc_jepa_* | head -1)
-
-uv run world-marl-render-dmc-jepa-policy \
-  --run-dir "$RUN" \
-  --seed 0 \
-  --max-steps 500 \
-  --out "$RUN/policy_rollout.gif"
-```
-
-The renderer loads the saved actor checkpoint and steps the actual DMC task. It
-does not use MPC or action search at evaluation time.
-
-On headless GPU pods the renderer defaults to `--mujoco-gl egl`. If MuJoCo
-cannot create an OpenGL context, install the EGL runtime libraries on the pod
-or retry with `--mujoco-gl osmesa` after installing `libosmesa6`.
 
 
 ## Tests

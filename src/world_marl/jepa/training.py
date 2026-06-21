@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import asdict
 from functools import partial
-from typing import Any, Literal
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -20,6 +19,7 @@ ControlMode = Literal[
     "none",
     "no-action-world-model",
     "shuffled-action-replay",
+    "frozen-random-world-model",
     "no-sigreg",
     "weak-sigreg",
     "no-isotropy",
@@ -985,35 +985,6 @@ def reward_only_returns(
     return returns[::-1]
 
 
-@partial(jax.jit, static_argnames=("config", "chunk_length", "control"))
-def evaluate_world_model(
-    state: JepaTrainState,
-    key: jax.Array,
-    batch: ReplayBatch,
-    config: JepaConfig,
-    *,
-    chunk_length: int,
-    control: ControlMode = "none",
-) -> dict[str, jax.Array]:
-    _, metrics = world_model_loss(
-        state.params,
-        state.apply_fn,
-        key,
-        batch,
-        config,
-        chunk_length=chunk_length,
-        control=control,
-    )
-    metrics["model/action_sensitivity"] = action_sensitivity(
-        state.params,
-        state.apply_fn,
-        batch.observations[:, 0],
-        config,
-        control=control,
-    )
-    return metrics
-
-
 @partial(jax.jit, static_argnames=("config", "horizon", "control"))
 def evaluate_open_loop(
     state: JepaTrainState,
@@ -1216,36 +1187,6 @@ def latent_collapse_metrics(latents: jax.Array) -> dict[str, jax.Array]:
     return metrics
 
 
-def action_sensitivity(
-    params: FrozenDict,
-    apply_fn,
-    observations: jax.Array,
-    config: JepaConfig,
-    *,
-    control: ControlMode = "none",
-) -> jax.Array:
-    if control == "no-action-world-model":
-        return jnp.asarray(0.0, dtype=jnp.float32)
-    if config.action_mode != "discrete":
-        return jnp.asarray(jnp.nan, dtype=jnp.float32)
-    z = apply_fn({"params": params}, observations, method=JepaWorldModel.encode)
-    context = jnp.repeat(z[:, None, :], repeats=config.context_window, axis=1)
-    preds = []
-    for action in range(config.action_dim):
-        actions = jnp.zeros((z.shape[0], config.context_window), dtype=jnp.int32)
-        actions = actions.at[:, -1].set(action)
-        pred, _, _ = apply_fn(
-            {"params": params},
-            context,
-            actions,
-            method=JepaWorldModel.predict_next_from_history,
-        )
-        preds.append(pred)
-    stacked = jnp.stack(preds, axis=1)
-    center = jnp.mean(stacked, axis=1, keepdims=True)
-    return jnp.mean(jnp.linalg.norm(stacked - center, axis=-1))
-
-
 def action_value_gap(
     state: JepaTrainState,
     observations: jax.Array,
@@ -1308,70 +1249,6 @@ def enumerated_action_values_from_latent(
         jnp.stack(continues, axis=-1),
         jnp.stack(next_values, axis=-1),
     )
-
-
-def policy_diagnostics(
-    reference_state: JepaTrainState,
-    current_state: JepaTrainState,
-    observations: jax.Array,
-    config: JepaConfig,
-    *,
-    prefix: str,
-) -> dict[str, jax.Array]:
-    flat_obs = observations.reshape((-1, config.observation_dim))
-    ref_logits, _ = reference_state.apply_fn(
-        {"params": reference_state.params},
-        flat_obs,
-        method=JepaWorldModel.actor_value_from_obs,
-    )
-    cur_logits, _ = current_state.apply_fn(
-        {"params": current_state.params},
-        flat_obs,
-        method=JepaWorldModel.actor_value_from_obs,
-    )
-    ref_log_probs = jax.nn.log_softmax(ref_logits, axis=-1)
-    cur_log_probs = jax.nn.log_softmax(cur_logits, axis=-1)
-    ref_probs = jnp.exp(ref_log_probs)
-    cur_probs = jnp.exp(cur_log_probs)
-    ref_actions = jnp.argmax(ref_logits, axis=-1)
-    cur_actions = jnp.argmax(cur_logits, axis=-1)
-    sorted_logits = jnp.sort(cur_logits, axis=-1)
-    frequencies = jnp.bincount(
-        cur_actions,
-        length=config.action_dim,
-    ).astype(jnp.float32) / jnp.maximum(cur_actions.shape[0], 1)
-    ref_z = reference_state.apply_fn(
-        {"params": reference_state.params},
-        flat_obs,
-        method=JepaWorldModel.encode,
-    )
-    cur_z = current_state.apply_fn(
-        {"params": current_state.params},
-        flat_obs,
-        method=JepaWorldModel.encode,
-    )
-    metrics = {
-        f"{prefix}/policy_kl": jnp.mean(
-            jnp.sum(ref_probs * (ref_log_probs - cur_log_probs), axis=-1)
-        ),
-        f"{prefix}/action_flip_rate": jnp.mean((ref_actions != cur_actions).astype(jnp.float32)),
-        f"{prefix}/entropy": jnp.mean(-jnp.sum(cur_probs * cur_log_probs, axis=-1)),
-        f"{prefix}/logit_margin": jnp.mean(sorted_logits[:, -1] - sorted_logits[:, -2]),
-        f"{prefix}/actor_param_delta": tree_l2_delta(
-            reference_state.params["actor_head"],
-            current_state.params["actor_head"],
-        ),
-        f"{prefix}/value_param_delta": tree_l2_delta(
-            reference_state.params["value_head"],
-            current_state.params["value_head"],
-        ),
-        f"{prefix}/encoder_latent_drift": jnp.mean(
-            jnp.linalg.norm(cur_z - ref_z, axis=-1)
-        ),
-    }
-    for action in range(config.action_dim):
-        metrics[f"{prefix}/action_frequency_{action}"] = frequencies[action]
-    return metrics
 
 
 def _normalize(x: jax.Array) -> jax.Array:
@@ -1460,15 +1337,6 @@ def _regularizer_weight(config: JepaConfig, control: ControlMode) -> float:
     return config.isotropy_weight
 
 
-def tree_l2_delta(reference, current) -> jax.Array:
-    ref_leaves = jax.tree_util.tree_leaves(reference)
-    cur_leaves = jax.tree_util.tree_leaves(current)
-    total = jnp.asarray(0.0)
-    for ref, cur in zip(ref_leaves, cur_leaves, strict=True):
-        total = total + jnp.sum(jnp.square(cur - ref))
-    return jnp.sqrt(total)
-
-
 def _masked_adam(
     params: FrozenDict,
     trainable_groups: frozenset[str],
@@ -1508,7 +1376,3 @@ def _finite_fraction(x: jax.Array) -> jax.Array:
 def _all_finite_fraction(*values: jax.Array) -> jax.Array:
     fractions = [_finite_fraction(value) for value in values]
     return jnp.min(jnp.stack(fractions))
-
-
-def config_dict(config: JepaConfig) -> dict[str, Any]:
-    return asdict(config)

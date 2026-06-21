@@ -798,9 +798,9 @@ def test_online_policy_outcome_keeps_original_baseline_for_summary():
     final = {
         "policy_initial_mean": 50.0,
         "policy_random_mean": 2.0,
-        "policy_trained_mean": 40.0,
-        "policy_improvement": -10.0,
-        "policy_trained_minus_random": 38.0,
+        "policy_trained_mean": 60.0,
+        "policy_improvement": 10.0,
+        "policy_trained_minus_random": 58.0,
         "policy_final_metrics": {
             "policy/action_saturation_fraction": 0.1,
         },
@@ -814,9 +814,89 @@ def test_online_policy_outcome_keeps_original_baseline_for_summary():
     assert merged["policy_initial_mean"] == 10.0
     assert merged["policy_random_mean"] == 1.0
     assert merged["policy_online_phase_initial_mean"] == 50.0
-    assert merged["policy_improvement"] == 30.0
-    assert merged["policy_trained_minus_random"] == 39.0
+    assert merged["policy_online_phase_improvement"] == 10.0
+    assert merged["policy_improvement"] == 50.0
+    assert merged["policy_primary_improvement"] == 10.0
+    assert merged["policy_primary_improvement_key"] == "policy_online_phase_improvement"
+    assert merged["policy_trained_minus_random"] == 59.0
     assert merged["policy_passed"]
+
+
+def test_online_policy_regression_fails_even_when_total_return_improves():
+    initial = {
+        "policy_initial_mean": 10.0,
+        "policy_random_mean": 1.0,
+    }
+    final = {
+        "policy_initial_mean": 50.0,
+        "policy_random_mean": 2.0,
+        "policy_trained_mean": 40.0,
+        "policy_improvement": -10.0,
+        "policy_trained_minus_random": 38.0,
+        "policy_final_metrics": {
+            "policy/action_saturation_fraction": 0.1,
+        },
+        "critic_final_metrics": {
+            "critic/finite_fraction": 1.0,
+        },
+    }
+
+    merged = _merge_online_policy_baseline(final, initial)
+
+    assert merged["policy_improvement"] == 30.0
+    assert merged["policy_primary_improvement"] == -10.0
+    assert not merged["policy_passed"]
+
+
+def test_dmc_jepa_summary_uses_online_phase_as_primary_policy_signal():
+    def outcome(control: str, total: float, online: float):
+        return {
+            "run_index": 0,
+            "control": control,
+            "passed": True,
+            "initial_jepa_loss": 1.0,
+            "final_jepa_loss": 0.1 if control == "none" else 0.2,
+            "initial_open_loop_loss": 1.0,
+            "final_open_loop_loss": 0.1 if control == "none" else 0.2,
+            "policy_training_enabled": True,
+            "policy_passed": control == "none" and online > 0.0,
+            "policy_random_mean": 0.0,
+            "policy_initial_mean": 10.0,
+            "policy_trained_mean": 10.0 + total,
+            "policy_improvement": total,
+            "policy_online_phase_improvement": online,
+            "policy_primary_improvement": online,
+            "policy_primary_improvement_key": "policy_online_phase_improvement",
+            "policy_trained_minus_random": 10.0 + total,
+            "final_model_metrics": {"model/jepa_loss": 0.1},
+        }
+
+    good = summarize_dmc_jepa(
+        [
+            outcome("none", 50.0, 5.0),
+            outcome("shuffled-action-replay", 40.0, 1.0),
+        ]
+    )
+    bad = summarize_dmc_jepa(
+        [
+            outcome("none", 50.0, 1.0),
+            outcome("shuffled-action-replay", 10.0, 5.0),
+        ]
+    )
+
+    assert good["passed"]
+    assert good["policy_comparison_key"] == "policy_primary_improvement"
+    assert good["aggregate_policy_primary_improvement"] == 5.0
+    assert good["aggregate_control_policy_primary_improvement"] == 1.0
+    assert (
+        good["paired_control_differences"]["shuffled-action-replay"][
+            "mean_policy_primary_improvement_advantage"
+        ]
+        == 4.0
+    )
+    assert not bad["passed"]
+    assert not bad["policy_main_beats_controls"]
+    assert not bad["paired_policy_ok"]
 
 
 def _batch(config: JepaConfig):

@@ -40,6 +40,7 @@ from world_marl.jepa.training import (
 from world_marl.logging import RunLogger, dependency_versions, timestamp, to_jsonable
 
 MIN_TERMINAL_FRACTION_FOR_CONTINUE_BASELINE = 0.01
+FROZEN_RANDOM_WORLD_MODEL_CONTROL = "frozen-random-world-model"
 
 
 def parse_args() -> argparse.Namespace:
@@ -150,8 +151,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--controls",
         nargs="+",
-        choices=("none", "no-action-world-model", "shuffled-action-replay"),
-        default=("none", "no-action-world-model", "shuffled-action-replay"),
+        choices=(
+            "none",
+            "no-action-world-model",
+            "shuffled-action-replay",
+            FROZEN_RANDOM_WORLD_MODEL_CONTROL,
+        ),
+        default=(
+            "none",
+            "no-action-world-model",
+            "shuffled-action-replay",
+            FROZEN_RANDOM_WORLD_MODEL_CONTROL,
+        ),
     )
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--allow-fail", action="store_true")
@@ -262,6 +273,10 @@ def main() -> None:
     print(json.dumps(to_jsonable(summary), indent=2, sort_keys=True))
     if not args.allow_fail and not summary["passed"]:
         raise SystemExit(1)
+
+
+def _skip_world_model_fit(control: ControlMode) -> bool:
+    return control == FROZEN_RANDOM_WORLD_MODEL_CONTROL
 
 
 def run_one(
@@ -391,21 +406,33 @@ def run_one(
         )
         logger.write_json("initial_model_metrics.json", initial_metrics)
 
-        state, rng, _, loss_history = _fit_world_model(
-            args,
-            logger,
-            state,
-            rng,
-            replay,
-            config,
-            np_rng=np_rng,
-            steps=args.train_steps,
-            control=control,
-            phase="world_model",
-            desc=f"{control} fit world model",
-            env_steps=env_steps,
-        )
-        logger.plot_world_model_loss(loss_history, filename="dmc_world_model_loss.png")
+        if _skip_world_model_fit(control):
+            loss_history: list[float] = []
+            logger.append_metrics(
+                {
+                    "phase": "world_model_skipped",
+                    "update": 0,
+                    "env_steps": env_steps,
+                    "control": control,
+                    "world_model_fit_skipped": True,
+                }
+            )
+        else:
+            state, rng, _, loss_history = _fit_world_model(
+                args,
+                logger,
+                state,
+                rng,
+                replay,
+                config,
+                np_rng=np_rng,
+                steps=args.train_steps,
+                control=control,
+                phase="world_model",
+                desc=f"{control} fit world model",
+                env_steps=env_steps,
+            )
+            logger.plot_world_model_loss(loss_history, filename="dmc_world_model_loss.png")
 
         rng, eval_key = jax.random.split(rng)
         final_batch = validation_batch
@@ -475,6 +502,8 @@ def run_one(
                 if args.online_train_steps is not None
                 else max(1, args.train_steps // 2)
             )
+            if _skip_world_model_fit(control):
+                online_train_steps = 0
             online_loss_history: list[float] = []
             if online_train_steps > 0:
                 state, rng, _, online_loss_history = _fit_world_model(
@@ -1136,6 +1165,8 @@ def _maybe_train_policy(
         "policy_initial_mean": initial_mean,
         "policy_trained_mean": trained_mean,
         "policy_improvement": trained_mean - initial_mean,
+        "policy_primary_improvement": trained_mean - initial_mean,
+        "policy_primary_improvement_key": "policy_improvement",
         "policy_trained_minus_random": trained_mean - random_mean,
         "policy_final_metrics": policy_metrics_json,
         "policy_passed": bool(
@@ -1309,6 +1340,13 @@ def _merge_online_policy_baseline(
     merged["policy_improvement"] = (
         merged["policy_trained_mean"] - merged["policy_initial_mean"]
     )
+    primary_improvement = (
+        phase_improvement
+        if phase_improvement is not None
+        else merged["policy_improvement"]
+    )
+    merged["policy_primary_improvement"] = primary_improvement
+    merged["policy_primary_improvement_key"] = "policy_online_phase_improvement"
     merged["policy_trained_minus_random"] = (
         merged["policy_trained_mean"] - merged["policy_random_mean"]
     )
@@ -1317,7 +1355,7 @@ def _merge_online_policy_baseline(
     merged["policy_passed"] = bool(
         _metrics_finite(policy_metrics)
         and _metrics_finite(critic_metrics)
-        and merged["policy_trained_mean"] > merged["policy_initial_mean"]
+        and primary_improvement > 0.0
         and merged["policy_trained_mean"] > merged["policy_random_mean"]
         and policy_metrics.get("policy/action_saturation_fraction", 1.0) < 0.75
     )
@@ -1452,7 +1490,11 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
     main_jepa = _mean(main, "final_jepa_loss")
     control_open_loop = _mean(controls, "final_open_loop_loss")
     control_jepa = _mean(controls, "final_jepa_loss")
-    paired = _paired_control_differences(outcomes)
+    policy_comparison_key = _policy_comparison_key(outcomes)
+    paired = _paired_control_differences(
+        outcomes,
+        policy_key=policy_comparison_key,
+    )
     main_beats_controls_open_loop = (
         not controls
         or (
@@ -1487,7 +1529,7 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
             sum(outcome.get("policy_passed", False) for outcome in main)
         )
         policy_required_successes = max(1, math.ceil((2 * len(main)) / 3))
-        main_policy_improvement = _mean(main, "policy_improvement")
+        main_policy_improvement = _mean(main, policy_comparison_key)
         main_policy_minus_random = _mean(main, "policy_trained_minus_random")
         policy_aggregate_improved = bool(
             main_policy_improvement is not None and main_policy_improvement > 0.0
@@ -1501,7 +1543,7 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
             and policy_aggregate_improved
             and policy_aggregate_beats_random
         )
-        control_policy_improvement = _mean(controls, "policy_improvement")
+        control_policy_improvement = _mean(controls, policy_comparison_key)
         policy_main_beats_controls = (
             not controls
             or (
@@ -1511,8 +1553,8 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
             )
         )
         paired_policy_ok = not paired or all(
-            item.get("mean_policy_improvement_advantage") is not None
-            and item["mean_policy_improvement_advantage"] > 0.0
+            item.get("mean_policy_primary_improvement_advantage") is not None
+            and item["mean_policy_primary_improvement_advantage"] > 0.0
             for item in paired.values()
         )
     return {
@@ -1554,6 +1596,7 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         "policy_aggregate_beats_random": policy_aggregate_beats_random,
         "policy_main_beats_controls": policy_main_beats_controls,
         "paired_policy_ok": paired_policy_ok,
+        "policy_comparison_key": policy_comparison_key,
         "paired_control_differences": paired,
         "aggregate_initial_jepa_loss": _mean(main, "initial_jepa_loss"),
         "aggregate_final_jepa_loss": main_jepa,
@@ -1565,6 +1608,14 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         "aggregate_policy_initial_mean": _mean(main, "policy_initial_mean"),
         "aggregate_policy_trained_mean": _mean(main, "policy_trained_mean"),
         "aggregate_policy_improvement": _mean(main, "policy_improvement"),
+        "aggregate_policy_online_phase_improvement": _mean(
+            main,
+            "policy_online_phase_improvement",
+        ),
+        "aggregate_policy_primary_improvement": _mean(
+            main,
+            policy_comparison_key,
+        ),
         "aggregate_policy_trained_minus_random": _mean(
             main,
             "policy_trained_minus_random",
@@ -1572,6 +1623,14 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         "aggregate_control_policy_improvement": _mean(
             controls,
             "policy_improvement",
+        ),
+        "aggregate_control_policy_online_phase_improvement": _mean(
+            controls,
+            "policy_online_phase_improvement",
+        ),
+        "aggregate_control_policy_primary_improvement": _mean(
+            controls,
+            policy_comparison_key,
         ),
         "runs": outcomes,
     }
@@ -1616,14 +1675,40 @@ def _metrics_finite(metrics: dict[str, Any]) -> bool:
 
 
 def _mean(rows: list[dict[str, Any]], key: str) -> float | None:
-    values = [row[key] for row in rows if key in row]
+    values = [
+        value
+        for row in rows
+        if (value := _metric_value(row, key)) is not None
+    ]
     if not values:
         return None
     return float(np.mean(values))
 
 
+def _metric_value(row: dict[str, Any], key: str) -> Any | None:
+    if key == "policy_primary_improvement":
+        return row.get(
+            "policy_primary_improvement",
+            row.get(
+                "policy_online_phase_improvement",
+                row.get("policy_improvement"),
+            ),
+        )
+    return row.get(key)
+
+
+def _policy_comparison_key(outcomes: list[dict[str, Any]]) -> str:
+    if any("policy_primary_improvement" in outcome for outcome in outcomes):
+        return "policy_primary_improvement"
+    if any("policy_online_phase_improvement" in outcome for outcome in outcomes):
+        return "policy_online_phase_improvement"
+    return "policy_improvement"
+
+
 def _paired_control_differences(
     outcomes: list[dict[str, Any]],
+    *,
+    policy_key: str,
 ) -> dict[str, dict[str, Any]]:
     main_by_run = {
         outcome["run_index"]: outcome
@@ -1635,6 +1720,8 @@ def _paired_control_differences(
         jepa_advantages = []
         open_loop_advantages = []
         policy_improvement_advantages = []
+        policy_online_phase_advantages = []
+        policy_primary_advantages = []
         for outcome in outcomes:
             if outcome["control"] != control:
                 continue
@@ -1651,6 +1738,14 @@ def _paired_control_differences(
                 policy_improvement_advantages.append(
                     main["policy_improvement"] - outcome["policy_improvement"]
                 )
+            main_online = _metric_value(main, "policy_online_phase_improvement")
+            control_online = _metric_value(outcome, "policy_online_phase_improvement")
+            if main_online is not None and control_online is not None:
+                policy_online_phase_advantages.append(main_online - control_online)
+            main_primary = _metric_value(main, policy_key)
+            control_primary = _metric_value(outcome, policy_key)
+            if main_primary is not None and control_primary is not None:
+                policy_primary_advantages.append(main_primary - control_primary)
         result[control] = {
             "pairs": len(jepa_advantages),
             "mean_jepa_advantage": (
@@ -1670,8 +1765,24 @@ def _paired_control_differences(
                 if policy_improvement_advantages
                 else None
             ),
+            "mean_policy_online_phase_improvement_advantage": (
+                float(np.mean(policy_online_phase_advantages))
+                if policy_online_phase_advantages
+                else None
+            ),
+            "mean_policy_primary_improvement_advantage": (
+                float(np.mean(policy_primary_advantages))
+                if policy_primary_advantages
+                else None
+            ),
             "runs_main_better_policy": int(
                 np.sum(np.asarray(policy_improvement_advantages) > 0.0)
+            ),
+            "runs_main_better_policy_online_phase": int(
+                np.sum(np.asarray(policy_online_phase_advantages) > 0.0)
+            ),
+            "runs_main_better_policy_primary": int(
+                np.sum(np.asarray(policy_primary_advantages) > 0.0)
             ),
         }
     return result
