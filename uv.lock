@@ -2142,8 +2142,6 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "distrax" },
-    { name = "dm-meltingpot" },
-    { name = "dmlab2d" },
     { name = "flax" },
     { name = "gymnax" },
     { name = "jax" },
@@ -2152,7 +2150,6 @@ dependencies = [
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "optax" },
-    { name = "shimmy", extra = ["meltingpot"] },
     { name = "tqdm" },
 ]
 
@@ -2168,13 +2165,18 @@ dev = [
 dmc = [
     { name = "dm-control" },
 ]
+meltingpot = [
+    { name = "dm-meltingpot" },
+    { name = "dmlab2d" },
+    { name = "shimmy", extra = ["meltingpot"] },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "distrax" },
     { name = "dm-control", marker = "extra == 'dmc'", specifier = ">=1.0" },
-    { name = "dm-meltingpot", specifier = "==2.4.0" },
-    { name = "dmlab2d", specifier = "==1.0.0" },
+    { name = "dm-meltingpot", marker = "extra == 'meltingpot'", specifier = "==2.4.0" },
+    { name = "dmlab2d", marker = "extra == 'meltingpot'", specifier = "==1.0.0" },
     { name = "flax" },
     { name = "gymnax", specifier = "==0.0.9" },
     { name = "jax", specifier = "==0.4.36" },
@@ -2187,10 +2189,10 @@ requires-dist = [
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.18" },
-    { name = "shimmy", extras = ["meltingpot"], specifier = "==2.0.1" },
+    { name = "shimmy", extras = ["meltingpot"], marker = "extra == 'meltingpot'", specifier = "==2.0.1" },
     { name = "tqdm" },
 ]
-provides-extras = ["dev", "cuda12", "dmc"]
+provides-extras = ["dev", "cuda12", "dmc", "meltingpot"]
 
 [[package]]
 name = "wrapt"

@@ -13,9 +13,6 @@ dependencies = [
   "jaxlib==0.4.36",
   "jaxmarl[algs]==0.1.0",
   "gymnax==0.0.9",
-  "dm-meltingpot==2.4.0",
-  "dmlab2d==1.0.0",
-  "shimmy[meltingpot]==2.0.1",
   "flax",
   "distrax",
   "optax",
@@ -35,6 +32,11 @@ cuda12 = [
 ]
 dmc = [
   "dm-control>=1.0",
+]
+meltingpot = [
+  "dm-meltingpot==2.4.0",
+  "dmlab2d==1.0.0",
+  "shimmy[meltingpot]==2.0.1",
 ]
 
 [project.scripts]

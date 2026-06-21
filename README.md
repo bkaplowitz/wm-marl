@@ -15,11 +15,27 @@
 uv sync --python 3.11 --extra dev
 ```
 
-The important pins are:
+For Melting Pot/JaxMARL work, install the Melting Pot extra:
+
+```bash
+uv sync --python 3.11 --extra dev --extra meltingpot
+```
+
+For DMC JEPA work, install only the DMC extra. This avoids pulling TensorFlow
+through Melting Pot on small cloud disks:
+
+```bash
+uv sync --python 3.11 --extra dmc
+```
+
+The important optional Melting Pot pins are:
 
 - `dm-meltingpot==2.4.0`
 - `dmlab2d==1.0.0`
 - `shimmy[meltingpot]==2.0.1`
+
+The common JAX/JaxMARL pins are:
+
 - `jaxmarl[algs]==0.1.0`
 - `jax==0.4.36`
 - `jaxlib==0.4.36`
@@ -28,6 +44,12 @@ The important pins are:
 
 ```bash
 uv sync --python 3.11 --extra dev --extra cuda12
+```
+
+DMC + CUDA on cloud:
+
+```bash
+uv sync --python 3.11 --extra dmc --extra cuda12
 ```
 
 ### Basic CMDs 
