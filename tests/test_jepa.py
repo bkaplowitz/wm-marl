@@ -962,8 +962,30 @@ def test_dmc_jepa_summary_requires_paired_policy_majority():
 def test_online_history_metrics_tracks_actor_replay_trend():
     metrics = _online_history_metrics(
         [
-            {"actor_replay": {"mean_return": 10.0}},
-            {"actor_replay": {"mean_return": 25.0}},
+            {
+                "actor_replay": {"mean_return": 10.0},
+                "policy": {
+                    "policy_training_enabled": True,
+                    "policy_improvement": 3.0,
+                    "policy_passed": True,
+                },
+                "model_metrics": {
+                    "model/jepa_loss": 0.2,
+                    "model/open_loop_loss": 0.4,
+                },
+            },
+            {
+                "actor_replay": {"mean_return": 25.0},
+                "policy": {
+                    "policy_training_enabled": True,
+                    "policy_improvement": 5.0,
+                    "policy_passed": True,
+                },
+                "model_metrics": {
+                    "model/jepa_loss": 0.1,
+                    "model/open_loop_loss": 0.3,
+                },
+            },
         ],
         {"policy_trained_mean": 8.0},
     )
@@ -973,6 +995,26 @@ def test_online_history_metrics_tracks_actor_replay_trend():
     assert metrics["online_actor_replay_delta"] == 15.0
     assert metrics["online_actor_replay_vs_initial_policy"] == 17.0
     assert metrics["online_actor_replay_trend_passed"]
+    assert metrics["online_policy_phase_improvements"] == [3.0, 5.0]
+    assert metrics["online_policy_phase_final_improvement"] == 5.0
+    assert metrics["online_policy_phase_passes"] == [True, True]
+    assert metrics["online_policy_phase_passed"]
+    assert metrics["online_model_jepa_losses"] == [0.2, 0.1]
+    assert metrics["online_model_open_loop_losses"] == [0.4, 0.3]
+    assert metrics["online_pipeline_completed"]
+
+
+def test_online_history_metrics_rejects_actor_replay_regression():
+    metrics = _online_history_metrics(
+        [
+            {"actor_replay": {"mean_return": 5.0}},
+        ],
+        {"policy_trained_mean": 8.0},
+    )
+
+    assert metrics["online_actor_replay_iterations"] == 1
+    assert metrics["online_actor_replay_vs_initial_policy"] == -3.0
+    assert not metrics["online_actor_replay_trend_passed"]
 
 
 def _batch(config: JepaConfig):

@@ -230,42 +230,41 @@ policy returns:
 `candidate-distill` remains available as a diagnostic planning-teacher baseline,
 but it is not the main algorithmic path.
 
-The next rung turns the offline validation into an online data loop. After the
-first frozen-model policy phase, the selected actor collects fresh real DMC
-transitions, the replay buffer is updated, the world model is refit, and the
-actor continues training in the updated latent model:
+The next engineering rung turns the offline validation into an online data loop.
+After the first frozen-model policy phase, the selected actor collects fresh real
+Brax transitions, the replay buffer is updated, the world model is refit, and the
+actor continues training in the updated latent model. Keep this as a lightweight
+single-seed pipeline check before spending on multi-seed controls:
 
 ```bash
-uv run world-marl-validate-dmc-world-model \
-  --env dmc:cartpole/swingup \
-  --num-envs 16 \
-  --dmc-workers 1 \
-  --collect-steps 8192 \
-  --validation-steps 2048 \
-  --train-steps 8000 \
-  --critic-warmup-steps 1000 \
+uv run world-marl-validate-single-agent-world-model \
+  --env brax:reacher \
+  --num-runs 1 \
+  --num-envs 512 \
+  --collect-steps 2048 \
+  --validation-steps 1024 \
+  --train-steps 3000 \
+  --critic-warmup-steps 500 \
   --critic-horizon 32 \
-  --policy-train-steps 3000 \
+  --policy-train-steps 1500 \
   --policy-objective direct \
   --policy-return-mode reward-only \
   --imag-horizon 15 \
   --policy-selection-interval 500 \
-  --policy-selection-episodes 20 \
-  --policy-eval-episodes 30 \
+  --policy-selection-episodes 32 \
+  --policy-eval-episodes 64 \
   --online-iterations 1 \
-  --online-collect-steps 2048 \
-  --online-train-steps 3000 \
-  --online-policy-train-steps 1500 \
-  --batch-size 256 \
+  --online-collect-steps 1024 \
+  --online-train-steps 1500 \
+  --online-policy-train-steps 1000 \
+  --batch-size 1024 \
   --chunk-length 32 \
   --open-loop-horizon 15 \
   --latent-dim 128 \
   --regularizer sigreg \
   --regularizer-weight 0.05 \
-  --controls none \
-  --num-runs 3 \
-  --out-dir runs/dmc_jepa_online_cartpole \
-  --allow-fail
+  --controls none no-action-world-model \
+  --out-dir runs/brax_jepa_reacher_online_dev
 ```
 
 Each `metrics.jsonl` row includes rollout diagnostics for debugging learning

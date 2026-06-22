@@ -1571,6 +1571,26 @@ def _online_history_metrics(
         for item in online_history
         if item.get("actor_replay", {}).get("mean_return") is not None
     ]
+    policy_improvements = [
+        item["policy"].get("policy_improvement")
+        for item in online_history
+        if item.get("policy", {}).get("policy_improvement") is not None
+    ]
+    policy_passed = [
+        bool(item["policy"].get("policy_passed", False))
+        for item in online_history
+        if item.get("policy", {}).get("policy_training_enabled", False)
+    ]
+    model_jepa_losses = [
+        item["model_metrics"].get("model/jepa_loss")
+        for item in online_history
+        if item.get("model_metrics", {}).get("model/jepa_loss") is not None
+    ]
+    model_open_loop_losses = [
+        item["model_metrics"].get("model/open_loop_loss")
+        for item in online_history
+        if item.get("model_metrics", {}).get("model/open_loop_loss") is not None
+    ]
     baseline = initial_policy_outcome.get("policy_trained_mean")
     if not returns:
         return {
@@ -1581,9 +1601,20 @@ def _online_history_metrics(
             "online_actor_replay_delta": None,
             "online_actor_replay_vs_initial_policy": None,
             "online_actor_replay_trend_passed": False,
+            "online_policy_phase_improvements": policy_improvements,
+            "online_policy_phase_final_improvement": (
+                policy_improvements[-1] if policy_improvements else None
+            ),
+            "online_policy_phase_passes": policy_passed,
+            "online_policy_phase_passed": bool(policy_passed and all(policy_passed)),
+            "online_model_jepa_losses": model_jepa_losses,
+            "online_model_open_loop_losses": model_open_loop_losses,
+            "online_pipeline_completed": False,
         }
     delta = returns[-1] - returns[0] if len(returns) >= 2 else None
     vs_initial = returns[-1] - baseline if baseline is not None else None
+    actor_replay_nonregression = vs_initial is None or vs_initial >= 0.0
+    actor_replay_trend = len(returns) < 2 or returns[-1] > returns[0]
     return {
         "online_actor_replay_iterations": len(returns),
         "online_actor_replay_returns": returns,
@@ -1592,8 +1623,17 @@ def _online_history_metrics(
         "online_actor_replay_delta": delta,
         "online_actor_replay_vs_initial_policy": vs_initial,
         "online_actor_replay_trend_passed": (
-            True if len(returns) < 2 else returns[-1] > returns[0]
+            actor_replay_trend and actor_replay_nonregression
         ),
+        "online_policy_phase_improvements": policy_improvements,
+        "online_policy_phase_final_improvement": (
+            policy_improvements[-1] if policy_improvements else None
+        ),
+        "online_policy_phase_passes": policy_passed,
+        "online_policy_phase_passed": bool(policy_passed and all(policy_passed)),
+        "online_model_jepa_losses": model_jepa_losses,
+        "online_model_open_loop_losses": model_open_loop_losses,
+        "online_pipeline_completed": True,
     }
 
 
