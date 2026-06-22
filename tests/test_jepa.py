@@ -27,6 +27,7 @@ from world_marl.jepa.training import (
 from world_marl.scripts.train_dmc_jepa import (
     _action_contrast_metrics,
     _merge_online_policy_baseline,
+    _online_history_metrics,
     _run_passed as dmc_run_passed,
     summarize as summarize_dmc_jepa,
 )
@@ -946,6 +947,62 @@ def test_dmc_jepa_summary_uses_online_phase_as_primary_policy_signal():
     assert not bad["passed"]
     assert not bad["policy_main_beats_controls"]
     assert not bad["paired_policy_ok"]
+
+
+def test_dmc_jepa_summary_requires_paired_policy_majority():
+    def outcome(control: str, run_index: int, primary: float):
+        return {
+            "run_index": run_index,
+            "control": control,
+            "passed": True,
+            "initial_jepa_loss": 1.0,
+            "final_jepa_loss": 0.1 if control == "none" else 0.2,
+            "initial_open_loop_loss": 1.0,
+            "final_open_loop_loss": 0.1 if control == "none" else 0.2,
+            "policy_training_enabled": True,
+            "policy_passed": control == "none",
+            "policy_random_mean": 0.0,
+            "policy_initial_mean": 10.0,
+            "policy_trained_mean": 10.0 + primary,
+            "policy_improvement": primary,
+            "policy_primary_improvement": primary,
+            "policy_trained_minus_random": 10.0 + primary,
+            "final_model_metrics": {"model/jepa_loss": 0.1},
+        }
+
+    summary = summarize_dmc_jepa(
+        [
+            outcome("none", 0, 100.0),
+            outcome("none", 1, 0.0),
+            outcome("none", 2, 0.0),
+            outcome("shuffled-action-replay", 0, 0.0),
+            outcome("shuffled-action-replay", 1, 1.0),
+            outcome("shuffled-action-replay", 2, 1.0),
+        ]
+    )
+
+    paired = summary["paired_control_differences"]["shuffled-action-replay"]
+    assert paired["mean_policy_primary_improvement_advantage"] > 0.0
+    assert paired["runs_main_better_policy_primary"] == 1
+    assert paired["required_majority_pairs"] == 2
+    assert not summary["paired_policy_ok"]
+    assert not summary["passed"]
+
+
+def test_online_history_metrics_tracks_actor_replay_trend():
+    metrics = _online_history_metrics(
+        [
+            {"actor_replay": {"mean_return": 10.0}},
+            {"actor_replay": {"mean_return": 25.0}},
+        ],
+        {"policy_trained_mean": 8.0},
+    )
+
+    assert metrics["online_actor_replay_iterations"] == 2
+    assert metrics["online_actor_replay_returns"] == [10.0, 25.0]
+    assert metrics["online_actor_replay_delta"] == 15.0
+    assert metrics["online_actor_replay_vs_initial_policy"] == 17.0
+    assert metrics["online_actor_replay_trend_passed"]
 
 
 def _batch(config: JepaConfig):

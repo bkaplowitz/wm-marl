@@ -96,6 +96,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--policy-action-l2-coef", type=float, default=1e-3)
     parser.add_argument("--policy-eval-episodes", type=int, default=20)
     parser.add_argument("--policy-eval-num-envs", type=int, default=None)
+    parser.add_argument("--policy-confirmation-episodes", type=int, default=0)
+    parser.add_argument("--policy-confirmation-num-envs", type=int, default=None)
     parser.add_argument(
         "--policy-selection-interval",
         type=int,
@@ -208,6 +210,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
     ):
         if getattr(args, name) < 0:
             parser.error(f"--{name.replace('_', '-')} must be >= 0")
+    if args.policy_confirmation_episodes < 0:
+        parser.error("--policy-confirmation-episodes must be >= 0")
     if args.online_collect_steps is not None and args.online_collect_steps < 1:
         parser.error("--online-collect-steps must be >= 1")
     for name in ("online_train_steps", "online_policy_train_steps"):
@@ -231,6 +235,11 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--policy-batch-size must be >= 1")
     if args.policy_eval_num_envs is not None and args.policy_eval_num_envs < 1:
         parser.error("--policy-eval-num-envs must be >= 1")
+    if (
+        args.policy_confirmation_num_envs is not None
+        and args.policy_confirmation_num_envs < 1
+    ):
+        parser.error("--policy-confirmation-num-envs must be >= 1")
     if (
         args.policy_selection_num_envs is not None
         and args.policy_selection_num_envs < 1
@@ -582,6 +591,9 @@ def run_one(
                 policy_outcome["outcome"],
                 initial_policy_outcome,
             )
+            policy_outcome["outcome"].update(
+                _online_history_metrics(online_history, initial_policy_outcome)
+            )
         if online_history:
             logger.write_json("online_history.json", online_history)
 
@@ -858,6 +870,7 @@ def _maybe_train_policy(
     reset_actor: bool = True,
     eval_seed_offset: int = 3_000_000,
     selection_seed_offset: int = 5_000_000,
+    confirmation_seed_offset: int = 7_000_000,
 ) -> dict[str, Any]:
     policy_train_steps = args.policy_train_steps if train_steps is None else train_steps
     if policy_train_steps == 0:
@@ -879,10 +892,16 @@ def _maybe_train_policy(
     action_high_jax = jnp.asarray(action_high, dtype=jnp.float32)
     policy_eval_seed = seed + eval_seed_offset
     policy_selection_seed = seed + selection_seed_offset
+    policy_confirmation_seed = seed + confirmation_seed_offset
     selection_enabled = args.policy_selection_interval > 0
     selection_num_envs = args.policy_selection_num_envs or min(
         args.num_envs,
         args.policy_selection_episodes,
+    )
+    confirmation_enabled = args.policy_confirmation_episodes > 0
+    confirmation_num_envs = args.policy_confirmation_num_envs or min(
+        args.num_envs,
+        max(1, args.policy_confirmation_episodes),
     )
     artifact_prefix = "" if phase == "policy" else f"{phase}_"
     metric_phase_prefix = "" if phase == "policy" else f"{phase}_"
@@ -905,6 +924,36 @@ def _maybe_train_policy(
     )
     logger.write_json(f"{artifact_prefix}random_policy_evaluation.json", random_eval)
     logger.write_json(f"{artifact_prefix}initial_policy_evaluation.json", initial_eval)
+
+    confirmation_random_eval = None
+    confirmation_initial_eval = None
+    if confirmation_enabled:
+        confirmation_random_eval = _evaluate_random_policy(
+            args,
+            seed=policy_confirmation_seed,
+            num_envs=confirmation_num_envs,
+            episodes=args.policy_confirmation_episodes,
+            desc=f"{control} {phase} confirm random policy",
+        )
+        confirmation_initial_eval = _evaluate_continuous_policy(
+            args,
+            state,
+            config,
+            seed=policy_confirmation_seed,
+            num_envs=confirmation_num_envs,
+            episodes=args.policy_confirmation_episodes,
+            action_low=action_low_jax,
+            action_high=action_high_jax,
+            desc=f"{control} {phase} confirm initial policy",
+        )
+        logger.write_json(
+            f"{artifact_prefix}confirmation_random_policy_evaluation.json",
+            confirmation_random_eval,
+        )
+        logger.write_json(
+            f"{artifact_prefix}confirmation_initial_policy_evaluation.json",
+            confirmation_initial_eval,
+        )
 
     best_state = state
     best_policy_step = 0
@@ -1124,6 +1173,23 @@ def _maybe_train_policy(
         desc=f"{control} {phase} eval trained policy",
     )
     logger.write_json(f"{artifact_prefix}trained_policy_evaluation.json", trained_eval)
+    confirmation_trained_eval = None
+    if confirmation_enabled:
+        confirmation_trained_eval = _evaluate_continuous_policy(
+            args,
+            state,
+            config,
+            seed=policy_confirmation_seed,
+            num_envs=confirmation_num_envs,
+            episodes=args.policy_confirmation_episodes,
+            action_low=action_low_jax,
+            action_high=action_high_jax,
+            desc=f"{control} {phase} confirm trained policy",
+        )
+        logger.write_json(
+            f"{artifact_prefix}confirmation_trained_policy_evaluation.json",
+            confirmation_trained_eval,
+        )
     logger.plot_world_model_loss(
         policy_loss_history,
         filename=f"{artifact_prefix}frozen_model_policy_loss.png",
@@ -1132,10 +1198,30 @@ def _maybe_train_policy(
     initial_mean = initial_eval["mean_return"]
     trained_mean = trained_eval["mean_return"]
     random_mean = random_eval["mean_return"]
+    confirmation_improvement = None
+    confirmation_trained_minus_random = None
+    if confirmation_enabled:
+        confirmation_improvement = (
+            confirmation_trained_eval["mean_return"]
+            - confirmation_initial_eval["mean_return"]
+        )
+        confirmation_trained_minus_random = (
+            confirmation_trained_eval["mean_return"]
+            - confirmation_random_eval["mean_return"]
+        )
     policy_metrics_json = (
         best_policy_metrics_json if selection_enabled else last_policy_metrics_json
     )
     critic_metrics_json = to_jsonable(critic_metrics)
+    confirmation_passed = (
+        not confirmation_enabled
+        or (
+            confirmation_improvement is not None
+            and confirmation_improvement > 0.0
+            and confirmation_trained_minus_random is not None
+            and confirmation_trained_minus_random > 0.0
+        )
+    )
     outcome = {
         "policy_training_enabled": True,
         "policy_phase": phase,
@@ -1148,6 +1234,14 @@ def _maybe_train_policy(
         "candidate_min_gap": args.candidate_min_gap,
         "policy_action_l2_coef": args.policy_action_l2_coef,
         "policy_eval_seed": policy_eval_seed,
+        "policy_confirmation_enabled": confirmation_enabled,
+        "policy_confirmation_seed": (
+            policy_confirmation_seed if confirmation_enabled else None
+        ),
+        "policy_confirmation_episodes": args.policy_confirmation_episodes,
+        "policy_confirmation_num_envs": (
+            confirmation_num_envs if confirmation_enabled else None
+        ),
         "policy_selection_enabled": selection_enabled,
         "policy_selection_seed": policy_selection_seed,
         "policy_selection_interval": args.policy_selection_interval,
@@ -1168,12 +1262,26 @@ def _maybe_train_policy(
         "policy_primary_improvement": trained_mean - initial_mean,
         "policy_primary_improvement_key": "policy_improvement",
         "policy_trained_minus_random": trained_mean - random_mean,
+        "policy_confirmation_random_mean": (
+            confirmation_random_eval["mean_return"] if confirmation_enabled else None
+        ),
+        "policy_confirmation_initial_mean": (
+            confirmation_initial_eval["mean_return"] if confirmation_enabled else None
+        ),
+        "policy_confirmation_trained_mean": (
+            confirmation_trained_eval["mean_return"] if confirmation_enabled else None
+        ),
+        "policy_confirmation_improvement": confirmation_improvement,
+        "policy_primary_confirmation_improvement": confirmation_improvement,
+        "policy_confirmation_trained_minus_random": confirmation_trained_minus_random,
+        "policy_confirmation_passed": confirmation_passed,
         "policy_final_metrics": policy_metrics_json,
         "policy_passed": bool(
             _metrics_finite(policy_metrics_json)
             and _metrics_finite(critic_metrics_json)
             and trained_mean > initial_mean
             and trained_mean > random_mean
+            and confirmation_passed
             and policy_metrics_json.get("policy/action_saturation_fraction", 1.0)
             < 0.75
         ),
@@ -1332,9 +1440,13 @@ def _merge_online_policy_baseline(
     phase_initial_mean = merged.get("policy_initial_mean")
     phase_random_mean = merged.get("policy_random_mean")
     phase_improvement = merged.get("policy_improvement")
+    phase_confirmation_improvement = merged.get("policy_confirmation_improvement")
     merged["policy_online_phase_initial_mean"] = phase_initial_mean
     merged["policy_online_phase_random_mean"] = phase_random_mean
     merged["policy_online_phase_improvement"] = phase_improvement
+    merged["policy_online_phase_confirmation_improvement"] = (
+        phase_confirmation_improvement
+    )
     merged["policy_initial_mean"] = initial_outcome["policy_initial_mean"]
     merged["policy_random_mean"] = initial_outcome["policy_random_mean"]
     merged["policy_improvement"] = (
@@ -1350,6 +1462,40 @@ def _merge_online_policy_baseline(
     merged["policy_trained_minus_random"] = (
         merged["policy_trained_mean"] - merged["policy_random_mean"]
     )
+    confirmation_enabled = bool(merged.get("policy_confirmation_enabled", False))
+    if confirmation_enabled and initial_outcome.get("policy_confirmation_initial_mean") is not None:
+        merged["policy_confirmation_initial_mean"] = initial_outcome[
+            "policy_confirmation_initial_mean"
+        ]
+        merged["policy_confirmation_random_mean"] = initial_outcome[
+            "policy_confirmation_random_mean"
+        ]
+        merged["policy_confirmation_improvement"] = (
+            merged["policy_confirmation_trained_mean"]
+            - merged["policy_confirmation_initial_mean"]
+        )
+        merged["policy_confirmation_trained_minus_random"] = (
+            merged["policy_confirmation_trained_mean"]
+            - merged["policy_confirmation_random_mean"]
+        )
+    primary_confirmation_improvement = (
+        phase_confirmation_improvement
+        if phase_confirmation_improvement is not None
+        else merged.get("policy_confirmation_improvement")
+    )
+    merged["policy_primary_confirmation_improvement"] = (
+        primary_confirmation_improvement
+    )
+    confirmation_passed = (
+        not confirmation_enabled
+        or (
+            primary_confirmation_improvement is not None
+            and primary_confirmation_improvement > 0.0
+            and merged.get("policy_confirmation_trained_minus_random") is not None
+            and merged["policy_confirmation_trained_minus_random"] > 0.0
+        )
+    )
+    merged["policy_confirmation_passed"] = confirmation_passed
     policy_metrics = merged.get("policy_final_metrics", {})
     critic_metrics = merged.get("critic_final_metrics", {})
     merged["policy_passed"] = bool(
@@ -1357,9 +1503,45 @@ def _merge_online_policy_baseline(
         and _metrics_finite(critic_metrics)
         and primary_improvement > 0.0
         and merged["policy_trained_mean"] > merged["policy_random_mean"]
+        and confirmation_passed
         and policy_metrics.get("policy/action_saturation_fraction", 1.0) < 0.75
     )
     return merged
+
+
+def _online_history_metrics(
+    online_history: list[dict[str, Any]],
+    initial_policy_outcome: dict[str, Any],
+) -> dict[str, Any]:
+    returns = [
+        item["actor_replay"].get("mean_return")
+        for item in online_history
+        if item.get("actor_replay", {}).get("mean_return") is not None
+    ]
+    baseline = initial_policy_outcome.get("policy_trained_mean")
+    if not returns:
+        return {
+            "online_actor_replay_iterations": 0,
+            "online_actor_replay_returns": [],
+            "online_actor_replay_first_mean": None,
+            "online_actor_replay_final_mean": None,
+            "online_actor_replay_delta": None,
+            "online_actor_replay_vs_initial_policy": None,
+            "online_actor_replay_trend_passed": False,
+        }
+    delta = returns[-1] - returns[0] if len(returns) >= 2 else None
+    vs_initial = returns[-1] - baseline if baseline is not None else None
+    return {
+        "online_actor_replay_iterations": len(returns),
+        "online_actor_replay_returns": returns,
+        "online_actor_replay_first_mean": returns[0],
+        "online_actor_replay_final_mean": returns[-1],
+        "online_actor_replay_delta": delta,
+        "online_actor_replay_vs_initial_policy": vs_initial,
+        "online_actor_replay_trend_passed": (
+            True if len(returns) < 2 else returns[-1] > returns[0]
+        ),
+    }
 
 
 def _evaluate_model(
@@ -1582,6 +1764,12 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
     policy_enabled = any(
         outcome.get("policy_training_enabled", False) for outcome in outcomes
     )
+    confirmation_enabled = any(
+        outcome.get("policy_confirmation_enabled", False) for outcome in outcomes
+    )
+    online_enabled = any(
+        outcome.get("online_actor_replay_iterations", 0) > 0 for outcome in outcomes
+    )
     main_passed = all(
         outcome.get("world_model_passed", outcome["passed"]) for outcome in main
     )
@@ -1614,10 +1802,14 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         )
     )
     paired_open_loop_ok = not paired or all(
-        item["mean_open_loop_advantage"] > 0.0 for item in paired.values()
+        item["mean_open_loop_advantage"] > 0.0
+        and item["runs_main_better_open_loop"] >= item["required_majority_pairs"]
+        for item in paired.values()
     )
     paired_jepa_ok = not paired or all(
-        item["mean_jepa_advantage"] > 0.0 for item in paired.values()
+        item["mean_jepa_advantage"] > 0.0
+        and item["runs_main_better_jepa"] >= item["required_majority_pairs"]
+        for item in paired.values()
     )
     policy_main_passed = True
     policy_main_successes = 0
@@ -1626,11 +1818,28 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
     policy_aggregate_beats_random = True
     policy_main_beats_controls = True
     paired_policy_ok = True
+    policy_confirmation_successes = 0
+    online_trend_successes = 0
+    online_trend_passed = True
     if policy_enabled:
         policy_main_successes = int(
             sum(outcome.get("policy_passed", False) for outcome in main)
         )
         policy_required_successes = max(1, math.ceil((2 * len(main)) / 3))
+        policy_confirmation_successes = int(
+            sum(outcome.get("policy_confirmation_passed", False) for outcome in main)
+        )
+        online_trend_successes = int(
+            sum(
+                outcome.get("online_actor_replay_trend_passed", False)
+                for outcome in main
+                if outcome.get("online_actor_replay_iterations", 0) > 0
+            )
+        )
+        online_trend_passed = bool(
+            not online_enabled
+            or online_trend_successes >= policy_required_successes
+        )
         main_policy_improvement = _mean(main, policy_comparison_key)
         main_policy_minus_random = _mean(main, "policy_trained_minus_random")
         policy_aggregate_improved = bool(
@@ -1644,6 +1853,7 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
             and policy_main_successes >= policy_required_successes
             and policy_aggregate_improved
             and policy_aggregate_beats_random
+            and online_trend_passed
         )
         control_policy_improvement = _mean(controls, policy_comparison_key)
         policy_main_beats_controls = (
@@ -1657,6 +1867,8 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         paired_policy_ok = not paired or all(
             item.get("mean_policy_primary_improvement_advantage") is not None
             and item["mean_policy_primary_improvement_advantage"] > 0.0
+            and item["runs_main_better_policy_primary"]
+            >= item["required_majority_pairs"]
             for item in paired.values()
         )
     return {
@@ -1680,6 +1892,7 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
             and policy_main_passed
             and policy_main_beats_controls
             and paired_policy_ok
+            and online_trend_passed
         ),
         "main_runs_passed": int(
             sum(outcome.get("world_model_passed", outcome["passed"]) for outcome in main)
@@ -1694,10 +1907,15 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         "policy_main_passed": policy_main_passed,
         "policy_main_successes": policy_main_successes,
         "policy_required_successes": policy_required_successes,
+        "policy_confirmation_enabled": confirmation_enabled,
+        "policy_confirmation_successes": policy_confirmation_successes,
         "policy_aggregate_improved": policy_aggregate_improved,
         "policy_aggregate_beats_random": policy_aggregate_beats_random,
         "policy_main_beats_controls": policy_main_beats_controls,
         "paired_policy_ok": paired_policy_ok,
+        "online_training_enabled": online_enabled,
+        "online_trend_successes": online_trend_successes,
+        "online_trend_passed": online_trend_passed,
         "policy_comparison_key": policy_comparison_key,
         "paired_control_differences": paired,
         "aggregate_initial_jepa_loss": _mean(main, "initial_jepa_loss"),
@@ -1714,9 +1932,21 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
             main,
             "policy_online_phase_improvement",
         ),
+        "aggregate_policy_online_actor_replay_delta": _mean(
+            main,
+            "online_actor_replay_delta",
+        ),
+        "aggregate_policy_online_actor_replay_vs_initial": _mean(
+            main,
+            "online_actor_replay_vs_initial_policy",
+        ),
         "aggregate_policy_primary_improvement": _mean(
             main,
             policy_comparison_key,
+        ),
+        "aggregate_policy_primary_confirmation_improvement": _mean(
+            main,
+            "policy_primary_confirmation_improvement",
         ),
         "aggregate_policy_trained_minus_random": _mean(
             main,
@@ -1850,6 +2080,7 @@ def _paired_control_differences(
                 policy_primary_advantages.append(main_primary - control_primary)
         result[control] = {
             "pairs": len(jepa_advantages),
+            "required_majority_pairs": _required_majority(len(jepa_advantages)),
             "mean_jepa_advantage": (
                 float(np.mean(jepa_advantages)) if jepa_advantages else None
             ),
@@ -1888,6 +2119,10 @@ def _paired_control_differences(
             ),
         }
     return result
+
+
+def _required_majority(count: int) -> int:
+    return max(1, math.ceil((2 * count) / 3)) if count > 0 else 0
 
 
 if __name__ == "__main__":
