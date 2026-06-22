@@ -24,6 +24,7 @@ from world_marl.jepa.training import (
 from world_marl.scripts.train_dmc_jepa import (
     _action_contrast_metrics,
     _merge_online_policy_baseline,
+    _online_interface_drift_metrics,
     _online_history_metrics,
     _run_passed as dmc_run_passed,
     summarize as summarize_dmc_jepa,
@@ -171,6 +172,57 @@ def test_continuous_action_jepa_model_step_is_finite():
     assert jnp.isfinite(metrics["model/total_loss"])
 
 
+def test_frozen_encoder_model_step_preserves_encoder_and_updates_world_model():
+    config = JepaConfig(
+        observation_dim=4,
+        action_dim=3,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=1,
+        context_window=1,
+        sigreg_num_proj=32,
+    )
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    observations = jax.random.normal(jax.random.PRNGKey(1), (4, 4, 4))
+    actions = jax.random.normal(jax.random.PRNGKey(2), (4, 3, 3))
+    batch = ReplayBatch(
+        observations=observations,
+        actions=actions,
+        rewards=jax.random.normal(jax.random.PRNGKey(3), (4, 3)),
+        dones=jnp.zeros((4, 3), dtype=jnp.float32),
+    )
+    frozen_state, frozen_metrics = train_model_step(
+        state,
+        jax.random.PRNGKey(4),
+        batch,
+        config,
+        chunk_length=2,
+        freeze_encoder=True,
+    )
+    normal_state, _ = train_model_step(
+        state,
+        jax.random.PRNGKey(4),
+        batch,
+        config,
+        chunk_length=2,
+    )
+
+    assert jnp.isfinite(frozen_metrics["model/total_loss"])
+    for left, right in zip(
+        jax.tree_util.tree_leaves(state.params["encoder"]),
+        jax.tree_util.tree_leaves(frozen_state.params["encoder"]),
+        strict=True,
+    ):
+        np.testing.assert_allclose(np.asarray(left), np.asarray(right))
+
+    assert _tree_changed(state.params["encoder"], normal_state.params["encoder"])
+    assert _tree_changed(state.params["predictor"], frozen_state.params["predictor"])
+    assert _tree_changed(state.params["block_0"], frozen_state.params["block_0"])
+
+
 def test_jepa_model_trains_recursive_overshooting_horizons():
     config = JepaConfig(
         observation_dim=4,
@@ -214,6 +266,87 @@ def test_jepa_model_trains_recursive_overshooting_horizons():
         chunk_length=3,
     )
     assert jnp.isfinite(metrics["model/total_loss"])
+
+
+def test_continuous_policy_behavior_distillation_reports_zero_for_same_teacher():
+    config = JepaConfig(
+        observation_dim=4,
+        action_dim=3,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=1,
+        context_window=1,
+        sigreg_num_proj=32,
+    )
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    state, metrics = continuous_policy_train_step(
+        state,
+        jax.random.PRNGKey(1),
+        jnp.ones((5, 1, 4), dtype=jnp.float32),
+        config,
+        jnp.full((3,), -1.0),
+        jnp.full((3,), 1.0),
+        imag_horizon=2,
+        start_actions=jnp.zeros((5, 1, 3), dtype=jnp.float32),
+        behavior_teacher_params=state.params,
+        behavior_distill_weight=1.0,
+    )
+
+    del state
+    assert jnp.isfinite(metrics["policy/total_loss"])
+    np.testing.assert_allclose(
+        np.asarray(metrics["policy/behavior_distill_loss"]),
+        0.0,
+        atol=1e-6,
+    )
+    assert metrics["policy/behavior_distill_weight"] == 1.0
+
+
+def test_online_interface_drift_metrics_are_zero_for_identical_state():
+    config = JepaConfig(
+        observation_dim=4,
+        action_dim=3,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=1,
+        context_window=1,
+        sigreg_num_proj=32,
+    )
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    batch = ReplayBatch(
+        observations=jnp.ones((5, 2, 4), dtype=jnp.float32),
+        actions=jnp.zeros((5, 1, 3), dtype=jnp.float32),
+        rewards=jnp.ones((5, 1), dtype=jnp.float32),
+        dones=jnp.zeros((5, 1), dtype=jnp.float32),
+    )
+
+    metrics = _online_interface_drift_metrics(
+        state,
+        state,
+        batch,
+        config,
+        action_low=np.full((3,), -1.0, dtype=np.float32),
+        action_high=np.full((3,), 1.0, dtype=np.float32),
+    )
+
+    np.testing.assert_allclose(metrics["online/raw_latent_cosine"], 1.0, atol=1e-5)
+    np.testing.assert_allclose(metrics["online/raw_latent_drift_l2"], 0.0, atol=1e-6)
+    np.testing.assert_allclose(
+        metrics["online/policy_action_drift_l2"],
+        0.0,
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        metrics["online/value_drift_abs_mean"],
+        0.0,
+        atol=1e-6,
+    )
 
 
 def test_action_contrast_no_action_control_has_zero_margin():
@@ -1111,4 +1244,15 @@ def _batch(config: JepaConfig):
         batch_size=2,
         chunk_length=2,
         max_horizon=config.max_horizon,
+    )
+
+
+def _tree_changed(left, right) -> bool:
+    return any(
+        not np.allclose(np.asarray(a), np.asarray(b))
+        for a, b in zip(
+            jax.tree_util.tree_leaves(left),
+            jax.tree_util.tree_leaves(right),
+            strict=True,
+        )
     )

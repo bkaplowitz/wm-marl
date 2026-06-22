@@ -58,6 +58,40 @@ def test_single_agent_jepa_cli_can_disable_online_replay_reset(monkeypatch):
     assert not args.online_reset_replay_env
 
 
+def test_single_agent_jepa_cli_accepts_online_interface_drift_flags(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "world-marl-validate-single-agent-world-model",
+            "--env",
+            "brax:reacher",
+            "--collect-steps",
+            "8",
+            "--validation-steps",
+            "8",
+            "--chunk-length",
+            "4",
+            "--open-loop-horizon",
+            "2",
+            "--online-freeze-encoder",
+            "--online-interface-eval-episodes",
+            "7",
+            "--online-interface-eval-num-envs",
+            "3",
+            "--online-behavior-distill-weight",
+            "0.25",
+        ],
+    )
+
+    args = train_dmc_jepa.parse_args()
+
+    assert args.online_freeze_encoder
+    assert args.online_interface_eval_episodes == 7
+    assert args.online_interface_eval_num_envs == 3
+    assert args.online_behavior_distill_weight == 0.25
+
+
 def test_single_agent_jepa_cli_uses_regularizer_weight_alias(monkeypatch):
     monkeypatch.setattr(
         sys,

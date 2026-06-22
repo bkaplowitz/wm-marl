@@ -190,6 +190,35 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Reset actor/value heads at the start of each online policy phase.",
     )
+    parser.add_argument(
+        "--online-freeze-encoder",
+        action="store_true",
+        help=(
+            "During online world-model refits, keep the observation encoder fixed "
+            "and update only the latent dynamics, reward, and continue components. "
+            "This is a diagnostic for latent-interface drift."
+        ),
+    )
+    parser.add_argument(
+        "--online-interface-eval-episodes",
+        type=int,
+        default=20,
+        help=(
+            "Evaluate the current policy immediately before and after each online "
+            "world-model refit. Use 0 to disable this diagnostic."
+        ),
+    )
+    parser.add_argument("--online-interface-eval-num-envs", type=int, default=None)
+    parser.add_argument(
+        "--online-behavior-distill-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional online actor behavior-preservation weight. When positive, "
+            "online direct policy updates penalize deviation from the pre-refit "
+            "actor on replay start states."
+        ),
+    )
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lambda-return", type=float, default=0.95)
     parser.add_argument(
@@ -281,6 +310,15 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         value = getattr(args, name)
         if value is not None and value < 0:
             parser.error(f"--{name.replace('_', '-')} must be >= 0")
+    if args.online_interface_eval_episodes < 0:
+        parser.error("--online-interface-eval-episodes must be >= 0")
+    if (
+        args.online_interface_eval_num_envs is not None
+        and args.online_interface_eval_num_envs < 1
+    ):
+        parser.error("--online-interface-eval-num-envs must be >= 1")
+    if args.online_behavior_distill_weight < 0.0:
+        parser.error("--online-behavior-distill-weight must be >= 0")
     for name in ("critic_horizon",):
         if getattr(args, name) < 1:
             parser.error(f"--{name.replace('_', '-')} must be >= 1")
@@ -613,6 +651,25 @@ def run_one(
                 }
             )
 
+            pre_refit_state = state
+            interface_seed = seed + 8_000_000 + online_index * 10_000
+            pre_refit_policy_eval = _evaluate_online_interface_policy(
+                args,
+                state,
+                config,
+                seed=interface_seed,
+                control=control,
+                phase=phase,
+                label="before refit",
+                action_low=adapter.action_low,
+                action_high=adapter.action_high,
+            )
+            if pre_refit_policy_eval is not None:
+                logger.write_json(
+                    f"{phase}_policy_before_refit_evaluation.json",
+                    pre_refit_policy_eval,
+                )
+
             online_train_steps = (
                 args.online_train_steps
                 if args.online_train_steps is not None
@@ -635,6 +692,7 @@ def run_one(
                     phase=f"{phase}_world_model",
                     desc=f"{control} {phase} fit world model",
                     env_steps=env_steps,
+                    freeze_encoder=args.online_freeze_encoder,
                 )
                 logger.plot_world_model_loss(
                     online_loss_history,
@@ -654,6 +712,57 @@ def run_one(
                 action_high=adapter.action_high,
             )
             logger.write_json(f"{phase}_model_metrics.json", online_metrics)
+            post_refit_policy_eval = _evaluate_online_interface_policy(
+                args,
+                state,
+                config,
+                seed=interface_seed,
+                control=control,
+                phase=phase,
+                label="after refit",
+                action_low=adapter.action_low,
+                action_high=adapter.action_high,
+            )
+            if post_refit_policy_eval is not None:
+                logger.write_json(
+                    f"{phase}_policy_after_refit_evaluation.json",
+                    post_refit_policy_eval,
+                )
+            interface_metrics = _online_interface_drift_metrics(
+                pre_refit_state,
+                state,
+                validation_batch,
+                config,
+                action_low=adapter.action_low,
+                action_high=adapter.action_high,
+            )
+            if pre_refit_policy_eval is not None and post_refit_policy_eval is not None:
+                before_mean = pre_refit_policy_eval["mean_return"]
+                after_mean = post_refit_policy_eval["mean_return"]
+                interface_metrics.update(
+                    {
+                        "online/policy_before_refit_mean_return": before_mean,
+                        "online/policy_after_refit_mean_return": after_mean,
+                        "online/policy_refit_return_delta": after_mean - before_mean,
+                    }
+                )
+            interface_payload = {
+                "online_iteration": online_index,
+                "control": control,
+                "online_freeze_encoder": args.online_freeze_encoder,
+                "policy_before_refit": pre_refit_policy_eval,
+                "policy_after_refit": post_refit_policy_eval,
+                "metrics": interface_metrics,
+            }
+            logger.write_json(f"{phase}_interface_drift.json", interface_payload)
+            logger.append_metrics(
+                {
+                    "phase": "online_interface_check",
+                    "online_iteration": online_index,
+                    "control": control,
+                    **interface_metrics,
+                }
+            )
 
             online_policy_train_steps = (
                 args.online_policy_train_steps
@@ -676,6 +785,12 @@ def run_one(
                     phase=f"{phase}_policy",
                     train_steps=online_policy_train_steps,
                     reset_actor=args.online_reset_actor,
+                    behavior_teacher_state=(
+                        pre_refit_state
+                        if args.online_behavior_distill_weight > 0.0
+                        else None
+                    ),
+                    behavior_distill_weight=args.online_behavior_distill_weight,
                 )
                 state = online_policy_outcome["state"]
                 rng = online_policy_outcome["rng"]
@@ -688,6 +803,7 @@ def run_one(
                     "iteration": online_index,
                     "actor_replay": collect_payload,
                     "model_metrics": online_metrics,
+                    "interface": interface_payload,
                     "policy": online_policy_payload,
                     "world_model_train_steps": online_train_steps,
                     "policy_train_steps": online_policy_train_steps,
@@ -893,6 +1009,121 @@ def _collect_validation_replay(
         adapter.close()
 
 
+def _evaluate_online_interface_policy(
+    args: argparse.Namespace,
+    state,
+    config: JepaConfig,
+    *,
+    seed: int,
+    control: ControlMode,
+    phase: str,
+    label: str,
+    action_low: np.ndarray,
+    action_high: np.ndarray,
+) -> dict[str, Any] | None:
+    if args.online_interface_eval_episodes == 0:
+        return None
+    num_envs = args.online_interface_eval_num_envs or min(
+        args.num_envs,
+        args.online_interface_eval_episodes,
+    )
+    return _evaluate_continuous_policy(
+        args,
+        state,
+        config,
+        seed=seed,
+        num_envs=num_envs,
+        episodes=args.online_interface_eval_episodes,
+        action_low=jnp.asarray(action_low, dtype=jnp.float32),
+        action_high=jnp.asarray(action_high, dtype=jnp.float32),
+        desc=f"{control} {phase} eval policy {label}",
+    )
+
+
+def _online_interface_drift_metrics(
+    before_state,
+    after_state,
+    batch: ReplayBatch,
+    config: JepaConfig,
+    *,
+    action_low: np.ndarray,
+    action_high: np.ndarray,
+) -> dict[str, Any]:
+    observations = batch.observations[:, 0].reshape((-1, config.observation_dim))
+    action_low_jax = jnp.asarray(action_low, dtype=jnp.float32)
+    action_high_jax = jnp.asarray(action_high, dtype=jnp.float32)
+
+    before_z = before_state.apply_fn(
+        {"params": before_state.params},
+        observations,
+        method=JepaWorldModel.encode,
+    )
+    after_z = after_state.apply_fn(
+        {"params": after_state.params},
+        observations,
+        method=JepaWorldModel.encode,
+    )
+    before_z_norm = _normalize_latents(before_z)
+    after_z_norm = _normalize_latents(after_z)
+    latent_cosine = jnp.mean(jnp.sum(before_z_norm * after_z_norm, axis=-1))
+    latent_l2 = jnp.mean(jnp.linalg.norm(after_z - before_z, axis=-1))
+
+    before_logits, before_values = before_state.apply_fn(
+        {"params": before_state.params},
+        observations,
+        method=JepaWorldModel.actor_value_from_obs,
+    )
+    after_logits, after_values = after_state.apply_fn(
+        {"params": after_state.params},
+        observations,
+        method=JepaWorldModel.actor_value_from_obs,
+    )
+    before_normalized_actions = jnp.tanh(before_logits)
+    after_normalized_actions = jnp.tanh(after_logits)
+    before_actions = select_continuous_actions(
+        before_state,
+        observations,
+        config,
+        action_low_jax,
+        action_high_jax,
+    )
+    after_actions = select_continuous_actions(
+        after_state,
+        observations,
+        config,
+        action_low_jax,
+        action_high_jax,
+    )
+
+    action_l2 = jnp.mean(jnp.linalg.norm(after_actions - before_actions, axis=-1))
+    normalized_action_l2 = jnp.mean(
+        jnp.linalg.norm(
+            after_normalized_actions - before_normalized_actions,
+            axis=-1,
+        )
+    )
+    value_abs_drift = jnp.mean(jnp.abs(after_values - before_values))
+    value_l2 = jnp.sqrt(jnp.mean(jnp.square(after_values - before_values)))
+    return to_jsonable(
+        {
+            "online/raw_latent_cosine": latent_cosine,
+            "online/raw_latent_drift_l2": latent_l2,
+            "online/policy_action_drift_l2": action_l2,
+            "online/policy_normalized_action_drift_l2": normalized_action_l2,
+            "online/value_drift_abs_mean": value_abs_drift,
+            "online/value_drift_l2": value_l2,
+            "online/interface_finite_fraction": _finite_fraction_np(
+                before_z,
+                after_z,
+                before_actions,
+                after_actions,
+                before_values,
+                after_values,
+            ),
+        }
+    )
+
+
 def _fit_world_model(
     args: argparse.Namespace,
     logger: RunLogger,
@@ -907,6 +1138,7 @@ def _fit_world_model(
     phase: str,
     desc: str,
     env_steps: int,
+    freeze_encoder: bool = False,
 ) -> tuple[Any, jax.Array, dict[str, Any], list[float]]:
     loss_history: list[float] = []
     metrics: dict[str, Any] = {}
@@ -931,6 +1163,7 @@ def _fit_world_model(
             config,
             chunk_length=args.chunk_length,
             control=control,
+            freeze_encoder=freeze_encoder,
         )
         total_loss = float(metrics["model/total_loss"])
         jepa_loss = float(metrics["model/jepa_loss"])
@@ -947,6 +1180,7 @@ def _fit_world_model(
                     "update": step_index,
                     "env_steps": env_steps,
                     "control": control,
+                    "online_freeze_encoder": freeze_encoder,
                     **metrics,
                 }
             )
@@ -972,6 +1206,8 @@ def _maybe_train_policy(
     eval_seed_offset: int = 3_000_000,
     selection_seed_offset: int = 5_000_000,
     confirmation_seed_offset: int = 7_000_000,
+    behavior_teacher_state=None,
+    behavior_distill_weight: float = 0.0,
 ) -> dict[str, Any]:
     policy_train_steps = args.policy_train_steps if train_steps is None else train_steps
     if policy_train_steps == 0:
@@ -1188,6 +1424,12 @@ def _maybe_train_policy(
                 value_clip=args.value_clip,
                 action_saturation_threshold=args.action_saturation_threshold,
                 start_actions=start_actions,
+                behavior_teacher_params=(
+                    behavior_teacher_state.params
+                    if behavior_teacher_state is not None
+                    else None
+                ),
+                behavior_distill_weight=behavior_distill_weight,
             )
         policy_loss = float(metrics["policy/total_loss"])
         progress_score = float(
@@ -1339,6 +1581,8 @@ def _maybe_train_policy(
         "num_policy_candidates": args.num_policy_candidates,
         "candidate_min_gap": args.candidate_min_gap,
         "policy_action_l2_coef": args.policy_action_l2_coef,
+        "policy_behavior_distill_weight": behavior_distill_weight,
+        "policy_behavior_distill_teacher": behavior_teacher_state is not None,
         "policy_eval_seed": policy_eval_seed,
         "policy_confirmation_enabled": confirmation_enabled,
         "policy_confirmation_seed": (
@@ -1642,6 +1886,38 @@ def _online_history_metrics(
         for item in online_history
         if item.get("model_metrics", {}).get("model/open_loop_loss") is not None
     ]
+    refit_return_deltas = [
+        item["interface"]["metrics"].get("online/policy_refit_return_delta")
+        for item in online_history
+        if item.get("interface", {})
+        .get("metrics", {})
+        .get("online/policy_refit_return_delta")
+        is not None
+    ]
+    latent_drifts = [
+        item["interface"]["metrics"].get("online/raw_latent_drift_l2")
+        for item in online_history
+        if item.get("interface", {})
+        .get("metrics", {})
+        .get("online/raw_latent_drift_l2")
+        is not None
+    ]
+    action_drifts = [
+        item["interface"]["metrics"].get("online/policy_action_drift_l2")
+        for item in online_history
+        if item.get("interface", {})
+        .get("metrics", {})
+        .get("online/policy_action_drift_l2")
+        is not None
+    ]
+    value_drifts = [
+        item["interface"]["metrics"].get("online/value_drift_abs_mean")
+        for item in online_history
+        if item.get("interface", {})
+        .get("metrics", {})
+        .get("online/value_drift_abs_mean")
+        is not None
+    ]
     baseline = initial_policy_outcome.get("policy_trained_mean")
     if not returns:
         return {
@@ -1660,6 +1936,25 @@ def _online_history_metrics(
             "online_policy_phase_passed": bool(policy_passed and all(policy_passed)),
             "online_model_jepa_losses": model_jepa_losses,
             "online_model_open_loop_losses": model_open_loop_losses,
+            "online_policy_refit_return_deltas": refit_return_deltas,
+            "online_policy_refit_return_delta_final": (
+                refit_return_deltas[-1] if refit_return_deltas else None
+            ),
+            "online_policy_refit_nonregression_passed": bool(
+                refit_return_deltas and min(refit_return_deltas) >= 0.0
+            ),
+            "online_raw_latent_drift_l2": latent_drifts,
+            "online_raw_latent_drift_l2_final": (
+                latent_drifts[-1] if latent_drifts else None
+            ),
+            "online_policy_action_drift_l2": action_drifts,
+            "online_policy_action_drift_l2_final": (
+                action_drifts[-1] if action_drifts else None
+            ),
+            "online_value_drift_abs_mean": value_drifts,
+            "online_value_drift_abs_mean_final": (
+                value_drifts[-1] if value_drifts else None
+            ),
             "online_pipeline_completed": False,
         }
     delta = returns[-1] - returns[0] if len(returns) >= 2 else None
@@ -1684,6 +1979,23 @@ def _online_history_metrics(
         "online_policy_phase_passed": bool(policy_passed and all(policy_passed)),
         "online_model_jepa_losses": model_jepa_losses,
         "online_model_open_loop_losses": model_open_loop_losses,
+        "online_policy_refit_return_deltas": refit_return_deltas,
+        "online_policy_refit_return_delta_final": (
+            refit_return_deltas[-1] if refit_return_deltas else None
+        ),
+        "online_policy_refit_nonregression_passed": bool(
+            not refit_return_deltas or min(refit_return_deltas) >= 0.0
+        ),
+        "online_raw_latent_drift_l2": latent_drifts,
+        "online_raw_latent_drift_l2_final": (
+            latent_drifts[-1] if latent_drifts else None
+        ),
+        "online_policy_action_drift_l2": action_drifts,
+        "online_policy_action_drift_l2_final": (
+            action_drifts[-1] if action_drifts else None
+        ),
+        "online_value_drift_abs_mean": value_drifts,
+        "online_value_drift_abs_mean_final": value_drifts[-1] if value_drifts else None,
         "online_pipeline_completed": True,
     }
 
@@ -2092,6 +2404,18 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         "aggregate_policy_online_actor_replay_vs_initial": _mean(
             main,
             "online_actor_replay_vs_initial_policy",
+        ),
+        "aggregate_policy_refit_return_delta": _mean(
+            main,
+            "online_policy_refit_return_delta_final",
+        ),
+        "aggregate_policy_refit_action_drift_l2": _mean(
+            main,
+            "online_policy_action_drift_l2_final",
+        ),
+        "aggregate_policy_refit_latent_drift_l2": _mean(
+            main,
+            "online_raw_latent_drift_l2_final",
         ),
         "aggregate_policy_primary_improvement": _mean(
             main,

@@ -31,6 +31,7 @@ MODEL_GROUPS = frozenset(
         "action_embed",
         "action_encoder_hidden",
         "action_encoder_out",
+        "transformer_blocks",
         "horizon_embed",
         "dynamics_norm",
         "predictor",
@@ -39,6 +40,7 @@ MODEL_GROUPS = frozenset(
         "continue_head",
     }
 )
+ONLINE_FROZEN_ENCODER_MODEL_GROUPS = MODEL_GROUPS - {"encoder"}
 ACTOR_GROUPS = frozenset({"actor_head"})
 CRITIC_GROUPS = frozenset({"value_head"})
 
@@ -50,6 +52,10 @@ class JepaTrainState:
     params: FrozenDict
     model_tx: optax.GradientTransformation = struct.field(pytree_node=False)
     model_opt_state: optax.OptState
+    frozen_encoder_model_tx: optax.GradientTransformation = struct.field(
+        pytree_node=False
+    )
+    frozen_encoder_model_opt_state: optax.OptState
     actor_tx: optax.GradientTransformation = struct.field(pytree_node=False)
     actor_opt_state: optax.OptState
     critic_tx: optax.GradientTransformation = struct.field(pytree_node=False)
@@ -65,6 +71,18 @@ class JepaTrainState:
             step=self.step + 1,
             params=optax.apply_updates(self.params, updates),
             model_opt_state=opt_state,
+        )
+
+    def apply_frozen_encoder_model_gradients(self, grads) -> "JepaTrainState":
+        updates, opt_state = self.frozen_encoder_model_tx.update(
+            grads,
+            self.frozen_encoder_model_opt_state,
+            self.params,
+        )
+        return self.replace(
+            step=self.step + 1,
+            params=optax.apply_updates(self.params, updates),
+            frozen_encoder_model_opt_state=opt_state,
         )
 
     def apply_actor_gradients(self, grads) -> "JepaTrainState":
@@ -116,6 +134,11 @@ def create_jepa_train_state(
     )["params"]
     params = freeze(params)
     model_tx = _masked_adam(params, MODEL_GROUPS, config.learning_rate)
+    frozen_encoder_model_tx = _masked_adam(
+        params,
+        ONLINE_FROZEN_ENCODER_MODEL_GROUPS,
+        config.learning_rate,
+    )
     actor_tx = _masked_adam(params, ACTOR_GROUPS, config.actor_learning_rate)
     critic_tx = _masked_adam(params, CRITIC_GROUPS, config.actor_learning_rate)
     return JepaTrainState(
@@ -124,6 +147,8 @@ def create_jepa_train_state(
         params=params,
         model_tx=model_tx,
         model_opt_state=model_tx.init(params),
+        frozen_encoder_model_tx=frozen_encoder_model_tx,
+        frozen_encoder_model_opt_state=frozen_encoder_model_tx.init(params),
         actor_tx=actor_tx,
         actor_opt_state=actor_tx.init(params),
         critic_tx=critic_tx,
@@ -131,7 +156,10 @@ def create_jepa_train_state(
     )
 
 
-@partial(jax.jit, static_argnames=("config", "chunk_length", "control"))
+@partial(
+    jax.jit,
+    static_argnames=("config", "chunk_length", "control", "freeze_encoder"),
+)
 def train_model_step(
     state: JepaTrainState,
     key: jax.Array,
@@ -140,6 +168,7 @@ def train_model_step(
     *,
     chunk_length: int,
     control: ControlMode = "none",
+    freeze_encoder: bool = False,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     def loss_fn(params):
         loss, metrics = world_model_loss(
@@ -155,6 +184,8 @@ def train_model_step(
 
     (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
     del loss
+    if freeze_encoder:
+        return state.apply_frozen_encoder_model_gradients(grads), metrics
     return state.apply_model_gradients(grads), metrics
 
 
@@ -268,7 +299,13 @@ def reset_policy_heads(
 
 @partial(
     jax.jit,
-    static_argnames=("config", "imag_horizon", "control", "policy_return_mode"),
+    static_argnames=(
+        "config",
+        "imag_horizon",
+        "control",
+        "policy_return_mode",
+        "behavior_distill_weight",
+    ),
 )
 def continuous_policy_train_step(
     state: JepaTrainState,
@@ -284,6 +321,8 @@ def continuous_policy_train_step(
     value_clip: float = 100.0,
     action_saturation_threshold: float = 0.95,
     start_actions: jax.Array | None = None,
+    behavior_teacher_params: FrozenDict | None = None,
+    behavior_distill_weight: float = 0.0,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     if config.action_mode != "continuous":
         raise ValueError("continuous_policy_train_step requires continuous actions")
@@ -319,6 +358,29 @@ def continuous_policy_train_step(
         clipped_returns = jnp.clip(actor_returns, -value_clip, value_clip)
         weights = survival_weights(rollout["continues"], gamma=config.gamma)
         actor_loss = -weighted_mean(clipped_returns, weights)
+        behavior_distill_loss = jnp.asarray(0.0, dtype=actor_loss.dtype)
+        if behavior_teacher_params is not None and behavior_distill_weight > 0.0:
+            teacher_params = jax.tree_util.tree_map(
+                jax.lax.stop_gradient,
+                behavior_teacher_params,
+            )
+            teacher_context, _ = initial_imagination_context(
+                state.apply_fn,
+                teacher_params,
+                start_observations,
+                start_actions,
+                config,
+            )
+            teacher_logits, _ = state.apply_fn(
+                {"params": teacher_params},
+                teacher_context[:, -1],
+                method=JepaWorldModel.actor_value_from_latent,
+            )
+            teacher_actions = jax.lax.stop_gradient(jnp.tanh(teacher_logits))
+            behavior_distill_loss = jnp.mean(
+                jnp.square(rollout["normalized_actions"][0] - teacher_actions)
+            )
+            actor_loss = actor_loss + behavior_distill_weight * behavior_distill_loss
         action_saturation = jnp.mean(
             (
                 jnp.abs(rollout["normalized_actions"]) >= action_saturation_threshold
@@ -347,6 +409,11 @@ def continuous_policy_train_step(
             "policy/return_abs_max": jnp.max(jnp.abs(actor_returns)),
             "policy/value_target_abs_mean": jnp.mean(jnp.abs(clipped_returns)),
             "policy/value_target_abs_max": jnp.max(jnp.abs(clipped_returns)),
+            "policy/behavior_distill_loss": behavior_distill_loss,
+            "policy/behavior_distill_weight": jnp.asarray(
+                behavior_distill_weight,
+                dtype=actor_loss.dtype,
+            ),
             "policy/action_mean": jnp.mean(rollout["actions"]),
             "policy/action_std": jnp.std(rollout["actions"]),
             "policy/action_abs_mean": jnp.mean(jnp.abs(rollout["actions"])),
@@ -1121,7 +1188,10 @@ def _label_params(params: FrozenDict, trainable_groups: frozenset[str]) -> Froze
             lambda _: (
                 "train"
                 if key in trainable_groups
-                or (key.startswith("block_") and "encoder" in trainable_groups)
+                or (
+                    key.startswith("block_")
+                    and "transformer_blocks" in trainable_groups
+                )
                 else "freeze"
             ),
             value,
