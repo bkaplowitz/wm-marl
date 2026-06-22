@@ -154,6 +154,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--online-train-steps", type=int, default=None)
     parser.add_argument("--online-policy-train-steps", type=int, default=None)
     parser.add_argument(
+        "--online-reset-replay-env",
+        dest="online_reset_replay_env",
+        action="store_true",
+        default=True,
+        help=(
+            "Reset vector environments before collecting each online actor-replay "
+            "block so replay-return metrics are attributable to the current actor."
+        ),
+    )
+    parser.add_argument(
+        "--no-online-reset-replay-env",
+        dest="online_reset_replay_env",
+        action="store_false",
+        help="Continue online actor replay from the current environment states.",
+    )
+    parser.add_argument(
         "--online-reset-actor",
         action="store_true",
         help="Reset actor/value heads at the start of each online policy phase.",
@@ -551,6 +567,8 @@ def run_one(
         for online_index in range(1, args.online_iterations + 1):
             phase = f"online_{online_index:03d}"
             online_collect_steps = args.online_collect_steps or args.collect_steps
+            if args.online_reset_replay_env:
+                observations = adapter.reset()
             observations, added_env_steps, collect_metrics = _collect_policy_steps(
                 adapter,
                 observations,
@@ -566,6 +584,7 @@ def run_one(
             env_steps += added_env_steps
             collect_payload = {
                 **collect_metrics,
+                "reset_env_before_collection": args.online_reset_replay_env,
                 "total_env_steps": env_steps,
                 "replay_size_per_env": replay.size,
             }
@@ -1502,6 +1521,14 @@ def _merge_online_policy_baseline(
     merged["policy_online_phase_confirmation_improvement"] = (
         phase_confirmation_improvement
     )
+    pre_online_trained_mean = initial_outcome.get("policy_trained_mean")
+    merged["policy_pre_online_trained_mean"] = pre_online_trained_mean
+    merged["policy_online_total_improvement_vs_pre_online"] = (
+        merged["policy_trained_mean"] - pre_online_trained_mean
+        if pre_online_trained_mean is not None
+        and merged.get("policy_trained_mean") is not None
+        else None
+    )
     merged["policy_initial_mean"] = initial_outcome["policy_initial_mean"]
     merged["policy_random_mean"] = initial_outcome["policy_random_mean"]
     merged["policy_improvement"] = (
@@ -1551,10 +1578,15 @@ def _merge_online_policy_baseline(
     merged["policy_confirmation_passed"] = confirmation_passed
     policy_metrics = merged.get("policy_final_metrics", {})
     critic_metrics = merged.get("critic_final_metrics", {})
+    nonregressed_from_pre_online = (
+        merged["policy_online_total_improvement_vs_pre_online"] is None
+        or merged["policy_online_total_improvement_vs_pre_online"] >= 0.0
+    )
     merged["policy_passed"] = bool(
         _metrics_finite(policy_metrics)
         and _metrics_finite(critic_metrics)
         and primary_improvement > 0.0
+        and nonregressed_from_pre_online
         and merged["policy_trained_mean"] > merged["policy_random_mean"]
         and confirmation_passed
         and policy_metrics.get("policy/action_saturation_fraction", 1.0) < 0.75

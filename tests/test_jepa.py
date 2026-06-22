@@ -812,6 +812,7 @@ def test_online_policy_outcome_keeps_original_baseline_for_summary():
     initial = {
         "policy_initial_mean": 10.0,
         "policy_random_mean": 1.0,
+        "policy_trained_mean": 40.0,
     }
     final = {
         "policy_initial_mean": 50.0,
@@ -833,6 +834,8 @@ def test_online_policy_outcome_keeps_original_baseline_for_summary():
     assert merged["policy_random_mean"] == 1.0
     assert merged["policy_online_phase_initial_mean"] == 50.0
     assert merged["policy_online_phase_improvement"] == 10.0
+    assert merged["policy_pre_online_trained_mean"] == 40.0
+    assert merged["policy_online_total_improvement_vs_pre_online"] == 20.0
     assert merged["policy_improvement"] == 50.0
     assert merged["policy_primary_improvement"] == 10.0
     assert merged["policy_primary_improvement_key"] == "policy_online_phase_improvement"
@@ -844,6 +847,7 @@ def test_online_policy_regression_fails_even_when_total_return_improves():
     initial = {
         "policy_initial_mean": 10.0,
         "policy_random_mean": 1.0,
+        "policy_trained_mean": 45.0,
     }
     final = {
         "policy_initial_mean": 50.0,
@@ -863,6 +867,34 @@ def test_online_policy_regression_fails_even_when_total_return_improves():
 
     assert merged["policy_improvement"] == 30.0
     assert merged["policy_primary_improvement"] == -10.0
+    assert merged["policy_online_total_improvement_vs_pre_online"] == -5.0
+    assert not merged["policy_passed"]
+
+
+def test_online_policy_fails_when_phase_improves_but_loses_pre_online_actor():
+    initial = {
+        "policy_initial_mean": 10.0,
+        "policy_random_mean": 1.0,
+        "policy_trained_mean": 100.0,
+    }
+    final = {
+        "policy_initial_mean": 50.0,
+        "policy_random_mean": 2.0,
+        "policy_trained_mean": 70.0,
+        "policy_improvement": 20.0,
+        "policy_trained_minus_random": 68.0,
+        "policy_final_metrics": {
+            "policy/action_saturation_fraction": 0.1,
+        },
+        "critic_final_metrics": {
+            "critic/finite_fraction": 1.0,
+        },
+    }
+
+    merged = _merge_online_policy_baseline(final, initial)
+
+    assert merged["policy_primary_improvement"] == 20.0
+    assert merged["policy_online_total_improvement_vs_pre_online"] == -30.0
     assert not merged["policy_passed"]
 
 
