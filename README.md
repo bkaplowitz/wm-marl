@@ -124,7 +124,7 @@ uv run world-marl-validate-dmc-world-model \
   --open-loop-horizon 5 \
   --latent-dim 128 \
   --regularizer sigreg \
-  --sigreg-weight 0.05 \
+  --regularizer-weight 0.05 \
   --controls none no-action-world-model shuffled-action-replay frozen-random-world-model \
   --out-dir runs/dmc_jepa
 ```
@@ -153,7 +153,7 @@ uv run world-marl-validate-single-agent-world-model \
   --open-loop-horizon 5 \
   --latent-dim 128 \
   --regularizer sigreg \
-  --sigreg-weight 0.05 \
+  --regularizer-weight 0.05 \
   --controls none no-action-world-model shuffled-action-replay frozen-random-world-model \
   --out-dir runs/brax_jepa
 ```
@@ -161,8 +161,32 @@ uv run world-marl-validate-single-agent-world-model \
 Start with state observations; pixel observations and larger recurrent/history
 models are later milestones.
 
-To test the next rung, add frozen-world-model policy training. This still does
-not use MPC and does not update the JEPA backbone during actor/value training:
+As a first sequence-model probe, use a larger context window in model-only mode.
+This validates history-conditioned latent dynamics without yet training the
+actor from history-initialized imagined rollouts:
+
+```bash
+uv run world-marl-validate-single-agent-world-model \
+  --env brax:reacher \
+  --num-envs 512 \
+  --collect-steps 2048 \
+  --validation-steps 1024 \
+  --train-steps 5000 \
+  --batch-size 1024 \
+  --chunk-length 32 \
+  --context-window 4 \
+  --open-loop-horizon 15 \
+  --latent-dim 128 \
+  --regularizer sigreg \
+  --regularizer-weight 0.05 \
+  --controls none no-action-world-model shuffled-action-replay \
+  --out-dir runs/brax_jepa_history
+```
+
+To test Milestone 2, add frozen-world-model policy training. This uses direct
+latent-imagination RL as the main algorithm: the actor is optimized through
+imagined latent rollouts in the frozen world model, with no MPC/search and no
+JEPA backbone updates during actor/value training:
 
 ```bash
 uv run world-marl-validate-dmc-world-model \
@@ -175,9 +199,7 @@ uv run world-marl-validate-dmc-world-model \
   --critic-warmup-steps 1000 \
   --critic-horizon 32 \
   --policy-train-steps 3000 \
-  --policy-objective candidate-distill \
-  --num-policy-candidates 64 \
-  --candidate-min-gap 0.001 \
+  --policy-objective direct \
   --policy-return-mode reward-only \
   --imag-horizon 15 \
   --policy-selection-interval 500 \
@@ -190,7 +212,7 @@ uv run world-marl-validate-dmc-world-model \
   --open-loop-horizon 15 \
   --latent-dim 128 \
   --regularizer sigreg \
-  --sigreg-weight 0.05 \
+  --regularizer-weight 0.05 \
   --controls none no-action-world-model shuffled-action-replay frozen-random-world-model \
   --out-dir runs/dmc_jepa_policy
 ```
@@ -205,11 +227,8 @@ policy returns:
   actor selected by periodic paired real-environment validation;
 - paired no-action, shuffled-action, and frozen-random-world-model controls.
 
-The default policy objective is training-only candidate distillation: the
-frozen latent model scores sampled action candidates for replay states, and the
-actor is trained toward the best candidate only when the predicted action-value
-gap is nontrivial. Evaluation still uses the direct actor; no MPC/search is used
-at evaluation time.
+`candidate-distill` remains available as a diagnostic planning-teacher baseline,
+but it is not the main algorithmic path.
 
 The next rung turns the offline validation into an online data loop. After the
 first frozen-model policy phase, the selected actor collects fresh real DMC
@@ -227,9 +246,8 @@ uv run world-marl-validate-dmc-world-model \
   --critic-warmup-steps 1000 \
   --critic-horizon 32 \
   --policy-train-steps 3000 \
-  --policy-objective candidate-distill \
-  --num-policy-candidates 64 \
-  --candidate-min-gap 0.001 \
+  --policy-objective direct \
+  --policy-return-mode reward-only \
   --imag-horizon 15 \
   --policy-selection-interval 500 \
   --policy-selection-episodes 20 \
@@ -243,7 +261,7 @@ uv run world-marl-validate-dmc-world-model \
   --open-loop-horizon 15 \
   --latent-dim 128 \
   --regularizer sigreg \
-  --sigreg-weight 0.05 \
+  --regularizer-weight 0.05 \
   --controls none \
   --num-runs 3 \
   --out-dir runs/dmc_jepa_online_cartpole \

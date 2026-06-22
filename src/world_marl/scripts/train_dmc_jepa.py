@@ -75,7 +75,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-interval", type=int, default=250)
     parser.add_argument("--model-horizon", type=int, default=1)
     parser.add_argument("--open-loop-horizon", type=int, default=5)
-    parser.add_argument("--context-window", type=int, default=1)
+    parser.add_argument(
+        "--context-window",
+        type=int,
+        default=1,
+        help=(
+            "Latent/action history length for world-model training. Values >1 "
+            "are currently supported for model-only validation, not policy "
+            "imagination."
+        ),
+    )
     parser.add_argument("--latent-dim", type=int, default=128)
     parser.add_argument("--model-dim", type=int, default=128)
     parser.add_argument("--num-layers", type=int, default=4)
@@ -91,11 +100,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--policy-objective",
         choices=("candidate-distill", "direct"),
-        default="candidate-distill",
+        default="direct",
         help=(
-            "candidate-distill scores sampled actions with the frozen latent model "
-            "and trains a direct actor toward the best candidates. direct "
-            "backpropagates reward-only or lambda returns through the model."
+            "direct is the main algorithm and backpropagates reward-only or "
+            "lambda returns through latent imagination. candidate-distill is a "
+            "diagnostic planning-teacher baseline that scores sampled actions "
+            "with the frozen latent model and trains the actor toward the best "
+            "candidates."
         ),
     )
     parser.add_argument(
@@ -103,8 +114,9 @@ def parse_args() -> argparse.Namespace:
         choices=("reward-only", "lambda"),
         default="reward-only",
         help=(
-            "Use finite-horizon predicted rewards by default. The old lambda mode "
-            "bootstraps from the learned value head and is mainly a diagnostic."
+            "Use finite-horizon predicted rewards by default. The lambda mode "
+            "bootstraps from the learned value head and is experimental until "
+            "the target critic is stronger."
         ),
     )
     parser.add_argument("--value-clip", type=float, default=100.0)
@@ -149,15 +161,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lambda-return", type=float, default=0.95)
     parser.add_argument(
-        "--isotropy-weight",
+        "--regularizer-weight",
         "--sigreg-weight",
-        dest="isotropy_weight",
+        dest="regularizer_weight",
         type=float,
         default=0.05,
+        help="Weight for the selected representation regularizer.",
     )
     parser.add_argument(
         "--regularizer",
-        choices=("sigreg", "isotropy", "none"),
+        choices=("sigreg", "none"),
         default="sigreg",
     )
     parser.add_argument("--sigreg-knots", type=int, default=17)
@@ -267,13 +280,18 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--env must be formatted as dmc:<domain>/<task> or brax:<env>")
     if args.model_horizon != 1:
         parser.error("--model-horizon must be 1 for this milestone")
-    if args.context_window != 1:
-        parser.error("--context-window must be 1 for this milestone")
+    if args.policy_train_steps > 0 and args.context_window != 1:
+        parser.error(
+            "--context-window > 1 is currently supported only for model-only "
+            "validation; policy imagination still needs real-history starts"
+        )
     min_steps = args.chunk_length + args.open_loop_horizon
     if args.collect_steps < min_steps:
         parser.error("--collect-steps must cover chunk-length + open-loop-horizon")
     if args.validation_steps < min_steps:
         parser.error("--validation-steps must cover chunk-length + open-loop-horizon")
+    if args.chunk_length < args.context_window:
+        parser.error("--chunk-length must be >= --context-window")
     if args.policy_train_steps > 0 and args.collect_steps < args.critic_horizon + 1:
         parser.error("--collect-steps must cover critic-horizon + 1")
     if args.online_iterations > 0 and args.policy_train_steps == 0:
@@ -371,7 +389,7 @@ def run_one(
             learning_rate=args.learning_rate,
             actor_learning_rate=args.actor_learning_rate,
             regularizer=args.regularizer,
-            isotropy_weight=args.isotropy_weight,
+            regularizer_weight=args.regularizer_weight,
             sigreg_knots=args.sigreg_knots,
             sigreg_num_proj=args.sigreg_num_proj,
             reward_weight=args.reward_weight,
@@ -1813,6 +1831,20 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
     main_jepa = _mean(main, "final_jepa_loss")
     control_open_loop = _mean(controls, "final_open_loop_loss")
     control_jepa = _mean(controls, "final_jepa_loss")
+    policy_objectives = sorted(
+        {
+            outcome["policy_objective"]
+            for outcome in outcomes
+            if outcome.get("policy_training_enabled", False)
+            and outcome.get("policy_objective") is not None
+        }
+    )
+    primary_policy_objective = (
+        policy_objectives[0] if len(policy_objectives) == 1 else None
+    )
+    direct_policy_mainline = (
+        not policy_enabled or primary_policy_objective == "direct"
+    )
     policy_comparison_key = _policy_comparison_key(outcomes)
     paired = _paired_control_differences(
         outcomes,
@@ -1914,6 +1946,7 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
             and policy_main_beats_controls
             and paired_policy_ok
             and online_trend_passed
+            and direct_policy_mainline
         ),
         "main_runs_passed": int(
             sum(
@@ -1927,6 +1960,14 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         "paired_open_loop_ok": paired_open_loop_ok,
         "paired_jepa_ok": paired_jepa_ok,
         "policy_training_enabled": policy_enabled,
+        "milestone": (
+            "single_agent_direct_latent_imagination_rl"
+            if policy_enabled
+            else "single_agent_jepa_world_model_validation"
+        ),
+        "policy_objectives": policy_objectives,
+        "primary_policy_objective": primary_policy_objective,
+        "direct_policy_mainline": direct_policy_mainline,
         "policy_main_passed": policy_main_passed,
         "policy_main_successes": policy_main_successes,
         "policy_required_successes": policy_required_successes,

@@ -25,7 +25,7 @@ class JepaConfig:
     learning_rate: float = 3e-4
     actor_learning_rate: float = 3e-4
     regularizer: str = "sigreg"
-    isotropy_weight: float = 0.05
+    regularizer_weight: float = 0.05
     sigreg_knots: int = 17
     sigreg_num_proj: int = 1024
     reward_weight: float = 1.0
@@ -37,22 +37,19 @@ class JepaConfig:
     def __post_init__(self) -> None:
         if self.action_mode not in ("discrete", "continuous"):
             raise ValueError("action_mode must be one of: discrete, continuous")
-        if self.regularizer not in ("sigreg", "isotropy", "none"):
-            raise ValueError("regularizer must be one of: sigreg, isotropy, none")
+        if self.regularizer not in ("sigreg", "none"):
+            raise ValueError("regularizer must be one of: sigreg, none")
         if self.sigreg_knots < 2:
             raise ValueError("sigreg_knots must be >= 2")
         if self.sigreg_num_proj < 1:
             raise ValueError("sigreg_num_proj must be >= 1")
         if self.max_horizon != 1:
             raise ValueError(
-                "Milestone 1 supports max_horizon=1 only; "
-                "multi-step action-conditioned overshooting is not implemented."
+                "This prototype supports max_horizon=1 only; multi-step "
+                "action-conditioned overshooting is not implemented."
             )
-        if self.context_window != 1:
-            raise ValueError(
-                "Milestone 1 supports context_window=1 only; "
-                "real-history imagination initialization is not implemented."
-            )
+        if self.context_window < 1:
+            raise ValueError("context_window must be >= 1")
 
 
 class MLPEncoder(nn.Module):

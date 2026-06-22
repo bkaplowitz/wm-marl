@@ -8,16 +8,13 @@ import pytest
 from world_marl.jepa.models import JepaConfig, JepaWorldModel
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
-    action_value_gap,
     continuous_candidate_distill_step,
     continuous_critic_warmup_step,
     continuous_policy_train_step,
     create_jepa_train_state,
-    enumerated_policy_train_step,
     evaluate_open_loop,
-    isotropy_loss,
     lambda_returns,
-    policy_train_step,
+    latent_collapse_metrics,
     prediction_validity,
     reset_policy_heads,
     reward_only_returns,
@@ -441,9 +438,9 @@ def test_continuous_candidate_distill_no_action_control_keeps_actor_head():
         np.testing.assert_allclose(np.asarray(left), np.asarray(right), atol=1e-7)
 
 
-def test_isotropy_detects_collapsed_embeddings():
+def test_collapse_metrics_detect_collapsed_embeddings():
     collapsed = jnp.ones((4, 3, 8))
-    _, metrics = isotropy_loss(collapsed)
+    metrics = latent_collapse_metrics(collapsed)
 
     assert metrics["latent_std_min"] <= 1.1e-3
     assert metrics["latent_effective_rank"] <= 1e-6
@@ -453,24 +450,25 @@ def test_effective_rank_distinguishes_rank_one_and_isotropic_embeddings():
     dim = 8
     scalars = jnp.linspace(-1.0, 1.0, 16)
     rank_one = scalars[:, None] * jnp.ones((1, dim))
-    _, rank_one_metrics = isotropy_loss(rank_one.reshape(4, 4, dim))
+    rank_one_metrics = latent_collapse_metrics(rank_one.reshape(4, 4, dim))
 
     isotropic = jnp.concatenate([jnp.eye(dim), -jnp.eye(dim)], axis=0)
-    _, isotropic_metrics = isotropy_loss(isotropic.reshape(4, 4, dim))
+    isotropic_metrics = latent_collapse_metrics(isotropic.reshape(4, 4, dim))
 
     assert rank_one_metrics["latent_effective_rank"] <= 1.01
     assert isotropic_metrics["latent_effective_rank"] >= dim - 0.1
 
 
-def test_jepa_config_enforces_milestone_one_constraints():
+def test_jepa_config_enforces_world_model_constraints():
     with pytest.raises(ValueError, match="action_mode"):
         JepaConfig(observation_dim=4, action_dim=2, action_mode="mixed")
     with pytest.raises(ValueError, match="regularizer"):
         JepaConfig(observation_dim=4, action_dim=2, regularizer="made-up")
     with pytest.raises(ValueError, match="max_horizon=1"):
         JepaConfig(observation_dim=4, action_dim=2, max_horizon=2)
-    with pytest.raises(ValueError, match="context_window=1"):
-        JepaConfig(observation_dim=4, action_dim=2, context_window=2)
+    with pytest.raises(ValueError, match="context_window"):
+        JepaConfig(observation_dim=4, action_dim=2, context_window=0)
+    assert JepaConfig(observation_dim=4, action_dim=2, context_window=2)
 
 
 def test_lambda_returns_bootstrap_from_next_values():
@@ -527,87 +525,42 @@ def test_open_loop_evaluation_masks_terminal_crossing_predictions():
     assert metrics["model/open_loop_finite_fraction"] == 1.0
 
 
-def test_policy_update_does_not_change_world_model_parameters():
-    config = _config()
+def test_open_loop_evaluation_supports_history_context():
+    config = JepaConfig(
+        observation_dim=4,
+        action_dim=2,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=1,
+        context_window=2,
+        sigreg_num_proj=32,
+    )
     state = create_jepa_train_state(jax.random.PRNGKey(0), config)
-    before = state.params
-    batch = _batch(config)
-    state, _ = policy_train_step(
-        state,
-        jax.random.PRNGKey(1),
-        batch.observations[:, 0],
-        config,
-        imag_horizon=2,
+    batch = ReplayBatch(
+        observations=jnp.zeros((3, 5, config.observation_dim), dtype=jnp.float32),
+        actions=jnp.zeros((3, 4, config.action_dim), dtype=jnp.float32),
+        rewards=jnp.ones((3, 4), dtype=jnp.float32),
+        dones=jnp.asarray(
+            [
+                [0.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+            ],
+            dtype=jnp.float32,
+        ),
     )
 
-    for group in (
-        "encoder",
-        "latent_proj",
-        "action_embed",
-        "dynamics_norm",
-        "predictor",
-        "predictor_norm",
-    ):
-        before_leaves = jax.tree_util.tree_leaves(before[group])
-        after_leaves = jax.tree_util.tree_leaves(state.params[group])
-        for left, right in zip(before_leaves, after_leaves, strict=True):
-            np.testing.assert_allclose(np.asarray(left), np.asarray(right))
-
-
-def test_enumerated_policy_update_does_not_change_world_model_parameters():
-    config = _config()
-    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
-    before = state.params
-    batch = _batch(config)
-    state, metrics = enumerated_policy_train_step(
-        state,
-        jax.random.PRNGKey(1),
-        batch.observations[:, 0],
-        config,
-    )
-
-    assert jnp.isfinite(metrics["policy/total_loss"])
-    for group in (
-        "encoder",
-        "latent_proj",
-        "action_embed",
-        "dynamics_norm",
-        "predictor",
-        "predictor_norm",
-        "reward_head",
-        "continue_head",
-    ):
-        before_leaves = jax.tree_util.tree_leaves(before[group])
-        after_leaves = jax.tree_util.tree_leaves(state.params[group])
-        for left, right in zip(before_leaves, after_leaves, strict=True):
-            np.testing.assert_allclose(np.asarray(left), np.asarray(right))
-
-
-def test_enumerated_no_action_control_leaves_actor_head_unchanged():
-    config = _config()
-    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
-    before = state.params
-    observations = jnp.ones((8, config.observation_dim), dtype=jnp.float32)
-
-    updated, metrics = enumerated_policy_train_step(
-        state,
-        jax.random.PRNGKey(1),
-        observations,
-        config,
-        control="no-action-world-model",
-    )
+    metrics = evaluate_open_loop(state, batch, config, horizon=2)
 
     np.testing.assert_allclose(
-        np.asarray(metrics["policy/enumerated_q_gap"]),
-        0.0,
+        np.asarray(metrics["model/open_loop_valid_fraction"]),
+        1.0 / 3.0,
         atol=1e-6,
     )
-    for left, right in zip(
-        jax.tree_util.tree_leaves(before["actor_head"]),
-        jax.tree_util.tree_leaves(updated.params["actor_head"]),
-        strict=True,
-    ):
-        np.testing.assert_allclose(np.asarray(left), np.asarray(right), atol=1e-7)
+    assert metrics["model/open_loop_finite_fraction"] == 1.0
 
 
 def test_reset_policy_heads_preserves_model_and_reinitializes_policy_heads():
@@ -655,21 +608,6 @@ def test_reset_policy_heads_preserves_model_and_reinitializes_policy_heads():
     )
     assert actor_changed
     assert value_changed
-
-
-def test_no_action_control_has_zero_action_value_gap():
-    config = _config()
-    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
-    observations = jnp.ones((5, config.observation_dim), dtype=jnp.float32)
-
-    gap = action_value_gap(
-        state,
-        observations,
-        config,
-        control="no-action-world-model",
-    )
-
-    np.testing.assert_allclose(np.asarray(gap), 0.0, atol=1e-6)
 
 
 def test_dmc_jepa_summary_requires_main_to_beat_controls():
@@ -775,6 +713,7 @@ def test_dmc_jepa_summary_tracks_policy_rung():
             "initial_open_loop_loss": 1.0,
             "final_open_loop_loss": 0.1 if control == "none" else 0.2,
             "policy_training_enabled": True,
+            "policy_objective": "direct",
             "policy_passed": control == "none",
             "policy_random_mean": 0.0,
             "policy_initial_mean": 1.0,
@@ -816,6 +755,7 @@ def test_dmc_jepa_policy_summary_allows_majority_success_with_positive_aggregate
             "initial_open_loop_loss": 1.0,
             "final_open_loop_loss": 0.1,
             "policy_training_enabled": True,
+            "policy_objective": "direct",
             "policy_passed": policy_passed,
             "policy_random_mean": 0.0,
             "policy_initial_mean": 10.0,
@@ -838,6 +778,34 @@ def test_dmc_jepa_policy_summary_allows_majority_success_with_positive_aggregate
     assert summary["policy_main_successes"] == 2
     assert summary["policy_required_successes"] == 2
     assert summary["policy_aggregate_improved"]
+
+
+def test_dmc_jepa_summary_marks_candidate_distill_as_diagnostic():
+    outcome = {
+        "run_index": 0,
+        "control": "none",
+        "passed": True,
+        "initial_jepa_loss": 1.0,
+        "final_jepa_loss": 0.1,
+        "initial_open_loop_loss": 1.0,
+        "final_open_loop_loss": 0.1,
+        "policy_training_enabled": True,
+        "policy_objective": "candidate-distill",
+        "policy_passed": True,
+        "policy_random_mean": 0.0,
+        "policy_initial_mean": 1.0,
+        "policy_trained_mean": 3.0,
+        "policy_improvement": 2.0,
+        "policy_trained_minus_random": 3.0,
+        "final_model_metrics": {"model/jepa_loss": 0.1},
+    }
+
+    summary = summarize_dmc_jepa([outcome])
+
+    assert summary["policy_main_passed"]
+    assert summary["primary_policy_objective"] == "candidate-distill"
+    assert not summary["direct_policy_mainline"]
+    assert not summary["passed"]
 
 
 def test_online_policy_outcome_keeps_original_baseline_for_summary():
@@ -909,6 +877,7 @@ def test_dmc_jepa_summary_uses_online_phase_as_primary_policy_signal():
             "initial_open_loop_loss": 1.0,
             "final_open_loop_loss": 0.1 if control == "none" else 0.2,
             "policy_training_enabled": True,
+            "policy_objective": "direct",
             "policy_passed": control == "none" and online > 0.0,
             "policy_random_mean": 0.0,
             "policy_initial_mean": 10.0,
@@ -960,6 +929,7 @@ def test_dmc_jepa_summary_requires_paired_policy_majority():
             "initial_open_loop_loss": 1.0,
             "final_open_loop_loss": 0.1 if control == "none" else 0.2,
             "policy_training_enabled": True,
+            "policy_objective": "direct",
             "policy_passed": control == "none",
             "policy_random_mean": 0.0,
             "policy_initial_mean": 10.0,
