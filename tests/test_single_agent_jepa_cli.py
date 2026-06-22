@@ -112,7 +112,7 @@ def test_single_agent_jepa_cli_allows_model_only_history_context(monkeypatch):
     assert args.context_window == 2
 
 
-def test_single_agent_jepa_cli_rejects_policy_history_context(monkeypatch):
+def test_single_agent_jepa_cli_allows_direct_policy_history_context(monkeypatch):
     monkeypatch.setattr(
         sys,
         "argv",
@@ -132,12 +132,20 @@ def test_single_agent_jepa_cli_rejects_policy_history_context(monkeypatch):
             "2",
             "--policy-train-steps",
             "1",
+            "--model-horizon",
+            "3",
+            "--target-gradient",
+            "symmetric",
+            "--no-residual-dynamics",
+            "--critic-warmup-steps",
+            "0",
         ],
     )
 
-    try:
-        train_dmc_jepa.parse_args()
-    except SystemExit as exc:
-        assert exc.code == 2
-    else:
-        raise AssertionError("expected context-window policy guard to fail")
+    args = train_dmc_jepa.parse_args()
+
+    assert args.context_window == 2
+    assert args.policy_train_steps == 1
+    assert args.model_horizon == 3
+    assert args.target_gradient == "symmetric"
+    assert not args.residual_dynamics

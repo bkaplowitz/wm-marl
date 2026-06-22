@@ -33,21 +33,22 @@ class JepaConfig:
     gamma: float = 0.99
     lambda_return: float = 0.95
     entropy_coef: float = 0.01
+    residual_dynamics: bool = True
+    target_gradient: str = "stopgrad"
 
     def __post_init__(self) -> None:
         if self.action_mode not in ("discrete", "continuous"):
             raise ValueError("action_mode must be one of: discrete, continuous")
         if self.regularizer not in ("sigreg", "none"):
             raise ValueError("regularizer must be one of: sigreg, none")
+        if self.target_gradient not in ("stopgrad", "symmetric"):
+            raise ValueError("target_gradient must be one of: stopgrad, symmetric")
         if self.sigreg_knots < 2:
             raise ValueError("sigreg_knots must be >= 2")
         if self.sigreg_num_proj < 1:
             raise ValueError("sigreg_num_proj must be >= 1")
-        if self.max_horizon != 1:
-            raise ValueError(
-                "This prototype supports max_horizon=1 only; multi-step "
-                "action-conditioned overshooting is not implemented."
-            )
+        if self.max_horizon < 1:
+            raise ValueError("max_horizon must be >= 1")
         if self.context_window < 1:
             raise ValueError("context_window must be >= 1")
 
@@ -206,39 +207,92 @@ class JepaWorldModel(nn.Module):
         dones: jax.Array | None = None,
     ) -> dict[str, jax.Array]:
         latents = self.encode(observations)
-        context_latents = latents[:, :chunk_length]
-        context_actions = actions[:, :chunk_length]
-        context_dones = None if dones is None else dones[:, :chunk_length]
-        h = self.dynamics_hidden(
-            context_latents,
-            context_actions,
-            dones=context_dones,
-        )
+        max_horizon = self.config.max_horizon
+        if latents.shape[1] < chunk_length + max_horizon:
+            raise ValueError("observations must cover chunk_length + max_horizon")
+        if actions.shape[1] < chunk_length + max_horizon - 1:
+            raise ValueError("actions must cover chunk_length + max_horizon - 1")
 
+        context_latents = latents[:, :chunk_length]
+        latent_history = history_windows(
+            context_latents,
+            self.config.context_window,
+            pad="edge",
+        )
+        action_history = history_windows(
+            actions[:, :chunk_length],
+            self.config.context_window,
+            pad="zero",
+        )
+        done_history = (
+            None
+            if dones is None
+            else history_windows(
+                dones[:, :chunk_length],
+                self.config.context_window,
+                pad="done",
+            )
+        )
         predictions = []
         targets = []
-        for horizon in range(1, self.config.max_horizon + 1):
-            horizon_ids = jnp.full(
-                (h.shape[0], h.shape[1]),
-                horizon,
-                dtype=jnp.int32,
+        rewards = []
+        continues = []
+        batch_size = latents.shape[0]
+        flat_batch = batch_size * chunk_length
+        for step_index in range(max_horizon):
+            flat_latents = latent_history.reshape(
+                (flat_batch, self.config.context_window, self.config.latent_dim)
             )
-            h_k = h + self.horizon_embed(horizon_ids)
-            predictions.append(self.predict_latent(h_k))
-            targets.append(
-                jax.lax.stop_gradient(latents[:, horizon : horizon + chunk_length])
+            flat_actions = action_history.reshape(
+                (flat_batch, self.config.context_window, *actions.shape[2:])
             )
-        predicted_latents = jnp.stack(predictions, axis=2)
-        target_latents = jnp.stack(targets, axis=2)
-        rewards = jnp.squeeze(self.reward_head(h), axis=-1)
-        continues = jnp.squeeze(self.continue_head(h), axis=-1)
+            flat_dones = (
+                None
+                if done_history is None
+                else done_history.reshape((flat_batch, self.config.context_window))
+            )
+            h = self.dynamics_hidden(flat_latents, flat_actions, dones=flat_dones)
+            last_h = h[:, -1]
+            horizon_ids = jnp.full((flat_batch,), step_index + 1, dtype=jnp.int32)
+            current_latents = flat_latents[:, -1]
+            next_latents = self.predict_latent(
+                last_h + self.horizon_embed(horizon_ids),
+                current_latents=current_latents,
+            )
+            predictions.append(
+                next_latents.reshape((batch_size, chunk_length, self.config.latent_dim))
+            )
+            target = latents[:, step_index + 1 : step_index + 1 + chunk_length]
+            if self.config.target_gradient == "stopgrad":
+                target = jax.lax.stop_gradient(target)
+            targets.append(target)
+            rewards.append(
+                jnp.squeeze(self.reward_head(last_h), axis=-1).reshape(
+                    (batch_size, chunk_length)
+                )
+            )
+            continues.append(
+                jnp.squeeze(self.continue_head(last_h), axis=-1).reshape(
+                    (batch_size, chunk_length)
+                )
+            )
+            if step_index + 1 < max_horizon:
+                latent_history = append_history(latent_history, predictions[-1])
+                action_history = append_history(
+                    action_history,
+                    actions[:, step_index + 1 : step_index + 1 + chunk_length],
+                )
+                if done_history is not None:
+                    done_history = append_history(
+                        done_history,
+                        dones[:, step_index + 1 : step_index + 1 + chunk_length],
+                    )
         return {
             "context_latents": context_latents,
-            "predicted_latents": predicted_latents,
-            "target_latents": target_latents,
-            "reward_logits": rewards,
-            "continue_logits": continues,
-            "hidden": h,
+            "predicted_latents": jnp.stack(predictions, axis=2),
+            "target_latents": jnp.stack(targets, axis=2),
+            "reward_logits": jnp.stack(rewards, axis=2),
+            "continue_logits": jnp.stack(continues, axis=2),
         }
 
     def dynamics_hidden(
@@ -263,8 +317,16 @@ class JepaWorldModel(nn.Module):
             h = block(h, mask)
         return self.dynamics_norm(h)
 
-    def predict_latent(self, hidden: jax.Array) -> jax.Array:
-        return self.predictor_norm(self.predictor(hidden))
+    def predict_latent(
+        self,
+        hidden: jax.Array,
+        *,
+        current_latents: jax.Array | None = None,
+    ) -> jax.Array:
+        update = self.predictor(hidden)
+        if self.config.residual_dynamics and current_latents is not None:
+            update = current_latents + update
+        return self.predictor_norm(update)
 
     def predict_next_from_history(
         self,
@@ -274,7 +336,10 @@ class JepaWorldModel(nn.Module):
         h = self.dynamics_hidden(latent_history, action_history)
         last_h = h[:, -1]
         horizon_ids = jnp.ones((last_h.shape[0],), dtype=jnp.int32)
-        z_next = self.predict_latent(last_h + self.horizon_embed(horizon_ids))
+        z_next = self.predict_latent(
+            last_h + self.horizon_embed(horizon_ids),
+            current_latents=latent_history[:, -1],
+        )
         reward = jnp.squeeze(self.reward_head(last_h), axis=-1)
         continue_logit = jnp.squeeze(self.continue_head(last_h), axis=-1)
         return z_next, reward, continue_logit
@@ -316,6 +381,38 @@ def causal_attention_mask(
     segment_ids = jnp.cumsum(previous_dones.astype(jnp.int32), axis=1)
     same_segment = segment_ids[:, None, :, None] == segment_ids[:, None, None, :]
     return mask & same_segment
+
+
+def history_windows(values: jax.Array, window: int, *, pad: str) -> jax.Array:
+    """Return per-position windows ending at each position in ``values``.
+
+    The result is shaped [batch, time, window, ...]. Left padding is only used for
+    the first few stream positions where less than ``window`` real history exists.
+    """
+
+    if window < 1:
+        raise ValueError("window must be >= 1")
+    if pad == "edge":
+        pad_values = jnp.repeat(values[:, :1], repeats=window - 1, axis=1)
+    elif pad == "zero":
+        pad_values = jnp.zeros(
+            (values.shape[0], window - 1, *values.shape[2:]), dtype=values.dtype
+        )
+    elif pad == "done":
+        pad_values = jnp.ones(
+            (values.shape[0], window - 1, *values.shape[2:]), dtype=values.dtype
+        )
+    else:
+        raise ValueError("pad must be one of: edge, zero, done")
+    padded = jnp.concatenate([pad_values, values], axis=1)
+    return jnp.stack(
+        [padded[:, index : index + values.shape[1]] for index in range(window)],
+        axis=2,
+    )
+
+
+def append_history(history: jax.Array, values: jax.Array) -> jax.Array:
+    return jnp.concatenate([history[:, :, 1:], values[:, :, None]], axis=2)
 
 
 def sinusoidal_position_embedding(time: int, dim: int) -> jax.Array:

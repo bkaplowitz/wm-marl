@@ -181,15 +181,30 @@ def world_model_loss(
     pred = _normalize(outputs["predicted_latents"])
     target = _normalize(outputs["target_latents"])
 
-    reward_targets = batch.rewards[:, :chunk_length]
-    continue_targets = 1.0 - batch.dones[:, :chunk_length]
+    max_horizon = config.max_horizon
+    reward_targets = jnp.stack(
+        [
+            batch.rewards[:, offset : offset + chunk_length]
+            for offset in range(max_horizon)
+        ],
+        axis=2,
+    )
+    done_targets = jnp.stack(
+        [
+            batch.dones[:, offset : offset + chunk_length]
+            for offset in range(max_horizon)
+        ],
+        axis=2,
+    )
+    continue_targets = 1.0 - done_targets
     reward_pred = outputs["reward_logits"]
     continue_logits = outputs["continue_logits"]
-    reward_loss = jnp.mean(jnp.square(reward_pred - reward_targets))
-    continue_loss = jnp.mean(
-        optax.sigmoid_binary_cross_entropy(continue_logits, continue_targets)
+    validity = prediction_validity(batch.dones, chunk_length, max_horizon)
+    reward_loss = masked_mean(jnp.square(reward_pred - reward_targets), validity)
+    continue_loss = masked_mean(
+        optax.sigmoid_binary_cross_entropy(continue_logits, continue_targets),
+        validity,
     )
-    validity = prediction_validity(batch.dones, chunk_length, config.max_horizon)
     cosine = jnp.sum(pred * target, axis=-1)
     jepa_loss = masked_mean(1.0 - cosine, validity)
     jepa_cosine = masked_mean(cosine, validity)
@@ -216,17 +231,19 @@ def world_model_loss(
         "model/regularizer_loss": regularizer,
         f"model/{regularizer_name}_loss": regularizer,
         "model/reward_loss": reward_loss,
-        "model/reward_constant_mse": jnp.mean(
-            jnp.square(constant_reward - reward_targets)
+        "model/reward_constant_mse": masked_mean(
+            jnp.square(constant_reward - reward_targets),
+            validity,
         ),
         "model/continue_loss": continue_loss,
-        "model/continue_constant_bce": jnp.mean(
+        "model/continue_constant_bce": masked_mean(
             optax.sigmoid_binary_cross_entropy(
                 jnp.log(constant_continue / (1.0 - constant_continue + 1e-6) + 1e-6),
                 continue_targets,
-            )
+            ),
+            validity,
         ),
-        **terminal_prediction_metrics(continue_logits, batch.dones[:, :chunk_length]),
+        **terminal_prediction_metrics(continue_logits, done_targets),
         **{f"collapse/{key}": value for key, value in collapse.items()},
     }
     return total_loss, metrics
@@ -266,14 +283,10 @@ def continuous_policy_train_step(
     policy_return_mode: PolicyReturnMode = "reward-only",
     value_clip: float = 100.0,
     action_saturation_threshold: float = 0.95,
+    start_actions: jax.Array | None = None,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     if config.action_mode != "continuous":
         raise ValueError("continuous_policy_train_step requires continuous actions")
-    if config.context_window != 1:
-        raise ValueError(
-            "continuous_policy_train_step requires context_window=1 until "
-            "real-history imagination starts are implemented"
-        )
     del key
 
     def actor_loss_fn(params):
@@ -286,6 +299,7 @@ def continuous_policy_train_step(
             action_high,
             imag_horizon=imag_horizon,
             control=control,
+            start_actions=start_actions,
         )
         if policy_return_mode == "reward-only":
             actor_returns = reward_only_returns(
@@ -408,22 +422,24 @@ def continuous_candidate_distill_step(
     candidate_min_gap: float = 1e-3,
     action_l2_coef: float = 1e-3,
     action_saturation_threshold: float = 0.95,
+    start_actions: jax.Array | None = None,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     if config.action_mode != "continuous":
         raise ValueError(
             "continuous_candidate_distill_step requires continuous actions"
         )
-    if config.context_window != 1:
-        raise ValueError(
-            "continuous_candidate_distill_step requires context_window=1 until "
-            "real-history imagination starts are implemented"
-        )
     if num_candidates < 2:
         raise ValueError("num_candidates must be >= 2")
+    del start_actions
 
     def loss_fn(params):
         model_params = jax.tree_util.tree_map(jax.lax.stop_gradient, params)
-        flat_obs = start_observations.reshape((-1, config.observation_dim))
+        current_observations = (
+            start_observations[:, -1]
+            if start_observations.ndim == 3
+            else start_observations
+        )
+        flat_obs = current_observations.reshape((-1, config.observation_dim))
         z0 = state.apply_fn(
             {"params": model_params},
             flat_obs,
@@ -634,17 +650,16 @@ def continuous_imagine_rollout(
     *,
     imag_horizon: int,
     control: ControlMode,
+    start_actions: jax.Array | None = None,
 ) -> dict[str, jax.Array]:
-    if config.context_window != 1:
-        raise ValueError(
-            "continuous_imagine_rollout requires context_window=1 until "
-            "real-history imagination starts are implemented"
-        )
     model_params = jax.tree_util.tree_map(jax.lax.stop_gradient, params)
-    flat_obs = start_observations.reshape((-1, config.observation_dim))
-    z0 = apply_fn({"params": model_params}, flat_obs, method=JepaWorldModel.encode)
-    context = jnp.repeat(z0[:, None, :], repeats=config.context_window, axis=1)
-    action_context = initial_action_context(z0.shape[0], config)
+    context, action_context = initial_imagination_context(
+        apply_fn,
+        model_params,
+        start_observations,
+        start_actions,
+        config,
+    )
 
     def step(carry, _):
         context, action_context = carry
@@ -663,11 +678,15 @@ def continuous_imagine_rollout(
         model_actions = (
             jnp.zeros_like(actions) if control == "no-action-world-model" else actions
         )
-        action_context = append_action_context(action_context, model_actions, config)
+        model_action_context = replace_last_action_context(
+            action_context,
+            model_actions,
+            config,
+        )
         next_z, rewards, continue_logits = apply_fn(
             {"params": model_params},
             context,
-            action_context,
+            model_action_context,
             method=JepaWorldModel.predict_next_from_history,
         )
         continues = jax.nn.sigmoid(continue_logits)
@@ -677,7 +696,12 @@ def continuous_imagine_rollout(
             method=JepaWorldModel.actor_value_from_latent,
         )
         next_context = jnp.concatenate([context[:, 1:], next_z[:, None, :]], axis=1)
-        return (next_context, action_context), {
+        next_action_context = append_action_context(
+            model_action_context,
+            jnp.zeros_like(model_actions),
+            config,
+        )
+        return (next_context, next_action_context), {
             "latents": current_z,
             "actions": actions,
             "normalized_actions": normalized_actions,
@@ -700,6 +724,40 @@ def continuous_imagine_rollout(
     )
     rollout["fixed_last_value"] = fixed_last_value
     return rollout
+
+
+def initial_imagination_context(
+    apply_fn,
+    model_params: FrozenDict,
+    start_observations: jax.Array,
+    start_actions: jax.Array | None,
+    config: JepaConfig,
+) -> tuple[jax.Array, jax.Array]:
+    if start_observations.ndim == 2:
+        flat_obs = start_observations.reshape((-1, config.observation_dim))
+        z0 = apply_fn({"params": model_params}, flat_obs, method=JepaWorldModel.encode)
+        context = jnp.repeat(z0[:, None, :], repeats=config.context_window, axis=1)
+        action_context = initial_action_context(z0.shape[0], config)
+        if start_actions is not None:
+            action_context = start_actions[:, -config.context_window :]
+        return context, action_context
+
+    if start_observations.ndim != 3:
+        raise ValueError(
+            "start_observations must be [batch, obs] or [batch, time, obs]"
+        )
+    if start_observations.shape[1] < config.context_window:
+        raise ValueError("start_observations does not cover context_window")
+    latents = apply_fn(
+        {"params": model_params},
+        start_observations[:, -config.context_window :],
+        method=JepaWorldModel.encode,
+    )
+    if start_actions is None:
+        action_context = initial_action_context(latents.shape[0], config)
+    else:
+        action_context = start_actions[:, -config.context_window :]
+    return latents, action_context
 
 
 def select_continuous_actions(
@@ -860,6 +918,16 @@ def append_action_context(
         [action_context[:, 1:], actions[:, None]],
         axis=1,
     )
+
+
+def replace_last_action_context(
+    action_context: jax.Array,
+    actions: jax.Array,
+    config: JepaConfig,
+) -> jax.Array:
+    if config.action_mode == "continuous":
+        actions = actions.reshape((actions.shape[0], config.action_dim))
+    return action_context.at[:, -1].set(actions)
 
 
 def representation_regularizer(

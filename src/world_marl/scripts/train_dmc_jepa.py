@@ -90,6 +90,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-layers", type=int, default=4)
     parser.add_argument("--num-heads", type=int, default=4)
     parser.add_argument("--mlp-ratio", type=int, default=4)
+    parser.add_argument(
+        "--target-gradient",
+        choices=("stopgrad", "symmetric"),
+        default="stopgrad",
+        help=(
+            "Whether JEPA target latents are stopped or receive symmetric "
+            "gradients through the prediction loss."
+        ),
+    )
+    parser.add_argument(
+        "--no-residual-dynamics",
+        dest="residual_dynamics",
+        action="store_false",
+        default=True,
+        help="Disable residual latent transition z_next = norm(z + delta).",
+    )
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--actor-learning-rate", type=float, default=3e-4)
     parser.add_argument("--policy-train-steps", type=int, default=0)
@@ -294,13 +310,6 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--policy-selection-num-envs must be >= 1")
     if not (args.env.startswith("dmc:") or args.env.startswith("brax:")):
         parser.error("--env must be formatted as dmc:<domain>/<task> or brax:<env>")
-    if args.model_horizon != 1:
-        parser.error("--model-horizon must be 1 for this milestone")
-    if args.policy_train_steps > 0 and args.context_window != 1:
-        parser.error(
-            "--context-window > 1 is currently supported only for model-only "
-            "validation; policy imagination still needs real-history starts"
-        )
     min_steps = args.chunk_length + args.open_loop_horizon
     if args.collect_steps < min_steps:
         parser.error("--collect-steps must cover chunk-length + open-loop-horizon")
@@ -308,7 +317,11 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--validation-steps must cover chunk-length + open-loop-horizon")
     if args.chunk_length < args.context_window:
         parser.error("--chunk-length must be >= --context-window")
-    if args.policy_train_steps > 0 and args.collect_steps < args.critic_horizon + 1:
+    if (
+        args.policy_train_steps > 0
+        and args.critic_warmup_steps > 0
+        and args.collect_steps < args.critic_horizon + 1
+    ):
         parser.error("--collect-steps must cover critic-horizon + 1")
     if args.online_iterations > 0 and args.policy_train_steps == 0:
         parser.error("--online-iterations requires --policy-train-steps > 0")
@@ -412,6 +425,8 @@ def run_one(
             continue_weight=args.continue_weight,
             gamma=args.gamma,
             lambda_return=args.lambda_return,
+            residual_dynamics=args.residual_dynamics,
+            target_gradient=args.target_gradient,
         )
         logger.write_json(
             "config.json",
@@ -1137,15 +1152,17 @@ def _maybe_train_policy(
         batch = replay.sample(
             np_rng,
             batch_size=policy_batch_size,
-            chunk_length=1,
+            chunk_length=config.context_window,
             max_horizon=1,
         )
+        start_observations = batch.observations[:, : config.context_window]
+        start_actions = batch.actions[:, : config.context_window]
         rng, policy_key = jax.random.split(rng)
         if args.policy_objective == "candidate-distill":
             state, metrics = continuous_candidate_distill_step(
                 state,
                 policy_key,
-                batch.observations[:, 0],
+                start_observations,
                 config,
                 action_low_jax,
                 action_high_jax,
@@ -1155,12 +1172,13 @@ def _maybe_train_policy(
                 candidate_min_gap=args.candidate_min_gap,
                 action_l2_coef=args.policy_action_l2_coef,
                 action_saturation_threshold=args.action_saturation_threshold,
+                start_actions=start_actions,
             )
         else:
             state, metrics = continuous_policy_train_step(
                 state,
                 policy_key,
-                batch.observations[:, 0],
+                start_observations,
                 config,
                 action_low_jax,
                 action_high_jax,
@@ -1169,6 +1187,7 @@ def _maybe_train_policy(
                 policy_return_mode=args.policy_return_mode,
                 value_clip=args.value_clip,
                 action_saturation_threshold=args.action_saturation_threshold,
+                start_actions=start_actions,
             )
         policy_loss = float(metrics["policy/total_loss"])
         progress_score = float(
@@ -1914,9 +1933,7 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
     primary_policy_objective = (
         policy_objectives[0] if len(policy_objectives) == 1 else None
     )
-    direct_policy_mainline = (
-        not policy_enabled or primary_policy_objective == "direct"
-    )
+    direct_policy_mainline = not policy_enabled or primary_policy_objective == "direct"
     policy_comparison_key = _policy_comparison_key(outcomes)
     paired = _paired_control_differences(
         outcomes,

@@ -171,6 +171,51 @@ def test_continuous_action_jepa_model_step_is_finite():
     assert jnp.isfinite(metrics["model/total_loss"])
 
 
+def test_jepa_model_trains_recursive_overshooting_horizons():
+    config = JepaConfig(
+        observation_dim=4,
+        action_dim=3,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=3,
+        context_window=2,
+        sigreg_num_proj=32,
+    )
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    observations = jnp.ones((3, 6, 4), dtype=jnp.float32)
+    actions = jnp.zeros((3, 5, 3), dtype=jnp.float32)
+    outputs = state.apply_fn(
+        {"params": state.params},
+        observations,
+        actions,
+        chunk_length=3,
+        method=JepaWorldModel.sequence_outputs,
+    )
+
+    assert outputs["predicted_latents"].shape == (3, 3, 3, 8)
+    assert outputs["target_latents"].shape == (3, 3, 3, 8)
+    assert outputs["reward_logits"].shape == (3, 3, 3)
+    assert outputs["continue_logits"].shape == (3, 3, 3)
+
+    replay_batch = ReplayBatch(
+        observations=observations,
+        actions=actions,
+        rewards=jnp.ones((3, 5), dtype=jnp.float32),
+        dones=jnp.zeros((3, 5), dtype=jnp.float32),
+    )
+    state, metrics = train_model_step(
+        state,
+        jax.random.PRNGKey(1),
+        replay_batch,
+        config,
+        chunk_length=3,
+    )
+    assert jnp.isfinite(metrics["model/total_loss"])
+
+
 def test_action_contrast_no_action_control_has_zero_margin():
     config = JepaConfig(
         observation_dim=4,
@@ -464,10 +509,13 @@ def test_jepa_config_enforces_world_model_constraints():
         JepaConfig(observation_dim=4, action_dim=2, action_mode="mixed")
     with pytest.raises(ValueError, match="regularizer"):
         JepaConfig(observation_dim=4, action_dim=2, regularizer="made-up")
-    with pytest.raises(ValueError, match="max_horizon=1"):
-        JepaConfig(observation_dim=4, action_dim=2, max_horizon=2)
+    with pytest.raises(ValueError, match="target_gradient"):
+        JepaConfig(observation_dim=4, action_dim=2, target_gradient="ema")
+    with pytest.raises(ValueError, match="max_horizon"):
+        JepaConfig(observation_dim=4, action_dim=2, max_horizon=0)
     with pytest.raises(ValueError, match="context_window"):
         JepaConfig(observation_dim=4, action_dim=2, context_window=0)
+    assert JepaConfig(observation_dim=4, action_dim=2, max_horizon=2)
     assert JepaConfig(observation_dim=4, action_dim=2, context_window=2)
 
 
