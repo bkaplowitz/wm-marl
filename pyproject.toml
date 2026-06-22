@@ -33,6 +33,9 @@ cuda12 = [
 dmc = [
   "dm-control>=1.0",
 ]
+brax = [
+  "brax==0.10.3",
+]
 meltingpot = [
   "dm-meltingpot==2.4.0",
   "dmlab2d==1.0.0",
@@ -44,6 +47,7 @@ world-marl-verify-install = "world_marl.scripts.verify_install:main"
 world-marl-train-e2e = "world_marl.scripts.train_e2e:main"
 world-marl-train-dmc-jepa = "world_marl.scripts.train_dmc_jepa:main"
 world-marl-validate-dmc-world-model = "world_marl.scripts.train_dmc_jepa:main"
+world-marl-validate-single-agent-world-model = "world_marl.scripts.train_dmc_jepa:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -130,8 +130,36 @@ uv run world-marl-validate-dmc-world-model \
 ```
 
 Good first DMC tasks are `dmc:cartpole/swingup`, `dmc:pendulum/swingup`, and
-`dmc:reacher/easy`. Start with state observations; pixel observations, online
-data collection, and model/policy co-training are later milestones.
+`dmc:reacher/easy`. For faster accelerator-friendly iteration, the same command
+also accepts Brax tasks with `--env brax:<env_name>`.
+
+Install the optional Brax dependency with:
+
+```bash
+uv sync --extra brax
+```
+
+Then run the same validation loop on a JAX-native Brax environment:
+
+```bash
+uv run world-marl-validate-single-agent-world-model \
+  --env brax:reacher \
+  --num-envs 256 \
+  --collect-steps 2048 \
+  --validation-steps 512 \
+  --train-steps 5000 \
+  --batch-size 512 \
+  --chunk-length 32 \
+  --open-loop-horizon 5 \
+  --latent-dim 128 \
+  --regularizer sigreg \
+  --sigreg-weight 0.05 \
+  --controls none no-action-world-model shuffled-action-replay frozen-random-world-model \
+  --out-dir runs/brax_jepa
+```
+
+Start with state observations; pixel observations and larger recurrent/history
+models are later milestones.
 
 To test the next rung, add frozen-world-model policy training. This still does
 not use MPC and does not update the JEPA backbone during actor/value training:

@@ -1,10 +1,10 @@
-"""Validate a representation-space SIGReg-JEPA world model on DMC rollouts.
+"""Validate a representation-space SIGReg-JEPA world model on single-agent rollouts.
 
-By default this is the first DMC rung: random continuous-control replay plus
-held-out latent prediction, reward prediction, and continue prediction. Passing
+By default this is the first single-agent rung: random continuous-control replay
+plus held-out latent prediction, reward prediction, and continue prediction. Passing
 ``--policy-train-steps`` enables the next rung: reset actor/value heads, freeze
 the JEPA world model, train a deterministic continuous actor inside the latent
-model, then evaluate that actor in the real DMC environment.
+model, then evaluate that actor in the real environment.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import numpy as np
 from tqdm.auto import tqdm
 
 from world_marl.checkpointing import load_params, save_checkpoint
+from world_marl.envs.brax_adapter import BraxVectorAdapter, brax_env_name
 from world_marl.envs.dmc_adapter import DMCVectorAdapter, dmc_env_name
 from world_marl.jepa.models import JepaConfig, JepaWorldModel
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
@@ -46,8 +47,25 @@ FROZEN_RANDOM_WORLD_MODEL_CONTROL = "frozen-random-world-model"
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env", default="dmc:cartpole/swingup")
-    parser.add_argument("--num-envs", type=int, default=16)
-    parser.add_argument("--dmc-workers", type=int, default=1)
+    parser.add_argument(
+        "--num-envs",
+        type=int,
+        default=16,
+        help="Number of vectorized environments.",
+    )
+    parser.add_argument(
+        "--env-workers",
+        "--dmc-workers",
+        dest="env_workers",
+        type=int,
+        default=1,
+        help="Worker threads for CPU/Python-backed adapters such as DMC.",
+    )
+    parser.add_argument(
+        "--brax-backend",
+        default=None,
+        help="Optional Brax physics backend to pass through to brax.envs.create.",
+    )
     parser.add_argument("--collect-steps", type=int, default=2048)
     parser.add_argument("--validation-steps", type=int, default=512)
     parser.add_argument("--replay-capacity", type=int, default=100_000)
@@ -176,7 +194,7 @@ def parse_args() -> argparse.Namespace:
 def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     for name in (
         "num_envs",
-        "dmc_workers",
+        "env_workers",
         "collect_steps",
         "validation_steps",
         "replay_capacity",
@@ -245,12 +263,12 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         and args.policy_selection_num_envs < 1
     ):
         parser.error("--policy-selection-num-envs must be >= 1")
-    if not args.env.startswith("dmc:"):
-        parser.error("--env must be formatted as dmc:<domain>/<task>")
+    if not (args.env.startswith("dmc:") or args.env.startswith("brax:")):
+        parser.error("--env must be formatted as dmc:<domain>/<task> or brax:<env>")
     if args.model_horizon != 1:
-        parser.error("--model-horizon must be 1 for this DMC milestone")
+        parser.error("--model-horizon must be 1 for this milestone")
     if args.context_window != 1:
-        parser.error("--context-window must be 1 for this DMC milestone")
+        parser.error("--context-window must be 1 for this milestone")
     min_steps = args.chunk_length + args.open_loop_horizon
     if args.collect_steps < min_steps:
         parser.error("--collect-steps must cover chunk-length + open-loop-horizon")
@@ -264,7 +282,9 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
 
 def main() -> None:
     args = parse_args()
-    experiment_dir = Path(args.out_dir) / f"dmc_jepa_{timestamp()}"
+    experiment_dir = (
+        Path(args.out_dir) / f"{_experiment_prefix(args.env)}_{timestamp()}"
+    )
     experiment_dir.mkdir(parents=True, exist_ok=True)
     outcomes = []
     for control in args.controls:
@@ -288,6 +308,44 @@ def _skip_world_model_fit(control: ControlMode) -> bool:
     return control == FROZEN_RANDOM_WORLD_MODEL_CONTROL
 
 
+def _env_backend(env: str) -> str:
+    if env.startswith("dmc:"):
+        return "dmc"
+    if env.startswith("brax:"):
+        return "brax"
+    raise ValueError(f"unsupported env: {env!r}")
+
+
+def _experiment_prefix(env: str) -> str:
+    return f"{_env_backend(env)}_jepa"
+
+
+def _make_vector_adapter(
+    args: argparse.Namespace,
+    *,
+    seed: int,
+    num_envs: int | None = None,
+):
+    adapter_num_envs = args.num_envs if num_envs is None else num_envs
+    if args.env.startswith("dmc:"):
+        return DMCVectorAdapter(
+            dmc_env_name(args.env),
+            num_envs=adapter_num_envs,
+            max_cycles=args.max_cycles,
+            seed=seed,
+            num_workers=min(args.env_workers, adapter_num_envs),
+        )
+    if args.env.startswith("brax:"):
+        return BraxVectorAdapter(
+            brax_env_name(args.env),
+            num_envs=adapter_num_envs,
+            max_cycles=args.max_cycles,
+            seed=seed,
+            backend=args.brax_backend,
+        )
+    raise ValueError(f"unsupported env: {args.env!r}")
+
+
 def run_one(
     args: argparse.Namespace,
     *,
@@ -297,13 +355,7 @@ def run_one(
 ) -> dict[str, Any]:
     logger = RunLogger(run_dir)
     seed = args.seed + 10_000 * run_index
-    adapter = DMCVectorAdapter(
-        dmc_env_name(args.env),
-        num_envs=args.num_envs,
-        max_cycles=args.max_cycles,
-        seed=seed,
-        num_workers=args.dmc_workers,
-    )
+    adapter = _make_vector_adapter(args, seed=seed)
     try:
         config = JepaConfig(
             observation_dim=int(np.prod(adapter.observation_shape)),
@@ -338,6 +390,7 @@ def run_one(
                 "action_shape": adapter.action_shape,
                 "action_low": adapter.action_low,
                 "action_high": adapter.action_high,
+                "env_backend": _env_backend(args.env),
                 "jepa_config": dataclasses.asdict(config),
                 "protocol": (
                     "heldout_world_model_validation_with_optional_frozen_policy"
@@ -441,7 +494,9 @@ def run_one(
                 desc=f"{control} fit world model",
                 env_steps=env_steps,
             )
-            logger.plot_world_model_loss(loss_history, filename="dmc_world_model_loss.png")
+            logger.plot_world_model_loss(
+                loss_history, filename="dmc_world_model_loss.png"
+            )
 
         rng, eval_key = jax.random.split(rng)
         final_batch = validation_batch
@@ -616,8 +671,9 @@ def run_one(
             checkpoint_dir,
             state,
             metadata={
-                "algorithm": "dmc_sigreg_jepa_world_model",
+                "algorithm": "single_agent_sigreg_jepa_world_model",
                 "env": args.env,
+                "env_backend": _env_backend(args.env),
                 "control": control,
                 "policy_trained": args.policy_train_steps > 0,
                 "jepa_config": dataclasses.asdict(config),
@@ -641,7 +697,10 @@ def run_one(
             "control": control,
             "run_dir": str(run_dir),
             "checkpoint_dir": str(checkpoint_dir),
-            "target": "dmc:p(z_next, reward, continue | z, continuous_action)",
+            "target": (
+                f"{_env_backend(args.env)}:"
+                "p(z_next, reward, continue | z, continuous_action)"
+            ),
             "initial_jepa_loss": initial_metrics["model/jepa_loss"],
             "final_jepa_loss": final_metrics["model/jepa_loss"],
             "initial_open_loop_loss": initial_metrics["model/open_loop_loss"],
@@ -649,9 +708,7 @@ def run_one(
             "final_reward_loss": final_metrics["model/reward_loss"],
             "final_reward_constant_mse": final_metrics["model/reward_constant_mse"],
             "final_continue_loss": final_metrics["model/continue_loss"],
-            "final_continue_constant_bce": final_metrics[
-                "model/continue_constant_bce"
-            ],
+            "final_continue_constant_bce": final_metrics["model/continue_constant_bce"],
             "jepa_loss_delta": initial_metrics["model/jepa_loss"]
             - final_metrics["model/jepa_loss"],
             "open_loop_loss_delta": initial_metrics["model/open_loop_loss"]
@@ -671,7 +728,7 @@ def run_one(
 
 
 def _collect_random_steps(
-    adapter: DMCVectorAdapter,
+    adapter,
     observations: np.ndarray,
     rng: np.random.Generator,
     replay: SequenceReplayBuffer,
@@ -694,7 +751,7 @@ def _collect_random_steps(
 
 
 def _collect_policy_steps(
-    adapter: DMCVectorAdapter,
+    adapter,
     observations: np.ndarray,
     state,
     config: JepaConfig,
@@ -744,9 +801,7 @@ def _collect_policy_steps(
         "mean_return": (
             float(np.mean(completed_returns)) if completed_returns else None
         ),
-        "std_return": (
-            float(np.std(completed_returns)) if completed_returns else None
-        ),
+        "std_return": (float(np.std(completed_returns)) if completed_returns else None),
         "mean_length": (
             float(np.mean(completed_lengths)) if completed_lengths else None
         ),
@@ -762,13 +817,7 @@ def _collect_validation_replay(
     *,
     seed: int,
 ) -> SequenceReplayBuffer:
-    adapter = DMCVectorAdapter(
-        dmc_env_name(args.env),
-        num_envs=args.num_envs,
-        max_cycles=args.max_cycles,
-        seed=seed,
-        num_workers=args.dmc_workers,
-    )
+    adapter = _make_vector_adapter(args, seed=seed)
     try:
         replay = SequenceReplayBuffer(
             capacity=max(2, args.validation_steps),
@@ -992,7 +1041,9 @@ def _maybe_train_policy(
                 **selection_record,
             }
         )
-        logger.write_json(f"{artifact_prefix}policy_selection_initial.json", selection_eval)
+        logger.write_json(
+            f"{artifact_prefix}policy_selection_initial.json", selection_eval
+        )
 
     critic_metrics: dict[str, Any] = {}
     if args.critic_warmup_steps > 0:
@@ -1154,7 +1205,9 @@ def _maybe_train_policy(
     last_policy_metrics_json = to_jsonable(metrics)
     if selection_enabled:
         state = best_state
-        logger.write_json(f"{artifact_prefix}policy_selection_history.json", selection_history)
+        logger.write_json(
+            f"{artifact_prefix}policy_selection_history.json", selection_history
+        )
         logger.write_json(
             f"{artifact_prefix}best_policy_selection_evaluation.json",
             {
@@ -1213,14 +1266,11 @@ def _maybe_train_policy(
         best_policy_metrics_json if selection_enabled else last_policy_metrics_json
     )
     critic_metrics_json = to_jsonable(critic_metrics)
-    confirmation_passed = (
-        not confirmation_enabled
-        or (
-            confirmation_improvement is not None
-            and confirmation_improvement > 0.0
-            and confirmation_trained_minus_random is not None
-            and confirmation_trained_minus_random > 0.0
-        )
+    confirmation_passed = not confirmation_enabled or (
+        confirmation_improvement is not None
+        and confirmation_improvement > 0.0
+        and confirmation_trained_minus_random is not None
+        and confirmation_trained_minus_random > 0.0
     )
     outcome = {
         "policy_training_enabled": True,
@@ -1282,8 +1332,7 @@ def _maybe_train_policy(
             and trained_mean > initial_mean
             and trained_mean > random_mean
             and confirmation_passed
-            and policy_metrics_json.get("policy/action_saturation_fraction", 1.0)
-            < 0.75
+            and policy_metrics_json.get("policy/action_saturation_fraction", 1.0) < 0.75
         ),
     }
     return {"state": state, "rng": rng, "outcome": outcome}
@@ -1298,13 +1347,7 @@ def _evaluate_random_policy(
     episodes: int | None = None,
 ) -> dict[str, Any]:
     target_episodes = args.policy_eval_episodes if episodes is None else episodes
-    adapter = DMCVectorAdapter(
-        dmc_env_name(args.env),
-        num_envs=num_envs,
-        max_cycles=args.max_cycles,
-        seed=seed,
-        num_workers=min(args.dmc_workers, num_envs),
-    )
+    adapter = _make_vector_adapter(args, seed=seed, num_envs=num_envs)
     try:
         rng = np.random.default_rng(seed)
         observations = adapter.reset()
@@ -1355,13 +1398,7 @@ def _evaluate_continuous_policy(
     episodes: int | None = None,
 ) -> dict[str, Any]:
     target_episodes = args.policy_eval_episodes if episodes is None else episodes
-    adapter = DMCVectorAdapter(
-        dmc_env_name(args.env),
-        num_envs=num_envs,
-        max_cycles=args.max_cycles,
-        seed=seed,
-        num_workers=min(args.dmc_workers, num_envs),
-    )
+    adapter = _make_vector_adapter(args, seed=seed, num_envs=num_envs)
     try:
         observations = adapter.reset()
         returns = []
@@ -1463,7 +1500,10 @@ def _merge_online_policy_baseline(
         merged["policy_trained_mean"] - merged["policy_random_mean"]
     )
     confirmation_enabled = bool(merged.get("policy_confirmation_enabled", False))
-    if confirmation_enabled and initial_outcome.get("policy_confirmation_initial_mean") is not None:
+    if (
+        confirmation_enabled
+        and initial_outcome.get("policy_confirmation_initial_mean") is not None
+    ):
         merged["policy_confirmation_initial_mean"] = initial_outcome[
             "policy_confirmation_initial_mean"
         ]
@@ -1483,17 +1523,12 @@ def _merge_online_policy_baseline(
         if phase_confirmation_improvement is not None
         else merged.get("policy_confirmation_improvement")
     )
-    merged["policy_primary_confirmation_improvement"] = (
-        primary_confirmation_improvement
-    )
-    confirmation_passed = (
-        not confirmation_enabled
-        or (
-            primary_confirmation_improvement is not None
-            and primary_confirmation_improvement > 0.0
-            and merged.get("policy_confirmation_trained_minus_random") is not None
-            and merged["policy_confirmation_trained_minus_random"] > 0.0
-        )
+    merged["policy_primary_confirmation_improvement"] = primary_confirmation_improvement
+    confirmation_passed = not confirmation_enabled or (
+        primary_confirmation_improvement is not None
+        and primary_confirmation_improvement > 0.0
+        and merged.get("policy_confirmation_trained_minus_random") is not None
+        and merged["policy_confirmation_trained_minus_random"] > 0.0
     )
     merged["policy_confirmation_passed"] = confirmation_passed
     policy_metrics = merged.get("policy_final_metrics", {})
@@ -1683,9 +1718,7 @@ def _masked_mean_np(values: jax.Array, mask: jax.Array) -> jax.Array:
 
 
 def _finite_fraction_np(*values: jax.Array) -> jax.Array:
-    fractions = [
-        jnp.mean(jnp.isfinite(value).astype(jnp.float32)) for value in values
-    ]
+    fractions = [jnp.mean(jnp.isfinite(value).astype(jnp.float32)) for value in values]
     return jnp.min(jnp.stack(fractions))
 
 
@@ -1785,21 +1818,13 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         outcomes,
         policy_key=policy_comparison_key,
     )
-    main_beats_controls_open_loop = (
-        not controls
-        or (
-            main_open_loop is not None
-            and control_open_loop is not None
-            and main_open_loop < control_open_loop
-        )
+    main_beats_controls_open_loop = not controls or (
+        main_open_loop is not None
+        and control_open_loop is not None
+        and main_open_loop < control_open_loop
     )
-    main_beats_controls_jepa = (
-        not controls
-        or (
-            main_jepa is not None
-            and control_jepa is not None
-            and main_jepa < control_jepa
-        )
+    main_beats_controls_jepa = not controls or (
+        main_jepa is not None and control_jepa is not None and main_jepa < control_jepa
     )
     paired_open_loop_ok = not paired or all(
         item["mean_open_loop_advantage"] > 0.0
@@ -1837,8 +1862,7 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
             )
         )
         online_trend_passed = bool(
-            not online_enabled
-            or online_trend_successes >= policy_required_successes
+            not online_enabled or online_trend_successes >= policy_required_successes
         )
         main_policy_improvement = _mean(main, policy_comparison_key)
         main_policy_minus_random = _mean(main, "policy_trained_minus_random")
@@ -1856,13 +1880,10 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
             and online_trend_passed
         )
         control_policy_improvement = _mean(controls, policy_comparison_key)
-        policy_main_beats_controls = (
-            not controls
-            or (
-                main_policy_improvement is not None
-                and control_policy_improvement is not None
-                and main_policy_improvement > control_policy_improvement
-            )
+        policy_main_beats_controls = not controls or (
+            main_policy_improvement is not None
+            and control_policy_improvement is not None
+            and main_policy_improvement > control_policy_improvement
         )
         paired_policy_ok = not paired or all(
             item.get("mean_policy_primary_improvement_advantage") is not None
@@ -1895,7 +1916,9 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
             and online_trend_passed
         ),
         "main_runs_passed": int(
-            sum(outcome.get("world_model_passed", outcome["passed"]) for outcome in main)
+            sum(
+                outcome.get("world_model_passed", outcome["passed"]) for outcome in main
+            )
         ),
         "main_runs": len(main),
         "controls_finite": controls_finite,
@@ -2007,11 +2030,7 @@ def _metrics_finite(metrics: dict[str, Any]) -> bool:
 
 
 def _mean(rows: list[dict[str, Any]], key: str) -> float | None:
-    values = [
-        value
-        for row in rows
-        if (value := _metric_value(row, key)) is not None
-    ]
+    values = [value for row in rows if (value := _metric_value(row, key)) is not None]
     if not values:
         return None
     return float(np.mean(values))
@@ -2060,9 +2079,7 @@ def _paired_control_differences(
             main = main_by_run.get(outcome["run_index"])
             if main is None:
                 continue
-            jepa_advantages.append(
-                outcome["final_jepa_loss"] - main["final_jepa_loss"]
-            )
+            jepa_advantages.append(outcome["final_jepa_loss"] - main["final_jepa_loss"])
             open_loop_advantages.append(
                 outcome["final_open_loop_loss"] - main["final_open_loop_loss"]
             )
@@ -2085,9 +2102,7 @@ def _paired_control_differences(
                 float(np.mean(jepa_advantages)) if jepa_advantages else None
             ),
             "mean_open_loop_advantage": (
-                float(np.mean(open_loop_advantages))
-                if open_loop_advantages
-                else None
+                float(np.mean(open_loop_advantages)) if open_loop_advantages else None
             ),
             "runs_main_better_jepa": int(np.sum(np.asarray(jepa_advantages) > 0.0)),
             "runs_main_better_open_loop": int(

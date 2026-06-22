@@ -2154,6 +2154,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+brax = [
+    { name = "brax" },
+]
 cuda12 = [
     { name = "jax", extra = ["cuda12"] },
 ]
@@ -2173,6 +2176,7 @@ meltingpot = [
 
 [package.metadata]
 requires-dist = [
+    { name = "brax", marker = "extra == 'brax'", specifier = "==0.10.3" },
     { name = "distrax" },
     { name = "dm-control", marker = "extra == 'dmc'", specifier = ">=1.0" },
     { name = "dm-meltingpot", marker = "extra == 'meltingpot'", specifier = "==2.4.0" },
@@ -2192,7 +2196,7 @@ requires-dist = [
     { name = "shimmy", extras = ["meltingpot"], marker = "extra == 'meltingpot'", specifier = "==2.0.1" },
     { name = "tqdm" },
 ]
-provides-extras = ["dev", "cuda12", "dmc", "meltingpot"]
+provides-extras = ["dev", "cuda12", "dmc", "brax", "meltingpot"]
 
 [[package]]
 name = "wrapt"
