@@ -8,6 +8,7 @@ import pytest
 from world_marl.jepa.models import JepaConfig, JepaWorldModel
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
+    apply_control_alignment,
     continuous_candidate_distill_step,
     continuous_critic_warmup_step,
     continuous_policy_train_step,
@@ -16,6 +17,7 @@ from world_marl.jepa.training import (
     lambda_returns,
     latent_collapse_metrics,
     prediction_validity,
+    procrustes_control_alignment,
     reset_policy_heads,
     reward_only_returns,
     select_continuous_actions,
@@ -224,6 +226,48 @@ def test_frozen_encoder_model_step_preserves_encoder_and_updates_world_model():
     assert _tree_changed(state.params["block_0"], frozen_state.params["block_0"])
 
 
+def test_model_step_supports_cosine_latent_anchor_loss():
+    config = JepaConfig(
+        observation_dim=4,
+        action_dim=3,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=1,
+        context_window=1,
+        sigreg_num_proj=32,
+    )
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    batch = ReplayBatch(
+        observations=jax.random.normal(jax.random.PRNGKey(1), (4, 4, 4)),
+        actions=jax.random.normal(jax.random.PRNGKey(2), (4, 3, 3)),
+        rewards=jax.random.normal(jax.random.PRNGKey(3), (4, 3)),
+        dones=jnp.zeros((4, 3), dtype=jnp.float32),
+    )
+
+    updated, metrics = train_model_step(
+        state,
+        jax.random.PRNGKey(4),
+        batch,
+        config,
+        chunk_length=2,
+        latent_anchor_params=state.params,
+        latent_anchor_alignment=state.control_alignment,
+        latent_anchor_weight=0.1,
+    )
+
+    del updated
+    assert jnp.isfinite(metrics["model/total_loss"])
+    assert metrics["model/latent_anchor_weight"] == 0.1
+    np.testing.assert_allclose(
+        np.asarray(metrics["model/latent_anchor_loss"]),
+        0.0,
+        atol=1e-6,
+    )
+
+
 def test_jepa_model_trains_recursive_overshooting_horizons():
     config = JepaConfig(
         observation_dim=4,
@@ -339,6 +383,16 @@ def test_online_interface_drift_metrics_are_zero_for_identical_state():
     np.testing.assert_allclose(metrics["online/raw_latent_cosine"], 1.0, atol=1e-5)
     np.testing.assert_allclose(metrics["online/raw_latent_drift_l2"], 0.0, atol=1e-6)
     np.testing.assert_allclose(
+        metrics["online/control_latent_cosine"],
+        1.0,
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(
+        metrics["online/control_latent_drift_l2"],
+        0.0,
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
         metrics["online/policy_action_drift_l2"],
         0.0,
         atol=1e-6,
@@ -348,6 +402,79 @@ def test_online_interface_drift_metrics_are_zero_for_identical_state():
         0.0,
         atol=1e-6,
     )
+
+
+def test_procrustes_control_alignment_recovers_orthogonal_interface():
+    source = jnp.asarray(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [-1.0, -1.0, -1.0],
+        ],
+        dtype=jnp.float32,
+    )
+    rotation = jnp.asarray(
+        [
+            [0.0, -1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=jnp.float32,
+    )
+    target = source @ rotation
+
+    alignment = procrustes_control_alignment(source, target)
+    aligned = apply_control_alignment(source, alignment)
+
+    np.testing.assert_allclose(
+        np.asarray(aligned),
+        np.asarray(target),
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(
+        np.asarray(alignment.T @ alignment),
+        np.eye(3),
+        atol=1e-5,
+    )
+
+
+def test_select_continuous_actions_uses_control_alignment():
+    config = JepaConfig(
+        observation_dim=4,
+        action_dim=3,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=1,
+        context_window=1,
+        sigreg_num_proj=32,
+    )
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    observations = jax.random.normal(jax.random.PRNGKey(1), (6, 4))
+    action_low = -jnp.ones((config.action_dim,), dtype=jnp.float32)
+    action_high = jnp.ones((config.action_dim,), dtype=jnp.float32)
+    identity_actions = select_continuous_actions(
+        state,
+        observations,
+        config,
+        action_low,
+        action_high,
+    )
+
+    flipped = -jnp.eye(config.latent_dim, dtype=jnp.float32)
+    aligned_state = state.replace(control_alignment=flipped)
+    aligned_actions = select_continuous_actions(
+        aligned_state,
+        observations,
+        config,
+        action_low,
+        action_high,
+    )
+
+    assert not np.allclose(np.asarray(identity_actions), np.asarray(aligned_actions))
 
 
 def test_candidate_refit_gate_requires_recent_improvement_and_anchor_preservation():

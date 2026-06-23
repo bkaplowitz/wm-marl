@@ -50,6 +50,7 @@ class JepaTrainState:
     step: int
     apply_fn: Callable = struct.field(pytree_node=False)
     params: FrozenDict
+    control_alignment: jax.Array
     model_tx: optax.GradientTransformation = struct.field(pytree_node=False)
     model_opt_state: optax.OptState
     frozen_encoder_model_tx: optax.GradientTransformation = struct.field(
@@ -145,6 +146,7 @@ def create_jepa_train_state(
         step=0,
         apply_fn=model.apply,
         params=params,
+        control_alignment=jnp.eye(config.latent_dim, dtype=jnp.float32),
         model_tx=model_tx,
         model_opt_state=model_tx.init(params),
         frozen_encoder_model_tx=frozen_encoder_model_tx,
@@ -158,7 +160,13 @@ def create_jepa_train_state(
 
 @partial(
     jax.jit,
-    static_argnames=("config", "chunk_length", "control", "freeze_encoder"),
+    static_argnames=(
+        "config",
+        "chunk_length",
+        "control",
+        "freeze_encoder",
+        "latent_anchor_weight",
+    ),
 )
 def train_model_step(
     state: JepaTrainState,
@@ -169,6 +177,9 @@ def train_model_step(
     chunk_length: int,
     control: ControlMode = "none",
     freeze_encoder: bool = False,
+    latent_anchor_params: FrozenDict | None = None,
+    latent_anchor_alignment: jax.Array | None = None,
+    latent_anchor_weight: float = 0.0,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     def loss_fn(params):
         loss, metrics = world_model_loss(
@@ -180,6 +191,35 @@ def train_model_step(
             chunk_length=chunk_length,
             control=control,
         )
+        if latent_anchor_params is not None and latent_anchor_weight > 0.0:
+            alignment = (
+                state.control_alignment
+                if latent_anchor_alignment is None
+                else latent_anchor_alignment
+            )
+            anchor_loss = latent_anchor_loss(
+                params,
+                state.apply_fn,
+                latent_anchor_params,
+                alignment,
+                batch.observations,
+                config,
+            )
+            loss = loss + latent_anchor_weight * anchor_loss
+            metrics = {
+                **metrics,
+                "model/latent_anchor_loss": anchor_loss,
+                "model/latent_anchor_weight": jnp.asarray(
+                    latent_anchor_weight,
+                    dtype=loss.dtype,
+                ),
+            }
+        else:
+            metrics = {
+                **metrics,
+                "model/latent_anchor_loss": jnp.asarray(0.0, dtype=loss.dtype),
+                "model/latent_anchor_weight": jnp.asarray(0.0, dtype=loss.dtype),
+            }
         return loss, metrics
 
     (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
@@ -187,6 +227,72 @@ def train_model_step(
     if freeze_encoder:
         return state.apply_frozen_encoder_model_gradients(grads), metrics
     return state.apply_model_gradients(grads), metrics
+
+
+def apply_control_alignment(
+    latents: jax.Array,
+    control_alignment: jax.Array,
+) -> jax.Array:
+    """Map raw world latents into the stable actor/critic control interface."""
+
+    return jnp.einsum("...d,df->...f", latents, control_alignment)
+
+
+def actor_value_from_control_latent(
+    apply_fn,
+    params: FrozenDict,
+    raw_latents: jax.Array,
+    control_alignment: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    return apply_fn(
+        {"params": params},
+        apply_control_alignment(raw_latents, control_alignment),
+        method=JepaWorldModel.actor_value_from_latent,
+    )
+
+
+def procrustes_control_alignment(
+    source_latents: jax.Array,
+    target_control_latents: jax.Array,
+) -> jax.Array:
+    """Return Q such that source_latents @ Q best matches target_control_latents."""
+
+    source = source_latents.reshape((-1, source_latents.shape[-1])).astype(jnp.float32)
+    target = target_control_latents.reshape(
+        (-1, target_control_latents.shape[-1])
+    ).astype(jnp.float32)
+    source = source - jnp.mean(source, axis=0, keepdims=True)
+    target = target - jnp.mean(target, axis=0, keepdims=True)
+    cross_cov = source.T @ target
+    u, _, vh = jnp.linalg.svd(cross_cov, full_matrices=False)
+    return (u @ vh).astype(source_latents.dtype)
+
+
+def latent_anchor_loss(
+    params: FrozenDict,
+    apply_fn,
+    anchor_params: FrozenDict,
+    anchor_alignment: jax.Array,
+    observations: jax.Array,
+    config: JepaConfig,
+) -> jax.Array:
+    flat_observations = observations.reshape((-1, config.observation_dim))
+    new_latents = apply_fn(
+        {"params": params},
+        flat_observations,
+        method=JepaWorldModel.encode,
+    )
+    teacher_params = jax.tree_util.tree_map(jax.lax.stop_gradient, anchor_params)
+    target_latents = apply_fn(
+        {"params": teacher_params},
+        flat_observations,
+        method=JepaWorldModel.encode,
+    )
+    target_latents = jax.lax.stop_gradient(
+        apply_control_alignment(target_latents, anchor_alignment)
+    )
+    cosine = jnp.sum(_normalize(new_latents) * _normalize(target_latents), axis=-1)
+    return jnp.mean(1.0 - cosine)
 
 
 def world_model_loss(
@@ -322,6 +428,7 @@ def continuous_policy_train_step(
     action_saturation_threshold: float = 0.95,
     start_actions: jax.Array | None = None,
     behavior_teacher_params: FrozenDict | None = None,
+    behavior_teacher_control_alignment: jax.Array | None = None,
     behavior_distill_weight: float = 0.0,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     if config.action_mode != "continuous":
@@ -339,6 +446,7 @@ def continuous_policy_train_step(
             imag_horizon=imag_horizon,
             control=control,
             start_actions=start_actions,
+            control_alignment=state.control_alignment,
         )
         if policy_return_mode == "reward-only":
             actor_returns = reward_only_returns(
@@ -371,10 +479,16 @@ def continuous_policy_train_step(
                 start_actions,
                 config,
             )
-            teacher_logits, _ = state.apply_fn(
-                {"params": teacher_params},
+            teacher_alignment = (
+                state.control_alignment
+                if behavior_teacher_control_alignment is None
+                else behavior_teacher_control_alignment
+            )
+            teacher_logits, _ = actor_value_from_control_latent(
+                state.apply_fn,
+                teacher_params,
                 teacher_context[:, -1],
-                method=JepaWorldModel.actor_value_from_latent,
+                teacher_alignment,
             )
             teacher_actions = jax.lax.stop_gradient(jnp.tanh(teacher_logits))
             behavior_distill_loss = jnp.mean(
@@ -437,10 +551,11 @@ def continuous_policy_train_step(
     state = state.apply_actor_gradients(actor_grads)
 
     def critic_loss_fn(params):
-        _, values = state.apply_fn(
-            {"params": params},
+        _, values = actor_value_from_control_latent(
+            state.apply_fn,
+            params,
             critic_latents,
-            method=JepaWorldModel.actor_value_from_latent,
+            state.control_alignment,
         )
         value_loss = 0.5 * weighted_mean(
             jnp.square(values - critic_targets),
@@ -530,6 +645,7 @@ def continuous_candidate_distill_step(
             action_high,
             imag_horizon=imag_horizon,
             control=control,
+            control_alignment=state.control_alignment,
         )
         best_index = jnp.argmax(scores, axis=1)
         best_action = jnp.take_along_axis(
@@ -542,10 +658,11 @@ def continuous_candidate_distill_step(
         score_range = sorted_scores[:, -1] - sorted_scores[:, 0]
         weights = (top_gap > candidate_min_gap).astype(jnp.float32)
 
-        raw_actions, _ = state.apply_fn(
-            {"params": params},
+        raw_actions, _ = actor_value_from_control_latent(
+            state.apply_fn,
+            params,
             z0,
-            method=JepaWorldModel.actor_value_from_latent,
+            state.control_alignment,
         )
         normalized_actions = jnp.tanh(raw_actions)
         imitation_error = jnp.mean(
@@ -618,6 +735,7 @@ def score_continuous_action_candidates(
     *,
     imag_horizon: int,
     control: ControlMode,
+    control_alignment: jax.Array,
 ) -> jax.Array:
     batch_size, num_candidates, _ = normalized_candidates.shape
     flat_z = jnp.repeat(z0[:, None, :], num_candidates, axis=1).reshape(
@@ -644,10 +762,11 @@ def score_continuous_action_candidates(
         returns = returns + discount * weights * rewards
         weights = weights * continues
         discount = discount * config.gamma
-        raw_actions, _ = apply_fn(
-            {"params": model_params},
+        raw_actions, _ = actor_value_from_control_latent(
+            apply_fn,
+            model_params,
             next_z,
-            method=JepaWorldModel.actor_value_from_latent,
+            control_alignment,
         )
         actions = scale_normalized_actions(
             jnp.tanh(raw_actions),
@@ -683,10 +802,11 @@ def continuous_critic_warmup_step(
             batch.observations[:, 0],
             method=JepaWorldModel.encode,
         )
-        _, values = state.apply_fn(
-            {"params": params},
+        _, values = actor_value_from_control_latent(
+            state.apply_fn,
+            params,
             z,
-            method=JepaWorldModel.actor_value_from_latent,
+            state.control_alignment,
         )
         value_loss = 0.5 * jnp.mean(jnp.square(values - targets))
         finite_fraction = _all_finite_fraction(values, targets, value_loss)
@@ -718,6 +838,7 @@ def continuous_imagine_rollout(
     imag_horizon: int,
     control: ControlMode,
     start_actions: jax.Array | None = None,
+    control_alignment: jax.Array,
 ) -> dict[str, jax.Array]:
     model_params = jax.tree_util.tree_map(jax.lax.stop_gradient, params)
     context, action_context = initial_imagination_context(
@@ -731,10 +852,11 @@ def continuous_imagine_rollout(
     def step(carry, _):
         context, action_context = carry
         current_z = context[:, -1]
-        raw_actions, values = apply_fn(
-            {"params": params},
+        raw_actions, values = actor_value_from_control_latent(
+            apply_fn,
+            params,
             current_z,
-            method=JepaWorldModel.actor_value_from_latent,
+            control_alignment,
         )
         normalized_actions = jnp.tanh(raw_actions)
         actions = scale_normalized_actions(
@@ -757,10 +879,11 @@ def continuous_imagine_rollout(
             method=JepaWorldModel.predict_next_from_history,
         )
         continues = jax.nn.sigmoid(continue_logits)
-        _, fixed_values = apply_fn(
-            {"params": model_params},
+        _, fixed_values = actor_value_from_control_latent(
+            apply_fn,
+            model_params,
             current_z,
-            method=JepaWorldModel.actor_value_from_latent,
+            control_alignment,
         )
         next_context = jnp.concatenate([context[:, 1:], next_z[:, None, :]], axis=1)
         next_action_context = append_action_context(
@@ -784,10 +907,11 @@ def continuous_imagine_rollout(
         xs=None,
         length=imag_horizon,
     )
-    _, fixed_last_value = apply_fn(
-        {"params": model_params},
+    _, fixed_last_value = actor_value_from_control_latent(
+        apply_fn,
+        model_params,
         final_context[:, -1],
-        method=JepaWorldModel.actor_value_from_latent,
+        control_alignment,
     )
     rollout["fixed_last_value"] = fixed_last_value
     return rollout
@@ -837,10 +961,16 @@ def select_continuous_actions(
     if config.action_mode != "continuous":
         raise ValueError("select_continuous_actions requires continuous actions")
     flat_obs = observations.reshape((-1, config.observation_dim))
-    raw_actions, _ = state.apply_fn(
+    z = state.apply_fn(
         {"params": state.params},
         flat_obs,
-        method=JepaWorldModel.actor_value_from_obs,
+        method=JepaWorldModel.encode,
+    )
+    raw_actions, _ = actor_value_from_control_latent(
+        state.apply_fn,
+        state.params,
+        z,
+        state.control_alignment,
     )
     normalized_actions = jnp.tanh(raw_actions)
     return scale_normalized_actions(
