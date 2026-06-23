@@ -167,6 +167,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--online-collect-steps", type=int, default=None)
+    parser.add_argument(
+        "--online-validation-steps",
+        type=int,
+        default=None,
+        help=(
+            "Held-out current-policy stream length for online candidate-refit "
+            "validation. Defaults to min(validation-steps, online-collect-steps)."
+        ),
+    )
     parser.add_argument("--online-train-steps", type=int, default=None)
     parser.add_argument("--online-policy-train-steps", type=int, default=None)
     parser.add_argument(
@@ -219,6 +228,32 @@ def parse_args() -> argparse.Namespace:
             "actor on replay start states."
         ),
     )
+    parser.add_argument(
+        "--online-candidate-refit",
+        action="store_true",
+        help=(
+            "Train online world-model updates as candidate states, then accept "
+            "only if held-out recent-policy validation improves while anchor "
+            "validation stays within tolerance."
+        ),
+    )
+    parser.add_argument(
+        "--online-candidate-gate-metric",
+        choices=("model/open_loop_loss", "model/jepa_loss"),
+        default="model/open_loop_loss",
+    )
+    parser.add_argument(
+        "--online-candidate-min-recent-improvement",
+        type=float,
+        default=0.0,
+        help="Required decrease in the gate metric on recent-policy validation.",
+    )
+    parser.add_argument(
+        "--online-candidate-max-anchor-degradation",
+        type=float,
+        default=0.05,
+        help="Maximum allowed increase in the gate metric on anchor validation.",
+    )
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lambda-return", type=float, default=0.95)
     parser.add_argument(
@@ -266,6 +301,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    min_sequence_steps = args.chunk_length + max(
+        args.model_horizon, args.open_loop_horizon
+    )
     for name in (
         "num_envs",
         "env_workers",
@@ -306,6 +344,13 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--policy-confirmation-episodes must be >= 0")
     if args.online_collect_steps is not None and args.online_collect_steps < 1:
         parser.error("--online-collect-steps must be >= 1")
+    if args.online_validation_steps is not None:
+        if args.online_validation_steps < 1:
+            parser.error("--online-validation-steps must be >= 1")
+        if args.online_validation_steps < min_sequence_steps:
+            parser.error(
+                "--online-validation-steps must cover chunk-length + max model/open-loop horizon"
+            )
     for name in ("online_train_steps", "online_policy_train_steps"):
         value = getattr(args, name)
         if value is not None and value < 0:
@@ -319,6 +364,10 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--online-interface-eval-num-envs must be >= 1")
     if args.online_behavior_distill_weight < 0.0:
         parser.error("--online-behavior-distill-weight must be >= 0")
+    if args.online_candidate_min_recent_improvement < 0.0:
+        parser.error("--online-candidate-min-recent-improvement must be >= 0")
+    if args.online_candidate_max_anchor_degradation < 0.0:
+        parser.error("--online-candidate-max-anchor-degradation must be >= 0")
     for name in ("critic_horizon",):
         if getattr(args, name) < 1:
             parser.error(f"--{name.replace('_', '-')} must be >= 1")
@@ -348,11 +397,15 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--policy-selection-num-envs must be >= 1")
     if not (args.env.startswith("dmc:") or args.env.startswith("brax:")):
         parser.error("--env must be formatted as dmc:<domain>/<task> or brax:<env>")
-    min_steps = args.chunk_length + args.open_loop_horizon
+    min_steps = min_sequence_steps
     if args.collect_steps < min_steps:
-        parser.error("--collect-steps must cover chunk-length + open-loop-horizon")
+        parser.error(
+            "--collect-steps must cover chunk-length + max model/open-loop horizon"
+        )
     if args.validation_steps < min_steps:
-        parser.error("--validation-steps must cover chunk-length + open-loop-horizon")
+        parser.error(
+            "--validation-steps must cover chunk-length + max model/open-loop horizon"
+        )
     if args.chunk_length < args.context_window:
         parser.error("--chunk-length must be >= --context-window")
     if (
@@ -651,6 +704,67 @@ def run_one(
                 }
             )
 
+            online_train_steps = (
+                args.online_train_steps
+                if args.online_train_steps is not None
+                else max(1, args.train_steps // 2)
+            )
+            if _skip_world_model_fit(control):
+                online_train_steps = 0
+
+            recent_validation_batch = None
+            recent_validation_payload = None
+            if args.online_candidate_refit and online_train_steps > 0:
+                online_validation_steps = _online_validation_steps(
+                    args,
+                    online_collect_steps,
+                )
+                recent_validation_replay = _new_replay_buffer(
+                    capacity=online_validation_steps,
+                    num_envs=args.num_envs,
+                    observation_dim=config.observation_dim,
+                    action_dim=adapter.action_dim,
+                )
+                observations, validation_env_steps, recent_validation_payload = (
+                    _collect_policy_steps(
+                        adapter,
+                        observations,
+                        state,
+                        config,
+                        recent_validation_replay,
+                        steps=online_validation_steps,
+                        action_low=adapter.action_low,
+                        action_high=adapter.action_high,
+                        desc=f"{control} {phase} collect recent validation",
+                        quiet=args.quiet,
+                    )
+                )
+                env_steps += validation_env_steps
+                recent_validation_payload = {
+                    **recent_validation_payload,
+                    "total_env_steps": env_steps,
+                    "recent_validation_size_per_env": recent_validation_replay.size,
+                    "held_out_from_training_replay": True,
+                }
+                logger.write_json(
+                    f"{phase}_recent_policy_validation_replay.json",
+                    recent_validation_payload,
+                )
+                logger.append_metrics(
+                    {
+                        "phase": "online_recent_policy_validation_replay",
+                        "online_iteration": online_index,
+                        "control": control,
+                        **recent_validation_payload,
+                    }
+                )
+                recent_validation_batch = recent_validation_replay.sample(
+                    np_rng,
+                    batch_size=args.batch_size,
+                    chunk_length=args.chunk_length,
+                    max_horizon=max(args.model_horizon, args.open_loop_horizon),
+                )
+
             pre_refit_state = state
             interface_seed = seed + 8_000_000 + online_index * 10_000
             pre_refit_policy_eval = _evaluate_online_interface_policy(
@@ -670,30 +784,67 @@ def run_one(
                     pre_refit_policy_eval,
                 )
 
-            online_train_steps = (
-                args.online_train_steps
-                if args.online_train_steps is not None
-                else max(1, args.train_steps // 2)
-            )
-            if _skip_world_model_fit(control):
-                online_train_steps = 0
             online_loss_history: list[float] = []
+            candidate_report = None
             if online_train_steps > 0:
-                state, rng, _, online_loss_history = _fit_world_model(
+                candidate_state = state
+                fit_phase = (
+                    f"{phase}_candidate_world_model"
+                    if args.online_candidate_refit
+                    else f"{phase}_world_model"
+                )
+                fit_desc = (
+                    f"{control} {phase} fit candidate world model"
+                    if args.online_candidate_refit
+                    else f"{control} {phase} fit world model"
+                )
+                candidate_state, rng, _, online_loss_history = _fit_world_model(
                     args,
                     logger,
-                    state,
+                    candidate_state,
                     rng,
                     replay,
                     config,
                     np_rng=np_rng,
                     steps=online_train_steps,
                     control=control,
-                    phase=f"{phase}_world_model",
-                    desc=f"{control} {phase} fit world model",
+                    phase=fit_phase,
+                    desc=fit_desc,
                     env_steps=env_steps,
                     freeze_encoder=args.online_freeze_encoder,
                 )
+                if args.online_candidate_refit:
+                    if recent_validation_batch is None:
+                        raise RuntimeError("candidate refit requires recent validation")
+                    rng, candidate_eval_key = jax.random.split(rng)
+                    candidate_report = _evaluate_candidate_model_update(
+                        args,
+                        pre_refit_state,
+                        candidate_state,
+                        candidate_eval_key,
+                        anchor_validation_batch=validation_batch,
+                        recent_validation_batch=recent_validation_batch,
+                        config=config,
+                        control=control,
+                        action_low=adapter.action_low,
+                        action_high=adapter.action_high,
+                    )
+                    state = (
+                        candidate_state
+                        if candidate_report["model_update_accepted"]
+                        else pre_refit_state
+                    )
+                    logger.write_json(f"{phase}_candidate_refit.json", candidate_report)
+                    logger.append_metrics(
+                        {
+                            "phase": "online_candidate_refit",
+                            "online_iteration": online_index,
+                            "control": control,
+                            **candidate_report["gate"],
+                        }
+                    )
+                else:
+                    state = candidate_state
                 logger.plot_world_model_loss(
                     online_loss_history,
                     filename=f"{phase}_world_model_loss.png",
@@ -750,6 +901,7 @@ def run_one(
                 "online_iteration": online_index,
                 "control": control,
                 "online_freeze_encoder": args.online_freeze_encoder,
+                "candidate_refit": candidate_report,
                 "policy_before_refit": pre_refit_policy_eval,
                 "policy_after_refit": post_refit_policy_eval,
                 "metrics": interface_metrics,
@@ -802,6 +954,8 @@ def run_one(
                 {
                     "iteration": online_index,
                     "actor_replay": collect_payload,
+                    "recent_policy_validation": recent_validation_payload,
+                    "candidate_refit": candidate_report,
                     "model_metrics": online_metrics,
                     "interface": interface_payload,
                     "policy": online_policy_payload,
@@ -1009,6 +1163,31 @@ def _collect_validation_replay(
         adapter.close()
 
 
+def _online_validation_steps(
+    args: argparse.Namespace, online_collect_steps: int
+) -> int:
+    min_steps = args.chunk_length + max(args.model_horizon, args.open_loop_horizon)
+    if args.online_validation_steps is not None:
+        return args.online_validation_steps
+    return max(min_steps, min(args.validation_steps, online_collect_steps))
+
+
+def _new_replay_buffer(
+    *,
+    capacity: int,
+    num_envs: int,
+    observation_dim: int,
+    action_dim: int,
+) -> SequenceReplayBuffer:
+    return SequenceReplayBuffer(
+        capacity=max(2, capacity),
+        num_envs=num_envs,
+        observation_shape=(observation_dim,),
+        action_shape=(action_dim,),
+        action_dtype=np.float32,
+    )
+
+
 def _evaluate_online_interface_policy(
     args: argparse.Namespace,
     state,
@@ -1038,6 +1217,123 @@ def _evaluate_online_interface_policy(
         action_high=jnp.asarray(action_high, dtype=jnp.float32),
         desc=f"{control} {phase} eval policy {label}",
     )
+
+
+def _evaluate_candidate_model_update(
+    args: argparse.Namespace,
+    baseline_state,
+    candidate_state,
+    key: jax.Array,
+    *,
+    anchor_validation_batch: ReplayBatch,
+    recent_validation_batch: ReplayBatch,
+    config: JepaConfig,
+    control: ControlMode,
+    action_low: np.ndarray,
+    action_high: np.ndarray,
+) -> dict[str, Any]:
+    keys = jax.random.split(key, 4)
+    baseline_anchor = _evaluate_model(
+        baseline_state,
+        keys[0],
+        anchor_validation_batch,
+        config,
+        chunk_length=args.chunk_length,
+        open_loop_horizon=args.open_loop_horizon,
+        control=control,
+        action_low=action_low,
+        action_high=action_high,
+    )
+    candidate_anchor = _evaluate_model(
+        candidate_state,
+        keys[1],
+        anchor_validation_batch,
+        config,
+        chunk_length=args.chunk_length,
+        open_loop_horizon=args.open_loop_horizon,
+        control=control,
+        action_low=action_low,
+        action_high=action_high,
+    )
+    baseline_recent = _evaluate_model(
+        baseline_state,
+        keys[2],
+        recent_validation_batch,
+        config,
+        chunk_length=args.chunk_length,
+        open_loop_horizon=args.open_loop_horizon,
+        control=control,
+        action_low=action_low,
+        action_high=action_high,
+    )
+    candidate_recent = _evaluate_model(
+        candidate_state,
+        keys[3],
+        recent_validation_batch,
+        config,
+        chunk_length=args.chunk_length,
+        open_loop_horizon=args.open_loop_horizon,
+        control=control,
+        action_low=action_low,
+        action_high=action_high,
+    )
+    gate = _candidate_refit_gate_report(
+        baseline_anchor,
+        candidate_anchor,
+        baseline_recent,
+        candidate_recent,
+        metric=args.online_candidate_gate_metric,
+        min_recent_improvement=args.online_candidate_min_recent_improvement,
+        max_anchor_degradation=args.online_candidate_max_anchor_degradation,
+    )
+    return {
+        "model_update_accepted": gate["model_update_accepted"],
+        "gate": gate,
+        "baseline_anchor_metrics": baseline_anchor,
+        "candidate_anchor_metrics": candidate_anchor,
+        "baseline_recent_policy_metrics": baseline_recent,
+        "candidate_recent_policy_metrics": candidate_recent,
+    }
+
+
+def _candidate_refit_gate_report(
+    baseline_anchor: dict[str, Any],
+    candidate_anchor: dict[str, Any],
+    baseline_recent: dict[str, Any],
+    candidate_recent: dict[str, Any],
+    *,
+    metric: str,
+    min_recent_improvement: float,
+    max_anchor_degradation: float,
+) -> dict[str, Any]:
+    baseline_anchor_value = float(baseline_anchor[metric])
+    candidate_anchor_value = float(candidate_anchor[metric])
+    baseline_recent_value = float(baseline_recent[metric])
+    candidate_recent_value = float(candidate_recent[metric])
+    recent_improvement = baseline_recent_value - candidate_recent_value
+    anchor_degradation = candidate_anchor_value - baseline_anchor_value
+    recent_improved = recent_improvement >= min_recent_improvement
+    anchor_preserved = anchor_degradation <= max_anchor_degradation
+    candidate_metrics_finite = _metrics_finite(candidate_anchor) and _metrics_finite(
+        candidate_recent
+    )
+    return {
+        "model_update_accepted": bool(
+            candidate_metrics_finite and recent_improved and anchor_preserved
+        ),
+        "candidate_gate_metric": metric,
+        "candidate_min_recent_improvement": min_recent_improvement,
+        "candidate_max_anchor_degradation": max_anchor_degradation,
+        "candidate_metrics_finite": candidate_metrics_finite,
+        "recent_validation_baseline": baseline_recent_value,
+        "recent_validation_candidate": candidate_recent_value,
+        "recent_validation_improvement": recent_improvement,
+        "recent_validation_improved": bool(recent_improved),
+        "anchor_validation_baseline": baseline_anchor_value,
+        "anchor_validation_candidate": candidate_anchor_value,
+        "anchor_validation_degradation": anchor_degradation,
+        "anchor_validation_preserved": bool(anchor_preserved),
+    }
 
 
 def _online_interface_drift_metrics(
@@ -1918,6 +2214,24 @@ def _online_history_metrics(
         .get("online/value_drift_abs_mean")
         is not None
     ]
+    candidate_refits = [
+        item["candidate_refit"]
+        for item in online_history
+        if item.get("candidate_refit") is not None
+    ]
+    candidate_acceptances = [
+        bool(item.get("model_update_accepted", False)) for item in candidate_refits
+    ]
+    candidate_recent_improvements = [
+        item["gate"].get("recent_validation_improvement")
+        for item in candidate_refits
+        if item.get("gate", {}).get("recent_validation_improvement") is not None
+    ]
+    candidate_anchor_degradations = [
+        item["gate"].get("anchor_validation_degradation")
+        for item in candidate_refits
+        if item.get("gate", {}).get("anchor_validation_degradation") is not None
+    ]
     baseline = initial_policy_outcome.get("policy_trained_mean")
     if not returns:
         return {
@@ -1954,6 +2268,27 @@ def _online_history_metrics(
             "online_value_drift_abs_mean": value_drifts,
             "online_value_drift_abs_mean_final": (
                 value_drifts[-1] if value_drifts else None
+            ),
+            "online_candidate_refit_iterations": len(candidate_refits),
+            "online_model_update_acceptances": candidate_acceptances,
+            "online_model_update_acceptance_rate": (
+                float(np.mean(candidate_acceptances)) if candidate_acceptances else None
+            ),
+            "online_candidate_recent_validation_improvements": (
+                candidate_recent_improvements
+            ),
+            "online_candidate_anchor_validation_degradations": (
+                candidate_anchor_degradations
+            ),
+            "online_candidate_recent_validation_improvement_final": (
+                candidate_recent_improvements[-1]
+                if candidate_recent_improvements
+                else None
+            ),
+            "online_candidate_anchor_validation_degradation_final": (
+                candidate_anchor_degradations[-1]
+                if candidate_anchor_degradations
+                else None
             ),
             "online_pipeline_completed": False,
         }
@@ -1996,6 +2331,23 @@ def _online_history_metrics(
         ),
         "online_value_drift_abs_mean": value_drifts,
         "online_value_drift_abs_mean_final": value_drifts[-1] if value_drifts else None,
+        "online_candidate_refit_iterations": len(candidate_refits),
+        "online_model_update_acceptances": candidate_acceptances,
+        "online_model_update_acceptance_rate": (
+            float(np.mean(candidate_acceptances)) if candidate_acceptances else None
+        ),
+        "online_candidate_recent_validation_improvements": (
+            candidate_recent_improvements
+        ),
+        "online_candidate_anchor_validation_degradations": (
+            candidate_anchor_degradations
+        ),
+        "online_candidate_recent_validation_improvement_final": (
+            candidate_recent_improvements[-1] if candidate_recent_improvements else None
+        ),
+        "online_candidate_anchor_validation_degradation_final": (
+            candidate_anchor_degradations[-1] if candidate_anchor_degradations else None
+        ),
         "online_pipeline_completed": True,
     }
 
@@ -2416,6 +2768,18 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         "aggregate_policy_refit_latent_drift_l2": _mean(
             main,
             "online_raw_latent_drift_l2_final",
+        ),
+        "aggregate_model_update_acceptance_rate": _mean(
+            main,
+            "online_model_update_acceptance_rate",
+        ),
+        "aggregate_candidate_recent_validation_improvement": _mean(
+            main,
+            "online_candidate_recent_validation_improvement_final",
+        ),
+        "aggregate_candidate_anchor_validation_degradation": _mean(
+            main,
+            "online_candidate_anchor_validation_degradation_final",
         ),
         "aggregate_policy_primary_improvement": _mean(
             main,

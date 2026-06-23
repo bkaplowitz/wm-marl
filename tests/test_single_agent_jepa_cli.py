@@ -81,6 +81,15 @@ def test_single_agent_jepa_cli_accepts_online_interface_drift_flags(monkeypatch)
             "3",
             "--online-behavior-distill-weight",
             "0.25",
+            "--online-candidate-refit",
+            "--online-validation-steps",
+            "9",
+            "--online-candidate-gate-metric",
+            "model/jepa_loss",
+            "--online-candidate-min-recent-improvement",
+            "0.01",
+            "--online-candidate-max-anchor-degradation",
+            "0.02",
         ],
     )
 
@@ -90,6 +99,11 @@ def test_single_agent_jepa_cli_accepts_online_interface_drift_flags(monkeypatch)
     assert args.online_interface_eval_episodes == 7
     assert args.online_interface_eval_num_envs == 3
     assert args.online_behavior_distill_weight == 0.25
+    assert args.online_candidate_refit
+    assert args.online_validation_steps == 9
+    assert args.online_candidate_gate_metric == "model/jepa_loss"
+    assert args.online_candidate_min_recent_improvement == 0.01
+    assert args.online_candidate_max_anchor_degradation == 0.02
 
 
 def test_single_agent_jepa_cli_uses_regularizer_weight_alias(monkeypatch):

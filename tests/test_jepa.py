@@ -23,6 +23,7 @@ from world_marl.jepa.training import (
 )
 from world_marl.scripts.train_dmc_jepa import (
     _action_contrast_metrics,
+    _candidate_refit_gate_report,
     _merge_online_policy_baseline,
     _online_interface_drift_metrics,
     _online_history_metrics,
@@ -347,6 +348,44 @@ def test_online_interface_drift_metrics_are_zero_for_identical_state():
         0.0,
         atol=1e-6,
     )
+
+
+def test_candidate_refit_gate_requires_recent_improvement_and_anchor_preservation():
+    accepted = _candidate_refit_gate_report(
+        {"model/open_loop_loss": 0.40, "model/jepa_loss": 0.10},
+        {"model/open_loop_loss": 0.43, "model/jepa_loss": 0.11},
+        {"model/open_loop_loss": 0.80, "model/jepa_loss": 0.20},
+        {"model/open_loop_loss": 0.65, "model/jepa_loss": 0.18},
+        metric="model/open_loop_loss",
+        min_recent_improvement=0.05,
+        max_anchor_degradation=0.05,
+    )
+    recent_failed = _candidate_refit_gate_report(
+        {"model/open_loop_loss": 0.40},
+        {"model/open_loop_loss": 0.43},
+        {"model/open_loop_loss": 0.80},
+        {"model/open_loop_loss": 0.78},
+        metric="model/open_loop_loss",
+        min_recent_improvement=0.05,
+        max_anchor_degradation=0.05,
+    )
+    anchor_failed = _candidate_refit_gate_report(
+        {"model/open_loop_loss": 0.40},
+        {"model/open_loop_loss": 0.50},
+        {"model/open_loop_loss": 0.80},
+        {"model/open_loop_loss": 0.65},
+        metric="model/open_loop_loss",
+        min_recent_improvement=0.05,
+        max_anchor_degradation=0.05,
+    )
+
+    assert accepted["model_update_accepted"]
+    assert accepted["recent_validation_improvement"] == pytest.approx(0.15)
+    assert accepted["anchor_validation_degradation"] == pytest.approx(0.03)
+    assert not recent_failed["model_update_accepted"]
+    assert not recent_failed["recent_validation_improved"]
+    assert not anchor_failed["model_update_accepted"]
+    assert not anchor_failed["anchor_validation_preserved"]
 
 
 def test_action_contrast_no_action_control_has_zero_margin():
@@ -1186,6 +1225,13 @@ def test_online_history_metrics_tracks_actor_replay_trend():
                     "model/jepa_loss": 0.2,
                     "model/open_loop_loss": 0.4,
                 },
+                "candidate_refit": {
+                    "model_update_accepted": True,
+                    "gate": {
+                        "recent_validation_improvement": 0.2,
+                        "anchor_validation_degradation": 0.01,
+                    },
+                },
             },
             {
                 "actor_replay": {"mean_return": 25.0},
@@ -1197,6 +1243,13 @@ def test_online_history_metrics_tracks_actor_replay_trend():
                 "model_metrics": {
                     "model/jepa_loss": 0.1,
                     "model/open_loop_loss": 0.3,
+                },
+                "candidate_refit": {
+                    "model_update_accepted": False,
+                    "gate": {
+                        "recent_validation_improvement": -0.1,
+                        "anchor_validation_degradation": 0.08,
+                    },
                 },
             },
         ],
@@ -1214,6 +1267,13 @@ def test_online_history_metrics_tracks_actor_replay_trend():
     assert metrics["online_policy_phase_passed"]
     assert metrics["online_model_jepa_losses"] == [0.2, 0.1]
     assert metrics["online_model_open_loop_losses"] == [0.4, 0.3]
+    assert metrics["online_candidate_refit_iterations"] == 2
+    assert metrics["online_model_update_acceptances"] == [True, False]
+    assert metrics["online_model_update_acceptance_rate"] == 0.5
+    assert metrics["online_candidate_recent_validation_improvements"] == [0.2, -0.1]
+    assert metrics["online_candidate_anchor_validation_degradations"] == [0.01, 0.08]
+    assert metrics["online_candidate_recent_validation_improvement_final"] == -0.1
+    assert metrics["online_candidate_anchor_validation_degradation_final"] == 0.08
     assert metrics["online_pipeline_completed"]
 
 
