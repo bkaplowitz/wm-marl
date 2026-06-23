@@ -73,6 +73,52 @@ V_t = V_\psi(z_t^c)
 Here \(z_t^c\) is the policy-facing control latent. In the default case,
 \(z_t^c = z_t\). During alignment experiments, \(z_t^c = z_t Q\).
 
+## Transformer Dynamics
+
+The dynamics model is a causal transformer over latent/action history tokens.
+For each timestep, the model builds one token by adding a projected latent and
+an encoded action:
+
+\[
+x_t = W_z z_t + A_\theta(a_t)
+\]
+
+where \(A_\theta\) is either an action embedding for discrete actions or a small
+MLP for continuous actions.
+
+Sinusoidal position embeddings are added to these tokens:
+
+\[
+h_t^{(0)} = x_t + p_t
+\]
+
+The transformer uses a causal local attention mask. A timestep can only attend
+to previous timesteps inside the configured context window, and attention is
+masked across episode boundaries.
+
+Each transformer block is pre-norm:
+
+\[
+h' = h + \mathrm{SelfAttention}(\mathrm{LN}(h))
+\]
+
+\[
+h^{next} = h' + \mathrm{MLP}(\mathrm{LN}(h'))
+\]
+
+The MLP expands to `mlp_ratio * model_dim`, uses GELU, then projects back to
+`model_dim`.
+
+After the transformer stack, a final layer norm produces the dynamics hidden
+state. The last hidden state is used by:
+
+- the latent predictor;
+- the reward head;
+- the continuation head.
+
+For multi-step prediction, the model recursively appends predicted latents back
+into the context and consumes the corresponding future actions from replay.
+
 ## Training Loss
 
 The JEPA target is the encoded next observation:
