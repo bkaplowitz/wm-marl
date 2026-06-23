@@ -22,7 +22,6 @@ ControlMode = Literal[
     "frozen-random-world-model",
 ]
 PolicyReturnMode = Literal["reward-only", "lambda"]
-ContinuousPolicyObjective = Literal["direct", "candidate-distill"]
 
 MODEL_GROUPS = frozenset(
     {
@@ -346,7 +345,6 @@ def world_model_loss(
     jepa_loss = masked_mean(1.0 - cosine, validity)
     jepa_cosine = masked_mean(cosine, validity)
 
-    regularizer_weight = _regularizer_weight(config, control)
     regularizer, regularizer_name, collapse = representation_regularizer(
         outputs["context_latents"],
         regularizer_key,
@@ -354,7 +352,7 @@ def world_model_loss(
     )
     total_loss = (
         jepa_loss
-        + regularizer_weight * regularizer
+        + config.regularizer_weight * regularizer
         + config.reward_weight * reward_loss
         + config.continue_weight * continue_loss
     )
@@ -1289,11 +1287,6 @@ def survival_weights(continues: jax.Array, *, gamma: float) -> jax.Array:
 
 def weighted_mean(values: jax.Array, weights: jax.Array) -> jax.Array:
     return jnp.sum(values * weights) / (jnp.sum(weights) + 1e-6)
-
-
-def _regularizer_weight(config: JepaConfig, control: ControlMode) -> float:
-    del control
-    return config.regularizer_weight
 
 
 def _masked_adam(

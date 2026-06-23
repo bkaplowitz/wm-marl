@@ -32,7 +32,6 @@ class JepaConfig:
     continue_weight: float = 1.0
     gamma: float = 0.99
     lambda_return: float = 0.95
-    entropy_coef: float = 0.01
     residual_dynamics: bool = True
     target_gradient: str = "stopgrad"
 
@@ -169,7 +168,8 @@ class JepaWorldModel(nn.Module):
             actions,
             chunk_length=chunk_length,
         )
-        logits, values = self.actor_value_from_obs(observations[:, 0])
+        z0 = self.encode(observations[:, 0])
+        logits, values = self.actor_value_from_latent(z0)
         outputs["actor_logits"] = logits
         outputs["values"] = values
         return outputs
@@ -178,13 +178,6 @@ class JepaWorldModel(nn.Module):
         flat = observations.reshape((-1, self.config.observation_dim))
         latents = self.encoder(flat)
         return latents.reshape((*observations.shape[:-1], self.config.latent_dim))
-
-    def actor_value_from_obs(
-        self,
-        observations: jax.Array,
-    ) -> tuple[jax.Array, jax.Array]:
-        z = self.encode(observations)
-        return self.actor_value_from_latent(z)
 
     def actor_value_from_latent(
         self,
