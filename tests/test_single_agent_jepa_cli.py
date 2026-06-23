@@ -31,6 +31,7 @@ def test_single_agent_jepa_cli_accepts_brax_env(monkeypatch):
     assert args.policy_objective == "direct"
     assert args.regularizer == "sigreg"
     assert args.online_reset_replay_env
+    assert args.online_freeze_encoder
 
 
 def test_single_agent_jepa_cli_can_disable_online_replay_reset(monkeypatch):
@@ -56,6 +57,31 @@ def test_single_agent_jepa_cli_can_disable_online_replay_reset(monkeypatch):
     args = train_dmc_jepa.parse_args()
 
     assert not args.online_reset_replay_env
+
+
+def test_single_agent_jepa_cli_can_disable_online_encoder_freeze(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "world-marl-validate-single-agent-world-model",
+            "--env",
+            "brax:reacher",
+            "--collect-steps",
+            "8",
+            "--validation-steps",
+            "8",
+            "--chunk-length",
+            "4",
+            "--open-loop-horizon",
+            "2",
+            "--no-online-freeze-encoder",
+        ],
+    )
+
+    args = train_dmc_jepa.parse_args()
+
+    assert not args.online_freeze_encoder
 
 
 def test_single_agent_jepa_cli_accepts_online_interface_drift_flags(monkeypatch):

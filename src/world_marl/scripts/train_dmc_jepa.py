@@ -204,11 +204,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--online-freeze-encoder",
+        dest="online_freeze_encoder",
         action="store_true",
+        default=True,
         help=(
             "During online world-model refits, keep the observation encoder fixed "
             "and update only the latent dynamics, reward, and continue components. "
-            "This is a diagnostic for latent-interface drift."
+            "This is the default stable online path."
+        ),
+    )
+    parser.add_argument(
+        "--no-online-freeze-encoder",
+        dest="online_freeze_encoder",
+        action="store_false",
+        help=(
+            "Allow online world-model refits to update the observation encoder. "
+            "Use only for latent-interface drift ablations."
         ),
     )
     parser.add_argument(
