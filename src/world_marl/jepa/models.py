@@ -24,6 +24,7 @@ class JepaConfig:
     context_window: int = 1
     learning_rate: float = 3e-4
     actor_learning_rate: float = 3e-4
+    online_encoder_lr_scale: float = 1.0
     regularizer: str = "sigreg"
     regularizer_weight: float = 0.05
     sigreg_knots: int = 17
@@ -53,6 +54,8 @@ class JepaConfig:
             raise ValueError("context_window must be >= 1")
         if self.dynamics_ensemble_size < 1:
             raise ValueError("dynamics_ensemble_size must be >= 1")
+        if self.online_encoder_lr_scale < 0.0:
+            raise ValueError("online_encoder_lr_scale must be >= 0")
 
 
 class MLPEncoder(nn.Module):

@@ -264,6 +264,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--online-encoder-lr-scale",
+        type=float,
+        default=1.0,
+        help=(
+            "Scale the observation-encoder learning rate during unfrozen online "
+            "world-model refits. Values below 1.0 test slow encoder adaptation "
+            "without fully freezing the encoder."
+        ),
+    )
+    parser.add_argument(
         "--online-interface-eval-episodes",
         type=int,
         default=20,
@@ -468,6 +478,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--online-latent-anchor-weight must be >= 0")
     if args.online_control_prediction_weight < 0.0:
         parser.error("--online-control-prediction-weight must be >= 0")
+    if args.online_encoder_lr_scale < 0.0:
+        parser.error("--online-encoder-lr-scale must be >= 0")
     if args.online_candidate_min_recent_improvement < 0.0:
         parser.error("--online-candidate-min-recent-improvement must be >= 0")
     if args.online_candidate_max_anchor_degradation < 0.0:
@@ -623,6 +635,7 @@ def run_one(
             context_window=args.context_window,
             learning_rate=args.learning_rate,
             actor_learning_rate=args.actor_learning_rate,
+            online_encoder_lr_scale=args.online_encoder_lr_scale,
             regularizer=args.regularizer,
             regularizer_weight=args.regularizer_weight,
             sigreg_knots=args.sigreg_knots,
@@ -928,6 +941,10 @@ def run_one(
                     desc=fit_desc,
                     env_steps=env_steps,
                     freeze_encoder=args.online_freeze_encoder,
+                    use_online_encoder_lr_scale=(
+                        not args.online_freeze_encoder
+                        and args.online_encoder_lr_scale != 1.0
+                    ),
                     latent_anchor_state=(
                         pre_refit_state
                         if args.online_latent_anchor_weight > 0.0
@@ -1041,6 +1058,7 @@ def run_one(
                 "online_iteration": online_index,
                 "control": control,
                 "online_freeze_encoder": args.online_freeze_encoder,
+                "online_encoder_lr_scale": args.online_encoder_lr_scale,
                 "control_alignment": control_alignment_report,
                 "online_latent_anchor_weight": args.online_latent_anchor_weight,
                 "candidate_refit": candidate_report,
@@ -1778,6 +1796,7 @@ def _fit_world_model(
     desc: str,
     env_steps: int,
     freeze_encoder: bool = False,
+    use_online_encoder_lr_scale: bool = False,
     latent_anchor_state=None,
     latent_anchor_weight: float = 0.0,
     control_prediction_state=None,
@@ -1807,6 +1826,7 @@ def _fit_world_model(
             chunk_length=args.chunk_length,
             control=control,
             freeze_encoder=freeze_encoder,
+            use_online_encoder_lr_scale=use_online_encoder_lr_scale,
             latent_anchor_params=(
                 None if latent_anchor_state is None else latent_anchor_state.params
             ),
@@ -1866,6 +1886,11 @@ def _fit_world_model(
                     "env_steps": env_steps,
                     "control": control,
                     "online_freeze_encoder": freeze_encoder,
+                    "online_encoder_lr_scale": (
+                        config.online_encoder_lr_scale
+                        if use_online_encoder_lr_scale
+                        else None
+                    ),
                     **metrics,
                 }
             )

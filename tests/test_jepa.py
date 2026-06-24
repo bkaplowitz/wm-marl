@@ -292,6 +292,50 @@ def test_frozen_encoder_model_step_preserves_encoder_and_updates_world_model():
     assert _tree_changed(state.params["block_0"], frozen_state.params["block_0"])
 
 
+def test_online_encoder_lr_scale_slows_but_updates_encoder():
+    config = JepaConfig(
+        observation_dim=4,
+        action_dim=3,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=1,
+        context_window=1,
+        online_encoder_lr_scale=0.05,
+        sigreg_num_proj=32,
+    )
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    batch = ReplayBatch(
+        observations=jax.random.normal(jax.random.PRNGKey(1), (4, 4, 4)),
+        actions=jax.random.normal(jax.random.PRNGKey(2), (4, 3, 3)),
+        rewards=jax.random.normal(jax.random.PRNGKey(3), (4, 3)),
+        dones=jnp.zeros((4, 3), dtype=jnp.float32),
+    )
+    normal_state, _ = train_model_step(
+        state,
+        jax.random.PRNGKey(4),
+        batch,
+        config,
+        chunk_length=2,
+    )
+    scaled_state, _ = train_model_step(
+        state,
+        jax.random.PRNGKey(4),
+        batch,
+        config,
+        chunk_length=2,
+        use_online_encoder_lr_scale=True,
+    )
+
+    normal_delta = _tree_delta_l2(state.params["encoder"], normal_state.params["encoder"])
+    scaled_delta = _tree_delta_l2(state.params["encoder"], scaled_state.params["encoder"])
+    assert scaled_delta > 0.0
+    assert scaled_delta < normal_delta * 0.5
+    assert _tree_changed(state.params["predictor"], scaled_state.params["predictor"])
+
+
 def test_model_step_supports_cosine_latent_anchor_loss():
     config = JepaConfig(
         observation_dim=4,
@@ -1580,3 +1624,15 @@ def _tree_changed(left, right) -> bool:
             strict=True,
         )
     )
+
+
+def _tree_delta_l2(left, right) -> float:
+    squared = [
+        np.sum(np.square(np.asarray(a) - np.asarray(b)))
+        for a, b in zip(
+            jax.tree_util.tree_leaves(left),
+            jax.tree_util.tree_leaves(right),
+            strict=True,
+        )
+    ]
+    return float(np.sqrt(np.sum(squared)))

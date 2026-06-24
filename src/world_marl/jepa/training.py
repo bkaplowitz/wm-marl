@@ -64,6 +64,10 @@ class JepaTrainState:
         pytree_node=False
     )
     frozen_encoder_model_opt_state: optax.OptState
+    online_encoder_model_tx: optax.GradientTransformation = struct.field(
+        pytree_node=False
+    )
+    online_encoder_model_opt_state: optax.OptState
     actor_tx: optax.GradientTransformation = struct.field(pytree_node=False)
     actor_opt_state: optax.OptState
     critic_tx: optax.GradientTransformation = struct.field(pytree_node=False)
@@ -91,6 +95,18 @@ class JepaTrainState:
             step=self.step + 1,
             params=optax.apply_updates(self.params, updates),
             frozen_encoder_model_opt_state=opt_state,
+        )
+
+    def apply_online_encoder_model_gradients(self, grads) -> "JepaTrainState":
+        updates, opt_state = self.online_encoder_model_tx.update(
+            grads,
+            self.online_encoder_model_opt_state,
+            self.params,
+        )
+        return self.replace(
+            step=self.step + 1,
+            params=optax.apply_updates(self.params, updates),
+            online_encoder_model_opt_state=opt_state,
         )
 
     def apply_actor_gradients(self, grads) -> "JepaTrainState":
@@ -147,6 +163,12 @@ def create_jepa_train_state(
         ONLINE_FROZEN_ENCODER_MODEL_GROUPS,
         config.learning_rate,
     )
+    online_encoder_model_tx = _masked_adam_with_encoder_scale(
+        params,
+        MODEL_GROUPS,
+        config.learning_rate,
+        config.online_encoder_lr_scale,
+    )
     actor_tx = _masked_adam(params, ACTOR_GROUPS, config.actor_learning_rate)
     critic_tx = _masked_adam(params, CRITIC_GROUPS, config.actor_learning_rate)
     return JepaTrainState(
@@ -160,6 +182,8 @@ def create_jepa_train_state(
         model_opt_state=model_tx.init(params),
         frozen_encoder_model_tx=frozen_encoder_model_tx,
         frozen_encoder_model_opt_state=frozen_encoder_model_tx.init(params),
+        online_encoder_model_tx=online_encoder_model_tx,
+        online_encoder_model_opt_state=online_encoder_model_tx.init(params),
         actor_tx=actor_tx,
         actor_opt_state=actor_tx.init(params),
         critic_tx=critic_tx,
@@ -174,6 +198,7 @@ def create_jepa_train_state(
         "chunk_length",
         "control",
         "freeze_encoder",
+        "use_online_encoder_lr_scale",
         "latent_anchor_weight",
         "control_prediction_weight",
     ),
@@ -187,6 +212,7 @@ def train_model_step(
     chunk_length: int,
     control: ControlMode = "none",
     freeze_encoder: bool = False,
+    use_online_encoder_lr_scale: bool = False,
     latent_anchor_params: FrozenDict | None = None,
     latent_anchor_alignment: jax.Array | None = None,
     latent_anchor_scale: jax.Array | None = None,
@@ -301,6 +327,8 @@ def train_model_step(
     del loss
     if freeze_encoder:
         return state.apply_frozen_encoder_model_gradients(grads), metrics
+    if use_online_encoder_lr_scale:
+        return state.apply_online_encoder_model_gradients(grads), metrics
     return state.apply_model_gradients(grads), metrics
 
 
@@ -1688,6 +1716,26 @@ def _masked_adam(
     )
 
 
+def _masked_adam_with_encoder_scale(
+    params: FrozenDict,
+    trainable_groups: frozenset[str],
+    learning_rate: float,
+    encoder_lr_scale: float,
+) -> optax.GradientTransformation:
+    labels = _label_params_with_encoder_scale(params, trainable_groups)
+    return optax.multi_transform(
+        {
+            "train": optax.adam(learning_rate, eps=1e-5),
+            "encoder_train": optax.adam(
+                learning_rate * encoder_lr_scale,
+                eps=1e-5,
+            ),
+            "freeze": optax.set_to_zero(),
+        },
+        labels,
+    )
+
+
 def _label_params(params: FrozenDict, trainable_groups: frozenset[str]) -> FrozenDict:
     raw = unfreeze(params)
     labels = {
@@ -1699,6 +1747,23 @@ def _label_params(params: FrozenDict, trainable_groups: frozenset[str]) -> Froze
         )
         for key, value in raw.items()
     }
+    return freeze(labels)
+
+
+def _label_params_with_encoder_scale(
+    params: FrozenDict,
+    trainable_groups: frozenset[str],
+) -> FrozenDict:
+    raw = unfreeze(params)
+    labels = {}
+    for key, value in raw.items():
+        if not _trainable_param_group(key, trainable_groups):
+            label = "freeze"
+        elif key == "encoder":
+            label = "encoder_train"
+        else:
+            label = "train"
+        labels[key] = jax.tree_util.tree_map(lambda _: label, value)
     return freeze(labels)
 
 
