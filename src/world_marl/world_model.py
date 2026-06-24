@@ -12,11 +12,13 @@ import jax.numpy as jnp
 from flax.training.train_state import TrainState
 
 from flow_matching.models import (
+    BlockDiffusionTransformer,
     MLPVectorField,
     TokenizedDiscreteDenoiser,
     TokenizedDiscreteTransformer,
 )
 from flow_matching.simulate import (
+    sample_llada2_block_diffusion,
     sample_marginal_discrete_flow_model,
     sample_marginal_flow_model,
 )
@@ -27,6 +29,9 @@ from flow_matching.train import (
     conditioned_train_step,
     create_conditioned_train_state,
     create_discrete_conditioned_train_state,
+    create_llada2_train_state,
+    llada2_bdlm_loss,
+    llada2_train_step,
 )
 from world_marl.algs.ippo import RolloutBatch
 from world_marl.algs.mappo import MAPPORolloutBatch
@@ -61,15 +66,68 @@ class VectorWorldModelConfig:
     num_categories: int = 0
     # Discrete denoiser architecture (only consulted when flow_type == "discrete").
     discrete_arch: str = "mlp"
+    # Transformer-arm capacity, shared by the discrete-transformer and llada2 arms
+    # (frozen dataclass -> all fields are hashable, safe as static jit args).
+    model_dim: int = 64
+    num_heads: int = 4
+    ffn_hidden_dims: tuple[int, ...] = (256, 256)
+    # LLaDA2.0 block-diffusion arm (only consulted when flow_type == "llada2").
+    # num_layers and the per-layer MoE expert width derive from ffn_hidden_dims, so
+    # capacity has a single source of truth across the transformer arms.
+    block_size: int = 4
+    num_experts: int = 1  # 1 -> dense SwiGLU (no router); >1 -> MoE top-k
+    expert_top_k: int = 1
+    mask_schedule: str = "linear"
+    alpha_min: float = 0.15  # mask-rate band lower bound (§5.1)
+    alpha_max: float = 0.95  # mask-rate band upper bound (§5.1)
+    cap_lambda: float = 0.1  # CAP confidence-loss weight (eq 6)
+    moe_aux_coeff: float = 0.01  # load-balancing aux weight
+    complementary_masking: bool = True  # §5.1 complementary pair
+    confidence_threshold: float = 0.9  # §5.4 sampler commit threshold
+    steps_per_block: int = 4  # §5.4 refinement passes per block
+    rope_base: float = 10000.0
+    rope_scaling: float = 1.0  # YaRN inference scaling (1.0 = off)
+    rope_original_max_position: int = 32
+    masked_embed_noise_iters: int = 0  # §7.1 stabilizer length (0 = from-scratch)
+    mask_noise_std: float = 0.1  # §7.1 noise std (annealed to 0 over the iters)
+    wsd_warmup_frac: float = 0.3  # §4.1 block-size curriculum phase fractions
+    wsd_stable_frac: float = 0.4
+    wsd_merge_k: int = 1  # §4.3 top-k checkpoint merge (1 = single, no merge)
 
 
 def create_world_model_state(
     key: jax.Array,
     config: VectorWorldModelConfig,
 ) -> TrainState:
+    if config.flow_type == "llada2":
+        model = BlockDiffusionTransformer(
+            num_categories=config.num_categories,
+            num_actions=config.action_dim,
+            model_dim=config.model_dim,
+            num_heads=config.num_heads,
+            num_layers=len(config.ffn_hidden_dims),
+            ffn_hidden_dim=config.ffn_hidden_dims[0],
+            num_experts=config.num_experts,
+            expert_top_k=config.expert_top_k,
+            rope_base=config.rope_base,
+            rope_scaling=config.rope_scaling,
+            rope_original_max_position=config.rope_original_max_position,
+        )
+        return create_llada2_train_state(
+            key,
+            model,
+            config.learning_rate,
+            num_factors=_num_factors(config),
+            num_action_tokens=config.num_agents,
+        )
     if config.flow_type == "discrete":
         if config.discrete_arch == "transformer":
-            model = TokenizedDiscreteTransformer(num_categories=config.num_categories)
+            model = TokenizedDiscreteTransformer(
+                num_categories=config.num_categories,
+                model_dim=config.model_dim,
+                num_heads=config.num_heads,
+                ffn_hidden_dims=config.ffn_hidden_dims,
+            )
         else:
             model = TokenizedDiscreteDenoiser(
                 num_categories=config.num_categories,
@@ -99,6 +157,25 @@ def world_model_loss(
     batch: VectorTransitionBatch,
     config: VectorWorldModelConfig,
 ) -> jnp.ndarray:
+    if config.flow_type == "llada2":
+        prev_tokens = _pack_discrete_tokens(batch.states, config)
+        x0 = _pack_discrete_tokens(batch.next_states, config)
+        return llada2_bdlm_loss(
+            params,
+            apply_fn,
+            key,
+            x0,
+            prev_tokens,
+            batch.actions,
+            config.num_categories,
+            block_size=config.block_size,
+            mask_schedule_name=config.mask_schedule,
+            alpha_min=config.alpha_min,
+            alpha_max=config.alpha_max,
+            complementary=config.complementary_masking,
+            cap_lambda=config.cap_lambda,
+            moe_aux_coeff=config.moe_aux_coeff,
+        )
     cond_vars = _pack_cond_vars(batch.states, batch.actions, config)
     if config.flow_type == "discrete":
         z = _pack_discrete_tokens(batch.next_states, config)
@@ -117,7 +194,40 @@ def train_world_model_step(
     key: jax.Array,
     batch: VectorTransitionBatch,
     config: VectorWorldModelConfig,
+    *,
+    block_size: jax.Array | None = None,
+    mask_noise_std: jax.Array | float = 0.0,
+    noise_rng: jax.Array | None = None,
 ) -> tuple[TrainState, jnp.ndarray]:
+    """One world-model gradient step.
+
+    ``block_size``/``mask_noise_std``/``noise_rng`` are only consulted for the
+    ``llada2`` flow; they stay *traced* (not static) so the WSD curriculum can thread
+    a per-step block size and an annealed §7.1 noise std through one fused ``scan``
+    with no recompiles. ``block_size is None`` (the default for the other flows) is a
+    structural check on absence, never a value comparison.
+    """
+    if config.flow_type == "llada2":
+        prev_tokens = _pack_discrete_tokens(batch.states, config)
+        x0 = _pack_discrete_tokens(batch.next_states, config)
+        bs = config.block_size if block_size is None else block_size
+        return llada2_train_step(
+            state,
+            key,
+            x0,
+            prev_tokens,
+            batch.actions,
+            config.num_categories,
+            block_size=bs,
+            mask_schedule_name=config.mask_schedule,
+            alpha_min=config.alpha_min,
+            alpha_max=config.alpha_max,
+            complementary=config.complementary_masking,
+            cap_lambda=config.cap_lambda,
+            moe_aux_coeff=config.moe_aux_coeff,
+            mask_noise_std=mask_noise_std,
+            noise_rng=noise_rng,
+        )
     cond_vars = _pack_cond_vars(batch.states, batch.actions, config)
     if config.flow_type == "discrete":
         z = _pack_discrete_tokens(batch.next_states, config)
@@ -136,6 +246,21 @@ def predict_next(
     config: VectorWorldModelConfig,
 ) -> jnp.ndarray:
     """Sample next-states from the conditioned flow (next-state only)."""
+    if config.flow_type == "llada2":
+        prev_tokens = _pack_discrete_tokens(states, config)
+        tokens = sample_llada2_block_diffusion(
+            state.apply_fn,
+            state.params,
+            key,
+            prev_tokens,
+            actions,
+            num_factors=_num_factors(config),
+            num_categories=config.num_categories,
+            block_size=config.block_size,
+            steps_per_block=config.steps_per_block,
+            confidence_threshold=config.confidence_threshold,
+        )
+        return _unpack_discrete_onehot(tokens, config)
     cond_vars = _pack_cond_vars(states, actions, config)
     if config.flow_type == "discrete":
         tokens = sample_marginal_discrete_flow_model(
