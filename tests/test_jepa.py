@@ -27,6 +27,7 @@ from world_marl.jepa.training import (
 )
 from world_marl.scripts.train_dmc_jepa import (
     _action_contrast_metrics,
+    _best_passing_candidate_report,
     _candidate_refit_gate_report,
     _merge_online_policy_baseline,
     _online_history_metrics,
@@ -427,10 +428,35 @@ def test_candidate_refit_gate_requires_recent_improvement_and_anchor_preservatio
     assert accepted["model_update_accepted"]
     assert accepted["recent_validation_improvement"] == pytest.approx(0.15)
     assert accepted["anchor_validation_degradation"] == pytest.approx(0.03)
+    assert accepted["candidate_gate_score"] == pytest.approx(0.12)
     assert not recent_failed["model_update_accepted"]
     assert not recent_failed["recent_validation_improved"]
     assert not anchor_failed["model_update_accepted"]
     assert not anchor_failed["anchor_validation_preserved"]
+
+
+def test_best_passing_candidate_report_uses_gate_score():
+    reports = [
+        {
+            "candidate_update": 100,
+            "model_update_accepted": True,
+            "gate": {"candidate_gate_score": 0.1},
+        },
+        {
+            "candidate_update": 200,
+            "model_update_accepted": False,
+            "gate": {"candidate_gate_score": 10.0},
+        },
+        {
+            "candidate_update": 300,
+            "model_update_accepted": True,
+            "gate": {"candidate_gate_score": 0.2},
+        },
+    ]
+
+    best = _best_passing_candidate_report(reports)
+
+    assert best is reports[2]
 
 
 def test_action_contrast_no_action_control_has_zero_margin():
@@ -1272,6 +1298,10 @@ def test_online_history_metrics_tracks_actor_replay_trend():
                 },
                 "candidate_refit": {
                     "model_update_accepted": True,
+                    "checkpoint_selection": {
+                        "candidate_selected_update": 500,
+                        "candidate_final_update_accepted": False,
+                    },
                     "gate": {
                         "recent_validation_improvement": 0.2,
                         "anchor_validation_degradation": 0.01,
@@ -1291,6 +1321,10 @@ def test_online_history_metrics_tracks_actor_replay_trend():
                 },
                 "candidate_refit": {
                     "model_update_accepted": False,
+                    "checkpoint_selection": {
+                        "candidate_selected_update": None,
+                        "candidate_final_update_accepted": False,
+                    },
                     "gate": {
                         "recent_validation_improvement": -0.1,
                         "anchor_validation_degradation": 0.08,
@@ -1319,6 +1353,8 @@ def test_online_history_metrics_tracks_actor_replay_trend():
     assert metrics["online_candidate_anchor_validation_degradations"] == [0.01, 0.08]
     assert metrics["online_candidate_recent_validation_improvement_final"] == -0.1
     assert metrics["online_candidate_anchor_validation_degradation_final"] == 0.08
+    assert metrics["online_candidate_selected_updates"] == [500]
+    assert metrics["online_candidate_final_update_acceptances"] == [False, False]
     assert metrics["online_pipeline_completed"]
 
 

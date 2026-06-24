@@ -83,6 +83,10 @@ def test_single_agent_jepa_cli_accepts_candidate_refit_flags(monkeypatch):
             "0.01",
             "--online-candidate-max-anchor-degradation",
             "0.02",
+            "--online-candidate-eval-interval",
+            "250",
+            "--online-candidate-anchor-penalty",
+            "2.0",
             "--online-control-value-weight",
             "0.3",
         ],
@@ -95,6 +99,8 @@ def test_single_agent_jepa_cli_accepts_candidate_refit_flags(monkeypatch):
     assert args.online_candidate_gate_metric == "model/jepa_loss"
     assert args.online_candidate_min_recent_improvement == 0.01
     assert args.online_candidate_max_anchor_degradation == 0.02
+    assert args.online_candidate_eval_interval == 250
+    assert args.online_candidate_anchor_penalty == 2.0
     assert args.online_control_value_weight == 0.3
 
 

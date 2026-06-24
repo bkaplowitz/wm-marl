@@ -278,6 +278,26 @@ def parse_args() -> argparse.Namespace:
         default=0.05,
         help="Maximum allowed increase in the gate metric on anchor validation.",
     )
+    parser.add_argument(
+        "--online-candidate-eval-interval",
+        type=int,
+        default=500,
+        help=(
+            "During online candidate refits, evaluate every N model updates and "
+            "keep the best passing checkpoint. Use 0 to evaluate only the final "
+            "candidate."
+        ),
+    )
+    parser.add_argument(
+        "--online-candidate-anchor-penalty",
+        type=float,
+        default=1.0,
+        help=(
+            "Penalty used to rank candidate checkpoints: score = recent "
+            "improvement - penalty * max(anchor degradation, 0). Hard accept "
+            "constraints are still enforced separately."
+        ),
+    )
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lambda-return", type=float, default=0.95)
     parser.add_argument(
@@ -386,6 +406,10 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--online-candidate-min-recent-improvement must be >= 0")
     if args.online_candidate_max_anchor_degradation < 0.0:
         parser.error("--online-candidate-max-anchor-degradation must be >= 0")
+    if args.online_candidate_eval_interval < 0:
+        parser.error("--online-candidate-eval-interval must be >= 0")
+    if args.online_candidate_anchor_penalty < 0.0:
+        parser.error("--online-candidate-anchor-penalty must be >= 0")
     for name in ("critic_horizon",):
         if getattr(args, name) < 1:
             parser.error(f"--{name.replace('_', '-')} must be >= 1")
@@ -799,53 +823,29 @@ def run_one(
             online_loss_history: list[float] = []
             candidate_report = None
             if online_train_steps > 0:
-                candidate_state = state
-                fit_phase = (
-                    f"{phase}_candidate_world_model"
-                    if args.online_candidate_refit
-                    else f"{phase}_world_model"
-                )
-                fit_desc = (
-                    f"{control} {phase} fit candidate world model"
-                    if args.online_candidate_refit
-                    else f"{control} {phase} fit world model"
-                )
-                candidate_state, rng, _, online_loss_history = _fit_world_model(
-                    args,
-                    logger,
-                    candidate_state,
-                    rng,
-                    replay,
-                    config,
-                    np_rng=np_rng,
-                    steps=online_train_steps,
-                    control=control,
-                    phase=fit_phase,
-                    desc=fit_desc,
-                    env_steps=env_steps,
-                    freeze_encoder=True,
-                    control_value_weight=args.online_control_value_weight,
-                )
                 if args.online_candidate_refit:
                     if recent_validation_batch is None:
                         raise RuntimeError("candidate refit requires recent validation")
-                    rng, candidate_eval_key = jax.random.split(rng)
-                    candidate_report = _evaluate_candidate_model_update(
-                        args,
-                        pre_refit_state,
-                        candidate_state,
-                        candidate_eval_key,
-                        anchor_validation_batch=validation_batch,
-                        recent_validation_batch=recent_validation_batch,
-                        config=config,
-                        control=control,
-                        action_low=adapter.action_low,
-                        action_high=adapter.action_high,
-                    )
-                    state = (
-                        candidate_state
-                        if candidate_report["model_update_accepted"]
-                        else pre_refit_state
+                    state, rng, candidate_report, online_loss_history = (
+                        _fit_candidate_world_model(
+                            args,
+                            logger,
+                            pre_refit_state,
+                            rng,
+                            replay,
+                            config,
+                            np_rng=np_rng,
+                            steps=online_train_steps,
+                            control=control,
+                            phase=f"{phase}_candidate_world_model",
+                            desc=f"{control} {phase} fit candidate world model",
+                            env_steps=env_steps,
+                            anchor_validation_batch=validation_batch,
+                            recent_validation_batch=recent_validation_batch,
+                            action_low=adapter.action_low,
+                            action_high=adapter.action_high,
+                            control_value_weight=args.online_control_value_weight,
+                        )
                     )
                     logger.write_json(f"{phase}_candidate_refit.json", candidate_report)
                     logger.append_metrics(
@@ -854,10 +854,26 @@ def run_one(
                             "online_iteration": online_index,
                             "control": control,
                             **candidate_report["gate"],
+                            **candidate_report.get("checkpoint_selection", {}),
                         }
                     )
                 else:
-                    state = candidate_state
+                    state, rng, _, online_loss_history = _fit_world_model(
+                        args,
+                        logger,
+                        state,
+                        rng,
+                        replay,
+                        config=config,
+                        np_rng=np_rng,
+                        steps=online_train_steps,
+                        control=control,
+                        phase=f"{phase}_world_model",
+                        desc=f"{control} {phase} fit world model",
+                        env_steps=env_steps,
+                        freeze_encoder=True,
+                        control_value_weight=args.online_control_value_weight,
+                    )
             logger.plot_world_model_loss(
                 online_loss_history,
                 filename=f"{phase}_world_model_loss.png",
@@ -1146,30 +1162,37 @@ def _evaluate_candidate_model_update(
     args: argparse.Namespace,
     baseline_state,
     candidate_state,
-    key: jax.Array,
     *,
+    anchor_key: jax.Array,
+    recent_key: jax.Array,
     anchor_validation_batch: ReplayBatch,
     recent_validation_batch: ReplayBatch,
     config: JepaConfig,
     control: ControlMode,
     action_low: np.ndarray,
     action_high: np.ndarray,
+    baseline_anchor_metrics: dict[str, Any] | None = None,
+    baseline_recent_policy_metrics: dict[str, Any] | None = None,
+    update: int | None = None,
 ) -> dict[str, Any]:
-    keys = jax.random.split(key, 4)
-    baseline_anchor = _evaluate_model(
-        baseline_state,
-        keys[0],
-        anchor_validation_batch,
-        config,
-        chunk_length=args.chunk_length,
-        open_loop_horizon=args.open_loop_horizon,
-        control=control,
-        action_low=action_low,
-        action_high=action_high,
+    baseline_anchor = (
+        baseline_anchor_metrics
+        if baseline_anchor_metrics is not None
+        else _evaluate_model(
+            baseline_state,
+            anchor_key,
+            anchor_validation_batch,
+            config,
+            chunk_length=args.chunk_length,
+            open_loop_horizon=args.open_loop_horizon,
+            control=control,
+            action_low=action_low,
+            action_high=action_high,
+        )
     )
     candidate_anchor = _evaluate_model(
         candidate_state,
-        keys[1],
+        anchor_key,
         anchor_validation_batch,
         config,
         chunk_length=args.chunk_length,
@@ -1178,20 +1201,24 @@ def _evaluate_candidate_model_update(
         action_low=action_low,
         action_high=action_high,
     )
-    baseline_recent = _evaluate_model(
-        baseline_state,
-        keys[2],
-        recent_validation_batch,
-        config,
-        chunk_length=args.chunk_length,
-        open_loop_horizon=args.open_loop_horizon,
-        control=control,
-        action_low=action_low,
-        action_high=action_high,
+    baseline_recent = (
+        baseline_recent_policy_metrics
+        if baseline_recent_policy_metrics is not None
+        else _evaluate_model(
+            baseline_state,
+            recent_key,
+            recent_validation_batch,
+            config,
+            chunk_length=args.chunk_length,
+            open_loop_horizon=args.open_loop_horizon,
+            control=control,
+            action_low=action_low,
+            action_high=action_high,
+        )
     )
     candidate_recent = _evaluate_model(
         candidate_state,
-        keys[3],
+        recent_key,
         recent_validation_batch,
         config,
         chunk_length=args.chunk_length,
@@ -1208,9 +1235,11 @@ def _evaluate_candidate_model_update(
         metric=args.online_candidate_gate_metric,
         min_recent_improvement=args.online_candidate_min_recent_improvement,
         max_anchor_degradation=args.online_candidate_max_anchor_degradation,
+        anchor_penalty=args.online_candidate_anchor_penalty,
     )
     return {
         "model_update_accepted": gate["model_update_accepted"],
+        "candidate_update": update,
         "gate": gate,
         "baseline_anchor_metrics": baseline_anchor,
         "candidate_anchor_metrics": candidate_anchor,
@@ -1228,6 +1257,7 @@ def _candidate_refit_gate_report(
     metric: str,
     min_recent_improvement: float,
     max_anchor_degradation: float,
+    anchor_penalty: float = 1.0,
 ) -> dict[str, Any]:
     baseline_anchor_value = float(baseline_anchor[metric])
     candidate_anchor_value = float(candidate_anchor[metric])
@@ -1235,6 +1265,7 @@ def _candidate_refit_gate_report(
     candidate_recent_value = float(candidate_recent[metric])
     recent_improvement = baseline_recent_value - candidate_recent_value
     anchor_degradation = candidate_anchor_value - baseline_anchor_value
+    gate_score = recent_improvement - anchor_penalty * max(anchor_degradation, 0.0)
     recent_improved = recent_improvement >= min_recent_improvement
     anchor_preserved = anchor_degradation <= max_anchor_degradation
     candidate_metrics_finite = _metrics_finite(candidate_anchor) and _metrics_finite(
@@ -1247,6 +1278,8 @@ def _candidate_refit_gate_report(
         "candidate_gate_metric": metric,
         "candidate_min_recent_improvement": min_recent_improvement,
         "candidate_max_anchor_degradation": max_anchor_degradation,
+        "candidate_anchor_penalty": anchor_penalty,
+        "candidate_gate_score": gate_score,
         "candidate_metrics_finite": candidate_metrics_finite,
         "recent_validation_baseline": baseline_recent_value,
         "recent_validation_candidate": candidate_recent_value,
@@ -1257,6 +1290,224 @@ def _candidate_refit_gate_report(
         "anchor_validation_degradation": anchor_degradation,
         "anchor_validation_preserved": bool(anchor_preserved),
     }
+
+
+def _best_passing_candidate_report(
+    reports: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    passing = [report for report in reports if report.get("model_update_accepted")]
+    if not passing:
+        return None
+    return max(
+        passing,
+        key=lambda report: float(report.get("gate", {}).get("candidate_gate_score", 0.0)),
+    )
+
+
+def _candidate_checkpoint_gate_summary(report: dict[str, Any]) -> dict[str, Any]:
+    gate = report["gate"]
+    return {
+        "candidate_update": report.get("candidate_update"),
+        "model_update_accepted": report.get("model_update_accepted"),
+        "candidate_gate_score": gate.get("candidate_gate_score"),
+        "recent_validation_improvement": gate.get("recent_validation_improvement"),
+        "anchor_validation_degradation": gate.get("anchor_validation_degradation"),
+        "recent_validation_improved": gate.get("recent_validation_improved"),
+        "anchor_validation_preserved": gate.get("anchor_validation_preserved"),
+        "candidate_metrics_finite": gate.get("candidate_metrics_finite"),
+    }
+
+
+def _fit_candidate_world_model(
+    args: argparse.Namespace,
+    logger: RunLogger,
+    state,
+    rng: jax.Array,
+    replay: SequenceReplayBuffer,
+    config: JepaConfig,
+    *,
+    np_rng: np.random.Generator,
+    steps: int,
+    control: ControlMode,
+    phase: str,
+    desc: str,
+    env_steps: int,
+    anchor_validation_batch: ReplayBatch,
+    recent_validation_batch: ReplayBatch,
+    action_low: np.ndarray,
+    action_high: np.ndarray,
+    control_value_weight: float = 0.0,
+) -> tuple[Any, jax.Array, dict[str, Any], list[float]]:
+    rng, anchor_key, recent_key = jax.random.split(rng, 3)
+    baseline_anchor = _evaluate_model(
+        state,
+        anchor_key,
+        anchor_validation_batch,
+        config,
+        chunk_length=args.chunk_length,
+        open_loop_horizon=args.open_loop_horizon,
+        control=control,
+        action_low=action_low,
+        action_high=action_high,
+    )
+    baseline_recent = _evaluate_model(
+        state,
+        recent_key,
+        recent_validation_batch,
+        config,
+        chunk_length=args.chunk_length,
+        open_loop_horizon=args.open_loop_horizon,
+        control=control,
+        action_low=action_low,
+        action_high=action_high,
+    )
+
+    candidate_state = state
+    best_state = None
+    best_report = None
+    final_report = None
+    reports: list[dict[str, Any]] = []
+    loss_history: list[float] = []
+    metrics: dict[str, Any] = {}
+    eval_interval = args.online_candidate_eval_interval
+    fit_steps = tqdm(
+        range(1, steps + 1),
+        desc=desc,
+        unit="update",
+        disable=args.quiet,
+    )
+    for step_index in fit_steps:
+        batch = replay.sample(
+            np_rng,
+            batch_size=args.batch_size,
+            chunk_length=args.chunk_length,
+            max_horizon=max(args.model_horizon, args.open_loop_horizon),
+        )
+        rng, train_key = jax.random.split(rng)
+        candidate_state, metrics = train_model_step(
+            candidate_state,
+            train_key,
+            batch,
+            config,
+            chunk_length=args.chunk_length,
+            control=control,
+            freeze_encoder=True,
+            control_value_weight=control_value_weight,
+        )
+        total_loss = float(metrics["model/total_loss"])
+        jepa_loss = float(metrics["model/jepa_loss"])
+        loss_history.append(total_loss)
+        fit_steps.set_postfix(loss=f"{total_loss:.4g}", jepa=f"{jepa_loss:.4g}")
+        if (
+            step_index == 1
+            or step_index == steps
+            or step_index % args.eval_interval == 0
+        ):
+            logger.append_metrics(
+                {
+                    "phase": phase,
+                    "update": step_index,
+                    "env_steps": env_steps,
+                    "control": control,
+                    "online_encoder_frozen": True,
+                    "online_control_value_weight": control_value_weight,
+                    **metrics,
+                }
+            )
+
+        should_evaluate = step_index == steps or (
+            eval_interval > 0 and step_index % eval_interval == 0
+        )
+        if should_evaluate:
+            report = _evaluate_candidate_model_update(
+                args,
+                state,
+                candidate_state,
+                anchor_key=anchor_key,
+                recent_key=recent_key,
+                anchor_validation_batch=anchor_validation_batch,
+                recent_validation_batch=recent_validation_batch,
+                config=config,
+                control=control,
+                action_low=action_low,
+                action_high=action_high,
+                baseline_anchor_metrics=baseline_anchor,
+                baseline_recent_policy_metrics=baseline_recent,
+                update=step_index,
+            )
+            reports.append(report)
+            final_report = report
+            if report["model_update_accepted"] and (
+                best_report is None
+                or report["gate"]["candidate_gate_score"]
+                > best_report["gate"]["candidate_gate_score"]
+            ):
+                best_report = report
+                best_state = candidate_state
+            logger.append_metrics(
+                {
+                    "phase": "online_candidate_refit_checkpoint",
+                    "update": step_index,
+                    "env_steps": env_steps,
+                    "control": control,
+                    **report["gate"],
+                }
+            )
+
+    if final_report is None:
+        final_report = _evaluate_candidate_model_update(
+            args,
+            state,
+            candidate_state,
+            anchor_key=anchor_key,
+            recent_key=recent_key,
+            anchor_validation_batch=anchor_validation_batch,
+            recent_validation_batch=recent_validation_batch,
+            config=config,
+            control=control,
+            action_low=action_low,
+            action_high=action_high,
+            baseline_anchor_metrics=baseline_anchor,
+            baseline_recent_policy_metrics=baseline_recent,
+            update=steps,
+        )
+        reports.append(final_report)
+
+    best_report = _best_passing_candidate_report(reports)
+    selected_report = best_report if best_report is not None else final_report
+    selected_state = best_state if best_report is not None else state
+    checkpoint_summaries = [
+        _candidate_checkpoint_gate_summary(report) for report in reports
+    ]
+    selected_report = {
+        **selected_report,
+        "checkpoint_selection": {
+            "candidate_checkpointing_enabled": eval_interval > 0,
+            "candidate_eval_interval": eval_interval,
+            "candidate_checkpoint_count": len(reports),
+            "candidate_checkpoint_updates": [
+                item["candidate_update"] for item in checkpoint_summaries
+            ],
+            "candidate_final_update": steps,
+            "candidate_final_update_accepted": final_report[
+                "model_update_accepted"
+            ],
+            "candidate_final_gate_score": final_report["gate"].get(
+                "candidate_gate_score"
+            ),
+            "candidate_best_passing_update": (
+                best_report.get("candidate_update") if best_report is not None else None
+            ),
+            "candidate_selected_update": (
+                selected_report.get("candidate_update")
+                if selected_report.get("model_update_accepted")
+                else None
+            ),
+        },
+        "candidate_checkpoints": checkpoint_summaries,
+        "final_candidate_gate": final_report["gate"],
+    }
+    return selected_state, rng, selected_report, loss_history
 
 
 def _fit_world_model(
@@ -2038,6 +2289,18 @@ def _online_history_metrics(
         for item in candidate_refits
         if item.get("gate", {}).get("anchor_validation_degradation") is not None
     ]
+    candidate_selected_updates = [
+        item.get("checkpoint_selection", {}).get("candidate_selected_update")
+        for item in candidate_refits
+        if item.get("checkpoint_selection", {}).get("candidate_selected_update")
+        is not None
+    ]
+    candidate_final_acceptances = [
+        item.get("checkpoint_selection", {}).get("candidate_final_update_accepted")
+        for item in candidate_refits
+        if item.get("checkpoint_selection", {}).get("candidate_final_update_accepted")
+        is not None
+    ]
     baseline = initial_policy_outcome.get("policy_trained_mean")
     if not returns:
         return {
@@ -2077,6 +2340,8 @@ def _online_history_metrics(
                 if candidate_anchor_degradations
                 else None
             ),
+            "online_candidate_selected_updates": candidate_selected_updates,
+            "online_candidate_final_update_acceptances": candidate_final_acceptances,
             "online_pipeline_completed": False,
         }
     delta = returns[-1] - returns[0] if len(returns) >= 2 else None
@@ -2118,6 +2383,8 @@ def _online_history_metrics(
         "online_candidate_anchor_validation_degradation_final": (
             candidate_anchor_degradations[-1] if candidate_anchor_degradations else None
         ),
+        "online_candidate_selected_updates": candidate_selected_updates,
+        "online_candidate_final_update_acceptances": candidate_final_acceptances,
         "online_pipeline_completed": True,
     }
 
@@ -2539,6 +2806,14 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
             main,
             "online_candidate_anchor_validation_degradation_final",
         ),
+        "aggregate_candidate_selected_update": _flat_mean(
+            main,
+            "online_candidate_selected_updates",
+        ),
+        "aggregate_candidate_final_update_acceptance_rate": _flat_mean(
+            main,
+            "online_candidate_final_update_acceptances",
+        ),
         "aggregate_policy_primary_improvement": _mean(
             main,
             policy_comparison_key,
@@ -2607,6 +2882,21 @@ def _metrics_finite(metrics: dict[str, Any]) -> bool:
 
 def _mean(rows: list[dict[str, Any]], key: str) -> float | None:
     values = [value for row in rows if (value := _metric_value(row, key)) is not None]
+    if not values:
+        return None
+    return float(np.mean(values))
+
+
+def _flat_mean(rows: list[dict[str, Any]], key: str) -> float | None:
+    values = []
+    for row in rows:
+        value = _metric_value(row, key)
+        if value is None:
+            continue
+        if isinstance(value, list):
+            values.extend(item for item in value if item is not None)
+        else:
+            values.append(value)
     if not values:
         return None
     return float(np.mean(values))
