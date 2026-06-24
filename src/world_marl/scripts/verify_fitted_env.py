@@ -237,14 +237,14 @@ def _collect_combined_batch(
     random_rollouts: int,
     initial_rollouts: int,
 ) -> tuple[VectorTransitionBatch, np.ndarray, jax.Array]:
-    random_batch, observations, _ = collect_random_transition_batch(
+    random_batch, observations, _, _ = collect_random_transition_batch(
         adapter,
         observations,
         np.random.default_rng(random_seed),
         rollout_steps=random_rollouts,
     )
     rng, policy_key = jax.random.split(rng)
-    policy_batch, observations, rng, _ = collect_policy_transition_batch(
+    policy_batch, observations, rng, _, _ = collect_policy_transition_batch(
         adapter,
         policy_state,
         observations,

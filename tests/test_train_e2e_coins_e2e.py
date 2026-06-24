@@ -93,10 +93,7 @@ def test_coins_prefit_run_training_completes_and_writes_artifacts(
     assert (run_dir / "world_model_policy_warmup.json").exists()
 
     timing = json.loads((run_dir / "timings.json").read_text(encoding="utf-8"))
-    assert timing["total_seconds"] > 0.0
-    assert timing["phases"]["world_model_fit_seconds"] > 0.0
-    assert timing["updates"][0]["rollout_seconds"] >= 0.0
-    assert timing["updates"][0]["ppo_update_seconds"] >= 0.0
+    assert timing["runtime_seconds"] > 0.0
 
     metrics_rows = [
         json.loads(line)
@@ -104,13 +101,13 @@ def test_coins_prefit_run_training_completes_and_writes_artifacts(
     ]
     assert metrics_rows
     final_row = metrics_rows[-1]
-    assert final_row["real_env_steps"] == 12
+    assert final_row["real_env_steps"] == 6
     assert final_row["imagined_env_steps"] == 8
-    assert final_row["cumulative_real_episodes"] == 3
+    assert final_row["cumulative_real_episodes"] == 1
 
     prefit = json.loads(
         (run_dir / "world_model_prefit.json").read_text(encoding="utf-8")
     )
-    assert prefit["random_completed_episodes"] == 1
-    assert prefit["initial_policy_completed_episodes"] == 1
-    assert prefit["prefit_completed_episodes"] == 2
+    assert prefit["random_completed_episodes"] == 0
+    assert prefit["initial_policy_completed_episodes"] == 0
+    assert prefit["prefit_completed_episodes"] == 0

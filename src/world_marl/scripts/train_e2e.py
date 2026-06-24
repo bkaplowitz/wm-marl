@@ -8,6 +8,7 @@ import json
 import math
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -77,9 +78,24 @@ class RunOutcome:
     first_window_mean: float
     final_window_mean: float
     checkpoint_dir: str
+    runtime_seconds: float
+    real_env_steps: int
+    imagined_env_steps: int
+    cumulative_real_episodes: int
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
+
+
+class RunTimer:
+    def __init__(self) -> None:
+        self._start = time.perf_counter()
+
+    def elapsed(self) -> float:
+        return time.perf_counter() - self._start
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"runtime_seconds": self.elapsed()}
 
 
 def parse_args() -> argparse.Namespace:
@@ -443,6 +459,11 @@ def _collect_real_env_rollout(
     )
 
 
+def _block_rollout_ready(rollout: Any) -> None:
+    jax.block_until_ready(rollout.batch.rewards)
+    jax.block_until_ready(rollout.last_values)
+
+
 def _warmup_policy_before_world_model(
     args: argparse.Namespace,
     *,
@@ -458,6 +479,8 @@ def _warmup_policy_before_world_model(
 ) -> tuple[Any, np.ndarray, jax.Array, list[dict[str, Any]]]:
     rows: list[dict[str, Any]] = []
     env_steps = 0
+    real_env_steps = 0
+    cumulative_real_episodes = 0
     for update in range(1, args.wm_policy_warmup_updates + 1):
         rng, rollout_key, update_key = jax.random.split(rng, 3)
         rollout = _collect_real_env_rollout(
@@ -470,6 +493,7 @@ def _warmup_policy_before_world_model(
             config,
             observation_mode,
         )
+        _block_rollout_ready(rollout)
         observations = rollout.next_observations
         update_metrics: dict[str, Any] = {}
         if not freeze_policy:
@@ -481,11 +505,18 @@ def _warmup_policy_before_world_model(
             )
             jax.block_until_ready(jnp.asarray(update_metrics["total_loss"]))
         env_steps += args.num_envs * args.rollout_steps
+        real_env_steps += args.num_envs * args.rollout_steps
+        completed_real_episodes = int(rollout.metrics.get("completed_episodes") or 0)
+        cumulative_real_episodes += completed_real_episodes
         rows.append(
             to_jsonable(
                 {
                     "update": update,
                     "env_steps": env_steps,
+                    "real_env_steps": real_env_steps,
+                    "imagined_env_steps": 0,
+                    "completed_real_episodes": completed_real_episodes,
+                    "cumulative_real_episodes": cumulative_real_episodes,
                     **rollout.metrics,
                     **{f"ppo/{key}": value for key, value in update_metrics.items()},
                 }
@@ -503,6 +534,7 @@ def run_training(
     control: str | None,
 ) -> RunOutcome:
     logger = RunLogger(run_dir)
+    timer = RunTimer()
     seed = args.seed + run_index * 10_000 + (5_000 if control else 0)
     rng = jax.random.PRNGKey(seed)
     config = algorithm_config_from_args(args, control)
@@ -560,6 +592,9 @@ def run_training(
         model_start_states = None
         world_model_prefit_loss = None
         reward_done_fn = None
+        real_env_steps = 0
+        imagined_env_steps = 0
+        cumulative_real_episodes = 0
 
         if args.algorithm == "mappo":
             update_fn = jax.jit(
@@ -600,6 +635,11 @@ def run_training(
                         freeze_policy=freeze_policy,
                     )
                 )
+                if warmup_rows:
+                    real_env_steps += int(warmup_rows[-1]["real_env_steps"])
+                    cumulative_real_episodes += int(
+                        warmup_rows[-1]["cumulative_real_episodes"]
+                    )
                 logger.write_json(
                     "world_model_policy_warmup.json",
                     {
@@ -614,7 +654,7 @@ def run_training(
                 )
 
             reward_done_fn = _make_reward_done_fn(args)
-            random_batch, observations, random_start_states = (
+            random_batch, observations, random_start_states, random_stats = (
                 collect_random_transition_batch(
                     adapter,
                     observations,
@@ -622,17 +662,25 @@ def run_training(
                     rollout_steps=args.wm_random_rollouts,
                 )
             )
+            real_env_steps += random_stats.real_env_steps
+            cumulative_real_episodes += random_stats.completed_episodes
             rng, policy_collect_key = jax.random.split(rng)
-            policy_batch, observations, rng, policy_start_states = (
-                collect_policy_transition_batch(
-                    adapter,
-                    train_state,
-                    observations,
-                    policy_collect_key,
-                    rollout_steps=args.wm_initial_rollouts,
-                    algorithm=args.algorithm,
-                )
+            (
+                policy_batch,
+                observations,
+                rng,
+                policy_start_states,
+                policy_stats,
+            ) = collect_policy_transition_batch(
+                adapter,
+                train_state,
+                observations,
+                policy_collect_key,
+                rollout_steps=args.wm_initial_rollouts,
+                algorithm=args.algorithm,
             )
+            real_env_steps += policy_stats.real_env_steps
+            cumulative_real_episodes += policy_stats.completed_episodes
             prefit_batch = concatenate_transition_batches([random_batch, policy_batch])
             model_start_states = jnp.concatenate(
                 [random_start_states, policy_start_states],
@@ -690,6 +738,27 @@ def run_training(
                         * args.num_envs
                         * args.rollout_steps
                     ),
+                    "random_real_env_steps": random_stats.real_env_steps,
+                    "random_completed_episodes": random_stats.completed_episodes,
+                    "random_episode_return_mean": random_stats.episode_return_mean,
+                    "random_episode_length_mean": random_stats.episode_length_mean,
+                    "initial_policy_real_env_steps": policy_stats.real_env_steps,
+                    "initial_policy_completed_episodes": (
+                        policy_stats.completed_episodes
+                    ),
+                    "initial_policy_episode_return_mean": (
+                        policy_stats.episode_return_mean
+                    ),
+                    "initial_policy_episode_length_mean": (
+                        policy_stats.episode_length_mean
+                    ),
+                    "prefit_real_env_steps": (
+                        random_stats.real_env_steps + policy_stats.real_env_steps
+                    ),
+                    "prefit_completed_episodes": (
+                        random_stats.completed_episodes
+                        + policy_stats.completed_episodes
+                    ),
                     "fit_steps": args.wm_fit_steps,
                     "transition_count": int(prefit_batch.states.shape[0]),
                     "loss": float(world_model_prefit_loss),
@@ -703,6 +772,7 @@ def run_training(
         updates = max(1, args.total_env_steps // (args.num_envs * args.rollout_steps))
         env_steps = 0
         for update in range(1, updates + 1):
+            completed_real_episodes = 0
             if args.prefit_world_model:
                 if (
                     world_model_state is None
@@ -736,6 +806,8 @@ def run_training(
                         config=world_model_config,
                         reward_done_fn=reward_done_fn,
                     )
+                _block_rollout_ready(rollout)
+                imagined_env_steps += args.num_envs * args.rollout_steps
             else:
                 rng, rollout_key, update_key = jax.random.split(rng, 3)
                 rollout = _collect_real_env_rollout(
@@ -748,7 +820,13 @@ def run_training(
                     config,
                     observation_mode,
                 )
+                _block_rollout_ready(rollout)
                 observations = rollout.next_observations
+                real_env_steps += args.num_envs * args.rollout_steps
+                completed_real_episodes = int(
+                    rollout.metrics.get("completed_episodes") or 0
+                )
+                cumulative_real_episodes += completed_real_episodes
             update_metrics: dict[str, Any] = {}
             if not freeze_policy:
                 train_state, update_metrics = update_fn(
@@ -763,6 +841,10 @@ def run_training(
             row = {
                 "update": update,
                 "env_steps": env_steps,
+                "real_env_steps": real_env_steps,
+                "imagined_env_steps": imagined_env_steps,
+                "completed_real_episodes": completed_real_episodes,
+                "cumulative_real_episodes": cumulative_real_episodes,
                 "control": control,
                 **rollout.metrics,
                 **{f"ppo/{key}": value for key, value in update_metrics.items()},
@@ -824,6 +906,8 @@ def run_training(
         seed=seed + 2,
     )
     logger.write_json("reload_evaluation.json", reload_result)
+    timing = timer.to_dict()
+    logger.write_json("timings.json", timing)
 
     random_mean = float(random_result["mean_return_per_agent"])
     initial_mean = float(initial_result["mean_return_per_agent"])
@@ -843,6 +927,10 @@ def run_training(
         first_window_mean=first_window_mean,
         final_window_mean=final_window_mean,
         checkpoint_dir=str(checkpoint_dir),
+        runtime_seconds=float(timing["runtime_seconds"]),
+        real_env_steps=real_env_steps,
+        imagined_env_steps=imagined_env_steps,
+        cumulative_real_episodes=cumulative_real_episodes,
     )
     logger.write_json("outcome.json", outcome.to_dict())
     return outcome
