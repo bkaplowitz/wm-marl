@@ -39,6 +39,7 @@ from world_marl.jepa.training import (
     reset_policy_heads,
     select_continuous_actions,
     train_model_step,
+    umeyama_control_interface,
     world_model_loss,
 )
 from world_marl.logging import RunLogger, dependency_versions, timestamp, to_jsonable
@@ -283,14 +284,17 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--control-interface",
         "--control-alignment",
-        choices=("none", "procrustes"),
-        default="none",
+        dest="control_interface",
+        choices=("identity", "none", "procrustes", "umeyama"),
+        default="identity",
         help=(
             "Policy-facing latent interface used after online world-model refits. "
-            "procrustes keeps actor/critic coordinates close to the previous "
-            "accepted control latents while leaving world dynamics in raw JEPA "
-            "latent space."
+            "identity applies no correction, procrustes fits an orthogonal "
+            "rotation/reflection, and umeyama fits rotation/reflection plus "
+            "scale and shift. The older --control-alignment spelling is kept "
+            "as an alias."
         ),
     )
     parser.add_argument(
@@ -314,7 +318,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--online-candidate-gate-metric",
-        choices=("model/open_loop_loss", "model/jepa_loss"),
+        choices=(
+            "model/open_loop_loss",
+            "model/jepa_loss",
+            "model/control_prediction_loss",
+        ),
         default="model/open_loop_loss",
     )
     parser.add_argument(
@@ -371,6 +379,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--allow-fail", action="store_true")
     args = parser.parse_args()
+    if args.control_interface == "none":
+        args.control_interface = "identity"
+    args.control_alignment = (
+        "none" if args.control_interface == "identity" else args.control_interface
+    )
     _validate_args(parser, args)
     return args
 
@@ -1387,6 +1400,46 @@ def _evaluate_candidate_model_update(
         action_low=action_low,
         action_high=action_high,
     )
+    baseline_anchor.update(
+        _control_coordinate_prediction_metrics(
+            reference_state=baseline_state,
+            predictor_state=baseline_state,
+            batch=anchor_validation_batch,
+            config=config,
+            chunk_length=args.chunk_length,
+            control=control,
+        )
+    )
+    candidate_anchor.update(
+        _control_coordinate_prediction_metrics(
+            reference_state=baseline_state,
+            predictor_state=candidate_state,
+            batch=anchor_validation_batch,
+            config=config,
+            chunk_length=args.chunk_length,
+            control=control,
+        )
+    )
+    baseline_recent.update(
+        _control_coordinate_prediction_metrics(
+            reference_state=baseline_state,
+            predictor_state=baseline_state,
+            batch=recent_validation_batch,
+            config=config,
+            chunk_length=args.chunk_length,
+            control=control,
+        )
+    )
+    candidate_recent.update(
+        _control_coordinate_prediction_metrics(
+            reference_state=baseline_state,
+            predictor_state=candidate_state,
+            batch=recent_validation_batch,
+            config=config,
+            chunk_length=args.chunk_length,
+            control=control,
+        )
+    )
     gate = _candidate_refit_gate_report(
         baseline_anchor,
         candidate_anchor,
@@ -1403,6 +1456,69 @@ def _evaluate_candidate_model_update(
         "candidate_anchor_metrics": candidate_anchor,
         "baseline_recent_policy_metrics": baseline_recent,
         "candidate_recent_policy_metrics": candidate_recent,
+    }
+
+
+def _control_coordinate_prediction_metrics(
+    *,
+    reference_state,
+    predictor_state,
+    batch: ReplayBatch,
+    config: JepaConfig,
+    chunk_length: int,
+    control: ControlMode,
+) -> dict[str, jax.Array]:
+    """Score one-step predictions in the accepted policy-facing coordinates."""
+
+    actions = batch.actions
+    if control == "no-action-world-model":
+        actions = jnp.zeros_like(actions)
+    outputs = predictor_state.apply_fn(
+        {"params": predictor_state.params},
+        batch.observations,
+        actions,
+        chunk_length=chunk_length,
+        dones=batch.dones,
+        method=JepaWorldModel.sequence_outputs,
+    )
+    predicted_z = outputs["predicted_latents"][:, :, 0]
+    if predicted_z.ndim == 4:
+        predicted_z = jnp.mean(predicted_z, axis=2)
+    predicted_z = predicted_z.reshape((-1, config.latent_dim))
+    next_obs = batch.observations[:, 1 : chunk_length + 1].reshape(
+        (-1, config.observation_dim)
+    )
+    validity = (1.0 - batch.dones[:, :chunk_length]).reshape((-1,))
+    predicted_control = _apply_state_control_interface(
+        predictor_state,
+        predicted_z,
+    )
+
+    reference_next_z = jax.lax.stop_gradient(
+        reference_state.apply_fn(
+            {"params": reference_state.params},
+            next_obs,
+            method=JepaWorldModel.encode,
+        )
+    )
+    target_control = jax.lax.stop_gradient(
+        _apply_state_control_interface(reference_state, reference_next_z)
+    )
+
+    pred_norm = _normalize_latents(predicted_control)
+    target_norm = _normalize_latents(target_control)
+    cosine = jnp.sum(pred_norm * target_norm, axis=-1)
+    loss = 1.0 - cosine
+    return {
+        "model/control_prediction_loss": _masked_mean_np(loss, validity),
+        "model/control_prediction_cosine": _masked_mean_np(cosine, validity),
+        "model/control_prediction_valid_fraction": jnp.mean(validity),
+        "model/control_prediction_finite_fraction": _finite_fraction_np(
+            predicted_control,
+            target_control,
+            cosine,
+            loss,
+        ),
     }
 
 
@@ -1453,7 +1569,7 @@ def _maybe_align_control_interface(
     anchor_batch: ReplayBatch,
     config: JepaConfig,
 ) -> tuple[Any, dict[str, Any] | None]:
-    if args.control_alignment != "procrustes":
+    if args.control_interface == "identity":
         return after_state, None
     observations = anchor_batch.observations[:, 0].reshape((-1, config.observation_dim))
     before_raw = before_state.apply_fn(
@@ -1466,37 +1582,59 @@ def _maybe_align_control_interface(
         observations,
         method=JepaWorldModel.encode,
     )
-    before_control = apply_control_alignment(
-        before_raw,
-        before_state.control_alignment,
+    before_control = _apply_state_control_interface(before_state, before_raw)
+    if args.control_interface == "procrustes":
+        alignment = procrustes_control_alignment(after_raw, before_control)
+        scale = jnp.asarray(1.0, dtype=after_raw.dtype)
+        bias = jnp.zeros((config.latent_dim,), dtype=after_raw.dtype)
+    elif args.control_interface == "umeyama":
+        alignment, scale, bias = umeyama_control_interface(after_raw, before_control)
+    else:
+        raise ValueError(f"unknown control interface: {args.control_interface!r}")
+    aligned_state = after_state.replace(
+        control_alignment=alignment,
+        control_scale=scale,
+        control_bias=bias,
     )
-    alignment = procrustes_control_alignment(after_raw, before_control)
-    aligned_state = after_state.replace(control_alignment=alignment)
-    after_control = apply_control_alignment(after_raw, alignment)
+    after_control = _apply_state_control_interface(aligned_state, after_raw)
     before_norm = _normalize_latents(before_control)
     after_norm = _normalize_latents(after_control)
     raw_norm = _normalize_latents(after_raw)
     raw_target_norm = _normalize_latents(before_raw)
+    singular_values = jnp.linalg.svd(alignment, compute_uv=False)
     return aligned_state, to_jsonable(
         {
+            "control_interface_mode": args.control_interface,
             "control_alignment_mode": args.control_alignment,
+            "online/control_interface_residual_l2": jnp.mean(
+                jnp.linalg.norm(after_control - before_control, axis=-1)
+            ),
+            "online/control_interface_cosine": jnp.mean(
+                jnp.sum(before_norm * after_norm, axis=-1)
+            ),
+            "online/control_interface_raw_cosine": jnp.mean(
+                jnp.sum(raw_target_norm * raw_norm, axis=-1)
+            ),
+            "online/control_interface_alignment_fro_norm": jnp.linalg.norm(alignment),
+            "online/control_interface_scale": scale,
+            "online/control_interface_bias_norm": jnp.linalg.norm(bias),
+            "online/control_interface_condition_number": singular_values[0]
+            / (singular_values[-1] + 1e-8),
+            "online/control_interface_orthogonality_error": jnp.linalg.norm(
+                alignment.T @ alignment - jnp.eye(alignment.shape[0])
+            ),
+            "online/control_interface_finite_fraction": _finite_fraction_np(
+                alignment,
+                scale,
+                bias,
+                after_control,
+                before_control,
+            ),
             "online/procrustes_residual_l2": jnp.mean(
                 jnp.linalg.norm(after_control - before_control, axis=-1)
             ),
             "online/procrustes_cosine": jnp.mean(
                 jnp.sum(before_norm * after_norm, axis=-1)
-            ),
-            "online/procrustes_raw_cosine": jnp.mean(
-                jnp.sum(raw_target_norm * raw_norm, axis=-1)
-            ),
-            "online/procrustes_alignment_fro_norm": jnp.linalg.norm(alignment),
-            "online/procrustes_alignment_orthogonality_error": jnp.linalg.norm(
-                alignment.T @ alignment - jnp.eye(alignment.shape[0])
-            ),
-            "online/procrustes_finite_fraction": _finite_fraction_np(
-                alignment,
-                after_control,
-                before_control,
             ),
         }
     )
@@ -1529,14 +1667,8 @@ def _online_interface_drift_metrics(
     after_z_norm = _normalize_latents(after_z)
     latent_cosine = jnp.mean(jnp.sum(before_z_norm * after_z_norm, axis=-1))
     latent_l2 = jnp.mean(jnp.linalg.norm(after_z - before_z, axis=-1))
-    before_control_z = apply_control_alignment(
-        before_z,
-        before_state.control_alignment,
-    )
-    after_control_z = apply_control_alignment(
-        after_z,
-        after_state.control_alignment,
-    )
+    before_control_z = _apply_state_control_interface(before_state, before_z)
+    after_control_z = _apply_state_control_interface(after_state, after_z)
     before_control_z_norm = _normalize_latents(before_control_z)
     after_control_z_norm = _normalize_latents(after_control_z)
     control_latent_cosine = jnp.mean(
@@ -1551,12 +1683,16 @@ def _online_interface_drift_metrics(
         before_state.params,
         before_z,
         before_state.control_alignment,
+        before_state.control_scale,
+        before_state.control_bias,
     )
     after_logits, after_values = actor_value_from_control_latent(
         after_state.apply_fn,
         after_state.params,
         after_z,
         after_state.control_alignment,
+        after_state.control_scale,
+        after_state.control_bias,
     )
     before_normalized_actions = jnp.tanh(before_logits)
     after_normalized_actions = jnp.tanh(after_logits)
@@ -1657,6 +1793,12 @@ def _fit_world_model(
                 None
                 if latent_anchor_state is None
                 else latent_anchor_state.control_alignment
+            ),
+            latent_anchor_scale=(
+                None if latent_anchor_state is None else latent_anchor_state.control_scale
+            ),
+            latent_anchor_bias=(
+                None if latent_anchor_state is None else latent_anchor_state.control_bias
             ),
             latent_anchor_weight=(
                 latent_anchor_weight if latent_anchor_state is not None else 0.0
@@ -1928,6 +2070,16 @@ def _maybe_train_policy(
                 ),
                 behavior_teacher_control_alignment=(
                     behavior_teacher_state.control_alignment
+                    if behavior_teacher_state is not None
+                    else None
+                ),
+                behavior_teacher_control_scale=(
+                    behavior_teacher_state.control_scale
+                    if behavior_teacher_state is not None
+                    else None
+                ),
+                behavior_teacher_control_bias=(
+                    behavior_teacher_state.control_bias
                     if behavior_teacher_state is not None
                     else None
                 ),
@@ -2712,6 +2864,15 @@ def _action_contrast_metrics(
 
 def _normalize_latents(x: jax.Array) -> jax.Array:
     return x / (jnp.linalg.norm(x, axis=-1, keepdims=True) + 1e-6)
+
+
+def _apply_state_control_interface(state, latents: jax.Array) -> jax.Array:
+    return apply_control_alignment(
+        latents,
+        state.control_alignment,
+        state.control_scale,
+        state.control_bias,
+    )
 
 
 def _masked_mean_np(values: jax.Array, mask: jax.Array) -> jax.Array:

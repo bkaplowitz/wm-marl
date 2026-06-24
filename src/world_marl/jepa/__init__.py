@@ -19,6 +19,7 @@ from world_marl.jepa.training import (
     select_continuous_actions,
     sigreg_loss,
     train_model_step,
+    umeyama_control_interface,
 )
 
 __all__ = [
@@ -42,4 +43,5 @@ __all__ = [
     "select_continuous_actions",
     "sigreg_loss",
     "train_model_step",
+    "umeyama_control_interface",
 ]

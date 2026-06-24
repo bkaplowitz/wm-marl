@@ -22,10 +22,12 @@ from world_marl.jepa.training import (
     reward_only_returns,
     select_continuous_actions,
     train_model_step,
+    umeyama_control_interface,
 )
 from world_marl.scripts.train_dmc_jepa import (
     _action_contrast_metrics,
     _candidate_refit_gate_report,
+    _control_coordinate_prediction_metrics,
     _merge_online_policy_baseline,
     _online_interface_drift_metrics,
     _online_history_metrics,
@@ -503,6 +505,37 @@ def test_procrustes_control_alignment_recovers_orthogonal_interface():
     )
 
 
+def test_umeyama_control_interface_recovers_affine_interface():
+    source = jnp.asarray(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [0.0, 0.0, 3.0],
+            [-1.0, -2.0, -1.0],
+            [2.0, -1.0, 1.0],
+        ],
+        dtype=jnp.float32,
+    )
+    rotation = jnp.asarray(
+        [
+            [0.0, -1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=jnp.float32,
+    )
+    scale = jnp.asarray(1.7, dtype=jnp.float32)
+    bias = jnp.asarray([0.5, -0.25, 0.75], dtype=jnp.float32)
+    target = scale * (source @ rotation) + bias
+
+    alignment, fitted_scale, fitted_bias = umeyama_control_interface(source, target)
+    aligned = apply_control_alignment(source, alignment, fitted_scale, fitted_bias)
+
+    np.testing.assert_allclose(np.asarray(aligned), np.asarray(target), atol=1e-5)
+    np.testing.assert_allclose(np.asarray(fitted_scale), np.asarray(scale), atol=1e-5)
+    np.testing.assert_allclose(np.asarray(fitted_bias), np.asarray(bias), atol=1e-5)
+
+
 def test_select_continuous_actions_uses_control_alignment():
     config = JepaConfig(
         observation_dim=4,
@@ -577,6 +610,41 @@ def test_candidate_refit_gate_requires_recent_improvement_and_anchor_preservatio
     assert not recent_failed["recent_validation_improved"]
     assert not anchor_failed["model_update_accepted"]
     assert not anchor_failed["anchor_validation_preserved"]
+
+
+def test_control_coordinate_prediction_metrics_are_finite():
+    config = JepaConfig(
+        observation_dim=4,
+        action_dim=2,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=1,
+        context_window=1,
+        sigreg_num_proj=32,
+    )
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    batch = ReplayBatch(
+        observations=jax.random.normal(jax.random.PRNGKey(1), (5, 4, 4)),
+        actions=jax.random.normal(jax.random.PRNGKey(2), (5, 3, 2)),
+        rewards=jnp.zeros((5, 3), dtype=jnp.float32),
+        dones=jnp.zeros((5, 3), dtype=jnp.float32),
+    )
+
+    metrics = _control_coordinate_prediction_metrics(
+        reference_state=state,
+        predictor_state=state,
+        batch=batch,
+        config=config,
+        chunk_length=3,
+        control="none",
+    )
+
+    assert "model/control_prediction_loss" in metrics
+    assert np.isfinite(float(metrics["model/control_prediction_loss"]))
+    assert float(metrics["model/control_prediction_finite_fraction"]) == 1.0
 
 
 def test_action_contrast_no_action_control_has_zero_margin():

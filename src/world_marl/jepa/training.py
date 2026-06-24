@@ -56,6 +56,8 @@ class JepaTrainState:
     apply_fn: Callable = struct.field(pytree_node=False)
     params: FrozenDict
     control_alignment: jax.Array
+    control_scale: jax.Array
+    control_bias: jax.Array
     model_tx: optax.GradientTransformation = struct.field(pytree_node=False)
     model_opt_state: optax.OptState
     frozen_encoder_model_tx: optax.GradientTransformation = struct.field(
@@ -152,6 +154,8 @@ def create_jepa_train_state(
         apply_fn=model.apply,
         params=params,
         control_alignment=jnp.eye(config.latent_dim, dtype=jnp.float32),
+        control_scale=jnp.asarray(1.0, dtype=jnp.float32),
+        control_bias=jnp.zeros((config.latent_dim,), dtype=jnp.float32),
         model_tx=model_tx,
         model_opt_state=model_tx.init(params),
         frozen_encoder_model_tx=frozen_encoder_model_tx,
@@ -184,6 +188,8 @@ def train_model_step(
     freeze_encoder: bool = False,
     latent_anchor_params: FrozenDict | None = None,
     latent_anchor_alignment: jax.Array | None = None,
+    latent_anchor_scale: jax.Array | None = None,
+    latent_anchor_bias: jax.Array | None = None,
     latent_anchor_weight: float = 0.0,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     def loss_fn(params):
@@ -202,11 +208,19 @@ def train_model_step(
                 if latent_anchor_alignment is None
                 else latent_anchor_alignment
             )
+            scale = (
+                state.control_scale
+                if latent_anchor_scale is None
+                else latent_anchor_scale
+            )
+            bias = state.control_bias if latent_anchor_bias is None else latent_anchor_bias
             anchor_loss = latent_anchor_loss(
                 params,
                 state.apply_fn,
                 latent_anchor_params,
                 alignment,
+                scale,
+                bias,
                 batch.observations,
                 config,
             )
@@ -237,10 +251,21 @@ def train_model_step(
 def apply_control_alignment(
     latents: jax.Array,
     control_alignment: jax.Array,
+    control_scale: jax.Array | float = 1.0,
+    control_bias: jax.Array | None = None,
 ) -> jax.Array:
     """Map raw world latents into the stable actor/critic control interface."""
 
-    return jnp.einsum("...d,df->...f", latents, control_alignment)
+    control_latents = jnp.einsum("...d,df->...f", latents, control_alignment)
+    control_latents = jnp.asarray(control_scale, dtype=control_latents.dtype) * (
+        control_latents
+    )
+    if control_bias is not None:
+        control_latents = control_latents + jnp.asarray(
+            control_bias,
+            dtype=control_latents.dtype,
+        )
+    return control_latents
 
 
 def actor_value_from_control_latent(
@@ -248,10 +273,17 @@ def actor_value_from_control_latent(
     params: FrozenDict,
     raw_latents: jax.Array,
     control_alignment: jax.Array,
+    control_scale: jax.Array | float = 1.0,
+    control_bias: jax.Array | None = None,
 ) -> tuple[jax.Array, jax.Array]:
     return apply_fn(
         {"params": params},
-        apply_control_alignment(raw_latents, control_alignment),
+        apply_control_alignment(
+            raw_latents,
+            control_alignment,
+            control_scale,
+            control_bias,
+        ),
         method=JepaWorldModel.actor_value_from_latent,
     )
 
@@ -273,11 +305,49 @@ def procrustes_control_alignment(
     return (u @ vh).astype(source_latents.dtype)
 
 
+def umeyama_control_interface(
+    source_latents: jax.Array,
+    target_control_latents: jax.Array,
+    *,
+    eps: float = 1e-8,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Fit scale, rotation/reflection, and shift from source to target latents.
+
+    Returns ``(alignment, scale, bias)`` for row-vector latents:
+    ``target ~= scale * (source @ alignment) + bias``.
+    """
+
+    source = source_latents.reshape((-1, source_latents.shape[-1])).astype(jnp.float32)
+    target = target_control_latents.reshape(
+        (-1, target_control_latents.shape[-1])
+    ).astype(jnp.float32)
+    source_mean = jnp.mean(source, axis=0)
+    target_mean = jnp.mean(target, axis=0)
+    centered_source = source - source_mean
+    centered_target = target - target_mean
+    cross_cov = centered_source.T @ centered_target / jnp.maximum(
+        source.shape[0],
+        1,
+    )
+    u, singular_values, vh = jnp.linalg.svd(cross_cov, full_matrices=False)
+    alignment = u @ vh
+    source_variance = jnp.mean(jnp.sum(jnp.square(centered_source), axis=-1))
+    scale = jnp.sum(singular_values) / (source_variance + eps)
+    bias = target_mean - scale * (source_mean @ alignment)
+    return (
+        alignment.astype(source_latents.dtype),
+        scale.astype(source_latents.dtype),
+        bias.astype(source_latents.dtype),
+    )
+
+
 def latent_anchor_loss(
     params: FrozenDict,
     apply_fn,
     anchor_params: FrozenDict,
     anchor_alignment: jax.Array,
+    anchor_scale: jax.Array,
+    anchor_bias: jax.Array,
     observations: jax.Array,
     config: JepaConfig,
 ) -> jax.Array:
@@ -287,6 +357,12 @@ def latent_anchor_loss(
         flat_observations,
         method=JepaWorldModel.encode,
     )
+    new_latents = apply_control_alignment(
+        new_latents,
+        anchor_alignment,
+        anchor_scale,
+        anchor_bias,
+    )
     teacher_params = jax.tree_util.tree_map(jax.lax.stop_gradient, anchor_params)
     target_latents = apply_fn(
         {"params": teacher_params},
@@ -294,7 +370,12 @@ def latent_anchor_loss(
         method=JepaWorldModel.encode,
     )
     target_latents = jax.lax.stop_gradient(
-        apply_control_alignment(target_latents, anchor_alignment)
+        apply_control_alignment(
+            target_latents,
+            anchor_alignment,
+            anchor_scale,
+            anchor_bias,
+        )
     )
     cosine = jnp.sum(_normalize(new_latents) * _normalize(target_latents), axis=-1)
     return jnp.mean(1.0 - cosine)
@@ -447,6 +528,8 @@ def continuous_policy_train_step(
     start_actions: jax.Array | None = None,
     behavior_teacher_params: FrozenDict | None = None,
     behavior_teacher_control_alignment: jax.Array | None = None,
+    behavior_teacher_control_scale: jax.Array | None = None,
+    behavior_teacher_control_bias: jax.Array | None = None,
     behavior_distill_weight: float = 0.0,
     uncertainty_penalty: float = 0.0,
     uncertainty_latent_weight: float = 1.0,
@@ -471,6 +554,8 @@ def continuous_policy_train_step(
             control=control,
             start_actions=start_actions,
             control_alignment=state.control_alignment,
+            control_scale=state.control_scale,
+            control_bias=state.control_bias,
             uncertainty_penalty=uncertainty_penalty,
             uncertainty_latent_weight=uncertainty_latent_weight,
             uncertainty_reward_weight=uncertainty_reward_weight,
@@ -514,11 +599,23 @@ def continuous_policy_train_step(
                 if behavior_teacher_control_alignment is None
                 else behavior_teacher_control_alignment
             )
+            teacher_scale = (
+                state.control_scale
+                if behavior_teacher_control_scale is None
+                else behavior_teacher_control_scale
+            )
+            teacher_bias = (
+                state.control_bias
+                if behavior_teacher_control_bias is None
+                else behavior_teacher_control_bias
+            )
             teacher_logits, _ = actor_value_from_control_latent(
                 state.apply_fn,
                 teacher_params,
                 teacher_context[:, -1],
                 teacher_alignment,
+                teacher_scale,
+                teacher_bias,
             )
             teacher_actions = jax.lax.stop_gradient(jnp.tanh(teacher_logits))
             behavior_distill_loss = jnp.mean(
@@ -600,6 +697,8 @@ def continuous_policy_train_step(
             params,
             critic_latents,
             state.control_alignment,
+            state.control_scale,
+            state.control_bias,
         )
         value_loss = 0.5 * weighted_mean(
             jnp.square(values - critic_targets),
@@ -690,6 +789,8 @@ def continuous_candidate_distill_step(
             imag_horizon=imag_horizon,
             control=control,
             control_alignment=state.control_alignment,
+            control_scale=state.control_scale,
+            control_bias=state.control_bias,
         )
         best_index = jnp.argmax(scores, axis=1)
         best_action = jnp.take_along_axis(
@@ -707,6 +808,8 @@ def continuous_candidate_distill_step(
             params,
             z0,
             state.control_alignment,
+            state.control_scale,
+            state.control_bias,
         )
         normalized_actions = jnp.tanh(raw_actions)
         imitation_error = jnp.mean(
@@ -780,6 +883,8 @@ def score_continuous_action_candidates(
     imag_horizon: int,
     control: ControlMode,
     control_alignment: jax.Array,
+    control_scale: jax.Array | float = 1.0,
+    control_bias: jax.Array | None = None,
 ) -> jax.Array:
     batch_size, num_candidates, _ = normalized_candidates.shape
     flat_z = jnp.repeat(z0[:, None, :], num_candidates, axis=1).reshape(
@@ -811,6 +916,8 @@ def score_continuous_action_candidates(
             model_params,
             next_z,
             control_alignment,
+            control_scale,
+            control_bias,
         )
         actions = scale_normalized_actions(
             jnp.tanh(raw_actions),
@@ -851,6 +958,8 @@ def continuous_critic_warmup_step(
             params,
             z,
             state.control_alignment,
+            state.control_scale,
+            state.control_bias,
         )
         value_loss = 0.5 * jnp.mean(jnp.square(values - targets))
         finite_fraction = _all_finite_fraction(values, targets, value_loss)
@@ -883,6 +992,8 @@ def continuous_imagine_rollout(
     control: ControlMode,
     start_actions: jax.Array | None = None,
     control_alignment: jax.Array,
+    control_scale: jax.Array | float = 1.0,
+    control_bias: jax.Array | None = None,
     uncertainty_penalty: float = 0.0,
     uncertainty_latent_weight: float = 1.0,
     uncertainty_reward_weight: float = 1.0,
@@ -910,6 +1021,8 @@ def continuous_imagine_rollout(
             params,
             current_z,
             control_alignment,
+            control_scale,
+            control_bias,
         )
         normalized_actions = jnp.tanh(raw_actions)
         actions = scale_normalized_actions(
@@ -954,6 +1067,8 @@ def continuous_imagine_rollout(
             model_params,
             current_z,
             control_alignment,
+            control_scale,
+            control_bias,
         )
         next_context = jnp.concatenate([context[:, 1:], next_z[:, None, :]], axis=1)
         next_action_context = append_action_context(
@@ -990,6 +1105,8 @@ def continuous_imagine_rollout(
         model_params,
         final_context[:, -1],
         control_alignment,
+        control_scale,
+        control_bias,
     )
     rollout["fixed_last_value"] = fixed_last_value
     return rollout
@@ -1070,6 +1187,8 @@ def select_continuous_actions(
         state.params,
         z,
         state.control_alignment,
+        state.control_scale,
+        state.control_bias,
     )
     normalized_actions = jnp.tanh(raw_actions)
     return scale_normalized_actions(
