@@ -35,7 +35,6 @@ from world_marl.jepa.training import (
     continuous_policy_train_step,
     create_jepa_train_state,
     evaluate_open_loop,
-    procrustes_control_alignment,
     reset_policy_heads,
     select_continuous_actions,
     train_model_step,
@@ -297,13 +296,12 @@ def parse_args() -> argparse.Namespace:
         "--control-interface",
         "--control-alignment",
         dest="control_interface",
-        choices=("identity", "none", "procrustes", "umeyama"),
+        choices=("identity", "none", "umeyama"),
         default="identity",
         help=(
             "Policy-facing latent interface used after online world-model refits. "
-            "identity applies no correction, procrustes fits an orthogonal "
-            "rotation/reflection, and umeyama fits rotation/reflection plus "
-            "scale and shift. The older --control-alignment spelling is kept "
+            "identity applies no correction, and umeyama fits rotation/reflection "
+            "plus scale and shift. The older --control-alignment spelling is kept "
             "as an alias."
         ),
     )
@@ -326,6 +324,16 @@ def parse_args() -> argparse.Namespace:
             "in the previous accepted control coordinates. This trains adaptive "
             "encoder candidates for controller compatibility instead of only "
             "checking it at the candidate gate."
+        ),
+    )
+    parser.add_argument(
+        "--online-control-value-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional online refit loss weight for value-equivalent dynamics. "
+            "The candidate's one-step predicted Q estimate is matched to a "
+            "critic target computed from the real next latent."
         ),
     )
     parser.add_argument(
@@ -478,6 +486,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--online-latent-anchor-weight must be >= 0")
     if args.online_control_prediction_weight < 0.0:
         parser.error("--online-control-prediction-weight must be >= 0")
+    if args.online_control_value_weight < 0.0:
+        parser.error("--online-control-value-weight must be >= 0")
     if args.online_encoder_lr_scale < 0.0:
         parser.error("--online-encoder-lr-scale must be >= 0")
     if args.online_candidate_min_recent_improvement < 0.0:
@@ -957,6 +967,7 @@ def run_one(
                         else None
                     ),
                     control_prediction_weight=args.online_control_prediction_weight,
+                    control_value_weight=args.online_control_value_weight,
                 )
                 candidate_state, control_alignment_report = (
                     _maybe_align_control_interface(
@@ -1061,6 +1072,7 @@ def run_one(
                 "online_encoder_lr_scale": args.online_encoder_lr_scale,
                 "control_alignment": control_alignment_report,
                 "online_latent_anchor_weight": args.online_latent_anchor_weight,
+                "online_control_value_weight": args.online_control_value_weight,
                 "candidate_refit": candidate_report,
                 "policy_before_refit": pre_refit_policy_eval,
                 "policy_after_refit": post_refit_policy_eval,
@@ -1620,11 +1632,7 @@ def _maybe_align_control_interface(
         method=JepaWorldModel.encode,
     )
     before_control = _apply_state_control_interface(before_state, before_raw)
-    if args.control_interface == "procrustes":
-        alignment = procrustes_control_alignment(after_raw, before_control)
-        scale = jnp.asarray(1.0, dtype=after_raw.dtype)
-        bias = jnp.zeros((config.latent_dim,), dtype=after_raw.dtype)
-    elif args.control_interface == "umeyama":
+    if args.control_interface == "umeyama":
         alignment, scale, bias = umeyama_control_interface(after_raw, before_control)
     else:
         raise ValueError(f"unknown control interface: {args.control_interface!r}")
@@ -1666,12 +1674,6 @@ def _maybe_align_control_interface(
                 bias,
                 after_control,
                 before_control,
-            ),
-            "online/procrustes_residual_l2": jnp.mean(
-                jnp.linalg.norm(after_control - before_control, axis=-1)
-            ),
-            "online/procrustes_cosine": jnp.mean(
-                jnp.sum(before_norm * after_norm, axis=-1)
             ),
         }
     )
@@ -1801,6 +1803,7 @@ def _fit_world_model(
     latent_anchor_weight: float = 0.0,
     control_prediction_state=None,
     control_prediction_weight: float = 0.0,
+    control_value_weight: float = 0.0,
 ) -> tuple[Any, jax.Array, dict[str, Any], list[float]]:
     loss_history: list[float] = []
     metrics: dict[str, Any] = {}
@@ -1869,6 +1872,7 @@ def _fit_world_model(
                 if control_prediction_state is not None
                 else 0.0
             ),
+            control_value_weight=control_value_weight,
         )
         total_loss = float(metrics["model/total_loss"])
         jepa_loss = float(metrics["model/jepa_loss"])
@@ -1891,6 +1895,7 @@ def _fit_world_model(
                         if use_online_encoder_lr_scale
                         else None
                     ),
+                    "online_control_value_weight": control_value_weight,
                     **metrics,
                 }
             )

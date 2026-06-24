@@ -117,11 +117,13 @@ def test_single_agent_jepa_cli_accepts_online_interface_drift_flags(monkeypatch)
             "--online-candidate-max-anchor-degradation",
             "0.02",
             "--control-alignment",
-            "procrustes",
+            "umeyama",
             "--online-latent-anchor-weight",
             "0.1",
             "--online-control-prediction-weight",
             "0.2",
+            "--online-control-value-weight",
+            "0.3",
         ],
     )
 
@@ -136,10 +138,11 @@ def test_single_agent_jepa_cli_accepts_online_interface_drift_flags(monkeypatch)
     assert args.online_candidate_gate_metric == "model/control_prediction_loss"
     assert args.online_candidate_min_recent_improvement == 0.01
     assert args.online_candidate_max_anchor_degradation == 0.02
-    assert args.control_alignment == "procrustes"
-    assert args.control_interface == "procrustes"
+    assert args.control_alignment == "umeyama"
+    assert args.control_interface == "umeyama"
     assert args.online_latent_anchor_weight == 0.1
     assert args.online_control_prediction_weight == 0.2
+    assert args.online_control_value_weight == 0.3
 
 
 def test_single_agent_jepa_cli_uses_regularizer_weight_alias(monkeypatch):

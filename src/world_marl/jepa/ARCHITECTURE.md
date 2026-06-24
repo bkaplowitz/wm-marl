@@ -52,14 +52,10 @@ where:
 - \(s\) is a scalar scale;
 - \(b\) is a shift.
 
-There are two active interface modes:
+There are two interface modes:
 
 - identity: \(R = I,\ s = 1,\ b = 0\);
 - Umeyama: fit \(R\), \(s\), and \(b\).
-
-Procrustes alignment, which fits only \(R\), remains useful as a rigid diagnostic
-baseline. It is not the preferred adaptive-encoder interface because current
-experiments show that scale and shift matter.
 
 The world model uses \(z^w\). The actor and critic use \(z^c\).
 
@@ -230,6 +226,38 @@ This trains the candidate to predict futures in the previous accepted
 policy-facing coordinate system. This loss is applied during candidate training,
 before any post-hoc Umeyama interface is fitted. The candidate is therefore not
 trained only in its own self-defined latent coordinates.
+
+Online refits can also include a value-equivalence loss. The current critic is
+used as a frozen teacher:
+
+\[
+\hat{Q}_{new}(z_t, a_t)
+=
+\hat{r}_{new}(z_t,a_t)
++ \gamma \hat{c}_{new}(z_t,a_t)
+V_{\psi}(\hat{z}_{t+1,new})
+\]
+
+\[
+Q_{target}
+=
+r_t + \gamma c_t
+\mathrm{stopgrad}(V_{\psi}(E(o_{t+1})))
+\]
+
+\[
+L_{control\_value}
+=
+\frac{1}{2}
+\left(
+\hat{Q}_{new}(z_t,a_t) - Q_{target}
+\right)^2
+\]
+
+The value head is not updated by this loss. It acts as a control-relevance
+teacher for the latent transition, reward, and continuation predictions. This is
+the decoder-free analogue of anchoring the world model to something useful for
+control, rather than only asking it to predict a latent vector.
 
 ## Offline Policy Learning
 
@@ -406,6 +434,7 @@ The main diagnostics are:
 - open-loop latent prediction loss;
 - fixed-coordinate control prediction loss;
 - train-time control prediction loss during candidate refits;
+- train-time control-value consistency loss during candidate refits;
 - reward and continuation losses;
 - SIGReg and collapse metrics;
 - action-contrast metrics;
@@ -436,8 +465,9 @@ The current mainline supports:
 3. online actor replay;
 4. candidate world-model refits;
 5. frozen-encoder online refits as the stable baseline;
-6. adaptive-encoder experiments with Umeyama control-interface alignment;
-7. control-interface anchor and control-coordinate prediction losses;
+6. optional Umeyama control-interface alignment for adaptive encoder experiments;
+7. control-interface anchor, control-coordinate prediction, and control-value
+   consistency losses;
 8. control-coordinate candidate gates;
 9. optional ensemble disagreement for conservative imagination.
 

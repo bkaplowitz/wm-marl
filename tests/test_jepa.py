@@ -17,7 +17,6 @@ from world_marl.jepa.training import (
     lambda_returns,
     latent_collapse_metrics,
     prediction_validity,
-    procrustes_control_alignment,
     reset_policy_heads,
     reward_only_returns,
     select_continuous_actions,
@@ -383,6 +382,51 @@ def test_model_step_supports_cosine_latent_anchor_loss():
     assert jnp.isfinite(metrics["model/control_prediction_train_loss"])
 
 
+def test_model_step_supports_control_value_consistency_loss():
+    config = JepaConfig(
+        observation_dim=4,
+        action_dim=3,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=2,
+        context_window=1,
+        sigreg_num_proj=32,
+    )
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    before = state.params
+    batch = ReplayBatch(
+        observations=jax.random.normal(jax.random.PRNGKey(1), (4, 5, 4)),
+        actions=jax.random.normal(jax.random.PRNGKey(2), (4, 4, 3)),
+        rewards=jax.random.normal(jax.random.PRNGKey(3), (4, 4)),
+        dones=jnp.zeros((4, 4), dtype=jnp.float32),
+    )
+
+    updated, metrics = train_model_step(
+        state,
+        jax.random.PRNGKey(4),
+        batch,
+        config,
+        chunk_length=2,
+        control_value_weight=0.25,
+    )
+
+    assert jnp.isfinite(metrics["model/total_loss"])
+    assert jnp.isfinite(metrics["model/control_value_loss"])
+    assert jnp.isfinite(metrics["model/control_value_q_abs_error"])
+    assert metrics["model/control_value_weight"] == 0.25
+    assert metrics["model/control_value_finite_fraction"] == 1.0
+    assert _tree_changed(before["predictor"], updated.params["predictor"])
+    for left, right in zip(
+        jax.tree_util.tree_leaves(before["value_head"]),
+        jax.tree_util.tree_leaves(updated.params["value_head"]),
+        strict=True,
+    ):
+        np.testing.assert_allclose(np.asarray(left), np.asarray(right))
+
+
 def test_jepa_model_trains_recursive_overshooting_horizons():
     config = JepaConfig(
         observation_dim=4,
@@ -516,41 +560,6 @@ def test_online_interface_drift_metrics_are_zero_for_identical_state():
         metrics["online/value_drift_abs_mean"],
         0.0,
         atol=1e-6,
-    )
-
-
-def test_procrustes_control_alignment_recovers_orthogonal_interface():
-    source = jnp.asarray(
-        [
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-            [-1.0, -1.0, -1.0],
-        ],
-        dtype=jnp.float32,
-    )
-    rotation = jnp.asarray(
-        [
-            [0.0, -1.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ],
-        dtype=jnp.float32,
-    )
-    target = source @ rotation
-
-    alignment = procrustes_control_alignment(source, target)
-    aligned = apply_control_alignment(source, alignment)
-
-    np.testing.assert_allclose(
-        np.asarray(aligned),
-        np.asarray(target),
-        atol=1e-5,
-    )
-    np.testing.assert_allclose(
-        np.asarray(alignment.T @ alignment),
-        np.eye(3),
-        atol=1e-5,
     )
 
 

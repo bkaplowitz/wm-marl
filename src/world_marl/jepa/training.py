@@ -201,6 +201,7 @@ def create_jepa_train_state(
         "use_online_encoder_lr_scale",
         "latent_anchor_weight",
         "control_prediction_weight",
+        "control_value_weight",
     ),
 )
 def train_model_step(
@@ -223,6 +224,7 @@ def train_model_step(
     control_prediction_scale: jax.Array | None = None,
     control_prediction_bias: jax.Array | None = None,
     control_prediction_weight: float = 0.0,
+    control_value_weight: float = 0.0,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     def loss_fn(params):
         loss, metrics, outputs = world_model_loss_with_outputs(
@@ -321,6 +323,38 @@ def train_model_step(
                     dtype=loss.dtype,
                 ),
             }
+        if control_value_weight > 0.0:
+            control_loss, control_metrics = control_value_consistency_loss(
+                params,
+                state.apply_fn,
+                batch,
+                config,
+                outputs,
+                chunk_length=chunk_length,
+            )
+            loss = loss + control_value_weight * control_loss
+            metrics = {
+                **metrics,
+                **control_metrics,
+                "model/control_value_weight": jnp.asarray(
+                    control_value_weight,
+                    dtype=loss.dtype,
+                ),
+            }
+        else:
+            metrics = {
+                **metrics,
+                "model/control_value_loss": jnp.asarray(0.0, dtype=loss.dtype),
+                "model/control_value_q_abs_error": jnp.asarray(
+                    0.0,
+                    dtype=loss.dtype,
+                ),
+                "model/control_value_finite_fraction": jnp.asarray(
+                    1.0,
+                    dtype=loss.dtype,
+                ),
+                "model/control_value_weight": jnp.asarray(0.0, dtype=loss.dtype),
+            }
         return loss, metrics
 
     (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
@@ -370,23 +404,6 @@ def actor_value_from_control_latent(
         ),
         method=JepaWorldModel.actor_value_from_latent,
     )
-
-
-def procrustes_control_alignment(
-    source_latents: jax.Array,
-    target_control_latents: jax.Array,
-) -> jax.Array:
-    """Return Q such that source_latents @ Q best matches target_control_latents."""
-
-    source = source_latents.reshape((-1, source_latents.shape[-1])).astype(jnp.float32)
-    target = target_control_latents.reshape(
-        (-1, target_control_latents.shape[-1])
-    ).astype(jnp.float32)
-    source = source - jnp.mean(source, axis=0, keepdims=True)
-    target = target - jnp.mean(target, axis=0, keepdims=True)
-    cross_cov = source.T @ target
-    u, _, vh = jnp.linalg.svd(cross_cov, full_matrices=False)
-    return (u @ vh).astype(source_latents.dtype)
 
 
 def umeyama_control_interface(
@@ -525,6 +542,81 @@ def control_coordinate_prediction_loss(
         axis=-1,
     )
     return masked_mean(1.0 - cosine, validity)
+
+
+def control_value_consistency_loss(
+    params: FrozenDict,
+    apply_fn,
+    batch: ReplayBatch,
+    config: JepaConfig,
+    outputs: dict[str, jax.Array],
+    *,
+    chunk_length: int,
+) -> tuple[jax.Array, dict[str, jax.Array]]:
+    """Make model-predicted futures preserve the critic's action-value target.
+
+    The critic is treated as a frozen teacher. Gradients flow through predicted
+    latents, reward predictions, and continue predictions, but not through the
+    value head itself.
+    """
+
+    predicted_latents = outputs["predicted_latents"]
+    target_latents = jax.lax.stop_gradient(outputs["target_latents"])
+    reward_pred = outputs["reward_logits"]
+    continue_pred = jax.nn.sigmoid(outputs["continue_logits"])
+    ensemble_axis = predicted_latents.ndim == target_latents.ndim + 1
+
+    teacher_params = jax.tree_util.tree_map(jax.lax.stop_gradient, params)
+    _, predicted_values = apply_fn(
+        {"params": teacher_params},
+        predicted_latents,
+        method=JepaWorldModel.actor_value_from_latent,
+    )
+    _, target_values = apply_fn(
+        {"params": teacher_params},
+        target_latents,
+        method=JepaWorldModel.actor_value_from_latent,
+    )
+
+    max_horizon = config.max_horizon
+    reward_targets = jnp.stack(
+        [
+            batch.rewards[:, offset : offset + chunk_length]
+            for offset in range(max_horizon)
+        ],
+        axis=2,
+    )
+    done_targets = jnp.stack(
+        [
+            batch.dones[:, offset : offset + chunk_length]
+            for offset in range(max_horizon)
+        ],
+        axis=2,
+    )
+    continue_targets = 1.0 - done_targets
+    validity = prediction_validity(batch.dones, chunk_length, max_horizon)
+
+    if ensemble_axis:
+        reward_targets = reward_targets[..., None]
+        continue_targets = continue_targets[..., None]
+        validity = validity[..., None]
+        target_values = target_values[..., None]
+
+    target_q = jax.lax.stop_gradient(
+        reward_targets + config.gamma * continue_targets * target_values
+    )
+    predicted_q = reward_pred + config.gamma * continue_pred * predicted_values
+    error = predicted_q - target_q
+    loss = 0.5 * masked_mean(jnp.square(error), validity)
+    return loss, {
+        "model/control_value_loss": loss,
+        "model/control_value_q_abs_error": masked_mean(jnp.abs(error), validity),
+        "model/control_value_finite_fraction": _all_finite_fraction(
+            predicted_q,
+            target_q,
+            loss,
+        ),
+    }
 
 
 def world_model_loss(
