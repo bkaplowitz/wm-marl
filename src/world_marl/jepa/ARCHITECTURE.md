@@ -70,11 +70,15 @@ action:
 x_t = W_z z_t + A_\theta(a_t)
 \]
 
-Sinusoidal position embeddings are added:
+Position information is injected with rotary position embeddings (RoPE) inside
+self-attention. RoPE rotates the query and key vectors as a function of timestep
+before the attention dot product:
 
 \[
-h_t^{(0)} = x_t + p_t
+q_t = R_t W_q x_t,\quad k_t = R_t W_k x_t
 \]
+
+No additive position embedding is added to the token stream.
 
 The transformer uses causal attention. A token can attend only to previous
 tokens in the configured context window. Attention across episode boundaries is
@@ -87,7 +91,7 @@ h' = h + \mathrm{SelfAttention}(\mathrm{LN}(h))
 \]
 
 \[
-h^{next} = h' + \mathrm{MLP}(\mathrm{LN}(h'))
+h^{next} = h' + \mathrm{GEGLU}(\mathrm{LN}(h'))
 \]
 
 The final hidden state feeds the latent, reward, and continuation heads.
@@ -221,7 +225,7 @@ The current mainline is:
 - single encoder;
 - SIGReg regularization;
 - stop-gradient JEPA targets by default;
-- causal transformer dynamics;
+- causal transformer dynamics with RoPE attention and GEGLU feed-forward blocks;
 - direct latent-imagination actor training;
 - frozen encoder during online world-model refits;
 - candidate refit gates on anchor and recent-policy validation;

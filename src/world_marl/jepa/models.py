@@ -53,6 +53,10 @@ class JepaConfig:
             raise ValueError("context_window must be >= 1")
         if self.dynamics_ensemble_size < 1:
             raise ValueError("dynamics_ensemble_size must be >= 1")
+        if self.model_dim % self.num_heads != 0:
+            raise ValueError("model_dim must be divisible by num_heads")
+        if (self.model_dim // self.num_heads) % 2 != 0:
+            raise ValueError("per-head dimension must be even for RoPE")
 
 
 class MLPEncoder(nn.Module):
@@ -89,16 +93,52 @@ class TransformerBlock(nn.Module):
     @nn.compact
     def __call__(self, x: jax.Array, mask: jax.Array) -> jax.Array:
         h = nn.LayerNorm()(x)
-        x = x + nn.MultiHeadDotProductAttention(num_heads=self.num_heads)(
-            h,
-            h,
+        head_dim = self.model_dim // self.num_heads
+        query = nn.DenseGeneral(
+            (self.num_heads, head_dim),
+            axis=-1,
+            use_bias=False,
+            name="query",
+        )(h)
+        key = nn.DenseGeneral(
+            (self.num_heads, head_dim),
+            axis=-1,
+            use_bias=False,
+            name="key",
+        )(h)
+        value = nn.DenseGeneral(
+            (self.num_heads, head_dim),
+            axis=-1,
+            use_bias=False,
+            name="value",
+        )(h)
+        query = apply_rotary_position_embedding(query)
+        key = apply_rotary_position_embedding(key)
+        attention = nn.dot_product_attention(
+            query,
+            key,
+            value,
             mask=mask,
             deterministic=True,
         )
+        attention = nn.DenseGeneral(
+            self.model_dim,
+            axis=(-2, -1),
+            name="attention_out",
+        )(attention)
+        x = x + attention
         h = nn.LayerNorm()(x)
-        h = nn.Dense(self.mlp_ratio * self.model_dim)(h)
-        h = nn.gelu(h)
-        return x + nn.Dense(self.model_dim)(h)
+        h = nn.Dense(
+            2 * self.mlp_ratio * self.model_dim,
+            name="geglu_in",
+        )(h)
+        value, gate = jnp.split(h, 2, axis=-1)
+        h = value * nn.gelu(gate)
+        h = nn.Dense(
+            self.model_dim,
+            name="geglu_out",
+        )(h)
+        return x + h
 
 
 class JepaWorldModel(nn.Module):
@@ -347,13 +387,12 @@ class JepaWorldModel(nn.Module):
             raise ValueError("latents must be shaped [batch, time, latent_dim]")
         tokens = self.latent_proj(latents) + self.action_tokens(actions)
         time = tokens.shape[1]
-        positions = sinusoidal_position_embedding(time, self.config.model_dim)
-        h = tokens + positions[None, :, :]
         mask = causal_attention_mask(
             time,
             context_window=self.config.context_window,
             dones=dones,
         )
+        h = tokens
         for block in self.blocks:
             h = block(h, mask)
         return self.dynamics_norm(h)
@@ -529,12 +568,24 @@ def append_history(history: jax.Array, values: jax.Array) -> jax.Array:
     return jnp.concatenate([history[:, :, 1:], values[:, :, None]], axis=2)
 
 
-def sinusoidal_position_embedding(time: int, dim: int) -> jax.Array:
+def apply_rotary_position_embedding(x: jax.Array) -> jax.Array:
+    """Apply RoPE to q/k tensors shaped [batch, time, heads, head_dim]."""
+
+    dim = x.shape[-1]
     half = dim // 2
+    time = x.shape[1]
     positions = jnp.arange(time, dtype=jnp.float32)[:, None]
     freqs = jnp.exp(-math.log(10000.0) * jnp.arange(half, dtype=jnp.float32) / half)
     angles = positions * freqs[None, :]
-    emb = jnp.concatenate([jnp.sin(angles), jnp.cos(angles)], axis=-1)
-    if emb.shape[-1] < dim:
-        emb = jnp.pad(emb, ((0, 0), (0, dim - emb.shape[-1])))
-    return emb
+    sin = jnp.sin(angles)[None, :, None, :]
+    cos = jnp.cos(angles)[None, :, None, :]
+    x_even = x[..., 0::2]
+    x_odd = x[..., 1::2]
+    rotated = jnp.stack(
+        [
+            x_even * cos - x_odd * sin,
+            x_even * sin + x_odd * cos,
+        ],
+        axis=-1,
+    )
+    return rotated.reshape(x.shape)

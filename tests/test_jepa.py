@@ -5,7 +5,11 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from world_marl.jepa.models import JepaConfig, JepaWorldModel
+from world_marl.jepa.models import (
+    JepaConfig,
+    JepaWorldModel,
+    apply_rotary_position_embedding,
+)
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
     continuous_candidate_distill_step,
@@ -42,6 +46,20 @@ def _config() -> JepaConfig:
         max_horizon=1,
         context_window=1,
         sigreg_num_proj=32,
+    )
+
+
+def test_rotary_position_embedding_preserves_norms():
+    x = jnp.arange(1 * 3 * 2 * 4, dtype=jnp.float32).reshape((1, 3, 2, 4))
+    rotated = apply_rotary_position_embedding(x)
+
+    assert rotated.shape == x.shape
+    np.testing.assert_allclose(np.asarray(rotated[:, 0]), np.asarray(x[:, 0]))
+    np.testing.assert_allclose(
+        np.asarray(jnp.linalg.norm(rotated, axis=-1)),
+        np.asarray(jnp.linalg.norm(x, axis=-1)),
+        rtol=1e-6,
+        atol=1e-6,
     )
 
 
