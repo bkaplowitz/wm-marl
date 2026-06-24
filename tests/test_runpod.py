@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import sys
+
+import pytest
 
 from world_marl import runpod
 
@@ -14,6 +17,14 @@ def _compare_args(tmp_path, **overrides) -> argparse.Namespace:
     }
     values.update(overrides)
     return argparse.Namespace(**values)
+
+
+def test_default_job_is_compare_world_models(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["world-marl-runpod"])
+
+    args = runpod.parse_args()
+
+    assert args.job == "compare-world-models"
 
 
 def test_compare_defaults_match_wide_transformer_run(tmp_path):
@@ -60,3 +71,14 @@ def test_dotenv_does_not_override_existing_runpod_api_key(tmp_path, monkeypatch)
     runpod.ensure_runpod_api_key(tmp_path)
 
     assert runpod.os.environ["RUNPOD_API_KEY"] == "from-env"
+
+
+def test_ssh_info_not_ready_reports_pod_status(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        runpod,
+        "run_json",
+        lambda _: {"error": "pod not ready", "status": "INITIALIZING"},
+    )
+
+    with pytest.raises(RuntimeError, match="ssh info not ready.*INITIALIZING"):
+        runpod.get_ssh_info("pod-id", tmp_path / "key")

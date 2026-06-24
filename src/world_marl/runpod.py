@@ -119,7 +119,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--job",
         choices=("train-e2e", "compare-world-models"),
-        default="train-e2e",
+        default="compare-world-models",
         help="Remote wm-marl job to run.",
     )
     parser.add_argument("--name-prefix", default="wm-marl")
@@ -440,6 +440,12 @@ def get_ssh_info(pod_id: str, fallback_key: Path) -> SshInfo:
     payload = run_json(["runpodctl", "--output", "json", "ssh", "info", pod_id])
     if not isinstance(payload, dict):
         raise RuntimeError(f"unexpected ssh info payload: {payload!r}")
+    if payload.get("error"):
+        status = payload.get("status", "unknown")
+        raise RuntimeError(
+            f"ssh info not ready for pod {pod_id}: status={status}, "
+            f"error={payload['error']}"
+        )
 
     command = str(payload.get("command") or "")
     user = payload.get("user")
