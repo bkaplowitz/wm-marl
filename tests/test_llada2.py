@@ -16,7 +16,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from flow_matching.models import BlockDiffusionTransformer
+from flow_matching.models import BlockDiffusionTransformer, apply_rope
 from flow_matching.paths import (
     block_diffusion_attention_mask,
     complementary_absorbing_pair,
@@ -113,6 +113,45 @@ def test_block_diffusion_traced_block_size_keeps_shape():
         lambda bs: block_diffusion_attention_mask(2, bs, 4, include_clean_copy=True)
     )(jnp.int32(4))
     assert np.asarray(m).shape == (10, 10)
+
+
+def test_doc_level_mask_blocks_cross_doc_attention():
+    # eq-4: distinct doc_ids must zero out cross-document attention the eq-3 mask
+    # otherwise allows. The coin-game default is single-doc, so this is the only
+    # check that exercises the restriction (direction, not mere presence).
+    base = np.asarray(block_diffusion_attention_mask(2, 2, 4, include_clean_copy=True))
+    length = base.shape[0]
+    doc_ids = jnp.asarray(
+        [0] * (length // 2) + [1] * (length - length // 2), dtype=jnp.int32
+    )
+    restricted = np.asarray(
+        block_diffusion_attention_mask(2, 2, 4, include_clean_copy=True, doc_ids=doc_ids)
+    )
+    same_doc = np.asarray(doc_ids)[:, None] == np.asarray(doc_ids)[None, :]
+    assert np.all(restricted <= base)  # restriction only removes edges, never adds
+    assert np.all(~restricted | same_doc)  # every surviving edge is intra-document
+    assert np.any(base & ~same_doc)  # baseline DID allow cross-doc (sanity)
+    assert np.any(base & ~same_doc & ~restricted)  # ...and eq-4 removed it
+
+
+# --------------------------------------------------------------------------- #
+# RoPE (+YaRN) position rotation (§ backbone)
+# --------------------------------------------------------------------------- #
+def test_rope_is_a_genuine_position_rotation():
+    # RoPE must be a real position-dependent rotation, not a no-op: position 0 is
+    # identity, nonzero positions actually move the vector, the per-token norm is
+    # preserved (orthogonal), and the SAME vector at different positions diverges.
+    x = jax.random.normal(jax.random.PRNGKey(0), (1, 4, 2, 8))  # (B, L, H, head_dim)
+    out = np.asarray(apply_rope(x, jnp.arange(4)))
+    x_np = np.asarray(x)
+    assert np.allclose(out[:, 0], x_np[:, 0], atol=1e-5)  # pos 0 -> angle 0 -> identity
+    assert not np.allclose(out[:, 1], x_np[:, 1], atol=1e-3)  # pos 1 actually rotates
+    assert np.allclose(  # rotation preserves the per-token norm
+        np.linalg.norm(out, axis=-1), np.linalg.norm(x_np, axis=-1), atol=1e-4
+    )
+    same = jnp.broadcast_to(x[:, :1], (1, 4, 2, 8))  # one vector at every position
+    rot = np.asarray(apply_rope(same, jnp.arange(4)))
+    assert not np.allclose(rot[:, 1], rot[:, 2], atol=1e-3)  # positions are distinct
 
 
 # --------------------------------------------------------------------------- #
@@ -241,8 +280,11 @@ def test_cap_and_moe_aux_are_finite_and_contribute():
     no_cap = loss(0.0, 0.01)
     no_aux = loss(0.1, 0.0)
     assert all(np.isfinite(v) for v in (full, no_cap, no_aux))
-    assert full != no_cap  # CAP confidence term contributes
-    assert full != no_aux  # MoE load-balancing aux contributes
+    # Sign matters, not just presence: CAP (eq 6) is +lambda*entropy on correctly
+    # predicted masked tokens (>=0), so it must *raise* the loss it penalizes -- a
+    # flipped sign would lower it and still pass a mere `!=` check.
+    assert full > no_cap  # CAP confidence penalty (eq 6) adds a non-negative term
+    assert full > no_aux  # MoE load-balancing aux (>=0) adds a non-negative term
 
 
 def test_nonlinear_schedule_reweight_differs_from_linear():
