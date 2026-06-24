@@ -322,16 +322,21 @@ def test_model_step_supports_cosine_latent_anchor_loss():
         latent_anchor_params=state.params,
         latent_anchor_alignment=state.control_alignment,
         latent_anchor_weight=0.1,
+        control_prediction_params=state.params,
+        control_prediction_alignment=state.control_alignment,
+        control_prediction_weight=0.2,
     )
 
     del updated
     assert jnp.isfinite(metrics["model/total_loss"])
     assert metrics["model/latent_anchor_weight"] == 0.1
+    assert metrics["model/control_prediction_train_weight"] == 0.2
     np.testing.assert_allclose(
         np.asarray(metrics["model/latent_anchor_loss"]),
         0.0,
         atol=1e-6,
     )
+    assert jnp.isfinite(metrics["model/control_prediction_train_loss"])
 
 
 def test_jepa_model_trains_recursive_overshooting_horizons():

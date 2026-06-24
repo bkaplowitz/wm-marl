@@ -175,6 +175,7 @@ def create_jepa_train_state(
         "control",
         "freeze_encoder",
         "latent_anchor_weight",
+        "control_prediction_weight",
     ),
 )
 def train_model_step(
@@ -191,6 +192,11 @@ def train_model_step(
     latent_anchor_scale: jax.Array | None = None,
     latent_anchor_bias: jax.Array | None = None,
     latent_anchor_weight: float = 0.0,
+    control_prediction_params: FrozenDict | None = None,
+    control_prediction_alignment: jax.Array | None = None,
+    control_prediction_scale: jax.Array | None = None,
+    control_prediction_bias: jax.Array | None = None,
+    control_prediction_weight: float = 0.0,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     def loss_fn(params):
         loss, metrics = world_model_loss(
@@ -238,6 +244,55 @@ def train_model_step(
                 **metrics,
                 "model/latent_anchor_loss": jnp.asarray(0.0, dtype=loss.dtype),
                 "model/latent_anchor_weight": jnp.asarray(0.0, dtype=loss.dtype),
+            }
+        if control_prediction_params is not None and control_prediction_weight > 0.0:
+            alignment = (
+                state.control_alignment
+                if control_prediction_alignment is None
+                else control_prediction_alignment
+            )
+            scale = (
+                state.control_scale
+                if control_prediction_scale is None
+                else control_prediction_scale
+            )
+            bias = (
+                state.control_bias
+                if control_prediction_bias is None
+                else control_prediction_bias
+            )
+            control_pred_loss = control_coordinate_prediction_loss(
+                params,
+                state.apply_fn,
+                control_prediction_params,
+                alignment,
+                scale,
+                bias,
+                batch,
+                config,
+                chunk_length=chunk_length,
+                control=control,
+            )
+            loss = loss + control_prediction_weight * control_pred_loss
+            metrics = {
+                **metrics,
+                "model/control_prediction_train_loss": control_pred_loss,
+                "model/control_prediction_train_weight": jnp.asarray(
+                    control_prediction_weight,
+                    dtype=loss.dtype,
+                ),
+            }
+        else:
+            metrics = {
+                **metrics,
+                "model/control_prediction_train_loss": jnp.asarray(
+                    0.0,
+                    dtype=loss.dtype,
+                ),
+                "model/control_prediction_train_weight": jnp.asarray(
+                    0.0,
+                    dtype=loss.dtype,
+                ),
             }
         return loss, metrics
 
@@ -379,6 +434,65 @@ def latent_anchor_loss(
     )
     cosine = jnp.sum(_normalize(new_latents) * _normalize(target_latents), axis=-1)
     return jnp.mean(1.0 - cosine)
+
+
+def control_coordinate_prediction_loss(
+    params: FrozenDict,
+    apply_fn,
+    anchor_params: FrozenDict,
+    anchor_alignment: jax.Array,
+    anchor_scale: jax.Array,
+    anchor_bias: jax.Array,
+    batch: ReplayBatch,
+    config: JepaConfig,
+    *,
+    chunk_length: int,
+    control: ControlMode,
+) -> jax.Array:
+    """Train one-step predictions in the accepted policy-facing coordinates."""
+
+    actions = batch.actions
+    if control == "no-action-world-model":
+        actions = jnp.zeros_like(actions)
+    outputs = apply_fn(
+        {"params": params},
+        batch.observations,
+        actions,
+        chunk_length=chunk_length,
+        dones=batch.dones,
+        method=JepaWorldModel.sequence_outputs,
+    )
+    predicted_latents = outputs["predicted_latents"][:, :, 0]
+    if predicted_latents.ndim == 4:
+        predicted_latents = jnp.mean(predicted_latents, axis=2)
+    predicted_control = apply_control_alignment(
+        predicted_latents,
+        anchor_alignment,
+        anchor_scale,
+        anchor_bias,
+    )
+
+    teacher_params = jax.tree_util.tree_map(jax.lax.stop_gradient, anchor_params)
+    target_observations = batch.observations[:, 1 : chunk_length + 1]
+    target_latents = apply_fn(
+        {"params": teacher_params},
+        target_observations,
+        method=JepaWorldModel.encode,
+    )
+    target_control = jax.lax.stop_gradient(
+        apply_control_alignment(
+            target_latents,
+            anchor_alignment,
+            anchor_scale,
+            anchor_bias,
+        )
+    )
+    validity = 1.0 - batch.dones[:, :chunk_length]
+    cosine = jnp.sum(
+        _normalize(predicted_control) * _normalize(target_control),
+        axis=-1,
+    )
+    return masked_mean(1.0 - cosine, validity)
 
 
 def world_model_loss(

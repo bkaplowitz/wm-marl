@@ -308,6 +308,17 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--online-control-prediction-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional online refit loss weight for one-step predictions measured "
+            "in the previous accepted control coordinates. This trains adaptive "
+            "encoder candidates for controller compatibility instead of only "
+            "checking it at the candidate gate."
+        ),
+    )
+    parser.add_argument(
         "--online-candidate-refit",
         action="store_true",
         help=(
@@ -455,6 +466,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--online-behavior-distill-weight must be >= 0")
     if args.online_latent_anchor_weight < 0.0:
         parser.error("--online-latent-anchor-weight must be >= 0")
+    if args.online_control_prediction_weight < 0.0:
+        parser.error("--online-control-prediction-weight must be >= 0")
     if args.online_candidate_min_recent_improvement < 0.0:
         parser.error("--online-candidate-min-recent-improvement must be >= 0")
     if args.online_candidate_max_anchor_degradation < 0.0:
@@ -921,6 +934,12 @@ def run_one(
                         else None
                     ),
                     latent_anchor_weight=args.online_latent_anchor_weight,
+                    control_prediction_state=(
+                        pre_refit_state
+                        if args.online_control_prediction_weight > 0.0
+                        else None
+                    ),
+                    control_prediction_weight=args.online_control_prediction_weight,
                 )
                 candidate_state, control_alignment_report = (
                     _maybe_align_control_interface(
@@ -1761,6 +1780,8 @@ def _fit_world_model(
     freeze_encoder: bool = False,
     latent_anchor_state=None,
     latent_anchor_weight: float = 0.0,
+    control_prediction_state=None,
+    control_prediction_weight: float = 0.0,
 ) -> tuple[Any, jax.Array, dict[str, Any], list[float]]:
     loss_history: list[float] = []
     metrics: dict[str, Any] = {}
@@ -1802,6 +1823,31 @@ def _fit_world_model(
             ),
             latent_anchor_weight=(
                 latent_anchor_weight if latent_anchor_state is not None else 0.0
+            ),
+            control_prediction_params=(
+                None
+                if control_prediction_state is None
+                else control_prediction_state.params
+            ),
+            control_prediction_alignment=(
+                None
+                if control_prediction_state is None
+                else control_prediction_state.control_alignment
+            ),
+            control_prediction_scale=(
+                None
+                if control_prediction_state is None
+                else control_prediction_state.control_scale
+            ),
+            control_prediction_bias=(
+                None
+                if control_prediction_state is None
+                else control_prediction_state.control_bias
+            ),
+            control_prediction_weight=(
+                control_prediction_weight
+                if control_prediction_state is not None
+                else 0.0
             ),
         )
         total_loss = float(metrics["model/total_loss"])

@@ -120,6 +120,8 @@ def test_single_agent_jepa_cli_accepts_online_interface_drift_flags(monkeypatch)
             "procrustes",
             "--online-latent-anchor-weight",
             "0.1",
+            "--online-control-prediction-weight",
+            "0.2",
         ],
     )
 
@@ -137,6 +139,7 @@ def test_single_agent_jepa_cli_accepts_online_interface_drift_flags(monkeypatch)
     assert args.control_alignment == "procrustes"
     assert args.control_interface == "procrustes"
     assert args.online_latent_anchor_weight == 0.1
+    assert args.online_control_prediction_weight == 0.2
 
 
 def test_single_agent_jepa_cli_uses_regularizer_weight_alias(monkeypatch):
