@@ -52,13 +52,28 @@ where:
 - \(s\) is a scalar scale;
 - \(b\) is a shift.
 
-There are three interface modes:
+There are two active interface modes:
 
 - identity: \(R = I,\ s = 1,\ b = 0\);
-- Procrustes: fit \(R\), with \(s = 1,\ b = 0\);
 - Umeyama: fit \(R\), \(s\), and \(b\).
 
+Procrustes alignment, which fits only \(R\), remains useful as a rigid diagnostic
+baseline. It is not the preferred adaptive-encoder interface because current
+experiments show that scale and shift matter.
+
 The world model uses \(z^w\). The actor and critic use \(z^c\).
+
+When an online refit updates the encoder, the interface can be fitted on anchor
+observations \(O_A\). Umeyama solves the similarity-alignment problem:
+
+\[
+s, R, b =
+\arg\min_{s,R,b}
+\| s(E_{new}(O_A)R) + b - A_{old}(E_{old}(O_A)) \|_F^2
+\]
+
+The fitted interface is a policy-side adapter. It does not change the raw latent
+dynamics model.
 
 ## Components
 
@@ -178,7 +193,7 @@ distribution without adding an observation decoder.
 Episode boundaries are masked so the model is not trained to predict through
 environment resets.
 
-## Control-Interface Anchor
+## Control-Interface Losses
 
 During online refits, the encoder may change its raw latent coordinates. This
 can break the actor and critic even if the world-model loss remains good.
@@ -212,9 +227,9 @@ A_{old}(\hat{z}_{t+1,new}^w),
 \]
 
 This trains the candidate to predict futures in the previous accepted
-policy-facing coordinate system. Post-hoc Procrustes or Umeyama alignment may
-still be fitted after the refit, but the candidate is no longer trained only in
-its own self-defined latent coordinates.
+policy-facing coordinate system. This loss is applied during candidate training,
+before any post-hoc Umeyama interface is fitted. The candidate is therefore not
+trained only in its own self-defined latent coordinates.
 
 ## Offline Policy Learning
 
@@ -303,9 +318,10 @@ L_{recent}^{new} < L_{recent}^{old} - \delta
 L_{anchor}^{new} \le L_{anchor}^{old} + \epsilon
 \]
 
-The gate can also use a fixed-coordinate prediction loss. This compares the
-candidate's prediction after mapping it into the candidate control space against
-the old accepted target in the old accepted control space:
+The gate can also use a fixed-coordinate prediction loss. This gate metric is
+computed after any candidate interface has been fitted. It compares the
+candidate's prediction in the candidate control space against the old accepted
+target in the old accepted control space:
 
 \[
 L_{control\_pred}
@@ -389,6 +405,7 @@ The main diagnostics are:
 - JEPA prediction loss;
 - open-loop latent prediction loss;
 - fixed-coordinate control prediction loss;
+- train-time control prediction loss during candidate refits;
 - reward and continuation losses;
 - SIGReg and collapse metrics;
 - action-contrast metrics;
@@ -419,10 +436,10 @@ The current mainline supports:
 3. online actor replay;
 4. candidate world-model refits;
 5. frozen-encoder online refits as the stable baseline;
-6. adaptive-encoder experiments with identity, Procrustes, and Umeyama control
-   interfaces;
-7. control-coordinate candidate gates;
-8. optional ensemble disagreement for conservative imagination.
+6. adaptive-encoder experiments with Umeyama control-interface alignment;
+7. control-interface anchor and control-coordinate prediction losses;
+8. control-coordinate candidate gates;
+9. optional ensemble disagreement for conservative imagination.
 
 The implementation is still single-agent and vector-observation based. It does
 not yet include image encoders, ViTs, multi-agent CTDE, or a large benchmark

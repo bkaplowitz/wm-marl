@@ -199,7 +199,7 @@ def train_model_step(
     control_prediction_weight: float = 0.0,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     def loss_fn(params):
-        loss, metrics = world_model_loss(
+        loss, metrics, outputs = world_model_loss_with_outputs(
             params,
             state.apply_fn,
             key,
@@ -272,6 +272,7 @@ def train_model_step(
                 config,
                 chunk_length=chunk_length,
                 control=control,
+                predicted_latents=outputs["predicted_latents"],
             )
             loss = loss + control_prediction_weight * control_pred_loss
             metrics = {
@@ -448,21 +449,24 @@ def control_coordinate_prediction_loss(
     *,
     chunk_length: int,
     control: ControlMode,
+    predicted_latents: jax.Array | None = None,
 ) -> jax.Array:
     """Train one-step predictions in the accepted policy-facing coordinates."""
 
-    actions = batch.actions
-    if control == "no-action-world-model":
-        actions = jnp.zeros_like(actions)
-    outputs = apply_fn(
-        {"params": params},
-        batch.observations,
-        actions,
-        chunk_length=chunk_length,
-        dones=batch.dones,
-        method=JepaWorldModel.sequence_outputs,
-    )
-    predicted_latents = outputs["predicted_latents"][:, :, 0]
+    if predicted_latents is None:
+        actions = batch.actions
+        if control == "no-action-world-model":
+            actions = jnp.zeros_like(actions)
+        outputs = apply_fn(
+            {"params": params},
+            batch.observations,
+            actions,
+            chunk_length=chunk_length,
+            dones=batch.dones,
+            method=JepaWorldModel.sequence_outputs,
+        )
+        predicted_latents = outputs["predicted_latents"]
+    predicted_latents = predicted_latents[:, :, 0]
     if predicted_latents.ndim == 4:
         predicted_latents = jnp.mean(predicted_latents, axis=2)
     predicted_control = apply_control_alignment(
@@ -505,6 +509,28 @@ def world_model_loss(
     chunk_length: int,
     control: ControlMode,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
+    loss, metrics, _ = world_model_loss_with_outputs(
+        params,
+        apply_fn,
+        key,
+        batch,
+        config,
+        chunk_length=chunk_length,
+        control=control,
+    )
+    return loss, metrics
+
+
+def world_model_loss_with_outputs(
+    params: FrozenDict,
+    apply_fn,
+    key: jax.Array,
+    batch: ReplayBatch,
+    config: JepaConfig,
+    *,
+    chunk_length: int,
+    control: ControlMode,
+) -> tuple[jax.Array, dict[str, jax.Array], dict[str, jax.Array]]:
     action_key, regularizer_key = jax.random.split(key)
     actions = _controlled_actions(action_key, batch.actions, config, control)
     outputs = apply_fn(
@@ -596,7 +622,7 @@ def world_model_loss(
         **terminal_prediction_metrics(terminal_logits, done_targets),
         **{f"collapse/{key}": value for key, value in collapse.items()},
     }
-    return total_loss, metrics
+    return total_loss, metrics, outputs
 
 
 def reset_policy_heads(
