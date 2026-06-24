@@ -205,19 +205,22 @@ def _fit_world_model_updates(
         total = steps if total_steps is None else total_steps
         d = _num_factors(config)
         divisors = tuple(s for s in range(1, d + 1) if d % s == 0)
-        block_sizes = jnp.asarray(
-            [
-                wsd_block_size_schedule(
-                    step_offset + s,
-                    total,
-                    divisors=divisors,
-                    warmup_frac=config.wsd_warmup_frac,
-                    stable_frac=config.wsd_stable_frac,
-                )
-                for s in range(steps)
-            ],
-            dtype=jnp.int32,
-        )
+        if config.wsd_enabled:
+            block_sizes = jnp.asarray(
+                [
+                    wsd_block_size_schedule(
+                        step_offset + s,
+                        total,
+                        divisors=divisors,
+                        warmup_frac=config.wsd_warmup_frac,
+                        stable_frac=config.wsd_stable_frac,
+                    )
+                    for s in range(steps)
+                ],
+                dtype=jnp.int32,
+            )
+        else:
+            block_sizes = jnp.full((steps,), config.block_size, dtype=jnp.int32)
         global_steps = jnp.arange(
             step_offset, step_offset + steps, dtype=jnp.float32
         )

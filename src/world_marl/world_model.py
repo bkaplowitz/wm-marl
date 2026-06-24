@@ -90,6 +90,7 @@ class VectorWorldModelConfig:
     rope_original_max_position: int = 32
     masked_embed_noise_iters: int = 0  # §7.1 stabilizer length (0 = from-scratch)
     mask_noise_std: float = 0.1  # §7.1 noise std (annealed to 0 over the iters)
+    wsd_enabled: bool = True  # §4.1 curriculum on; False -> constant block_size
     wsd_warmup_frac: float = 0.3  # §4.1 block-size curriculum phase fractions
     wsd_stable_frac: float = 0.4
     wsd_merge_k: int = 1  # §4.3 top-k checkpoint merge (1 = single, no merge)

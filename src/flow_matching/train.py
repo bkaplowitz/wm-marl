@@ -301,10 +301,10 @@ def llada2_bdlm_loss(
             key_path, x0, t, num_categories, alpha
         )
         sft_p, conf_p, aux_p = member_loss(x_t, masked, w_primary, noise_primary)
-        sft_c, conf_c, aux_c = member_loss(
-            x_t_comp, masked_comp, w_comp, noise_comp
-        )
-        sft, conf, aux = sft_p + sft_c, conf_p + conf_c, aux_p + aux_c
+        sft_c, conf_c, aux_c = member_loss(x_t_comp, masked_comp, w_comp, noise_comp)
+        sft = 0.5 * (sft_p + sft_c)
+        conf = 0.5 * (conf_p + conf_c)
+        aux = 0.5 * (aux_p + aux_c)
     else:
         x_t, masked = sample_absorbing_path(key_path, x0, t, num_categories, alpha)
         sft, conf, aux = member_loss(x_t, masked, w_primary, noise_primary)
