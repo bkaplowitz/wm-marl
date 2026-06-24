@@ -459,11 +459,6 @@ def _collect_real_env_rollout(
     )
 
 
-def _block_rollout_ready(rollout: Any) -> None:
-    jax.block_until_ready(rollout.batch.rewards)
-    jax.block_until_ready(rollout.last_values)
-
-
 def _warmup_policy_before_world_model(
     args: argparse.Namespace,
     *,
@@ -493,7 +488,6 @@ def _warmup_policy_before_world_model(
             config,
             observation_mode,
         )
-        _block_rollout_ready(rollout)
         observations = rollout.next_observations
         update_metrics: dict[str, Any] = {}
         if not freeze_policy:
@@ -805,8 +799,7 @@ def run_training(
                         rollout_steps=args.rollout_steps,
                         config=world_model_config,
                         reward_done_fn=reward_done_fn,
-                    )
-                _block_rollout_ready(rollout)
+                )
                 imagined_env_steps += args.num_envs * args.rollout_steps
             else:
                 rng, rollout_key, update_key = jax.random.split(rng, 3)
@@ -820,7 +813,6 @@ def run_training(
                     config,
                     observation_mode,
                 )
-                _block_rollout_ready(rollout)
                 observations = rollout.next_observations
                 real_env_steps += args.num_envs * args.rollout_steps
                 completed_real_episodes = int(
