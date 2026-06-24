@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from functools import partial
 
 import jax
@@ -19,6 +20,14 @@ from world_marl.world_model import (
 )
 
 
+@dataclass(frozen=True)
+class TransitionCollectionStats:
+    real_env_steps: int
+    completed_episodes: int
+    episode_return_mean: float | None
+    episode_length_mean: float | None
+
+
 def flatten_state_observations(observations: np.ndarray) -> np.ndarray:
     """Flatten local observations while preserving env and agent axes."""
     observations = np.asarray(observations, dtype=np.float32)
@@ -33,13 +42,20 @@ def collect_random_transition_batch(
     rng: np.random.Generator,
     *,
     rollout_steps: int,
-) -> tuple[VectorTransitionBatch, np.ndarray, jnp.ndarray]:
+) -> tuple[
+    VectorTransitionBatch,
+    np.ndarray,
+    jnp.ndarray,
+    TransitionCollectionStats,
+]:
     """Collect vector-state transitions using adapter-sampled random actions."""
     if rollout_steps < 1:
         raise ValueError("rollout_steps must be >= 1")
 
     current_observations = observations
     rows = _TransitionRows()
+    completed_returns: list[tuple[float, ...]] = []
+    completed_lengths: list[int] = []
     for _ in range(rollout_steps):
         states = flatten_state_observations(current_observations)
         actions = adapter.sample_actions(rng)
@@ -51,10 +67,21 @@ def collect_random_transition_batch(
             rewards=step.rewards,
             dones=step.dones,
         )
+        completed_returns.extend(step.completed_returns)
+        completed_lengths.extend(step.completed_lengths)
         current_observations = step.observations
 
     batch = rows.to_batch()
-    return batch, current_observations, batch.states
+    return (
+        batch,
+        current_observations,
+        batch.states,
+        _collection_stats(
+            real_env_steps=rollout_steps * adapter.num_envs,
+            completed_returns=completed_returns,
+            completed_lengths=completed_lengths,
+        ),
+    )
 
 
 def collect_policy_transition_batch(
@@ -65,7 +92,13 @@ def collect_policy_transition_batch(
     *,
     rollout_steps: int,
     algorithm: str,
-) -> tuple[VectorTransitionBatch, np.ndarray, jax.Array, jnp.ndarray]:
+) -> tuple[
+    VectorTransitionBatch,
+    np.ndarray,
+    jax.Array,
+    jnp.ndarray,
+    TransitionCollectionStats,
+]:
     """Collect vector-state transitions using the current IPPO/MAPPO policy."""
     if rollout_steps < 1:
         raise ValueError("rollout_steps must be >= 1")
@@ -74,6 +107,8 @@ def collect_policy_transition_batch(
 
     current_observations = observations
     rows = _TransitionRows()
+    completed_returns: list[tuple[float, ...]] = []
+    completed_lengths: list[int] = []
     for _ in range(rollout_steps):
         states = flatten_state_observations(current_observations)
         flat_states = states.reshape((adapter.num_envs * adapter.num_agents, -1))
@@ -102,10 +137,45 @@ def collect_policy_transition_batch(
             rewards=step.rewards,
             dones=step.dones,
         )
+        completed_returns.extend(step.completed_returns)
+        completed_lengths.extend(step.completed_lengths)
         current_observations = step.observations
 
     batch = rows.to_batch()
-    return batch, current_observations, rng, batch.states
+    return (
+        batch,
+        current_observations,
+        rng,
+        batch.states,
+        _collection_stats(
+            real_env_steps=rollout_steps * adapter.num_envs,
+            completed_returns=completed_returns,
+            completed_lengths=completed_lengths,
+        ),
+    )
+
+
+def _collection_stats(
+    *,
+    real_env_steps: int,
+    completed_returns: Sequence[tuple[float, ...]],
+    completed_lengths: Sequence[int],
+) -> TransitionCollectionStats:
+    completed_array = (
+        np.asarray(completed_returns, dtype=np.float32)
+        if completed_returns
+        else np.asarray([], dtype=np.float32)
+    )
+    return TransitionCollectionStats(
+        real_env_steps=real_env_steps,
+        completed_episodes=len(completed_returns),
+        episode_return_mean=(
+            float(completed_array.mean()) if completed_returns else None
+        ),
+        episode_length_mean=(
+            float(np.mean(completed_lengths)) if completed_lengths else None
+        ),
+    )
 
 
 def concatenate_transition_batches(

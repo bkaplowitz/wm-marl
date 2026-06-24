@@ -13,6 +13,7 @@ Completion is the contract under test here.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -90,3 +91,26 @@ def test_coins_prefit_run_training_completes_and_writes_artifacts(
     assert (run_dir / "outcome.json").exists()
     assert (run_dir / "world_model_prefit.json").exists()
     assert (run_dir / "world_model_policy_warmup.json").exists()
+
+    timing = json.loads((run_dir / "timings.json").read_text(encoding="utf-8"))
+    assert timing["total_seconds"] > 0.0
+    assert timing["phases"]["world_model_fit_seconds"] > 0.0
+    assert timing["updates"][0]["rollout_seconds"] >= 0.0
+    assert timing["updates"][0]["ppo_update_seconds"] >= 0.0
+
+    metrics_rows = [
+        json.loads(line)
+        for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert metrics_rows
+    final_row = metrics_rows[-1]
+    assert final_row["real_env_steps"] == 12
+    assert final_row["imagined_env_steps"] == 8
+    assert final_row["cumulative_real_episodes"] == 3
+
+    prefit = json.loads(
+        (run_dir / "world_model_prefit.json").read_text(encoding="utf-8")
+    )
+    assert prefit["random_completed_episodes"] == 1
+    assert prefit["initial_policy_completed_episodes"] == 1
+    assert prefit["prefit_completed_episodes"] == 2
