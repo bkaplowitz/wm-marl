@@ -4,8 +4,7 @@ from world_marl.jepa.models import JepaConfig, JepaWorldModel
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
     JepaTrainState,
-    actor_value_from_control_latent,
-    apply_control_alignment,
+    actor_value_from_latent,
     continuous_candidate_distill_step,
     continuous_critic_warmup_step,
     continuous_policy_train_step,
@@ -18,7 +17,6 @@ from world_marl.jepa.training import (
     select_continuous_actions,
     sigreg_loss,
     train_model_step,
-    umeyama_control_interface,
 )
 
 __all__ = [
@@ -27,8 +25,7 @@ __all__ = [
     "JepaWorldModel",
     "ReplayBatch",
     "SequenceReplayBuffer",
-    "actor_value_from_control_latent",
-    "apply_control_alignment",
+    "actor_value_from_latent",
     "continuous_candidate_distill_step",
     "continuous_critic_warmup_step",
     "continuous_policy_train_step",
@@ -41,5 +38,4 @@ __all__ = [
     "select_continuous_actions",
     "sigreg_loss",
     "train_model_step",
-    "umeyama_control_interface",
 ]

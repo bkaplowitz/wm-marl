@@ -8,7 +8,6 @@ import pytest
 from world_marl.jepa.models import JepaConfig, JepaWorldModel
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
-    apply_control_alignment,
     continuous_candidate_distill_step,
     continuous_critic_warmup_step,
     continuous_policy_train_step,
@@ -21,14 +20,11 @@ from world_marl.jepa.training import (
     reward_only_returns,
     select_continuous_actions,
     train_model_step,
-    umeyama_control_interface,
 )
 from world_marl.scripts.train_dmc_jepa import (
     _action_contrast_metrics,
     _candidate_refit_gate_report,
-    _control_coordinate_prediction_metrics,
     _merge_online_policy_baseline,
-    _online_interface_drift_metrics,
     _online_history_metrics,
     _run_passed as dmc_run_passed,
     summarize as summarize_dmc_jepa,
@@ -291,97 +287,6 @@ def test_frozen_encoder_model_step_preserves_encoder_and_updates_world_model():
     assert _tree_changed(state.params["block_0"], frozen_state.params["block_0"])
 
 
-def test_online_encoder_lr_scale_slows_but_updates_encoder():
-    config = JepaConfig(
-        observation_dim=4,
-        action_dim=3,
-        action_mode="continuous",
-        latent_dim=8,
-        model_dim=16,
-        num_layers=1,
-        num_heads=2,
-        max_horizon=1,
-        context_window=1,
-        online_encoder_lr_scale=0.05,
-        sigreg_num_proj=32,
-    )
-    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
-    batch = ReplayBatch(
-        observations=jax.random.normal(jax.random.PRNGKey(1), (4, 4, 4)),
-        actions=jax.random.normal(jax.random.PRNGKey(2), (4, 3, 3)),
-        rewards=jax.random.normal(jax.random.PRNGKey(3), (4, 3)),
-        dones=jnp.zeros((4, 3), dtype=jnp.float32),
-    )
-    normal_state, _ = train_model_step(
-        state,
-        jax.random.PRNGKey(4),
-        batch,
-        config,
-        chunk_length=2,
-    )
-    scaled_state, _ = train_model_step(
-        state,
-        jax.random.PRNGKey(4),
-        batch,
-        config,
-        chunk_length=2,
-        use_online_encoder_lr_scale=True,
-    )
-
-    normal_delta = _tree_delta_l2(state.params["encoder"], normal_state.params["encoder"])
-    scaled_delta = _tree_delta_l2(state.params["encoder"], scaled_state.params["encoder"])
-    assert scaled_delta > 0.0
-    assert scaled_delta < normal_delta * 0.5
-    assert _tree_changed(state.params["predictor"], scaled_state.params["predictor"])
-
-
-def test_model_step_supports_cosine_latent_anchor_loss():
-    config = JepaConfig(
-        observation_dim=4,
-        action_dim=3,
-        action_mode="continuous",
-        latent_dim=8,
-        model_dim=16,
-        num_layers=1,
-        num_heads=2,
-        max_horizon=1,
-        context_window=1,
-        sigreg_num_proj=32,
-    )
-    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
-    batch = ReplayBatch(
-        observations=jax.random.normal(jax.random.PRNGKey(1), (4, 4, 4)),
-        actions=jax.random.normal(jax.random.PRNGKey(2), (4, 3, 3)),
-        rewards=jax.random.normal(jax.random.PRNGKey(3), (4, 3)),
-        dones=jnp.zeros((4, 3), dtype=jnp.float32),
-    )
-
-    updated, metrics = train_model_step(
-        state,
-        jax.random.PRNGKey(4),
-        batch,
-        config,
-        chunk_length=2,
-        latent_anchor_params=state.params,
-        latent_anchor_alignment=state.control_alignment,
-        latent_anchor_weight=0.1,
-        control_prediction_params=state.params,
-        control_prediction_alignment=state.control_alignment,
-        control_prediction_weight=0.2,
-    )
-
-    del updated
-    assert jnp.isfinite(metrics["model/total_loss"])
-    assert metrics["model/latent_anchor_weight"] == 0.1
-    assert metrics["model/control_prediction_train_weight"] == 0.2
-    np.testing.assert_allclose(
-        np.asarray(metrics["model/latent_anchor_loss"]),
-        0.0,
-        atol=1e-6,
-    )
-    assert jnp.isfinite(metrics["model/control_prediction_train_loss"])
-
-
 def test_model_step_supports_control_value_consistency_loss():
     config = JepaConfig(
         observation_dim=4,
@@ -472,166 +377,6 @@ def test_jepa_model_trains_recursive_overshooting_horizons():
     assert jnp.isfinite(metrics["model/total_loss"])
 
 
-def test_continuous_policy_behavior_distillation_reports_zero_for_same_teacher():
-    config = JepaConfig(
-        observation_dim=4,
-        action_dim=3,
-        action_mode="continuous",
-        latent_dim=8,
-        model_dim=16,
-        num_layers=1,
-        num_heads=2,
-        max_horizon=1,
-        context_window=1,
-        sigreg_num_proj=32,
-    )
-    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
-    state, metrics = continuous_policy_train_step(
-        state,
-        jax.random.PRNGKey(1),
-        jnp.ones((5, 1, 4), dtype=jnp.float32),
-        config,
-        jnp.full((3,), -1.0),
-        jnp.full((3,), 1.0),
-        imag_horizon=2,
-        start_actions=jnp.zeros((5, 1, 3), dtype=jnp.float32),
-        behavior_teacher_params=state.params,
-        behavior_distill_weight=1.0,
-    )
-
-    del state
-    assert jnp.isfinite(metrics["policy/total_loss"])
-    np.testing.assert_allclose(
-        np.asarray(metrics["policy/behavior_distill_loss"]),
-        0.0,
-        atol=1e-6,
-    )
-    assert metrics["policy/behavior_distill_weight"] == 1.0
-
-
-def test_online_interface_drift_metrics_are_zero_for_identical_state():
-    config = JepaConfig(
-        observation_dim=4,
-        action_dim=3,
-        action_mode="continuous",
-        latent_dim=8,
-        model_dim=16,
-        num_layers=1,
-        num_heads=2,
-        max_horizon=1,
-        context_window=1,
-        sigreg_num_proj=32,
-    )
-    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
-    batch = ReplayBatch(
-        observations=jnp.ones((5, 2, 4), dtype=jnp.float32),
-        actions=jnp.zeros((5, 1, 3), dtype=jnp.float32),
-        rewards=jnp.ones((5, 1), dtype=jnp.float32),
-        dones=jnp.zeros((5, 1), dtype=jnp.float32),
-    )
-
-    metrics = _online_interface_drift_metrics(
-        state,
-        state,
-        batch,
-        config,
-        action_low=np.full((3,), -1.0, dtype=np.float32),
-        action_high=np.full((3,), 1.0, dtype=np.float32),
-    )
-
-    np.testing.assert_allclose(metrics["online/raw_latent_cosine"], 1.0, atol=1e-5)
-    np.testing.assert_allclose(metrics["online/raw_latent_drift_l2"], 0.0, atol=1e-6)
-    np.testing.assert_allclose(
-        metrics["online/control_latent_cosine"],
-        1.0,
-        atol=1e-5,
-    )
-    np.testing.assert_allclose(
-        metrics["online/control_latent_drift_l2"],
-        0.0,
-        atol=1e-6,
-    )
-    np.testing.assert_allclose(
-        metrics["online/policy_action_drift_l2"],
-        0.0,
-        atol=1e-6,
-    )
-    np.testing.assert_allclose(
-        metrics["online/value_drift_abs_mean"],
-        0.0,
-        atol=1e-6,
-    )
-
-
-def test_umeyama_control_interface_recovers_affine_interface():
-    source = jnp.asarray(
-        [
-            [1.0, 0.0, 0.0],
-            [0.0, 2.0, 0.0],
-            [0.0, 0.0, 3.0],
-            [-1.0, -2.0, -1.0],
-            [2.0, -1.0, 1.0],
-        ],
-        dtype=jnp.float32,
-    )
-    rotation = jnp.asarray(
-        [
-            [0.0, -1.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ],
-        dtype=jnp.float32,
-    )
-    scale = jnp.asarray(1.7, dtype=jnp.float32)
-    bias = jnp.asarray([0.5, -0.25, 0.75], dtype=jnp.float32)
-    target = scale * (source @ rotation) + bias
-
-    alignment, fitted_scale, fitted_bias = umeyama_control_interface(source, target)
-    aligned = apply_control_alignment(source, alignment, fitted_scale, fitted_bias)
-
-    np.testing.assert_allclose(np.asarray(aligned), np.asarray(target), atol=1e-5)
-    np.testing.assert_allclose(np.asarray(fitted_scale), np.asarray(scale), atol=1e-5)
-    np.testing.assert_allclose(np.asarray(fitted_bias), np.asarray(bias), atol=1e-5)
-
-
-def test_select_continuous_actions_uses_control_alignment():
-    config = JepaConfig(
-        observation_dim=4,
-        action_dim=3,
-        action_mode="continuous",
-        latent_dim=8,
-        model_dim=16,
-        num_layers=1,
-        num_heads=2,
-        max_horizon=1,
-        context_window=1,
-        sigreg_num_proj=32,
-    )
-    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
-    observations = jax.random.normal(jax.random.PRNGKey(1), (6, 4))
-    action_low = -jnp.ones((config.action_dim,), dtype=jnp.float32)
-    action_high = jnp.ones((config.action_dim,), dtype=jnp.float32)
-    identity_actions = select_continuous_actions(
-        state,
-        observations,
-        config,
-        action_low,
-        action_high,
-    )
-
-    flipped = -jnp.eye(config.latent_dim, dtype=jnp.float32)
-    aligned_state = state.replace(control_alignment=flipped)
-    aligned_actions = select_continuous_actions(
-        aligned_state,
-        observations,
-        config,
-        action_low,
-        action_high,
-    )
-
-    assert not np.allclose(np.asarray(identity_actions), np.asarray(aligned_actions))
-
-
 def test_candidate_refit_gate_requires_recent_improvement_and_anchor_preservation():
     accepted = _candidate_refit_gate_report(
         {"model/open_loop_loss": 0.40, "model/jepa_loss": 0.10},
@@ -668,41 +413,6 @@ def test_candidate_refit_gate_requires_recent_improvement_and_anchor_preservatio
     assert not recent_failed["recent_validation_improved"]
     assert not anchor_failed["model_update_accepted"]
     assert not anchor_failed["anchor_validation_preserved"]
-
-
-def test_control_coordinate_prediction_metrics_are_finite():
-    config = JepaConfig(
-        observation_dim=4,
-        action_dim=2,
-        action_mode="continuous",
-        latent_dim=8,
-        model_dim=16,
-        num_layers=1,
-        num_heads=2,
-        max_horizon=1,
-        context_window=1,
-        sigreg_num_proj=32,
-    )
-    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
-    batch = ReplayBatch(
-        observations=jax.random.normal(jax.random.PRNGKey(1), (5, 4, 4)),
-        actions=jax.random.normal(jax.random.PRNGKey(2), (5, 3, 2)),
-        rewards=jnp.zeros((5, 3), dtype=jnp.float32),
-        dones=jnp.zeros((5, 3), dtype=jnp.float32),
-    )
-
-    metrics = _control_coordinate_prediction_metrics(
-        reference_state=state,
-        predictor_state=state,
-        batch=batch,
-        config=config,
-        chunk_length=3,
-        control="none",
-    )
-
-    assert "model/control_prediction_loss" in metrics
-    assert np.isfinite(float(metrics["model/control_prediction_loss"]))
-    assert float(metrics["model/control_prediction_finite_fraction"]) == 1.0
 
 
 def test_action_contrast_no_action_control_has_zero_margin():
@@ -1633,15 +1343,3 @@ def _tree_changed(left, right) -> bool:
             strict=True,
         )
     )
-
-
-def _tree_delta_l2(left, right) -> float:
-    squared = [
-        np.sum(np.square(np.asarray(a) - np.asarray(b)))
-        for a, b in zip(
-            jax.tree_util.tree_leaves(left),
-            jax.tree_util.tree_leaves(right),
-            strict=True,
-        )
-    ]
-    return float(np.sqrt(np.sum(squared)))

@@ -31,7 +31,6 @@ def test_single_agent_jepa_cli_accepts_brax_env(monkeypatch):
     assert args.policy_objective == "direct"
     assert args.regularizer == "sigreg"
     assert args.online_reset_replay_env
-    assert args.online_freeze_encoder
 
 
 def test_single_agent_jepa_cli_can_disable_online_replay_reset(monkeypatch):
@@ -59,7 +58,7 @@ def test_single_agent_jepa_cli_can_disable_online_replay_reset(monkeypatch):
     assert not args.online_reset_replay_env
 
 
-def test_single_agent_jepa_cli_can_disable_online_encoder_freeze(monkeypatch):
+def test_single_agent_jepa_cli_accepts_candidate_refit_flags(monkeypatch):
     monkeypatch.setattr(
         sys,
         "argv",
@@ -75,53 +74,15 @@ def test_single_agent_jepa_cli_can_disable_online_encoder_freeze(monkeypatch):
             "4",
             "--open-loop-horizon",
             "2",
-            "--no-online-freeze-encoder",
-        ],
-    )
-
-    args = train_dmc_jepa.parse_args()
-
-    assert not args.online_freeze_encoder
-
-
-def test_single_agent_jepa_cli_accepts_online_interface_drift_flags(monkeypatch):
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "world-marl-validate-single-agent-world-model",
-            "--env",
-            "brax:reacher",
-            "--collect-steps",
-            "8",
-            "--validation-steps",
-            "8",
-            "--chunk-length",
-            "4",
-            "--open-loop-horizon",
-            "2",
-            "--online-freeze-encoder",
-            "--online-interface-eval-episodes",
-            "7",
-            "--online-interface-eval-num-envs",
-            "3",
-            "--online-behavior-distill-weight",
-            "0.25",
             "--online-candidate-refit",
             "--online-validation-steps",
             "9",
             "--online-candidate-gate-metric",
-            "model/control_prediction_loss",
+            "model/jepa_loss",
             "--online-candidate-min-recent-improvement",
             "0.01",
             "--online-candidate-max-anchor-degradation",
             "0.02",
-            "--control-alignment",
-            "umeyama",
-            "--online-latent-anchor-weight",
-            "0.1",
-            "--online-control-prediction-weight",
-            "0.2",
             "--online-control-value-weight",
             "0.3",
         ],
@@ -129,19 +90,11 @@ def test_single_agent_jepa_cli_accepts_online_interface_drift_flags(monkeypatch)
 
     args = train_dmc_jepa.parse_args()
 
-    assert args.online_freeze_encoder
-    assert args.online_interface_eval_episodes == 7
-    assert args.online_interface_eval_num_envs == 3
-    assert args.online_behavior_distill_weight == 0.25
     assert args.online_candidate_refit
     assert args.online_validation_steps == 9
-    assert args.online_candidate_gate_metric == "model/control_prediction_loss"
+    assert args.online_candidate_gate_metric == "model/jepa_loss"
     assert args.online_candidate_min_recent_improvement == 0.01
     assert args.online_candidate_max_anchor_degradation == 0.02
-    assert args.control_alignment == "umeyama"
-    assert args.control_interface == "umeyama"
-    assert args.online_latent_anchor_weight == 0.1
-    assert args.online_control_prediction_weight == 0.2
     assert args.online_control_value_weight == 0.3
 
 

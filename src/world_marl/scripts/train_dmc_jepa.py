@@ -28,8 +28,6 @@ from world_marl.jepa.models import JepaConfig, JepaWorldModel
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
     ControlMode,
-    apply_control_alignment,
-    actor_value_from_control_latent,
     continuous_candidate_distill_step,
     continuous_critic_warmup_step,
     continuous_policy_train_step,
@@ -38,7 +36,6 @@ from world_marl.jepa.training import (
     reset_policy_heads,
     select_continuous_actions,
     train_model_step,
-    umeyama_control_interface,
     world_model_loss,
 )
 from world_marl.logging import RunLogger, dependency_versions, timestamp, to_jsonable
@@ -243,90 +240,6 @@ def parse_args() -> argparse.Namespace:
         help="Reset actor/value heads at the start of each online policy phase.",
     )
     parser.add_argument(
-        "--online-freeze-encoder",
-        dest="online_freeze_encoder",
-        action="store_true",
-        default=True,
-        help=(
-            "During online world-model refits, keep the observation encoder fixed "
-            "and update only the latent dynamics, reward, and continue components. "
-            "This is the default stable online path."
-        ),
-    )
-    parser.add_argument(
-        "--no-online-freeze-encoder",
-        dest="online_freeze_encoder",
-        action="store_false",
-        help=(
-            "Allow online world-model refits to update the observation encoder. "
-            "Use only for latent-interface drift ablations."
-        ),
-    )
-    parser.add_argument(
-        "--online-encoder-lr-scale",
-        type=float,
-        default=1.0,
-        help=(
-            "Scale the observation-encoder learning rate during unfrozen online "
-            "world-model refits. Values below 1.0 test slow encoder adaptation "
-            "without fully freezing the encoder."
-        ),
-    )
-    parser.add_argument(
-        "--online-interface-eval-episodes",
-        type=int,
-        default=20,
-        help=(
-            "Evaluate the current policy immediately before and after each online "
-            "world-model refit. Use 0 to disable this diagnostic."
-        ),
-    )
-    parser.add_argument("--online-interface-eval-num-envs", type=int, default=None)
-    parser.add_argument(
-        "--online-behavior-distill-weight",
-        type=float,
-        default=0.0,
-        help=(
-            "Optional online actor behavior-preservation weight. When positive, "
-            "online direct policy updates penalize deviation from the pre-refit "
-            "actor on replay start states."
-        ),
-    )
-    parser.add_argument(
-        "--control-interface",
-        "--control-alignment",
-        dest="control_interface",
-        choices=("identity", "none", "umeyama"),
-        default="identity",
-        help=(
-            "Policy-facing latent interface used after online world-model refits. "
-            "identity applies no correction, and umeyama fits rotation/reflection "
-            "plus scale and shift. The older --control-alignment spelling is kept "
-            "as an alias."
-        ),
-    )
-    parser.add_argument(
-        "--online-latent-anchor-weight",
-        type=float,
-        default=0.0,
-        help=(
-            "Optional cosine anchor loss during online refits. This penalizes "
-            "new encoder latents for moving away from the previous accepted "
-            "control latents on sampled replay observations."
-        ),
-    )
-    parser.add_argument(
-        "--online-control-prediction-weight",
-        type=float,
-        default=0.0,
-        help=(
-            "Optional online refit loss weight for one-step predictions measured "
-            "in the previous accepted control coordinates. This trains adaptive "
-            "encoder candidates for controller compatibility instead of only "
-            "checking it at the candidate gate."
-        ),
-    )
-    parser.add_argument(
         "--online-control-value-weight",
         type=float,
         default=0.0,
@@ -350,7 +263,6 @@ def parse_args() -> argparse.Namespace:
         choices=(
             "model/open_loop_loss",
             "model/jepa_loss",
-            "model/control_prediction_loss",
         ),
         default="model/open_loop_loss",
     )
@@ -408,11 +320,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--allow-fail", action="store_true")
     args = parser.parse_args()
-    if args.control_interface == "none":
-        args.control_interface = "identity"
-    args.control_alignment = (
-        "none" if args.control_interface == "identity" else args.control_interface
-    )
     _validate_args(parser, args)
     return args
 
@@ -473,23 +380,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         value = getattr(args, name)
         if value is not None and value < 0:
             parser.error(f"--{name.replace('_', '-')} must be >= 0")
-    if args.online_interface_eval_episodes < 0:
-        parser.error("--online-interface-eval-episodes must be >= 0")
-    if (
-        args.online_interface_eval_num_envs is not None
-        and args.online_interface_eval_num_envs < 1
-    ):
-        parser.error("--online-interface-eval-num-envs must be >= 1")
-    if args.online_behavior_distill_weight < 0.0:
-        parser.error("--online-behavior-distill-weight must be >= 0")
-    if args.online_latent_anchor_weight < 0.0:
-        parser.error("--online-latent-anchor-weight must be >= 0")
-    if args.online_control_prediction_weight < 0.0:
-        parser.error("--online-control-prediction-weight must be >= 0")
     if args.online_control_value_weight < 0.0:
         parser.error("--online-control-value-weight must be >= 0")
-    if args.online_encoder_lr_scale < 0.0:
-        parser.error("--online-encoder-lr-scale must be >= 0")
     if args.online_candidate_min_recent_improvement < 0.0:
         parser.error("--online-candidate-min-recent-improvement must be >= 0")
     if args.online_candidate_max_anchor_degradation < 0.0:
@@ -645,7 +537,6 @@ def run_one(
             context_window=args.context_window,
             learning_rate=args.learning_rate,
             actor_learning_rate=args.actor_learning_rate,
-            online_encoder_lr_scale=args.online_encoder_lr_scale,
             regularizer=args.regularizer,
             regularizer_weight=args.regularizer_weight,
             sigreg_knots=args.sigreg_knots,
@@ -905,24 +796,6 @@ def run_one(
                 )
 
             pre_refit_state = state
-            interface_seed = seed + 8_000_000 + online_index * 10_000
-            pre_refit_policy_eval = _evaluate_online_interface_policy(
-                args,
-                state,
-                config,
-                seed=interface_seed,
-                control=control,
-                phase=phase,
-                label="before refit",
-                action_low=adapter.action_low,
-                action_high=adapter.action_high,
-            )
-            if pre_refit_policy_eval is not None:
-                logger.write_json(
-                    f"{phase}_policy_before_refit_evaluation.json",
-                    pre_refit_policy_eval,
-                )
-
             online_loss_history: list[float] = []
             candidate_report = None
             if online_train_steps > 0:
@@ -950,33 +823,8 @@ def run_one(
                     phase=fit_phase,
                     desc=fit_desc,
                     env_steps=env_steps,
-                    freeze_encoder=args.online_freeze_encoder,
-                    use_online_encoder_lr_scale=(
-                        not args.online_freeze_encoder
-                        and args.online_encoder_lr_scale != 1.0
-                    ),
-                    latent_anchor_state=(
-                        pre_refit_state
-                        if args.online_latent_anchor_weight > 0.0
-                        else None
-                    ),
-                    latent_anchor_weight=args.online_latent_anchor_weight,
-                    control_prediction_state=(
-                        pre_refit_state
-                        if args.online_control_prediction_weight > 0.0
-                        else None
-                    ),
-                    control_prediction_weight=args.online_control_prediction_weight,
+                    freeze_encoder=True,
                     control_value_weight=args.online_control_value_weight,
-                )
-                candidate_state, control_alignment_report = (
-                    _maybe_align_control_interface(
-                        args,
-                        pre_refit_state,
-                        candidate_state,
-                        validation_batch,
-                        config,
-                    )
                 )
                 if args.online_candidate_refit:
                     if recent_validation_batch is None:
@@ -994,7 +842,6 @@ def run_one(
                         action_low=adapter.action_low,
                         action_high=adapter.action_high,
                     )
-                    candidate_report["control_alignment"] = control_alignment_report
                     state = (
                         candidate_state
                         if candidate_report["model_update_accepted"]
@@ -1011,8 +858,6 @@ def run_one(
                     )
                 else:
                     state = candidate_state
-            else:
-                control_alignment_report = None
             logger.plot_world_model_loss(
                 online_loss_history,
                 filename=f"{phase}_world_model_loss.png",
@@ -1031,62 +876,6 @@ def run_one(
                 action_high=adapter.action_high,
             )
             logger.write_json(f"{phase}_model_metrics.json", online_metrics)
-            post_refit_policy_eval = _evaluate_online_interface_policy(
-                args,
-                state,
-                config,
-                seed=interface_seed,
-                control=control,
-                phase=phase,
-                label="after refit",
-                action_low=adapter.action_low,
-                action_high=adapter.action_high,
-            )
-            if post_refit_policy_eval is not None:
-                logger.write_json(
-                    f"{phase}_policy_after_refit_evaluation.json",
-                    post_refit_policy_eval,
-                )
-            interface_metrics = _online_interface_drift_metrics(
-                pre_refit_state,
-                state,
-                validation_batch,
-                config,
-                action_low=adapter.action_low,
-                action_high=adapter.action_high,
-            )
-            if pre_refit_policy_eval is not None and post_refit_policy_eval is not None:
-                before_mean = pre_refit_policy_eval["mean_return"]
-                after_mean = post_refit_policy_eval["mean_return"]
-                interface_metrics.update(
-                    {
-                        "online/policy_before_refit_mean_return": before_mean,
-                        "online/policy_after_refit_mean_return": after_mean,
-                        "online/policy_refit_return_delta": after_mean - before_mean,
-                    }
-                )
-            interface_payload = {
-                "online_iteration": online_index,
-                "control": control,
-                "online_freeze_encoder": args.online_freeze_encoder,
-                "online_encoder_lr_scale": args.online_encoder_lr_scale,
-                "control_alignment": control_alignment_report,
-                "online_latent_anchor_weight": args.online_latent_anchor_weight,
-                "online_control_value_weight": args.online_control_value_weight,
-                "candidate_refit": candidate_report,
-                "policy_before_refit": pre_refit_policy_eval,
-                "policy_after_refit": post_refit_policy_eval,
-                "metrics": interface_metrics,
-            }
-            logger.write_json(f"{phase}_interface_drift.json", interface_payload)
-            logger.append_metrics(
-                {
-                    "phase": "online_interface_check",
-                    "online_iteration": online_index,
-                    "control": control,
-                    **interface_metrics,
-                }
-            )
 
             online_policy_train_steps = (
                 args.online_policy_train_steps
@@ -1109,12 +898,6 @@ def run_one(
                     phase=f"{phase}_policy",
                     train_steps=online_policy_train_steps,
                     reset_actor=args.online_reset_actor,
-                    behavior_teacher_state=(
-                        pre_refit_state
-                        if args.online_behavior_distill_weight > 0.0
-                        else None
-                    ),
-                    behavior_distill_weight=args.online_behavior_distill_weight,
                 )
                 state = online_policy_outcome["state"]
                 rng = online_policy_outcome["rng"]
@@ -1129,7 +912,6 @@ def run_one(
                     "recent_policy_validation": recent_validation_payload,
                     "candidate_refit": candidate_report,
                     "model_metrics": online_metrics,
-                    "interface": interface_payload,
                     "policy": online_policy_payload,
                     "world_model_train_steps": online_train_steps,
                     "policy_train_steps": online_policy_train_steps,
@@ -1360,37 +1142,6 @@ def _new_replay_buffer(
     )
 
 
-def _evaluate_online_interface_policy(
-    args: argparse.Namespace,
-    state,
-    config: JepaConfig,
-    *,
-    seed: int,
-    control: ControlMode,
-    phase: str,
-    label: str,
-    action_low: np.ndarray,
-    action_high: np.ndarray,
-) -> dict[str, Any] | None:
-    if args.online_interface_eval_episodes == 0:
-        return None
-    num_envs = args.online_interface_eval_num_envs or min(
-        args.num_envs,
-        args.online_interface_eval_episodes,
-    )
-    return _evaluate_continuous_policy(
-        args,
-        state,
-        config,
-        seed=seed,
-        num_envs=num_envs,
-        episodes=args.online_interface_eval_episodes,
-        action_low=jnp.asarray(action_low, dtype=jnp.float32),
-        action_high=jnp.asarray(action_high, dtype=jnp.float32),
-        desc=f"{control} {phase} eval policy {label}",
-    )
-
-
 def _evaluate_candidate_model_update(
     args: argparse.Namespace,
     baseline_state,
@@ -1449,46 +1200,6 @@ def _evaluate_candidate_model_update(
         action_low=action_low,
         action_high=action_high,
     )
-    baseline_anchor.update(
-        _control_coordinate_prediction_metrics(
-            reference_state=baseline_state,
-            predictor_state=baseline_state,
-            batch=anchor_validation_batch,
-            config=config,
-            chunk_length=args.chunk_length,
-            control=control,
-        )
-    )
-    candidate_anchor.update(
-        _control_coordinate_prediction_metrics(
-            reference_state=baseline_state,
-            predictor_state=candidate_state,
-            batch=anchor_validation_batch,
-            config=config,
-            chunk_length=args.chunk_length,
-            control=control,
-        )
-    )
-    baseline_recent.update(
-        _control_coordinate_prediction_metrics(
-            reference_state=baseline_state,
-            predictor_state=baseline_state,
-            batch=recent_validation_batch,
-            config=config,
-            chunk_length=args.chunk_length,
-            control=control,
-        )
-    )
-    candidate_recent.update(
-        _control_coordinate_prediction_metrics(
-            reference_state=baseline_state,
-            predictor_state=candidate_state,
-            batch=recent_validation_batch,
-            config=config,
-            chunk_length=args.chunk_length,
-            control=control,
-        )
-    )
     gate = _candidate_refit_gate_report(
         baseline_anchor,
         candidate_anchor,
@@ -1505,69 +1216,6 @@ def _evaluate_candidate_model_update(
         "candidate_anchor_metrics": candidate_anchor,
         "baseline_recent_policy_metrics": baseline_recent,
         "candidate_recent_policy_metrics": candidate_recent,
-    }
-
-
-def _control_coordinate_prediction_metrics(
-    *,
-    reference_state,
-    predictor_state,
-    batch: ReplayBatch,
-    config: JepaConfig,
-    chunk_length: int,
-    control: ControlMode,
-) -> dict[str, jax.Array]:
-    """Score one-step predictions in the accepted policy-facing coordinates."""
-
-    actions = batch.actions
-    if control == "no-action-world-model":
-        actions = jnp.zeros_like(actions)
-    outputs = predictor_state.apply_fn(
-        {"params": predictor_state.params},
-        batch.observations,
-        actions,
-        chunk_length=chunk_length,
-        dones=batch.dones,
-        method=JepaWorldModel.sequence_outputs,
-    )
-    predicted_z = outputs["predicted_latents"][:, :, 0]
-    if predicted_z.ndim == 4:
-        predicted_z = jnp.mean(predicted_z, axis=2)
-    predicted_z = predicted_z.reshape((-1, config.latent_dim))
-    next_obs = batch.observations[:, 1 : chunk_length + 1].reshape(
-        (-1, config.observation_dim)
-    )
-    validity = (1.0 - batch.dones[:, :chunk_length]).reshape((-1,))
-    predicted_control = _apply_state_control_interface(
-        predictor_state,
-        predicted_z,
-    )
-
-    reference_next_z = jax.lax.stop_gradient(
-        reference_state.apply_fn(
-            {"params": reference_state.params},
-            next_obs,
-            method=JepaWorldModel.encode,
-        )
-    )
-    target_control = jax.lax.stop_gradient(
-        _apply_state_control_interface(reference_state, reference_next_z)
-    )
-
-    pred_norm = _normalize_latents(predicted_control)
-    target_norm = _normalize_latents(target_control)
-    cosine = jnp.sum(pred_norm * target_norm, axis=-1)
-    loss = 1.0 - cosine
-    return {
-        "model/control_prediction_loss": _masked_mean_np(loss, validity),
-        "model/control_prediction_cosine": _masked_mean_np(cosine, validity),
-        "model/control_prediction_valid_fraction": jnp.mean(validity),
-        "model/control_prediction_finite_fraction": _finite_fraction_np(
-            predicted_control,
-            target_control,
-            cosine,
-            loss,
-        ),
     }
 
 
@@ -1611,178 +1259,6 @@ def _candidate_refit_gate_report(
     }
 
 
-def _maybe_align_control_interface(
-    args: argparse.Namespace,
-    before_state,
-    after_state,
-    anchor_batch: ReplayBatch,
-    config: JepaConfig,
-) -> tuple[Any, dict[str, Any] | None]:
-    if args.control_interface == "identity":
-        return after_state, None
-    observations = anchor_batch.observations[:, 0].reshape((-1, config.observation_dim))
-    before_raw = before_state.apply_fn(
-        {"params": before_state.params},
-        observations,
-        method=JepaWorldModel.encode,
-    )
-    after_raw = after_state.apply_fn(
-        {"params": after_state.params},
-        observations,
-        method=JepaWorldModel.encode,
-    )
-    before_control = _apply_state_control_interface(before_state, before_raw)
-    if args.control_interface == "umeyama":
-        alignment, scale, bias = umeyama_control_interface(after_raw, before_control)
-    else:
-        raise ValueError(f"unknown control interface: {args.control_interface!r}")
-    aligned_state = after_state.replace(
-        control_alignment=alignment,
-        control_scale=scale,
-        control_bias=bias,
-    )
-    after_control = _apply_state_control_interface(aligned_state, after_raw)
-    before_norm = _normalize_latents(before_control)
-    after_norm = _normalize_latents(after_control)
-    raw_norm = _normalize_latents(after_raw)
-    raw_target_norm = _normalize_latents(before_raw)
-    singular_values = jnp.linalg.svd(alignment, compute_uv=False)
-    return aligned_state, to_jsonable(
-        {
-            "control_interface_mode": args.control_interface,
-            "control_alignment_mode": args.control_alignment,
-            "online/control_interface_residual_l2": jnp.mean(
-                jnp.linalg.norm(after_control - before_control, axis=-1)
-            ),
-            "online/control_interface_cosine": jnp.mean(
-                jnp.sum(before_norm * after_norm, axis=-1)
-            ),
-            "online/control_interface_raw_cosine": jnp.mean(
-                jnp.sum(raw_target_norm * raw_norm, axis=-1)
-            ),
-            "online/control_interface_alignment_fro_norm": jnp.linalg.norm(alignment),
-            "online/control_interface_scale": scale,
-            "online/control_interface_bias_norm": jnp.linalg.norm(bias),
-            "online/control_interface_condition_number": singular_values[0]
-            / (singular_values[-1] + 1e-8),
-            "online/control_interface_orthogonality_error": jnp.linalg.norm(
-                alignment.T @ alignment - jnp.eye(alignment.shape[0])
-            ),
-            "online/control_interface_finite_fraction": _finite_fraction_np(
-                alignment,
-                scale,
-                bias,
-                after_control,
-                before_control,
-            ),
-        }
-    )
-
-
-def _online_interface_drift_metrics(
-    before_state,
-    after_state,
-    batch: ReplayBatch,
-    config: JepaConfig,
-    *,
-    action_low: np.ndarray,
-    action_high: np.ndarray,
-) -> dict[str, Any]:
-    observations = batch.observations[:, 0].reshape((-1, config.observation_dim))
-    action_low_jax = jnp.asarray(action_low, dtype=jnp.float32)
-    action_high_jax = jnp.asarray(action_high, dtype=jnp.float32)
-
-    before_z = before_state.apply_fn(
-        {"params": before_state.params},
-        observations,
-        method=JepaWorldModel.encode,
-    )
-    after_z = after_state.apply_fn(
-        {"params": after_state.params},
-        observations,
-        method=JepaWorldModel.encode,
-    )
-    before_z_norm = _normalize_latents(before_z)
-    after_z_norm = _normalize_latents(after_z)
-    latent_cosine = jnp.mean(jnp.sum(before_z_norm * after_z_norm, axis=-1))
-    latent_l2 = jnp.mean(jnp.linalg.norm(after_z - before_z, axis=-1))
-    before_control_z = _apply_state_control_interface(before_state, before_z)
-    after_control_z = _apply_state_control_interface(after_state, after_z)
-    before_control_z_norm = _normalize_latents(before_control_z)
-    after_control_z_norm = _normalize_latents(after_control_z)
-    control_latent_cosine = jnp.mean(
-        jnp.sum(before_control_z_norm * after_control_z_norm, axis=-1)
-    )
-    control_latent_l2 = jnp.mean(
-        jnp.linalg.norm(after_control_z - before_control_z, axis=-1)
-    )
-
-    before_logits, before_values = actor_value_from_control_latent(
-        before_state.apply_fn,
-        before_state.params,
-        before_z,
-        before_state.control_alignment,
-        before_state.control_scale,
-        before_state.control_bias,
-    )
-    after_logits, after_values = actor_value_from_control_latent(
-        after_state.apply_fn,
-        after_state.params,
-        after_z,
-        after_state.control_alignment,
-        after_state.control_scale,
-        after_state.control_bias,
-    )
-    before_normalized_actions = jnp.tanh(before_logits)
-    after_normalized_actions = jnp.tanh(after_logits)
-    before_actions = select_continuous_actions(
-        before_state,
-        observations,
-        config,
-        action_low_jax,
-        action_high_jax,
-    )
-    after_actions = select_continuous_actions(
-        after_state,
-        observations,
-        config,
-        action_low_jax,
-        action_high_jax,
-    )
-
-    action_l2 = jnp.mean(jnp.linalg.norm(after_actions - before_actions, axis=-1))
-    normalized_action_l2 = jnp.mean(
-        jnp.linalg.norm(
-            after_normalized_actions - before_normalized_actions,
-            axis=-1,
-        )
-    )
-    value_abs_drift = jnp.mean(jnp.abs(after_values - before_values))
-    value_l2 = jnp.sqrt(jnp.mean(jnp.square(after_values - before_values)))
-    return to_jsonable(
-        {
-            "online/raw_latent_cosine": latent_cosine,
-            "online/raw_latent_drift_l2": latent_l2,
-            "online/control_latent_cosine": control_latent_cosine,
-            "online/control_latent_drift_l2": control_latent_l2,
-            "online/policy_action_drift_l2": action_l2,
-            "online/policy_normalized_action_drift_l2": normalized_action_l2,
-            "online/value_drift_abs_mean": value_abs_drift,
-            "online/value_drift_l2": value_l2,
-            "online/interface_finite_fraction": _finite_fraction_np(
-                before_z,
-                after_z,
-                before_control_z,
-                after_control_z,
-                before_actions,
-                after_actions,
-                before_values,
-                after_values,
-            ),
-        }
-    )
-
-
 def _fit_world_model(
     args: argparse.Namespace,
     logger: RunLogger,
@@ -1798,11 +1274,6 @@ def _fit_world_model(
     desc: str,
     env_steps: int,
     freeze_encoder: bool = False,
-    use_online_encoder_lr_scale: bool = False,
-    latent_anchor_state=None,
-    latent_anchor_weight: float = 0.0,
-    control_prediction_state=None,
-    control_prediction_weight: float = 0.0,
     control_value_weight: float = 0.0,
 ) -> tuple[Any, jax.Array, dict[str, Any], list[float]]:
     loss_history: list[float] = []
@@ -1829,49 +1300,6 @@ def _fit_world_model(
             chunk_length=args.chunk_length,
             control=control,
             freeze_encoder=freeze_encoder,
-            use_online_encoder_lr_scale=use_online_encoder_lr_scale,
-            latent_anchor_params=(
-                None if latent_anchor_state is None else latent_anchor_state.params
-            ),
-            latent_anchor_alignment=(
-                None
-                if latent_anchor_state is None
-                else latent_anchor_state.control_alignment
-            ),
-            latent_anchor_scale=(
-                None if latent_anchor_state is None else latent_anchor_state.control_scale
-            ),
-            latent_anchor_bias=(
-                None if latent_anchor_state is None else latent_anchor_state.control_bias
-            ),
-            latent_anchor_weight=(
-                latent_anchor_weight if latent_anchor_state is not None else 0.0
-            ),
-            control_prediction_params=(
-                None
-                if control_prediction_state is None
-                else control_prediction_state.params
-            ),
-            control_prediction_alignment=(
-                None
-                if control_prediction_state is None
-                else control_prediction_state.control_alignment
-            ),
-            control_prediction_scale=(
-                None
-                if control_prediction_state is None
-                else control_prediction_state.control_scale
-            ),
-            control_prediction_bias=(
-                None
-                if control_prediction_state is None
-                else control_prediction_state.control_bias
-            ),
-            control_prediction_weight=(
-                control_prediction_weight
-                if control_prediction_state is not None
-                else 0.0
-            ),
             control_value_weight=control_value_weight,
         )
         total_loss = float(metrics["model/total_loss"])
@@ -1889,12 +1317,7 @@ def _fit_world_model(
                     "update": step_index,
                     "env_steps": env_steps,
                     "control": control,
-                    "online_freeze_encoder": freeze_encoder,
-                    "online_encoder_lr_scale": (
-                        config.online_encoder_lr_scale
-                        if use_online_encoder_lr_scale
-                        else None
-                    ),
+                    "online_encoder_frozen": freeze_encoder,
                     "online_control_value_weight": control_value_weight,
                     **metrics,
                 }
@@ -1921,8 +1344,6 @@ def _maybe_train_policy(
     eval_seed_offset: int = 3_000_000,
     selection_seed_offset: int = 5_000_000,
     confirmation_seed_offset: int = 7_000_000,
-    behavior_teacher_state=None,
-    behavior_distill_weight: float = 0.0,
 ) -> dict[str, Any]:
     policy_train_steps = args.policy_train_steps if train_steps is None else train_steps
     if policy_train_steps == 0:
@@ -2139,27 +1560,6 @@ def _maybe_train_policy(
                 value_clip=args.value_clip,
                 action_saturation_threshold=args.action_saturation_threshold,
                 start_actions=start_actions,
-                behavior_teacher_params=(
-                    behavior_teacher_state.params
-                    if behavior_teacher_state is not None
-                    else None
-                ),
-                behavior_teacher_control_alignment=(
-                    behavior_teacher_state.control_alignment
-                    if behavior_teacher_state is not None
-                    else None
-                ),
-                behavior_teacher_control_scale=(
-                    behavior_teacher_state.control_scale
-                    if behavior_teacher_state is not None
-                    else None
-                ),
-                behavior_teacher_control_bias=(
-                    behavior_teacher_state.control_bias
-                    if behavior_teacher_state is not None
-                    else None
-                ),
-                behavior_distill_weight=behavior_distill_weight,
                 uncertainty_penalty=args.uncertainty_penalty,
                 uncertainty_latent_weight=args.uncertainty_latent_weight,
                 uncertainty_reward_weight=args.uncertainty_reward_weight,
@@ -2317,8 +1717,6 @@ def _maybe_train_policy(
         "num_policy_candidates": args.num_policy_candidates,
         "candidate_min_gap": args.candidate_min_gap,
         "policy_action_l2_coef": args.policy_action_l2_coef,
-        "policy_behavior_distill_weight": behavior_distill_weight,
-        "policy_behavior_distill_teacher": behavior_teacher_state is not None,
         "policy_eval_seed": policy_eval_seed,
         "policy_confirmation_enabled": confirmation_enabled,
         "policy_confirmation_seed": (
@@ -2622,46 +2020,6 @@ def _online_history_metrics(
         for item in online_history
         if item.get("model_metrics", {}).get("model/open_loop_loss") is not None
     ]
-    refit_return_deltas = [
-        item["interface"]["metrics"].get("online/policy_refit_return_delta")
-        for item in online_history
-        if item.get("interface", {})
-        .get("metrics", {})
-        .get("online/policy_refit_return_delta")
-        is not None
-    ]
-    latent_drifts = [
-        item["interface"]["metrics"].get("online/raw_latent_drift_l2")
-        for item in online_history
-        if item.get("interface", {})
-        .get("metrics", {})
-        .get("online/raw_latent_drift_l2")
-        is not None
-    ]
-    control_latent_drifts = [
-        item["interface"]["metrics"].get("online/control_latent_drift_l2")
-        for item in online_history
-        if item.get("interface", {})
-        .get("metrics", {})
-        .get("online/control_latent_drift_l2")
-        is not None
-    ]
-    action_drifts = [
-        item["interface"]["metrics"].get("online/policy_action_drift_l2")
-        for item in online_history
-        if item.get("interface", {})
-        .get("metrics", {})
-        .get("online/policy_action_drift_l2")
-        is not None
-    ]
-    value_drifts = [
-        item["interface"]["metrics"].get("online/value_drift_abs_mean")
-        for item in online_history
-        if item.get("interface", {})
-        .get("metrics", {})
-        .get("online/value_drift_abs_mean")
-        is not None
-    ]
     candidate_refits = [
         item["candidate_refit"]
         for item in online_history
@@ -2698,29 +2056,6 @@ def _online_history_metrics(
             "online_policy_phase_passed": bool(policy_passed and all(policy_passed)),
             "online_model_jepa_losses": model_jepa_losses,
             "online_model_open_loop_losses": model_open_loop_losses,
-            "online_policy_refit_return_deltas": refit_return_deltas,
-            "online_policy_refit_return_delta_final": (
-                refit_return_deltas[-1] if refit_return_deltas else None
-            ),
-            "online_policy_refit_nonregression_passed": bool(
-                refit_return_deltas and min(refit_return_deltas) >= 0.0
-            ),
-            "online_raw_latent_drift_l2": latent_drifts,
-            "online_raw_latent_drift_l2_final": (
-                latent_drifts[-1] if latent_drifts else None
-            ),
-            "online_control_latent_drift_l2": control_latent_drifts,
-            "online_control_latent_drift_l2_final": (
-                control_latent_drifts[-1] if control_latent_drifts else None
-            ),
-            "online_policy_action_drift_l2": action_drifts,
-            "online_policy_action_drift_l2_final": (
-                action_drifts[-1] if action_drifts else None
-            ),
-            "online_value_drift_abs_mean": value_drifts,
-            "online_value_drift_abs_mean_final": (
-                value_drifts[-1] if value_drifts else None
-            ),
             "online_candidate_refit_iterations": len(candidate_refits),
             "online_model_update_acceptances": candidate_acceptances,
             "online_model_update_acceptance_rate": (
@@ -2766,27 +2101,6 @@ def _online_history_metrics(
         "online_policy_phase_passed": bool(policy_passed and all(policy_passed)),
         "online_model_jepa_losses": model_jepa_losses,
         "online_model_open_loop_losses": model_open_loop_losses,
-        "online_policy_refit_return_deltas": refit_return_deltas,
-        "online_policy_refit_return_delta_final": (
-            refit_return_deltas[-1] if refit_return_deltas else None
-        ),
-        "online_policy_refit_nonregression_passed": bool(
-            not refit_return_deltas or min(refit_return_deltas) >= 0.0
-        ),
-        "online_raw_latent_drift_l2": latent_drifts,
-        "online_raw_latent_drift_l2_final": (
-            latent_drifts[-1] if latent_drifts else None
-        ),
-        "online_control_latent_drift_l2": control_latent_drifts,
-        "online_control_latent_drift_l2_final": (
-            control_latent_drifts[-1] if control_latent_drifts else None
-        ),
-        "online_policy_action_drift_l2": action_drifts,
-        "online_policy_action_drift_l2_final": (
-            action_drifts[-1] if action_drifts else None
-        ),
-        "online_value_drift_abs_mean": value_drifts,
-        "online_value_drift_abs_mean_final": value_drifts[-1] if value_drifts else None,
         "online_candidate_refit_iterations": len(candidate_refits),
         "online_model_update_acceptances": candidate_acceptances,
         "online_model_update_acceptance_rate": (
@@ -2940,15 +2254,6 @@ def _action_contrast_metrics(
 
 def _normalize_latents(x: jax.Array) -> jax.Array:
     return x / (jnp.linalg.norm(x, axis=-1, keepdims=True) + 1e-6)
-
-
-def _apply_state_control_interface(state, latents: jax.Array) -> jax.Array:
-    return apply_control_alignment(
-        latents,
-        state.control_alignment,
-        state.control_scale,
-        state.control_bias,
-    )
 
 
 def _masked_mean_np(values: jax.Array, mask: jax.Array) -> jax.Array:
@@ -3221,22 +2526,6 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         "aggregate_policy_online_actor_replay_vs_initial": _mean(
             main,
             "online_actor_replay_vs_initial_policy",
-        ),
-        "aggregate_policy_refit_return_delta": _mean(
-            main,
-            "online_policy_refit_return_delta_final",
-        ),
-        "aggregate_policy_refit_action_drift_l2": _mean(
-            main,
-            "online_policy_action_drift_l2_final",
-        ),
-        "aggregate_policy_refit_latent_drift_l2": _mean(
-            main,
-            "online_raw_latent_drift_l2_final",
-        ),
-        "aggregate_policy_refit_control_latent_drift_l2": _mean(
-            main,
-            "online_control_latent_drift_l2_final",
         ),
         "aggregate_model_update_acceptance_rate": _mean(
             main,
