@@ -253,6 +253,65 @@ L_{anchor}^{new} \le L_{anchor}^{old} + \epsilon
 If the gate rejects the candidate, the active world model remains unchanged.
 The collected real data is still retained in replay.
 
+## Conservative Imagination
+
+The model can optionally use an ensemble of prediction heads:
+
+\[
+M_\theta^{(i)}(z_t, a_t)
+\rightarrow
+\hat{z}_{t+1}^{(i)}, \hat{r}_t^{(i)}, \hat{c}_t^{(i)}
+\]
+
+The heads share the encoder, action encoder, and transformer trunk. Each head has
+its own latent predictor, reward head, and continuation head.
+
+During world-model training, all heads are trained against the same transition
+targets. During policy imagination, the rollout uses the ensemble mean
+transition:
+
+\[
+\bar{z}_{t+1} = \frac{1}{K}\sum_i \hat{z}_{t+1}^{(i)}
+\]
+
+\[
+\bar{r}_t = \frac{1}{K}\sum_i \hat{r}_t^{(i)}
+\]
+
+\[
+\bar{c}_t = \frac{1}{K}\sum_i \sigma(\hat{c}_t^{(i)})
+\]
+
+The ensemble also produces an uncertainty score. The latent part is spherical
+disagreement:
+
+\[
+u_z =
+1 -
+\left\|
+\frac{1}{K}
+\sum_i
+\frac{\hat{z}_{t+1}^{(i)}}{\|\hat{z}_{t+1}^{(i)}\|}
+\right\|_2^2
+\]
+
+Reward and continuation variance can also contribute:
+
+\[
+u_t = \alpha_z u_z + \alpha_r u_r + \alpha_c u_c
+\]
+
+When enabled, the actor optimizes conservative imagined reward:
+
+\[
+\tilde{r}_t = \bar{r}_t - \lambda_u u_t
+\]
+
+The rollout can also stop trusting a trajectory when transition uncertainty or
+cumulative uncertainty crosses configured thresholds. By default the ensemble
+size is one and the uncertainty penalty is zero, so this path reduces to the
+standard single-model imagination path.
+
 ## Control Latents
 
 The code separates raw world latents from policy-facing control latents:
@@ -318,14 +377,13 @@ The current mainline is:
 3. Use online actor replay for further data collection.
 4. Keep the encoder frozen during online refits.
 5. Gate candidate world-model updates before accepting them.
+6. Optionally use ensemble disagreement for conservative imagined actor updates.
 
 The implemented architecture is still single-agent and vector-observation based.
 It does not yet include:
 
 - image encoders or ViTs;
-- ensemble uncertainty;
-- uncertainty-penalized imagined rewards;
-- adaptive imagination horizons;
+- separately bootstrapped ensemble replay masks;
 - multi-agent centralized training / decentralized execution.
 
 Those are future extensions, not part of the current implemented architecture.

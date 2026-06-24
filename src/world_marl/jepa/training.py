@@ -42,6 +42,12 @@ MODEL_GROUPS = frozenset(
 ONLINE_FROZEN_ENCODER_MODEL_GROUPS = MODEL_GROUPS - {"encoder"}
 ACTOR_GROUPS = frozenset({"actor_head"})
 CRITIC_GROUPS = frozenset({"value_head"})
+ENSEMBLE_GROUP_PREFIXES = {
+    "predictor": "predictor_",
+    "predictor_norm": "predictor_norm_",
+    "reward_head": "reward_head_",
+    "continue_head": "continue_head_",
+}
 
 
 @struct.dataclass
@@ -316,6 +322,9 @@ def world_model_loss(
     )
     pred = _normalize(outputs["predicted_latents"])
     target = _normalize(outputs["target_latents"])
+    ensemble_axis = pred.ndim == target.ndim + 1
+    if ensemble_axis:
+        target = target[..., None, :]
 
     max_horizon = config.max_horizon
     reward_targets = jnp.stack(
@@ -335,7 +344,12 @@ def world_model_loss(
     continue_targets = 1.0 - done_targets
     reward_pred = outputs["reward_logits"]
     continue_logits = outputs["continue_logits"]
+    if ensemble_axis:
+        reward_targets = reward_targets[..., None]
+        continue_targets = continue_targets[..., None]
     validity = prediction_validity(batch.dones, chunk_length, max_horizon)
+    if ensemble_axis:
+        validity = validity[..., None]
     reward_loss = masked_mean(jnp.square(reward_pred - reward_targets), validity)
     continue_loss = masked_mean(
         optax.sigmoid_binary_cross_entropy(continue_logits, continue_targets),
@@ -358,6 +372,7 @@ def world_model_loss(
     )
     constant_continue = jnp.full_like(continue_targets, jnp.mean(continue_targets))
     constant_reward = jnp.full_like(reward_targets, jnp.mean(reward_targets))
+    terminal_logits = jnp.mean(continue_logits, axis=-1) if ensemble_axis else continue_logits
     metrics = {
         "model/total_loss": total_loss,
         "model/jepa_loss": jepa_loss,
@@ -371,6 +386,11 @@ def world_model_loss(
             validity,
         ),
         "model/continue_loss": continue_loss,
+        **ensemble_prediction_metrics(
+            outputs["predicted_latents"],
+            outputs["reward_logits"],
+            outputs["continue_logits"],
+        ),
         "model/continue_constant_bce": masked_mean(
             optax.sigmoid_binary_cross_entropy(
                 jnp.log(constant_continue / (1.0 - constant_continue + 1e-6) + 1e-6),
@@ -378,7 +398,7 @@ def world_model_loss(
             ),
             validity,
         ),
-        **terminal_prediction_metrics(continue_logits, done_targets),
+        **terminal_prediction_metrics(terminal_logits, done_targets),
         **{f"collapse/{key}": value for key, value in collapse.items()},
     }
     return total_loss, metrics
@@ -428,6 +448,12 @@ def continuous_policy_train_step(
     behavior_teacher_params: FrozenDict | None = None,
     behavior_teacher_control_alignment: jax.Array | None = None,
     behavior_distill_weight: float = 0.0,
+    uncertainty_penalty: float = 0.0,
+    uncertainty_latent_weight: float = 1.0,
+    uncertainty_reward_weight: float = 1.0,
+    uncertainty_continue_weight: float = 1.0,
+    uncertainty_threshold: float = float("inf"),
+    uncertainty_budget: float = float("inf"),
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     if config.action_mode != "continuous":
         raise ValueError("continuous_policy_train_step requires continuous actions")
@@ -445,6 +471,12 @@ def continuous_policy_train_step(
             control=control,
             start_actions=start_actions,
             control_alignment=state.control_alignment,
+            uncertainty_penalty=uncertainty_penalty,
+            uncertainty_latent_weight=uncertainty_latent_weight,
+            uncertainty_reward_weight=uncertainty_reward_weight,
+            uncertainty_continue_weight=uncertainty_continue_weight,
+            uncertainty_threshold=uncertainty_threshold,
+            uncertainty_budget=uncertainty_budget,
         )
         if policy_return_mode == "reward-only":
             actor_returns = reward_only_returns(
@@ -504,8 +536,11 @@ def continuous_policy_train_step(
             rollout["normalized_actions"],
             rollout["rewards"],
             rollout["continues"],
+            rollout["raw_rewards"],
             rollout["values"],
             rollout["fixed_values"],
+            rollout["uncertainty"],
+            rollout["trusted"],
             actor_returns,
             clipped_returns,
             actor_loss,
@@ -515,8 +550,19 @@ def continuous_policy_train_step(
             "policy/imagined_return": weighted_mean(actor_returns, weights),
             "policy/clipped_imagined_return": weighted_mean(clipped_returns, weights),
             "policy/imagined_reward": weighted_mean(rollout["rewards"], weights),
+            "policy/raw_imagined_reward": weighted_mean(
+                rollout["raw_rewards"],
+                weights,
+            ),
             "policy/imagined_continue": weighted_mean(rollout["continues"], weights),
             "policy/survival_weight_mean": jnp.mean(weights),
+            "policy/uncertainty": weighted_mean(rollout["uncertainty"], weights),
+            "policy/uncertainty_abs_max": jnp.max(jnp.abs(rollout["uncertainty"])),
+            "policy/trusted_fraction": jnp.mean(rollout["trusted"]),
+            "policy/uncertainty_penalty": jnp.asarray(
+                uncertainty_penalty,
+                dtype=actor_loss.dtype,
+            ),
             "policy/return_abs_mean": jnp.mean(jnp.abs(actor_returns)),
             "policy/return_abs_max": jnp.max(jnp.abs(actor_returns)),
             "policy/value_target_abs_mean": jnp.mean(jnp.abs(clipped_returns)),
@@ -837,6 +883,12 @@ def continuous_imagine_rollout(
     control: ControlMode,
     start_actions: jax.Array | None = None,
     control_alignment: jax.Array,
+    uncertainty_penalty: float = 0.0,
+    uncertainty_latent_weight: float = 1.0,
+    uncertainty_reward_weight: float = 1.0,
+    uncertainty_continue_weight: float = 1.0,
+    uncertainty_threshold: float = float("inf"),
+    uncertainty_budget: float = float("inf"),
 ) -> dict[str, jax.Array]:
     model_params = jax.tree_util.tree_map(jax.lax.stop_gradient, params)
     context, action_context = initial_imagination_context(
@@ -846,9 +898,12 @@ def continuous_imagine_rollout(
         start_actions,
         config,
     )
+    batch_size = context.shape[0]
+    initial_uncertainty = jnp.zeros((batch_size,), dtype=context.dtype)
+    initial_trusted = jnp.ones((batch_size,), dtype=context.dtype)
 
     def step(carry, _):
-        context, action_context = carry
+        context, action_context, cumulative_uncertainty, active = carry
         current_z = context[:, -1]
         raw_actions, values = actor_value_from_control_latent(
             apply_fn,
@@ -870,13 +925,30 @@ def continuous_imagine_rollout(
             model_actions,
             config,
         )
-        next_z, rewards, continue_logits = apply_fn(
+        z_ensemble, reward_ensemble, continue_logit_ensemble = apply_fn(
             {"params": model_params},
             context,
             model_action_context,
-            method=JepaWorldModel.predict_next_from_history,
+            method=JepaWorldModel.predict_next_ensemble_from_history,
         )
-        continues = jax.nn.sigmoid(continue_logits)
+        next_z = jnp.mean(z_ensemble, axis=0)
+        raw_rewards = jnp.mean(reward_ensemble, axis=0)
+        continues = jnp.mean(jax.nn.sigmoid(continue_logit_ensemble), axis=0)
+        uncertainty = ensemble_transition_uncertainty(
+            z_ensemble,
+            reward_ensemble,
+            continue_logit_ensemble,
+            latent_weight=uncertainty_latent_weight,
+            reward_weight=uncertainty_reward_weight,
+            continue_weight=uncertainty_continue_weight,
+        )
+        next_cumulative_uncertainty = cumulative_uncertainty + uncertainty
+        trusted = active * (
+            (uncertainty <= uncertainty_threshold)
+            & (next_cumulative_uncertainty <= uncertainty_budget)
+        ).astype(context.dtype)
+        rewards = (raw_rewards - uncertainty_penalty * uncertainty) * trusted
+        continues = continues * trusted
         _, fixed_values = actor_value_from_control_latent(
             apply_fn,
             model_params,
@@ -889,19 +961,27 @@ def continuous_imagine_rollout(
             jnp.zeros_like(model_actions),
             config,
         )
-        return (next_context, next_action_context), {
+        return (
+            next_context,
+            next_action_context,
+            next_cumulative_uncertainty,
+            trusted,
+        ), {
             "latents": current_z,
             "actions": actions,
             "normalized_actions": normalized_actions,
             "values": values,
             "fixed_values": fixed_values,
+            "raw_rewards": raw_rewards,
             "rewards": rewards,
             "continues": continues,
+            "uncertainty": uncertainty,
+            "trusted": trusted,
         }
 
-    (final_context, _), rollout = jax.lax.scan(
+    (final_context, _, _, _), rollout = jax.lax.scan(
         step,
-        (context, action_context),
+        (context, action_context, initial_uncertainty, initial_trusted),
         xs=None,
         length=imag_horizon,
     )
@@ -913,6 +993,27 @@ def continuous_imagine_rollout(
     )
     rollout["fixed_last_value"] = fixed_last_value
     return rollout
+
+
+def ensemble_transition_uncertainty(
+    z_ensemble: jax.Array,
+    reward_ensemble: jax.Array,
+    continue_logit_ensemble: jax.Array,
+    *,
+    latent_weight: float,
+    reward_weight: float,
+    continue_weight: float,
+) -> jax.Array:
+    normalized = _normalize(z_ensemble)
+    mean_direction = jnp.mean(normalized, axis=0)
+    latent_disagreement = 1.0 - jnp.sum(jnp.square(mean_direction), axis=-1)
+    reward_variance = jnp.var(reward_ensemble, axis=0)
+    continue_variance = jnp.var(jax.nn.sigmoid(continue_logit_ensemble), axis=0)
+    return (
+        latent_weight * latent_disagreement
+        + reward_weight * reward_variance
+        + continue_weight * continue_variance
+    )
 
 
 def initial_imagination_context(
@@ -1145,6 +1246,30 @@ def representation_regularizer(
     )
 
 
+def ensemble_prediction_metrics(
+    predicted_latents: jax.Array,
+    reward_logits: jax.Array,
+    continue_logits: jax.Array,
+) -> dict[str, jax.Array]:
+    if predicted_latents.ndim != 5:
+        zero = jnp.asarray(0.0, dtype=predicted_latents.dtype)
+        return {
+            "model/ensemble_latent_disagreement": zero,
+            "model/ensemble_reward_std": zero,
+            "model/ensemble_continue_std": zero,
+        }
+
+    normalized = _normalize(predicted_latents)
+    mean_direction = jnp.mean(normalized, axis=-2)
+    latent_disagreement = 1.0 - jnp.sum(jnp.square(mean_direction), axis=-1)
+    continue_probs = jax.nn.sigmoid(continue_logits)
+    return {
+        "model/ensemble_latent_disagreement": jnp.mean(latent_disagreement),
+        "model/ensemble_reward_std": jnp.mean(jnp.std(reward_logits, axis=-1)),
+        "model/ensemble_continue_std": jnp.mean(jnp.std(continue_probs, axis=-1)),
+    }
+
+
 def sigreg_loss(
     latents: jax.Array,
     key: jax.Array,
@@ -1308,20 +1433,25 @@ def _label_params(params: FrozenDict, trainable_groups: frozenset[str]) -> Froze
     raw = unfreeze(params)
     labels = {
         key: jax.tree_util.tree_map(
-            lambda _: (
-                "train"
-                if key in trainable_groups
-                or (
-                    key.startswith("block_")
-                    and "transformer_blocks" in trainable_groups
-                )
-                else "freeze"
-            ),
+            lambda _: "train"
+            if _trainable_param_group(key, trainable_groups)
+            else "freeze",
             value,
         )
         for key, value in raw.items()
     }
     return freeze(labels)
+
+
+def _trainable_param_group(key: str, trainable_groups: frozenset[str]) -> bool:
+    if key in trainable_groups:
+        return True
+    if key.startswith("block_") and "transformer_blocks" in trainable_groups:
+        return True
+    return any(
+        key.startswith(prefix) and group in trainable_groups
+        for group, prefix in ENSEMBLE_GROUP_PREFIXES.items()
+    )
 
 
 def _finite_fraction(x: jax.Array) -> jax.Array:

@@ -94,6 +94,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-heads", type=int, default=4)
     parser.add_argument("--mlp-ratio", type=int, default=4)
     parser.add_argument(
+        "--dynamics-ensemble-size",
+        type=int,
+        default=1,
+        help=(
+            "Number of independently initialized predictor/reward/continue "
+            "heads sharing the encoder and transformer trunk. Values >1 enable "
+            "ensemble disagreement diagnostics and conservative imagination."
+        ),
+    )
+    parser.add_argument(
         "--target-gradient",
         choices=("stopgrad", "symmetric"),
         default="stopgrad",
@@ -140,6 +150,36 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--value-clip", type=float, default=100.0)
     parser.add_argument("--action-saturation-threshold", type=float, default=0.95)
+    parser.add_argument(
+        "--uncertainty-penalty",
+        type=float,
+        default=0.0,
+        help=(
+            "Penalty subtracted from imagined rewards per unit of ensemble "
+            "uncertainty. Requires --dynamics-ensemble-size > 1 to have effect."
+        ),
+    )
+    parser.add_argument("--uncertainty-latent-weight", type=float, default=1.0)
+    parser.add_argument("--uncertainty-reward-weight", type=float, default=1.0)
+    parser.add_argument("--uncertainty-continue-weight", type=float, default=1.0)
+    parser.add_argument(
+        "--uncertainty-threshold",
+        type=float,
+        default=float("inf"),
+        help=(
+            "Stop trusting an imagined trajectory after a transition exceeds "
+            "this ensemble-uncertainty threshold."
+        ),
+    )
+    parser.add_argument(
+        "--uncertainty-budget",
+        type=float,
+        default=float("inf"),
+        help=(
+            "Stop trusting an imagined trajectory after cumulative ensemble "
+            "uncertainty exceeds this budget."
+        ),
+    )
     parser.add_argument("--num-policy-candidates", type=int, default=64)
     parser.add_argument("--candidate-min-gap", type=float, default=1e-3)
     parser.add_argument("--policy-action-l2-coef", type=float, default=1e-3)
@@ -357,6 +397,7 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         "num_layers",
         "num_heads",
         "mlp_ratio",
+        "dynamics_ensemble_size",
         "sigreg_knots",
         "sigreg_num_proj",
         "num_runs",
@@ -418,6 +459,17 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--value-clip must be > 0")
     if not 0.0 < args.action_saturation_threshold <= 1.0:
         parser.error("--action-saturation-threshold must be in (0, 1]")
+    for name in (
+        "uncertainty_penalty",
+        "uncertainty_latent_weight",
+        "uncertainty_reward_weight",
+        "uncertainty_continue_weight",
+        "uncertainty_threshold",
+        "uncertainty_budget",
+    ):
+        value = getattr(args, name)
+        if value < 0.0:
+            parser.error(f"--{name.replace('_', '-')} must be >= 0")
     if args.policy_batch_size is not None and args.policy_batch_size < 1:
         parser.error("--policy-batch-size must be >= 1")
     if args.policy_eval_num_envs is not None and args.policy_eval_num_envs < 1:
@@ -551,6 +603,7 @@ def run_one(
             sigreg_num_proj=args.sigreg_num_proj,
             reward_weight=args.reward_weight,
             continue_weight=args.continue_weight,
+            dynamics_ensemble_size=args.dynamics_ensemble_size,
             gamma=args.gamma,
             lambda_return=args.lambda_return,
             residual_dynamics=args.residual_dynamics,
@@ -1879,6 +1932,12 @@ def _maybe_train_policy(
                     else None
                 ),
                 behavior_distill_weight=behavior_distill_weight,
+                uncertainty_penalty=args.uncertainty_penalty,
+                uncertainty_latent_weight=args.uncertainty_latent_weight,
+                uncertainty_reward_weight=args.uncertainty_reward_weight,
+                uncertainty_continue_weight=args.uncertainty_continue_weight,
+                uncertainty_threshold=args.uncertainty_threshold,
+                uncertainty_budget=args.uncertainty_budget,
             )
         policy_loss = float(metrics["policy/total_loss"])
         progress_score = float(

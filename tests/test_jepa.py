@@ -175,6 +175,70 @@ def test_continuous_action_jepa_model_step_is_finite():
     assert jnp.isfinite(metrics["model/total_loss"])
 
 
+def test_dynamics_ensemble_model_step_and_policy_metrics_are_finite():
+    config = JepaConfig(
+        observation_dim=4,
+        action_dim=3,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=1,
+        context_window=1,
+        dynamics_ensemble_size=3,
+        sigreg_num_proj=32,
+    )
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    observations = jnp.ones((3, 4, 4), dtype=jnp.float32)
+    actions = jnp.zeros((3, 3, 3), dtype=jnp.float32)
+    outputs = state.apply_fn(
+        {"params": state.params},
+        observations,
+        actions,
+        chunk_length=2,
+        method=JepaWorldModel.sequence_outputs,
+    )
+
+    assert outputs["predicted_latents"].shape == (3, 2, 1, 3, 8)
+    assert outputs["reward_logits"].shape == (3, 2, 1, 3)
+    assert outputs["continue_logits"].shape == (3, 2, 1, 3)
+
+    batch = ReplayBatch(
+        observations=observations,
+        actions=actions,
+        rewards=jnp.ones((3, 3), dtype=jnp.float32),
+        dones=jnp.zeros((3, 3), dtype=jnp.float32),
+    )
+    state, model_metrics = train_model_step(
+        state,
+        jax.random.PRNGKey(1),
+        batch,
+        config,
+        chunk_length=2,
+    )
+    assert jnp.isfinite(model_metrics["model/total_loss"])
+    assert jnp.isfinite(model_metrics["model/ensemble_latent_disagreement"])
+
+    state, policy_metrics = continuous_policy_train_step(
+        state,
+        jax.random.PRNGKey(2),
+        jnp.ones((5, 1, 4), dtype=jnp.float32),
+        config,
+        jnp.full((3,), -1.0),
+        jnp.full((3,), 1.0),
+        imag_horizon=2,
+        uncertainty_penalty=0.1,
+        uncertainty_threshold=10.0,
+        uncertainty_budget=20.0,
+    )
+
+    del state
+    assert jnp.isfinite(policy_metrics["policy/total_loss"])
+    assert jnp.isfinite(policy_metrics["policy/uncertainty"])
+    assert jnp.isfinite(policy_metrics["policy/trusted_fraction"])
+
+
 def test_frozen_encoder_model_step_preserves_encoder_and_updates_world_model():
     config = JepaConfig(
         observation_dim=4,

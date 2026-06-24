@@ -164,6 +164,50 @@ def test_single_agent_jepa_cli_uses_regularizer_weight_alias(monkeypatch):
     assert args.regularizer_weight == 0.25
 
 
+def test_single_agent_jepa_cli_accepts_uncertainty_gated_imagination(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "world-marl-validate-single-agent-world-model",
+            "--env",
+            "brax:reacher",
+            "--collect-steps",
+            "8",
+            "--validation-steps",
+            "8",
+            "--chunk-length",
+            "4",
+            "--open-loop-horizon",
+            "2",
+            "--dynamics-ensemble-size",
+            "3",
+            "--uncertainty-penalty",
+            "0.2",
+            "--uncertainty-latent-weight",
+            "1.5",
+            "--uncertainty-reward-weight",
+            "0.5",
+            "--uncertainty-continue-weight",
+            "0.25",
+            "--uncertainty-threshold",
+            "0.75",
+            "--uncertainty-budget",
+            "2.5",
+        ],
+    )
+
+    args = train_dmc_jepa.parse_args()
+
+    assert args.dynamics_ensemble_size == 3
+    assert args.uncertainty_penalty == 0.2
+    assert args.uncertainty_latent_weight == 1.5
+    assert args.uncertainty_reward_weight == 0.5
+    assert args.uncertainty_continue_weight == 0.25
+    assert args.uncertainty_threshold == 0.75
+    assert args.uncertainty_budget == 2.5
+
+
 def test_single_agent_jepa_cli_allows_model_only_history_context(monkeypatch):
     monkeypatch.setattr(
         sys,

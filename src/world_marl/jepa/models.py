@@ -30,6 +30,7 @@ class JepaConfig:
     sigreg_num_proj: int = 1024
     reward_weight: float = 1.0
     continue_weight: float = 1.0
+    dynamics_ensemble_size: int = 1
     gamma: float = 0.99
     lambda_return: float = 0.95
     residual_dynamics: bool = True
@@ -50,6 +51,8 @@ class JepaConfig:
             raise ValueError("max_horizon must be >= 1")
         if self.context_window < 1:
             raise ValueError("context_window must be >= 1")
+        if self.dynamics_ensemble_size < 1:
+            raise ValueError("dynamics_ensemble_size must be >= 1")
 
 
 class MLPEncoder(nn.Module):
@@ -138,14 +141,36 @@ class JepaWorldModel(nn.Module):
             for index in range(self.config.num_layers)
         ]
         self.dynamics_norm = nn.LayerNorm(name="dynamics_norm")
-        self.predictor = MLPHead(
-            self.config.latent_dim,
-            self.config.model_dim,
-            name="predictor",
-        )
-        self.predictor_norm = nn.LayerNorm(name="predictor_norm")
-        self.reward_head = MLPHead(1, self.config.model_dim, name="reward_head")
-        self.continue_head = MLPHead(1, self.config.model_dim, name="continue_head")
+        if self.config.dynamics_ensemble_size == 1:
+            self.predictor = MLPHead(
+                self.config.latent_dim,
+                self.config.model_dim,
+                name="predictor",
+            )
+            self.predictor_norm = nn.LayerNorm(name="predictor_norm")
+            self.reward_head = MLPHead(1, self.config.model_dim, name="reward_head")
+            self.continue_head = MLPHead(1, self.config.model_dim, name="continue_head")
+        else:
+            self.predictors = [
+                MLPHead(
+                    self.config.latent_dim,
+                    self.config.model_dim,
+                    name=f"predictor_{index}",
+                )
+                for index in range(self.config.dynamics_ensemble_size)
+            ]
+            self.predictor_norms = [
+                nn.LayerNorm(name=f"predictor_norm_{index}")
+                for index in range(self.config.dynamics_ensemble_size)
+            ]
+            self.reward_heads = [
+                MLPHead(1, self.config.model_dim, name=f"reward_head_{index}")
+                for index in range(self.config.dynamics_ensemble_size)
+            ]
+            self.continue_heads = [
+                MLPHead(1, self.config.model_dim, name=f"continue_head_{index}")
+                for index in range(self.config.dynamics_ensemble_size)
+            ]
         self.actor_head = MLPHead(
             self.config.action_dim,
             self.config.model_dim,
@@ -248,29 +273,45 @@ class JepaWorldModel(nn.Module):
             last_h = h[:, -1]
             horizon_ids = jnp.full((flat_batch,), step_index + 1, dtype=jnp.int32)
             current_latents = flat_latents[:, -1]
-            next_latents = self.predict_latent(
-                last_h + self.horizon_embed(horizon_ids),
-                current_latents=current_latents,
-            )
-            predictions.append(
-                next_latents.reshape((batch_size, chunk_length, self.config.latent_dim))
-            )
+            head_predictions = []
+            head_rewards = []
+            head_continues = []
+            for head_index in range(self.config.dynamics_ensemble_size):
+                next_latents = self.predict_latent(
+                    last_h + self.horizon_embed(horizon_ids),
+                    current_latents=current_latents,
+                    head_index=head_index,
+                )
+                head_predictions.append(
+                    next_latents.reshape(
+                        (batch_size, chunk_length, self.config.latent_dim)
+                    )
+                )
+                head_rewards.append(
+                    jnp.squeeze(
+                        self.reward_from_hidden(last_h, head_index=head_index),
+                        axis=-1,
+                    ).reshape((batch_size, chunk_length))
+                )
+                head_continues.append(
+                    jnp.squeeze(
+                        self.continue_from_hidden(last_h, head_index=head_index),
+                        axis=-1,
+                    ).reshape((batch_size, chunk_length))
+                )
+            head_predictions = jnp.stack(head_predictions, axis=2)
+            predictions.append(head_predictions)
             target = latents[:, step_index + 1 : step_index + 1 + chunk_length]
             if self.config.target_gradient == "stopgrad":
                 target = jax.lax.stop_gradient(target)
             targets.append(target)
-            rewards.append(
-                jnp.squeeze(self.reward_head(last_h), axis=-1).reshape(
-                    (batch_size, chunk_length)
-                )
-            )
-            continues.append(
-                jnp.squeeze(self.continue_head(last_h), axis=-1).reshape(
-                    (batch_size, chunk_length)
-                )
-            )
+            rewards.append(jnp.stack(head_rewards, axis=2))
+            continues.append(jnp.stack(head_continues, axis=2))
             if step_index + 1 < max_horizon:
-                latent_history = append_history(latent_history, predictions[-1])
+                latent_history = append_history(
+                    latent_history,
+                    jnp.mean(predictions[-1], axis=2),
+                )
                 action_history = append_history(
                     action_history,
                     actions[:, step_index + 1 : step_index + 1 + chunk_length],
@@ -280,12 +321,19 @@ class JepaWorldModel(nn.Module):
                         done_history,
                         dones[:, step_index + 1 : step_index + 1 + chunk_length],
                     )
+        predicted_latents = jnp.stack(predictions, axis=2)
+        reward_logits = jnp.stack(rewards, axis=2)
+        continue_logits = jnp.stack(continues, axis=2)
+        if self.config.dynamics_ensemble_size == 1:
+            predicted_latents = predicted_latents[..., 0, :]
+            reward_logits = reward_logits[..., 0]
+            continue_logits = continue_logits[..., 0]
         return {
             "context_latents": context_latents,
-            "predicted_latents": jnp.stack(predictions, axis=2),
+            "predicted_latents": predicted_latents,
             "target_latents": jnp.stack(targets, axis=2),
-            "reward_logits": jnp.stack(rewards, axis=2),
-            "continue_logits": jnp.stack(continues, axis=2),
+            "reward_logits": reward_logits,
+            "continue_logits": continue_logits,
         }
 
     def dynamics_hidden(
@@ -315,17 +363,53 @@ class JepaWorldModel(nn.Module):
         hidden: jax.Array,
         *,
         current_latents: jax.Array | None = None,
+        head_index: int = 0,
     ) -> jax.Array:
-        update = self.predictor(hidden)
+        if self.config.dynamics_ensemble_size == 1:
+            update = self.predictor(hidden)
+        else:
+            update = self.predictors[head_index](hidden)
         if self.config.residual_dynamics and current_latents is not None:
             update = current_latents + update
-        return self.predictor_norm(update)
+        if self.config.dynamics_ensemble_size == 1:
+            return self.predictor_norm(update)
+        return self.predictor_norms[head_index](update)
+
+    def reward_from_hidden(self, hidden: jax.Array, *, head_index: int = 0) -> jax.Array:
+        if self.config.dynamics_ensemble_size == 1:
+            return self.reward_head(hidden)
+        return self.reward_heads[head_index](hidden)
+
+    def continue_from_hidden(
+        self,
+        hidden: jax.Array,
+        *,
+        head_index: int = 0,
+    ) -> jax.Array:
+        if self.config.dynamics_ensemble_size == 1:
+            return self.continue_head(hidden)
+        return self.continue_heads[head_index](hidden)
 
     def predict_next_from_history(
         self,
         latent_history: jax.Array,
         action_history: jax.Array,
     ) -> tuple[jax.Array, jax.Array, jax.Array]:
+        if self.config.dynamics_ensemble_size > 1:
+            z_ensemble, reward_ensemble, continue_logit_ensemble = (
+                self.predict_next_ensemble_from_history(latent_history, action_history)
+            )
+            continue_prob = jnp.mean(jax.nn.sigmoid(continue_logit_ensemble), axis=0)
+            continue_logit = jnp.log(
+                jnp.clip(continue_prob, 1e-6, 1.0 - 1e-6)
+                / jnp.clip(1.0 - continue_prob, 1e-6, 1.0)
+            )
+            return (
+                jnp.mean(z_ensemble, axis=0),
+                jnp.mean(reward_ensemble, axis=0),
+                continue_logit,
+            )
+
         h = self.dynamics_hidden(latent_history, action_history)
         last_h = h[:, -1]
         horizon_ids = jnp.ones((last_h.shape[0],), dtype=jnp.int32)
@@ -333,9 +417,46 @@ class JepaWorldModel(nn.Module):
             last_h + self.horizon_embed(horizon_ids),
             current_latents=latent_history[:, -1],
         )
-        reward = jnp.squeeze(self.reward_head(last_h), axis=-1)
-        continue_logit = jnp.squeeze(self.continue_head(last_h), axis=-1)
+        reward = jnp.squeeze(self.reward_from_hidden(last_h), axis=-1)
+        continue_logit = jnp.squeeze(self.continue_from_hidden(last_h), axis=-1)
         return z_next, reward, continue_logit
+
+    def predict_next_ensemble_from_history(
+        self,
+        latent_history: jax.Array,
+        action_history: jax.Array,
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+        h = self.dynamics_hidden(latent_history, action_history)
+        last_h = h[:, -1]
+        horizon_ids = jnp.ones((last_h.shape[0],), dtype=jnp.int32)
+        z_next = []
+        rewards = []
+        continue_logits = []
+        for head_index in range(self.config.dynamics_ensemble_size):
+            z_next.append(
+                self.predict_latent(
+                    last_h + self.horizon_embed(horizon_ids),
+                    current_latents=latent_history[:, -1],
+                    head_index=head_index,
+                )
+            )
+            rewards.append(
+                jnp.squeeze(
+                    self.reward_from_hidden(last_h, head_index=head_index),
+                    axis=-1,
+                )
+            )
+            continue_logits.append(
+                jnp.squeeze(
+                    self.continue_from_hidden(last_h, head_index=head_index),
+                    axis=-1,
+                )
+            )
+        return (
+            jnp.stack(z_next, axis=0),
+            jnp.stack(rewards, axis=0),
+            jnp.stack(continue_logits, axis=0),
+        )
 
     def action_tokens(self, actions: jax.Array) -> jax.Array:
         if self.config.action_mode == "discrete":
