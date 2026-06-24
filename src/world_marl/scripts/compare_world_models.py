@@ -612,6 +612,27 @@ def plot_example_rollout(
     plt.close(fig)
 
 
+def count_params(params, *, num_experts: int = 1, expert_top_k: int = 1) -> dict:
+    """Total leaf params + a FLOPs-comparable 'active' count.
+
+    MoE experts live as separate named submodules (``expert_{e}``); only
+    ``expert_top_k`` of ``num_experts`` run per token, so ``active`` discounts the
+    un-selected experts (router/attention/embeds are always active). Arms with no
+    ``expert_`` leaves get ``active == total``.
+    """
+    total = expert = 0
+    for path, leaf in jax.tree_util.tree_leaves_with_path(params):
+        size = int(leaf.size)
+        total += size
+        if "expert_" in jax.tree_util.keystr(path):
+            expert += size
+    if num_experts > 0:
+        active = (total - expert) + int(round(expert * expert_top_k / num_experts))
+    else:
+        active = total
+    return {"total": total, "active": active}
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--algorithm", choices=("ippo", "mappo"), default="ippo")
@@ -629,14 +650,36 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--integration-steps", type=int, default=8)
     p.add_argument("--learning-rate", type=float, default=1e-3)
     p.add_argument("--num-categories", type=int, default=9)
+    # Transformer-arm capacity (shared by 'transformer' and 'llada2'); kept separate
+    # from --hidden-dim (the MLP arms). The printed param audit makes matching the MLP
+    # arm's count explicit -- set --transformer-dim from it. ffn width is 4x model_dim
+    # (so the defaults reproduce the prior model_dim=64, ffn=256 transformer).
+    p.add_argument("--transformer-dim", type=int, default=64)
+    p.add_argument("--transformer-layers", type=int, default=2)
+    p.add_argument("--num-heads", type=int, default=4)
+    # LLaDA2.0 block-diffusion arm knobs (orthogonal; one parameter each).
+    p.add_argument("--block-size", type=int, default=4)
+    p.add_argument("--num-experts", type=int, default=4)
+    p.add_argument("--expert-top-k", type=int, default=2)
+    p.add_argument("--alpha-min", type=float, default=0.15)
+    p.add_argument("--alpha-max", type=float, default=0.95)
+    p.add_argument("--mask-schedule", default="linear")
+    p.add_argument("--confidence-threshold", type=float, default=0.9)
+    p.add_argument("--steps-per-block", type=int, default=4)
+    p.add_argument("--cap-lambda", type=float, default=0.1)
+    p.add_argument(
+        "--complementary-masking", action=argparse.BooleanOptionalAction, default=True
+    )
+    p.add_argument("--wsd", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument(
         "--flow-types",
         nargs="+",
         default=["discrete", "linear"],
         help=(
             "predictor arms: 'discrete'/'transformer' are token denoisers (MLP vs "
-            "transformer), 'gaussian'/'linear' are continuous flows. "
-            "Pass 'discrete transformer linear' for the full token-architecture ablation."
+            "transformer), 'llada2' is the faithful LLaDA2.0 block-diffusion arm, "
+            "'gaussian'/'linear' are continuous flows. Pass 'discrete transformer "
+            "llada2 linear' for the full token-architecture ablation."
         ),
     )
     p.add_argument(
@@ -644,9 +687,20 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--out-dir", default="runs/compare_world_models")
     args = p.parse_args()
-    for name in ("num_envs", "horizon", "fit_steps", "chunk_steps", "hidden_dim"):
+    positive = (
+        "num_envs", "horizon", "fit_steps", "chunk_steps", "hidden_dim",
+        "transformer_dim", "transformer_layers", "num_heads", "block_size",
+        "num_experts", "expert_top_k", "steps_per_block",
+    )
+    for name in positive:
         if getattr(args, name) < 1:
             p.error(f"--{name.replace('_', '-')} must be >= 1")
+    if args.transformer_dim % args.num_heads != 0:
+        p.error("--transformer-dim must be divisible by --num-heads")
+    if args.expert_top_k > args.num_experts:
+        p.error("--expert-top-k must be <= --num-experts")
+    if not 0.0 <= args.alpha_min < args.alpha_max <= 1.0:
+        p.error("require 0 <= --alpha-min < --alpha-max <= 1")
     return args
 
 
@@ -662,6 +716,9 @@ def main() -> None:
     try:
         state_dim = adapter.observation_shape[0]
         hidden_dims = (args.hidden_dim, args.hidden_dim)
+        # ffn width = 4x model_dim per layer; single source of truth for transformer
+        # depth (len) and per-layer/MoE-expert width (the LLaDA2 backbone reads [0]).
+        ffn_hidden_dims = (4 * args.transformer_dim,) * args.transformer_layers
         decode_config = VectorWorldModelConfig(
             state_dim=state_dim,
             num_agents=adapter.num_agents,
@@ -670,6 +727,20 @@ def main() -> None:
             learning_rate=args.learning_rate,
             integration_steps=args.integration_steps,
             num_categories=args.num_categories,
+            model_dim=args.transformer_dim,
+            num_heads=args.num_heads,
+            ffn_hidden_dims=ffn_hidden_dims,
+            block_size=args.block_size,
+            num_experts=args.num_experts,
+            expert_top_k=args.expert_top_k,
+            mask_schedule=args.mask_schedule,
+            alpha_min=args.alpha_min,
+            alpha_max=args.alpha_max,
+            cap_lambda=args.cap_lambda,
+            complementary_masking=args.complementary_masking,
+            confidence_threshold=args.confidence_threshold,
+            steps_per_block=args.steps_per_block,
+            wsd_enabled=args.wsd,
         )
         uniform_ce = float(_num_factors(decode_config) * np.log(args.num_categories))
 
@@ -728,6 +799,7 @@ def main() -> None:
             {},
             {},
         )
+        param_counts: dict[str, dict] = {}
 
         def evaluate_predictor(name, predict_fn, history):
             loss_histories[name] = history
@@ -744,14 +816,30 @@ def main() -> None:
             _report(name, rollout_metrics[name], single_step_acc[name], history)
 
         for flow in args.flow_types:
-            is_discrete = flow in ("discrete", "transformer")
+            is_token = flow in ("discrete", "transformer", "llada2")
+            if flow == "llada2":
+                flow_type = "llada2"
+            elif flow in ("discrete", "transformer"):
+                flow_type = "discrete"
+            else:
+                flow_type = flow
             config = dataclasses.replace(
                 decode_config,
-                flow_type=("discrete" if is_discrete else flow),
-                num_categories=(args.num_categories if is_discrete else 0),
+                flow_type=flow_type,
+                num_categories=(args.num_categories if is_token else 0),
                 discrete_arch=("transformer" if flow == "transformer" else "mlp"),
             )
             model_state = create_world_model_state(model_key, config)
+            param_counts[flow] = count_params(
+                model_state.params,
+                num_experts=config.num_experts,
+                expert_top_k=config.expert_top_k,
+            )
+            print(
+                f"[{flow}] params total={param_counts[flow]['total']} "
+                f"active={param_counts[flow]['active']}",
+                flush=True,
+            )
 
             def fit_step(carry, n, cfg=config):
                 ms, r = carry
@@ -769,6 +857,10 @@ def main() -> None:
 
         baseline_state = create_baseline_state(
             model_key, decode_config, hidden_dims, args.learning_rate
+        )
+        param_counts["baseline"] = count_params(baseline_state.params)
+        print(
+            f"[baseline] params total={param_counts['baseline']['total']}", flush=True
         )
 
         def baseline_step(state, n):
@@ -813,6 +905,7 @@ def main() -> None:
             },
             "single_step_accuracy": single_step_acc,
             "rollout_tracking": rollout_metrics,
+            "param_counts": param_counts,
         }
         (out_dir / "compare_world_models.json").write_text(
             json.dumps(summary, indent=2), encoding="utf-8"
