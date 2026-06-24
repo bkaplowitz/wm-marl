@@ -43,12 +43,10 @@ class MLPVectorField(nn.Module):
 
 
 class TokenizedDiscreteDenoiser(nn.Module):
-    """Posterior network f_theta for discrete flow matching (discrete.md Alg 8).
+    """MLP-based encoder for discrete flow matching (discrete.md Alg 8).
 
     Maps integer tokens ``(B, d)`` to per-factor logits ``(B, d, V)`` via a token
-    embedding rather than a one-hot input, so the input embedding and the d*V
-    classification head are sized independently (unlike :class:`MLPVectorField`,
-    whose head is tied to its input width).
+    embedding. Does not use one-hot encoding unlike :class:`MLPVectorField`.
     """
 
     num_categories: int
@@ -88,13 +86,10 @@ def sinusoidal_time_embedding(t: jax.Array, dim: int) -> jax.Array:
 
 
 class TokenizedDiscreteTransformer(nn.Module):
-    """Transformer posterior network f_theta for discrete flow matching (Alg 8).
+    """Transformer encoder for discrete flow matching.
 
     Treats the d factors as a length-d sequence with bidirectional self-attention
-    and a prepended conditioning token carrying (sinusoidal-t, cond_vars). Honors
-    the same ``(tokens, t, cond_vars) -> (B, d, V)`` contract as
-    :class:`TokenizedDiscreteDenoiser`; dropout-free so the apply signature needs
-    no rng.
+    and a prepended conditioning token carrying (sinusoidal-t, cond_vars).
     """
 
     num_categories: int

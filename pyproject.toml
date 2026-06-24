@@ -30,6 +30,7 @@ dev = ["pre-commit>=4.3", "pytest>=8", "ruff==0.15.18"]
 [project.scripts]
 world-marl-train-e2e = "world_marl.scripts.train_e2e:main"
 world-marl-verify-install = "world_marl.scripts.verify_install:main"
+world-marl-runpod = "world_marl.runpod:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

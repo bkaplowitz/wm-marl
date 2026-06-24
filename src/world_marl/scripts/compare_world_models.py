@@ -615,7 +615,9 @@ def plot_example_rollout(
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--algorithm", choices=("ippo", "mappo"), default="ippo")
-    p.add_argument("--num-envs", type=int, default=64)
+    p.add_argument(
+        "--num-envs", "--rollout-envs", dest="num_envs", type=int, default=64
+    )
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--max-cycles", type=int, default=1000)
     p.add_argument("--horizon", type=int, default=25)
@@ -625,6 +627,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--train-initial-rollouts", type=int, default=64)
     p.add_argument("--heldout-random-rollouts", type=int, default=16)
     p.add_argument("--heldout-initial-rollouts", type=int, default=16)
+    p.add_argument("--heldout-seeds", type=int)
     p.add_argument("--hidden-dim", type=int, default=256)
     p.add_argument("--integration-steps", type=int, default=8)
     p.add_argument("--learning-rate", type=float, default=1e-3)
@@ -644,9 +647,14 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--out-dir", default="runs/compare_world_models")
     args = p.parse_args()
+    if args.heldout_seeds is not None:
+        args.heldout_random_rollouts = args.heldout_seeds
+        args.heldout_initial_rollouts = args.heldout_seeds
     for name in ("num_envs", "horizon", "fit_steps", "chunk_steps", "hidden_dim"):
         if getattr(args, name) < 1:
             p.error(f"--{name.replace('_', '-')} must be >= 1")
+    if args.heldout_seeds is not None and args.heldout_seeds < 1:
+        p.error("--heldout-seeds must be >= 1")
     return args
 
 

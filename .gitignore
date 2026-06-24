@@ -18,3 +18,4 @@ build/
 .cursorindexingignore
 AGENTS.md
 CLAUDE.md
+.env

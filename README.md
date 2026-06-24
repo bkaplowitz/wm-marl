@@ -30,6 +30,57 @@ The important pins are:
 uv sync --python 3.11 --extra dev --extra cuda12
 ```
 
+### Runpod launch
+
+For a one-shot GPU run that cleans itself up, use the Runpod wrapper from the
+repo root. The default job is the prefit `train_e2e` path:
+
+```bash
+uv run world-marl-runpod \
+  --gpu-id "NVIDIA A40" \
+  --prefit-train-steps 5000 \
+  --policy-warmstart-updates 1
+```
+
+The wrapper creates a fresh pod, syncs this checkout to `/root/wm-marl`, installs
+the CUDA dev environment, runs the selected wm-marl command, downloads artifacts
+to `runs/runpod/<job>/<timestamp>/`, and then deletes the pod. If the remote
+command fails or the local process is interrupted, it stops the pod instead and
+prints the pod id plus remote output path for inspection. New pods also get a
+12-hour auto-stop backstop by default; adjust it with `--auto-stop-hours` or
+disable it with `--auto-stop-hours 0`.
+
+The training defaults mirror the long prefit CoinGame run: IPPO, `coins`,
+`--prefit-world-model`, `--wm-flow-type linear`, `--wm-fit-steps` from
+`--prefit-train-steps`, and `--wm-policy-warmup-updates` from
+`--policy-warmstart-updates`. Use `--no-policy-warmstart` to set the warmstart
+updates to zero.
+
+Pass extra train options after `--`; later duplicate argparse flags override the
+wrapper defaults:
+
+```bash
+uv run world-marl-runpod \
+  --gpu-id "NVIDIA A40" \
+  --prefit-train-steps 10000 \
+  -- --total-env-steps 100000 --num-runs 1
+```
+
+To run the standalone compare harness instead:
+
+```bash
+uv run world-marl-runpod \
+  --job compare-world-models \
+  --gpu-id "NVIDIA A40" \
+  -- --fit-steps 20000 --flow-types discrete transformer linear
+```
+
+Preview the lifecycle without creating a pod:
+
+```bash
+uv run world-marl-runpod --dry-run
+```
+
 ### Basic CMDs 
 
 ```bash
