@@ -70,6 +70,10 @@ def main() -> None:
     write_csv(args.out_dir / "summary.csv", rows)
     write_json(args.out_dir / "summary.json", rows)
     write_markdown(args.out_dir / "diagnostics.md", rows)
+    write_csv(
+        args.out_dir / "policy_diagnostics.csv",
+        build_policy_diagnostic_rows(args.jepa_root, envs),
+    )
 
     plot_returns(args.out_dir / "returns_vs_ppo.png", envs, jepa, ppo)
     plot_jepa_improvement(args.out_dir / "jepa_improvement.png", envs, jepa)
@@ -91,9 +95,25 @@ def main() -> None:
         title="JEPA Imagined Policy Return",
         ylabel="Imagined return",
     )
+    plot_policy_selection_returns(
+        args.out_dir / "jepa_policy_selection_returns.png",
+        args.jepa_root,
+        envs,
+    )
+    plot_policy_training_metrics(
+        args.out_dir / "jepa_policy_training_metrics.png",
+        args.jepa_root,
+        envs,
+    )
+    plot_model_head_losses(
+        args.out_dir / "jepa_model_head_losses.png",
+        args.jepa_root,
+        envs,
+    )
 
     print(f"Wrote diagnostics to {args.out_dir}")
     print(f"- {args.out_dir / 'summary.csv'}")
+    print(f"- {args.out_dir / 'policy_diagnostics.csv'}")
     print(f"- {args.out_dir / 'diagnostics.md'}")
     print(f"- {args.out_dir / 'returns_vs_ppo.png'}")
     print(f"- {args.out_dir / 'jepa_improvement.png'}")
@@ -101,6 +121,9 @@ def main() -> None:
     print(f"- {args.out_dir / 'ppo_learning_curves.png'}")
     print(f"- {args.out_dir / 'jepa_model_loss_curves.png'}")
     print(f"- {args.out_dir / 'jepa_policy_return_curves.png'}")
+    print(f"- {args.out_dir / 'jepa_policy_selection_returns.png'}")
+    print(f"- {args.out_dir / 'jepa_policy_training_metrics.png'}")
+    print(f"- {args.out_dir / 'jepa_model_head_losses.png'}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -297,6 +320,8 @@ def write_markdown(path: Path, rows: list[dict[str, Any]]) -> None:
             "## Files",
             "",
             "- `summary.csv`: machine-readable aggregate table.",
+            "- `policy_diagnostics.csv`: best real-env policy selection "
+            "checkpoints by phase.",
             "- `summary.json`: same aggregate table in JSON.",
             "- `returns_vs_ppo.png`: JEPA final return against PPO best and last.",
             "- `jepa_improvement.png`: offline+online and online-only JEPA gains.",
@@ -304,6 +329,11 @@ def write_markdown(path: Path, rows: list[dict[str, Any]]) -> None:
             "- `ppo_learning_curves.png`: PPO evaluation curves from baseline runs.",
             "- `jepa_model_loss_curves.png`: JEPA model loss curves from metrics logs.",
             "- `jepa_policy_return_curves.png`: imagined-return policy curves.",
+            "- `jepa_policy_selection_returns.png`: real-env selection returns "
+            "during policy training.",
+            "- `jepa_policy_training_metrics.png`: imagined return, value loss, "
+            "and action saturation during policy training.",
+            "- `jepa_model_head_losses.png`: reward and control-value model losses.",
         ]
     )
     path.write_text("\n".join(lines) + "\n")
@@ -520,6 +550,202 @@ def load_jepa_metric_points(
                 continue
             points.append((len(points) + 1, value))
     return points
+
+
+def build_policy_diagnostic_rows(root: Path, envs: list[str]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for env in envs:
+        metrics = load_main_metrics_rows(root, env)
+        selection_rows = [
+            row
+            for row in metrics
+            if row.get("phase") == "policy_selection"
+            and row.get("policy_selection_mean_return") is not None
+        ]
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for row in selection_rows:
+            control = str(row.get("control", ""))
+            policy_phase = str(row.get("policy_phase", ""))
+            grouped.setdefault((control, policy_phase), []).append(row)
+
+        for (control, policy_phase), group in sorted(grouped.items()):
+            best = max(
+                group,
+                key=lambda row: (
+                    maybe_float(row.get("policy_selection_mean_return")) or -math.inf
+                ),
+            )
+            last = group[-1]
+            selected_steps = [
+                maybe_int(row.get("policy_selection_step"))
+                for row in group
+                if row.get("policy_selection_selected")
+            ]
+            rows.append(
+                {
+                    "env": env,
+                    "control": control,
+                    "policy_phase": policy_phase,
+                    "num_selection_points": len(group),
+                    "best_selection_step": maybe_int(best.get("policy_selection_step")),
+                    "best_selection_mean_return": trained_or_none(
+                        maybe_float(best.get("policy_selection_mean_return"))
+                    ),
+                    "last_selection_step": maybe_int(last.get("policy_selection_step")),
+                    "last_selection_mean_return": trained_or_none(
+                        maybe_float(last.get("policy_selection_mean_return"))
+                    ),
+                    "selected_steps": " ".join(
+                        str(step) for step in selected_steps if step is not None
+                    ),
+                    "logged_best_step": maybe_int(
+                        last.get("policy_selection_best_step")
+                    ),
+                    "logged_best_mean_return": trained_or_none(
+                        maybe_float(last.get("policy_selection_best_mean_return"))
+                    ),
+                }
+            )
+    return rows
+
+
+def plot_policy_selection_returns(
+    path: Path,
+    root: Path,
+    envs: list[str],
+) -> None:
+    fig, ax = plt.subplots(figsize=(9, 5.5))
+    plotted = False
+    for env in envs:
+        metrics = load_main_metrics_rows(root, env)
+        groups: dict[str, list[tuple[int, float]]] = {}
+        for row in metrics:
+            if row.get("phase") != "policy_selection":
+                continue
+            step = maybe_int(row.get("policy_selection_step"))
+            value = maybe_float(row.get("policy_selection_mean_return"))
+            if step is None or value is None:
+                continue
+            phase = str(row.get("policy_phase", "policy"))
+            groups.setdefault(phase, []).append((step, value))
+        for phase, points in sorted(groups.items()):
+            steps, values = zip(*points)
+            label = f"{env}:{phase}"
+            ax.plot(steps, values, marker="o", linewidth=1.7, markersize=3, label=label)
+            plotted = True
+    ax.set_title("Real-env Policy Selection Returns")
+    ax.set_xlabel("Policy update within phase")
+    ax.set_ylabel("Selection return")
+    ax.grid(alpha=0.25)
+    if plotted:
+        ax.legend(fontsize="x-small", ncol=2)
+    fig.tight_layout()
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def plot_policy_training_metrics(
+    path: Path,
+    root: Path,
+    envs: list[str],
+) -> None:
+    metrics = [
+        ("policy/imagined_return", "Imagined return"),
+        ("policy/value_loss", "Value loss"),
+        ("policy/action_saturation_fraction", "Action saturation fraction"),
+    ]
+    fig, axes = plt.subplots(len(metrics), 1, figsize=(9, 9), sharex=True)
+    for ax, (metric, title) in zip(axes, metrics, strict=True):
+        plotted = False
+        for env in envs:
+            points = load_policy_training_points(root, env, metric)
+            if not points:
+                continue
+            steps, values = zip(*points)
+            ax.plot(steps, values, linewidth=1.6, label=env)
+            plotted = True
+        ax.set_title(title)
+        ax.set_ylabel(title)
+        ax.grid(alpha=0.25)
+        if plotted:
+            ax.legend(fontsize="small")
+    axes[-1].set_xlabel("Logged policy-training point")
+    fig.tight_layout()
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def plot_model_head_losses(
+    path: Path,
+    root: Path,
+    envs: list[str],
+) -> None:
+    metrics = [
+        ("model/reward_loss", "Reward loss"),
+        ("model/reward_constant_mse", "Reward constant baseline"),
+        ("model/control_value_loss", "Control-value loss"),
+    ]
+    fig, axes = plt.subplots(len(metrics), 1, figsize=(9, 9), sharex=True)
+    for ax, (metric, title) in zip(axes, metrics, strict=True):
+        plotted = False
+        for env in envs:
+            points = load_jepa_metric_points(root, env, metric)
+            if not points:
+                continue
+            steps, values = zip(*points)
+            ax.plot(steps, values, linewidth=1.6, label=env)
+            plotted = True
+        ax.set_title(title)
+        ax.set_ylabel(title)
+        ax.grid(alpha=0.25)
+        if plotted:
+            ax.legend(fontsize="small")
+    axes[-1].set_xlabel("Logged model-training point")
+    fig.tight_layout()
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def load_policy_training_points(
+    root: Path,
+    env: str,
+    metric: str,
+) -> list[tuple[int, float]]:
+    points: list[tuple[int, float]] = []
+    for row in load_main_metrics_rows(root, env):
+        phase = str(row.get("phase", ""))
+        if not phase.endswith("frozen_model_policy"):
+            continue
+        value = maybe_float(row.get(metric))
+        if value is None:
+            continue
+        points.append((len(points) + 1, value))
+    return points
+
+
+def load_main_metrics_rows(root: Path, env: str) -> list[dict[str, Any]]:
+    run_dir = latest_jepa_run_dir(root, env)
+    if run_dir is None:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for metrics_path in sorted(run_dir.glob("none/run_*/metrics.jsonl")):
+        rows.extend(read_jsonl(metrics_path))
+    return rows
+
+
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(errors="ignore").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
 
 
 def latest_jepa_run_dir(root: Path, env: str) -> Path | None:
