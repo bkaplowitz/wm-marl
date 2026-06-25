@@ -144,6 +144,10 @@ without adding an observation decoder.
 Episode boundaries are masked so the model is not trained to predict through
 environment resets.
 
+The current implementation uses one encoder. There is no EMA target encoder and
+no observation decoder. The default target-gradient mode is stop-gradient; the
+same encoder defines both the current latent and the future target latent.
+
 ## Control-Relevant Online Loss
 
 Online refits keep the observation encoder frozen. The update changes the
@@ -211,6 +215,55 @@ The long replay keeps all collected data, while candidate refits use an explicit
 anchor/recent sampling ratio so new actor data cannot silently overwrite the
 random-replay coverage.
 
+Let:
+
+- \(B_A\) be the initial random anchor replay;
+- \(B_{all}\) be the full replay containing all retained experience;
+- \(B_R^{(i)}\) be the actor replay collected in online iteration \(i\);
+- \(B_{val,A}\) be anchor validation replay;
+- \(B_{val,R}^{(i)}\) be held-out recent-policy validation replay.
+
+For candidate refits, each training minibatch is sampled as:
+
+\[
+B_{train}^{(i)}
+= \rho B_A + (1-\rho)B_R^{(i)}
+\]
+
+where \(\rho\) is `online_anchor_batch_fraction` and defaults to \(0.5\).
+The full replay \(B_{all}\) is still retained; the explicit mixture only
+controls the candidate-refit training distribution.
+
+Candidate checkpoints are evaluated during refit. For a candidate checkpoint
+\(m\), define:
+
+\[
+\Delta_R = L_{val,R}^{old} - L_{val,R}^{m}
+\]
+
+\[
+\Delta_A = L_{val,A}^{m} - L_{val,A}^{old}
+\]
+
+where lower validation loss is better. A checkpoint must improve recent-policy
+validation and keep anchor degradation below tolerance:
+
+\[
+\Delta_R \ge \epsilon_R
+\]
+
+\[
+\Delta_A \le \epsilon_A
+\]
+
+Among passing checkpoints, the selected candidate maximizes:
+
+\[
+S_m = \Delta_R - \alpha \max(\Delta_A, 0)
+\]
+
+where \(\alpha\) is `online_candidate_anchor_penalty`.
+
 ## Controls
 
 The main comparisons are:
@@ -233,5 +286,6 @@ The current mainline is:
 - causal transformer dynamics with RoPE attention and GEGLU feed-forward blocks;
 - direct latent-imagination actor training;
 - frozen encoder during online world-model refits;
+- explicit anchor/recent replay mixing during online refits;
 - candidate refit gates on anchor and recent-policy validation;
 - optional control-value consistency loss during online refits.
