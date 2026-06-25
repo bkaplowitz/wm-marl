@@ -250,6 +250,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--online-anchor-batch-fraction",
+        type=float,
+        default=0.5,
+        help=(
+            "Fraction of each online candidate-refit minibatch sampled from the "
+            "initial random anchor replay. The remaining samples come from the "
+            "latest actor replay. Full replay is still retained."
+        ),
+    )
+    parser.add_argument(
         "--online-candidate-refit",
         action="store_true",
         help=(
@@ -402,6 +412,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
             parser.error(f"--{name.replace('_', '-')} must be >= 0")
     if args.online_control_value_weight < 0.0:
         parser.error("--online-control-value-weight must be >= 0")
+    if not 0.0 <= args.online_anchor_batch_fraction <= 1.0:
+        parser.error("--online-anchor-batch-fraction must be in [0, 1]")
     if args.online_candidate_min_recent_improvement < 0.0:
         parser.error("--online-candidate-min-recent-improvement must be >= 0")
     if args.online_candidate_max_anchor_degradation < 0.0:
@@ -605,13 +617,20 @@ def run_one(
             action_shape=(adapter.action_dim,),
             action_dtype=np.float32,
         )
+        anchor_replay = SequenceReplayBuffer(
+            capacity=max(2, args.collect_steps),
+            num_envs=args.num_envs,
+            observation_shape=(config.observation_dim,),
+            action_shape=(adapter.action_dim,),
+            action_dtype=np.float32,
+        )
 
         observations = adapter.reset()
         observations, env_steps = _collect_random_steps(
             adapter,
             observations,
             np_rng,
-            replay,
+            (replay, anchor_replay),
             steps=args.collect_steps,
             desc=f"{control} collect train replay",
             quiet=args.quiet,
@@ -622,6 +641,7 @@ def run_one(
                 "env_steps": env_steps,
                 "steps_per_env": args.collect_steps,
                 "size_per_env": replay.size,
+                "anchor_size_per_env": anchor_replay.size,
                 "observation_dim": config.observation_dim,
                 "action_dim": config.action_dim,
             },
@@ -729,12 +749,18 @@ def run_one(
             online_collect_steps = args.online_collect_steps or args.collect_steps
             if args.online_reset_replay_env:
                 observations = adapter.reset()
+            recent_actor_replay = _new_replay_buffer(
+                capacity=online_collect_steps,
+                num_envs=args.num_envs,
+                observation_dim=config.observation_dim,
+                action_dim=adapter.action_dim,
+            )
             observations, added_env_steps, collect_metrics = _collect_policy_steps(
                 adapter,
                 observations,
                 state,
                 config,
-                replay,
+                (replay, recent_actor_replay),
                 steps=online_collect_steps,
                 action_low=adapter.action_low,
                 action_high=adapter.action_high,
@@ -747,6 +773,8 @@ def run_one(
                 "reset_env_before_collection": args.online_reset_replay_env,
                 "total_env_steps": env_steps,
                 "replay_size_per_env": replay.size,
+                "anchor_replay_size_per_env": anchor_replay.size,
+                "recent_actor_replay_size_per_env": recent_actor_replay.size,
             }
             logger.write_json(f"{phase}_actor_replay.json", collect_payload)
             logger.append_metrics(
@@ -840,6 +868,8 @@ def run_one(
                             phase=f"{phase}_candidate_world_model",
                             desc=f"{control} {phase} fit candidate world model",
                             env_steps=env_steps,
+                            anchor_replay=anchor_replay,
+                            recent_replay=recent_actor_replay,
                             anchor_validation_batch=validation_batch,
                             recent_validation_batch=recent_validation_batch,
                             action_low=adapter.action_low,
@@ -1023,7 +1053,7 @@ def _collect_random_steps(
     adapter,
     observations: np.ndarray,
     rng: np.random.Generator,
-    replay: SequenceReplayBuffer,
+    replay: SequenceReplayBuffer | tuple[SequenceReplayBuffer, ...],
     *,
     steps: int,
     desc: str,
@@ -1032,7 +1062,8 @@ def _collect_random_steps(
     for _ in tqdm(range(steps), desc=desc, unit="step", disable=quiet):
         actions = adapter.sample_actions(rng)
         step = adapter.step(actions)
-        replay.add_step(
+        _add_replay_step(
+            replay,
             observations=observations[:, 0],
             actions=actions[:, 0],
             rewards=step.rewards[:, 0],
@@ -1047,7 +1078,7 @@ def _collect_policy_steps(
     observations: np.ndarray,
     state,
     config: JepaConfig,
-    replay: SequenceReplayBuffer,
+    replay: SequenceReplayBuffer | tuple[SequenceReplayBuffer, ...],
     *,
     steps: int,
     action_low: np.ndarray,
@@ -1071,7 +1102,8 @@ def _collect_policy_steps(
             )
         )
         step = adapter.step(actions[:, None, :])
-        replay.add_step(
+        _add_replay_step(
+            replay,
             observations=observations[:, 0],
             actions=actions,
             rewards=step.rewards[:, 0],
@@ -1101,6 +1133,24 @@ def _collect_policy_steps(
         "lengths": completed_lengths,
     }
     return observations, steps * adapter.num_envs, metrics
+
+
+def _add_replay_step(
+    replay: SequenceReplayBuffer | tuple[SequenceReplayBuffer, ...],
+    *,
+    observations: np.ndarray,
+    actions: np.ndarray,
+    rewards: np.ndarray,
+    dones: np.ndarray,
+) -> None:
+    buffers = replay if isinstance(replay, tuple) else (replay,)
+    for buffer in buffers:
+        buffer.add_step(
+            observations=observations,
+            actions=actions,
+            rewards=rewards,
+            dones=dones,
+        )
 
 
 def _collect_validation_replay(
@@ -1318,6 +1368,60 @@ def _candidate_checkpoint_gate_summary(report: dict[str, Any]) -> dict[str, Any]
     }
 
 
+def _concat_replay_batches(batches: list[ReplayBatch]) -> ReplayBatch:
+    if len(batches) == 1:
+        return batches[0]
+    return ReplayBatch(
+        observations=jnp.concatenate([batch.observations for batch in batches], axis=0),
+        actions=jnp.concatenate([batch.actions for batch in batches], axis=0),
+        rewards=jnp.concatenate([batch.rewards for batch in batches], axis=0),
+        dones=jnp.concatenate([batch.dones for batch in batches], axis=0),
+    )
+
+
+def _sample_online_candidate_batch(
+    np_rng: np.random.Generator,
+    *,
+    replay: SequenceReplayBuffer,
+    anchor_replay: SequenceReplayBuffer,
+    recent_replay: SequenceReplayBuffer,
+    batch_size: int,
+    chunk_length: int,
+    max_horizon: int,
+    anchor_batch_fraction: float,
+) -> ReplayBatch:
+    anchor_size = int(round(batch_size * anchor_batch_fraction))
+    anchor_size = max(0, min(batch_size, anchor_size))
+    recent_size = batch_size - anchor_size
+    batches: list[ReplayBatch] = []
+    if anchor_size > 0:
+        batches.append(
+            anchor_replay.sample(
+                np_rng,
+                batch_size=anchor_size,
+                chunk_length=chunk_length,
+                max_horizon=max_horizon,
+            )
+        )
+    if recent_size > 0:
+        batches.append(
+            recent_replay.sample(
+                np_rng,
+                batch_size=recent_size,
+                chunk_length=chunk_length,
+                max_horizon=max_horizon,
+            )
+        )
+    if batches:
+        return _concat_replay_batches(batches)
+    return replay.sample(
+        np_rng,
+        batch_size=batch_size,
+        chunk_length=chunk_length,
+        max_horizon=max_horizon,
+    )
+
+
 def _fit_candidate_world_model(
     args: argparse.Namespace,
     logger: RunLogger,
@@ -1332,6 +1436,8 @@ def _fit_candidate_world_model(
     phase: str,
     desc: str,
     env_steps: int,
+    anchor_replay: SequenceReplayBuffer,
+    recent_replay: SequenceReplayBuffer,
     anchor_validation_batch: ReplayBatch,
     recent_validation_batch: ReplayBatch,
     action_low: np.ndarray,
@@ -1377,11 +1483,15 @@ def _fit_candidate_world_model(
         disable=args.quiet,
     )
     for step_index in fit_steps:
-        batch = replay.sample(
+        batch = _sample_online_candidate_batch(
             np_rng,
+            replay=replay,
+            anchor_replay=anchor_replay,
+            recent_replay=recent_replay,
             batch_size=args.batch_size,
             chunk_length=args.chunk_length,
             max_horizon=max(args.model_horizon, args.open_loop_horizon),
+            anchor_batch_fraction=args.online_anchor_batch_fraction,
         )
         rng, train_key = jax.random.split(rng)
         candidate_state, metrics = train_model_step(
@@ -1411,6 +1521,9 @@ def _fit_candidate_world_model(
                     "control": control,
                     "online_encoder_frozen": True,
                     "online_control_value_weight": control_value_weight,
+                    "online_anchor_batch_fraction": args.online_anchor_batch_fraction,
+                    "anchor_replay_size_per_env": anchor_replay.size,
+                    "recent_replay_size_per_env": recent_replay.size,
                     **metrics,
                 }
             )

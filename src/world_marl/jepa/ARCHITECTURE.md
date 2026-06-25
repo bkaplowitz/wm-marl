@@ -199,13 +199,17 @@ The online loop extends the offline workflow:
 
 1. collect replay using the current actor;
 2. hold out a recent-policy validation stream;
-3. train a candidate world-model refit with the encoder frozen;
+3. train a candidate world-model refit with the encoder frozen, using minibatches
+   mixed from initial random anchor replay and the latest actor replay;
 4. evaluate candidate checkpoints during refit;
 5. keep the best checkpoint that improves recent-policy validation while keeping
    anchor validation within tolerance;
 6. continue actor/critic training in the accepted world model.
 
 Real data is retained even when a candidate world-model update is rejected.
+The long replay keeps all collected data, while candidate refits use an explicit
+anchor/recent sampling ratio so new actor data cannot silently overwrite the
+random-replay coverage.
 
 ## Controls
 

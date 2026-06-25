@@ -87,6 +87,8 @@ def test_single_agent_jepa_cli_accepts_candidate_refit_flags(monkeypatch):
             "250",
             "--online-candidate-anchor-penalty",
             "2.0",
+            "--online-anchor-batch-fraction",
+            "0.75",
             "--online-control-value-weight",
             "0.3",
         ],
@@ -101,6 +103,7 @@ def test_single_agent_jepa_cli_accepts_candidate_refit_flags(monkeypatch):
     assert args.online_candidate_max_anchor_degradation == 0.02
     assert args.online_candidate_eval_interval == 250
     assert args.online_candidate_anchor_penalty == 2.0
+    assert args.online_anchor_batch_fraction == 0.75
     assert args.online_control_value_weight == 0.3
 
 

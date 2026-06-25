@@ -32,6 +32,7 @@ from world_marl.scripts.train_dmc_jepa import (
     _merge_online_policy_baseline,
     _online_history_metrics,
     _run_passed as dmc_run_passed,
+    _sample_online_candidate_batch,
     summarize as summarize_dmc_jepa,
 )
 
@@ -120,6 +121,69 @@ def test_sequence_replay_supports_continuous_action_vectors():
 
     assert batch.actions.shape == (4, 4, 3)
     assert batch.actions.dtype == jnp.float32
+
+
+def test_online_candidate_batch_mixes_anchor_and_recent_replay():
+    anchor = SequenceReplayBuffer(
+        capacity=8,
+        num_envs=1,
+        observation_shape=(1,),
+        action_shape=(1,),
+        action_dtype=np.float32,
+    )
+    recent = SequenceReplayBuffer(
+        capacity=8,
+        num_envs=1,
+        observation_shape=(1,),
+        action_shape=(1,),
+        action_dtype=np.float32,
+    )
+    full = SequenceReplayBuffer(
+        capacity=16,
+        num_envs=1,
+        observation_shape=(1,),
+        action_shape=(1,),
+        action_dtype=np.float32,
+    )
+    for step in range(6):
+        anchor_obs = np.asarray([[step]], dtype=np.float32)
+        recent_obs = np.asarray([[step + 100]], dtype=np.float32)
+        action = np.asarray([[step]], dtype=np.float32)
+        reward = np.asarray([step], dtype=np.float32)
+        done = np.zeros((1,), dtype=np.float32)
+        anchor.add_step(
+            observations=anchor_obs,
+            actions=action,
+            rewards=reward,
+            dones=done,
+        )
+        recent.add_step(
+            observations=recent_obs,
+            actions=action,
+            rewards=reward,
+            dones=done,
+        )
+        full.add_step(
+            observations=anchor_obs,
+            actions=action,
+            rewards=reward,
+            dones=done,
+        )
+
+    batch = _sample_online_candidate_batch(
+        np.random.default_rng(0),
+        replay=full,
+        anchor_replay=anchor,
+        recent_replay=recent,
+        batch_size=4,
+        chunk_length=2,
+        max_horizon=1,
+        anchor_batch_fraction=0.5,
+    )
+
+    assert batch.observations.shape == (4, 3, 1)
+    assert np.all(np.asarray(batch.observations[:2]) < 100.0)
+    assert np.all(np.asarray(batch.observations[2:]) >= 100.0)
 
 
 def test_jepa_model_forward_and_model_step_are_finite():
