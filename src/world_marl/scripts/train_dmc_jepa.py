@@ -180,6 +180,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-policy-candidates", type=int, default=64)
     parser.add_argument("--candidate-min-gap", type=float, default=1e-3)
     parser.add_argument("--policy-action-l2-coef", type=float, default=1e-3)
+    parser.add_argument(
+        "--policy-trust-coef",
+        type=float,
+        default=0.0,
+        help=(
+            "Direct-policy penalty for changing normalized actions from the "
+            "actor at the start of the policy phase. This is mainly a "
+            "conservative online-policy knob; leave at 0 for unconstrained "
+            "initial actor learning."
+        ),
+    )
+    parser.add_argument(
+        "--online-policy-trust-coef",
+        type=float,
+        default=None,
+        help=(
+            "Override --policy-trust-coef for online policy phases. Use this "
+            "to keep online actor updates close to the accepted actor while "
+            "allowing the first offline policy phase to move freely."
+        ),
+    )
     parser.add_argument("--policy-eval-episodes", type=int, default=20)
     parser.add_argument("--policy-eval-num-envs", type=int, default=None)
     parser.add_argument("--policy-confirmation-episodes", type=int, default=0)
@@ -431,6 +452,13 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--candidate-min-gap must be >= 0")
     if args.policy_action_l2_coef < 0.0:
         parser.error("--policy-action-l2-coef must be >= 0")
+    if args.policy_trust_coef < 0.0:
+        parser.error("--policy-trust-coef must be >= 0")
+    if (
+        args.online_policy_trust_coef is not None
+        and args.online_policy_trust_coef < 0.0
+    ):
+        parser.error("--online-policy-trust-coef must be >= 0")
     if args.value_clip <= 0.0:
         parser.error("--value-clip must be > 0")
     if not 0.0 < args.action_saturation_threshold <= 1.0:
@@ -1350,7 +1378,9 @@ def _best_passing_candidate_report(
         return None
     return max(
         passing,
-        key=lambda report: float(report.get("gate", {}).get("candidate_gate_score", 0.0)),
+        key=lambda report: float(
+            report.get("gate", {}).get("candidate_gate_score", 0.0)
+        ),
     )
 
 
@@ -1602,9 +1632,7 @@ def _fit_candidate_world_model(
                 item["candidate_update"] for item in checkpoint_summaries
             ],
             "candidate_final_update": steps,
-            "candidate_final_update_accepted": final_report[
-                "model_update_accepted"
-            ],
+            "candidate_final_update_accepted": final_report["model_update_accepted"],
             "candidate_final_gate_score": final_report["gate"].get(
                 "candidate_gate_score"
             ),
@@ -1876,6 +1904,10 @@ def _maybe_train_policy(
                     }
                 )
 
+    policy_trust_coef = args.policy_trust_coef
+    if phase != "policy" and args.online_policy_trust_coef is not None:
+        policy_trust_coef = args.online_policy_trust_coef
+    reference_actor_params = jax.tree_util.tree_map(jax.lax.stop_gradient, state.params)
     policy_loss_history: list[float] = []
     metrics: dict[str, Any] = {}
     policy_steps = tqdm(
@@ -1930,6 +1962,8 @@ def _maybe_train_policy(
                 uncertainty_continue_weight=args.uncertainty_continue_weight,
                 uncertainty_threshold=args.uncertainty_threshold,
                 uncertainty_budget=args.uncertainty_budget,
+                reference_actor_params=reference_actor_params,
+                policy_trust_coef=policy_trust_coef,
             )
         policy_loss = float(metrics["policy/total_loss"])
         progress_score = float(
@@ -2081,6 +2115,9 @@ def _maybe_train_policy(
         "num_policy_candidates": args.num_policy_candidates,
         "candidate_min_gap": args.candidate_min_gap,
         "policy_action_l2_coef": args.policy_action_l2_coef,
+        "policy_trust_coef": policy_trust_coef,
+        "policy_base_trust_coef": args.policy_trust_coef,
+        "online_policy_trust_coef": args.online_policy_trust_coef,
         "policy_eval_seed": policy_eval_seed,
         "policy_confirmation_enabled": confirmation_enabled,
         "policy_confirmation_seed": (

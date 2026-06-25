@@ -414,7 +414,9 @@ def world_model_loss_with_outputs(
     )
     constant_continue = jnp.full_like(continue_targets, jnp.mean(continue_targets))
     constant_reward = jnp.full_like(reward_targets, jnp.mean(reward_targets))
-    terminal_logits = jnp.mean(continue_logits, axis=-1) if ensemble_axis else continue_logits
+    terminal_logits = (
+        jnp.mean(continue_logits, axis=-1) if ensemble_axis else continue_logits
+    )
     metrics = {
         "model/total_loss": total_loss,
         "model/jepa_loss": jepa_loss,
@@ -492,6 +494,8 @@ def continuous_policy_train_step(
     uncertainty_continue_weight: float = 1.0,
     uncertainty_threshold: float = float("inf"),
     uncertainty_budget: float = float("inf"),
+    reference_actor_params: FrozenDict | None = None,
+    policy_trust_coef: float = 0.0,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     if config.action_mode != "continuous":
         raise ValueError("continuous_policy_train_step requires continuous actions")
@@ -532,7 +536,29 @@ def continuous_policy_train_step(
             )
         clipped_returns = jnp.clip(actor_returns, -value_clip, value_clip)
         weights = survival_weights(rollout["continues"], gamma=config.gamma)
-        actor_loss = -weighted_mean(clipped_returns, weights)
+        return_loss = -weighted_mean(clipped_returns, weights)
+        if reference_actor_params is None:
+            trust_action_l2 = jnp.asarray(0.0, dtype=return_loss.dtype)
+        else:
+            reference_params = jax.tree_util.tree_map(
+                jax.lax.stop_gradient,
+                reference_actor_params,
+            )
+            reference_raw_actions, _ = actor_value_from_latent(
+                state.apply_fn,
+                reference_params,
+                rollout["latents"],
+            )
+            reference_normalized_actions = jnp.tanh(reference_raw_actions)
+            action_delta_l2 = jnp.mean(
+                jnp.square(
+                    rollout["normalized_actions"]
+                    - jax.lax.stop_gradient(reference_normalized_actions),
+                ),
+                axis=-1,
+            )
+            trust_action_l2 = weighted_mean(action_delta_l2, weights)
+        actor_loss = return_loss + policy_trust_coef * trust_action_l2
         action_saturation = jnp.mean(
             (
                 jnp.abs(rollout["normalized_actions"]) >= action_saturation_threshold
@@ -555,6 +581,9 @@ def continuous_policy_train_step(
         )
         metrics = {
             "policy/actor_loss": actor_loss,
+            "policy/return_loss": return_loss,
+            "policy/trust_action_l2": trust_action_l2,
+            "policy/trust_coef": jnp.asarray(policy_trust_coef, dtype=actor_loss.dtype),
             "policy/imagined_return": weighted_mean(actor_returns, weights),
             "policy/clipped_imagined_return": weighted_mean(clipped_returns, weights),
             "policy/imagined_reward": weighted_mean(rollout["rewards"], weights),
@@ -1425,9 +1454,9 @@ def _label_params(params: FrozenDict, trainable_groups: frozenset[str]) -> Froze
     raw = unfreeze(params)
     labels = {
         key: jax.tree_util.tree_map(
-            lambda _: "train"
-            if _trainable_param_group(key, trainable_groups)
-            else "freeze",
+            lambda _: (
+                "train" if _trainable_param_group(key, trainable_groups) else "freeze"
+            ),
             value,
         )
         for key, value in raw.items()
