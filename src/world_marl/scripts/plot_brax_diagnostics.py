@@ -132,7 +132,7 @@ def load_jepa_summaries(root: Path) -> dict[str, JepaSummary]:
         if root.exists()
         else set()
     )
-    envs.update(path.stem for path in root.glob("*.nohup.log"))
+    envs.update(nohup_env_name(path) for path in root.glob("*.nohup.log"))
     out: dict[str, JepaSummary] = {}
     for env in sorted(envs):
         paths = sorted((root / env).glob("brax_jepa_*/summary.json"))
@@ -527,6 +527,14 @@ def latest_jepa_run_dir(root: Path, env: str) -> Path | None:
     if not paths:
         return None
     return paths[-1].parent
+
+
+def nohup_env_name(path: Path) -> str:
+    suffix = ".nohup.log"
+    name = path.name
+    if name.endswith(suffix):
+        return name[: -len(suffix)]
+    return path.stem
 
 
 def annotate_status(
