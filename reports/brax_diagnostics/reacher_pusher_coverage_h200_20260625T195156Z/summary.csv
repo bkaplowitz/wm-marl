@@ -1,0 +1,7 @@
+env,jepa_status,jepa_passed,jepa_world_model_passed,jepa_policy_main_passed,jepa_initial_return,jepa_trained_return,jepa_improvement,jepa_online_improvement,jepa_acceptance_rate,jepa_open_loop_loss,jepa_control_open_loop_loss,jepa_recent_validation_improvement,jepa_anchor_validation_degradation,ppo_best_return,ppo_last_return,ppo_best_steps,ppo_last_steps,ppo_last_length,jepa_minus_ppo_best
+hopper,not_launched,,,,,,,,,,,,,346.988007,346.988007,7864320,7864320,122.453125,
+inverted_double_pendulum,not_launched,,,,,,,,,,,,,6279.938965,4911.929199,6553600,7864320,531.140625,
+inverted_pendulum,not_launched,,,,,,,,,,,,,1000.0,1000.0,1966080,7864320,1000.0,
+pusher,running_or_incomplete,,,,,,,,,,,,,-303.369507,-425.237244,4915200,7864320,1000.0,
+reacher,done,True,True,True,-531.534686,-38.29831,493.236376,0.61939,1.0,0.023954,0.346615,0.000583,-0.004546,-28.239201,-28.239201,7864320,7864320,1000.0,-10.05911
+walker2d,not_launched,,,,,,,,,,,,,55.749382,55.749382,7864320,7864320,33.320312,
