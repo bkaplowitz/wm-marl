@@ -31,6 +31,7 @@ from world_marl.jepa.training import (
     continuous_candidate_distill_step,
     continuous_critic_warmup_step,
     continuous_policy_train_step,
+    copy_policy_heads,
     create_jepa_train_state,
     evaluate_open_loop,
     reset_policy_heads,
@@ -240,6 +241,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--online-train-steps", type=int, default=None)
     parser.add_argument("--online-policy-train-steps", type=int, default=None)
     parser.add_argument(
+        "--online-policy-champion",
+        dest="online_policy_champion",
+        action="store_true",
+        default=True,
+        help=(
+            "Keep the best real-env evaluated actor across online policy "
+            "phases. Rejected policy proposals restore champion actor/value "
+            "heads while preserving accepted world-model updates."
+        ),
+    )
+    parser.add_argument(
+        "--no-online-policy-champion",
+        dest="online_policy_champion",
+        action="store_false",
+        help="Disable best-actor retention across online policy phases.",
+    )
+    parser.add_argument(
+        "--online-policy-champion-tolerance",
+        type=float,
+        default=0.0,
+        help=(
+            "Allowed real-return regression when accepting an online policy "
+            "proposal as the new champion."
+        ),
+    )
+    parser.add_argument(
         "--online-reset-replay-env",
         dest="online_reset_replay_env",
         action="store_true",
@@ -431,6 +458,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         value = getattr(args, name)
         if value is not None and value < 0:
             parser.error(f"--{name.replace('_', '-')} must be >= 0")
+    if args.online_policy_champion_tolerance < 0.0:
+        parser.error("--online-policy-champion-tolerance must be >= 0")
     if args.online_control_value_weight < 0.0:
         parser.error("--online-control-value-weight must be >= 0")
     if not 0.0 <= args.online_anchor_batch_fraction <= 1.0:
@@ -771,6 +800,10 @@ def run_one(
         state = policy_outcome["state"]
         rng = policy_outcome["rng"]
         initial_policy_outcome = policy_outcome["outcome"]
+        champion_state = state
+        champion_policy_outcome = dict(initial_policy_outcome)
+        champion_policy_return = champion_policy_outcome.get("policy_trained_mean")
+        champion_policy_iteration = 0
         online_history: list[dict[str, Any]] = []
         for online_index in range(1, args.online_iterations + 1):
             phase = f"online_{online_index:03d}"
@@ -973,12 +1006,77 @@ def run_one(
                     train_steps=online_policy_train_steps,
                     reset_actor=args.online_reset_actor,
                 )
-                state = online_policy_outcome["state"]
+                candidate_policy_state = online_policy_outcome["state"]
                 rng = online_policy_outcome["rng"]
-                policy_outcome = online_policy_outcome
-                online_policy_payload = online_policy_outcome["outcome"]
+                candidate_policy_payload = online_policy_outcome["outcome"]
+                candidate_policy_return = candidate_policy_payload.get(
+                    "policy_trained_mean"
+                )
+                previous_champion_return = champion_policy_return
+                policy_update_accepted = True
+                if args.online_policy_champion:
+                    policy_update_accepted = candidate_policy_return is not None and (
+                        previous_champion_return is None
+                        or candidate_policy_return
+                        >= previous_champion_return
+                        - args.online_policy_champion_tolerance
+                    )
+                if policy_update_accepted:
+                    state = candidate_policy_state
+                    champion_state = state
+                    champion_policy_outcome = dict(candidate_policy_payload)
+                    champion_policy_return = candidate_policy_return
+                    champion_policy_iteration = online_index
+                    online_policy_payload = dict(candidate_policy_payload)
+                else:
+                    state = copy_policy_heads(candidate_policy_state, champion_state)
+                    online_policy_payload = dict(champion_policy_outcome)
+                online_policy_payload.update(
+                    {
+                        "policy_champion_enabled": args.online_policy_champion,
+                        "policy_update_accepted": policy_update_accepted,
+                        "policy_candidate_trained_mean": candidate_policy_return,
+                        "policy_previous_champion_mean": previous_champion_return,
+                        "policy_champion_return": champion_policy_return,
+                        "policy_champion_iteration": champion_policy_iteration,
+                        "policy_champion_tolerance": (
+                            args.online_policy_champion_tolerance
+                        ),
+                    }
+                )
+                candidate_policy_payload = {
+                    **candidate_policy_payload,
+                    "policy_champion_enabled": args.online_policy_champion,
+                    "policy_update_accepted": policy_update_accepted,
+                    "policy_candidate_trained_mean": candidate_policy_return,
+                    "policy_previous_champion_mean": previous_champion_return,
+                    "policy_champion_return": champion_policy_return,
+                    "policy_champion_iteration": champion_policy_iteration,
+                    "policy_champion_tolerance": args.online_policy_champion_tolerance,
+                }
+                policy_outcome = {
+                    "state": state,
+                    "rng": rng,
+                    "outcome": online_policy_payload,
+                }
+                logger.append_metrics(
+                    {
+                        "phase": "online_policy_champion",
+                        "online_iteration": online_index,
+                        "control": control,
+                        "policy_update_accepted": policy_update_accepted,
+                        "policy_candidate_trained_mean": candidate_policy_return,
+                        "policy_previous_champion_mean": previous_champion_return,
+                        "policy_champion_return": champion_policy_return,
+                        "policy_champion_iteration": champion_policy_iteration,
+                        "policy_champion_tolerance": (
+                            args.online_policy_champion_tolerance
+                        ),
+                    }
+                )
             else:
                 online_policy_payload = {"policy_training_enabled": False}
+                candidate_policy_payload = {}
             online_history.append(
                 {
                     "iteration": online_index,
@@ -987,6 +1085,7 @@ def run_one(
                     "candidate_refit": candidate_report,
                     "model_metrics": online_metrics,
                     "policy": online_policy_payload,
+                    "candidate_policy": candidate_policy_payload,
                     "world_model_train_steps": online_train_steps,
                     "policy_train_steps": online_policy_train_steps,
                 }
@@ -2411,6 +2510,21 @@ def _online_history_metrics(
         for item in online_history
         if item.get("policy", {}).get("policy_training_enabled", False)
     ]
+    policy_candidate_returns = [
+        item["candidate_policy"].get("policy_trained_mean")
+        for item in online_history
+        if item.get("candidate_policy", {}).get("policy_trained_mean") is not None
+    ]
+    policy_champion_returns = [
+        item["policy"].get("policy_champion_return")
+        for item in online_history
+        if item.get("policy", {}).get("policy_champion_return") is not None
+    ]
+    policy_update_acceptances = [
+        bool(item["policy"].get("policy_update_accepted", False))
+        for item in online_history
+        if item.get("policy", {}).get("policy_update_accepted") is not None
+    ]
     model_jepa_losses = [
         item["model_metrics"].get("model/jepa_loss")
         for item in online_history
@@ -2467,6 +2581,17 @@ def _online_history_metrics(
             ),
             "online_policy_phase_passes": policy_passed,
             "online_policy_phase_passed": bool(policy_passed and all(policy_passed)),
+            "online_policy_candidate_returns": policy_candidate_returns,
+            "online_policy_champion_returns": policy_champion_returns,
+            "online_policy_update_acceptances": policy_update_acceptances,
+            "online_policy_update_acceptance_rate": (
+                float(np.mean(policy_update_acceptances))
+                if policy_update_acceptances
+                else None
+            ),
+            "online_policy_final_champion_return": (
+                policy_champion_returns[-1] if policy_champion_returns else None
+            ),
             "online_model_jepa_losses": model_jepa_losses,
             "online_model_open_loop_losses": model_open_loop_losses,
             "online_candidate_refit_iterations": len(candidate_refits),
@@ -2514,6 +2639,17 @@ def _online_history_metrics(
         ),
         "online_policy_phase_passes": policy_passed,
         "online_policy_phase_passed": bool(policy_passed and all(policy_passed)),
+        "online_policy_candidate_returns": policy_candidate_returns,
+        "online_policy_champion_returns": policy_champion_returns,
+        "online_policy_update_acceptances": policy_update_acceptances,
+        "online_policy_update_acceptance_rate": (
+            float(np.mean(policy_update_acceptances))
+            if policy_update_acceptances
+            else None
+        ),
+        "online_policy_final_champion_return": (
+            policy_champion_returns[-1] if policy_champion_returns else None
+        ),
         "online_model_jepa_losses": model_jepa_losses,
         "online_model_open_loop_losses": model_open_loop_losses,
         "online_candidate_refit_iterations": len(candidate_refits),
@@ -2963,6 +3099,14 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         "aggregate_candidate_final_update_acceptance_rate": _flat_mean(
             main,
             "online_candidate_final_update_acceptances",
+        ),
+        "aggregate_policy_update_acceptance_rate": _flat_mean(
+            main,
+            "online_policy_update_acceptances",
+        ),
+        "aggregate_policy_final_champion_return": _mean(
+            main,
+            "online_policy_final_champion_return",
         ),
         "aggregate_policy_primary_improvement": _mean(
             main,

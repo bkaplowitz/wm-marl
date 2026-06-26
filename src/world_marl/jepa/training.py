@@ -465,6 +465,23 @@ def reset_policy_heads(
     )
 
 
+def copy_policy_heads(
+    target: JepaTrainState,
+    source: JepaTrainState,
+) -> JepaTrainState:
+    """Copy actor/value heads while preserving the target world model."""
+
+    raw = unfreeze(target.params)
+    raw["actor_head"] = unfreeze(source.params["actor_head"])
+    raw["value_head"] = unfreeze(source.params["value_head"])
+    params = freeze(raw)
+    return target.replace(
+        params=params,
+        actor_opt_state=target.actor_tx.init(params),
+        critic_opt_state=target.critic_tx.init(params),
+    )
+
+
 @partial(
     jax.jit,
     static_argnames=(
