@@ -14,6 +14,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.ticker import FuncFormatter  # noqa: E402
 
 
 ERROR_PATTERNS = (
@@ -61,6 +62,49 @@ class JepaSummary:
 def main() -> None:
     args = parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.paper_only:
+        sample_efficiency_rows = build_sample_efficiency_rows(
+            args.jepa_root,
+            args.ppo_root,
+            env=args.sample_env,
+            step_limit=args.sample_step_limit,
+        )
+        loss_rows = build_train_loss_rows(
+            args.jepa_root,
+            env=args.sample_env,
+            metric=args.paper_loss_metric,
+        )
+        write_csv(args.out_dir / "paper_return_vs_env_steps.csv", sample_efficiency_rows)
+        write_csv(args.out_dir / "paper_train_loss.csv", loss_rows)
+        plot_paper_return_vs_env_steps(
+            args.out_dir / "paper_return_vs_env_steps.png",
+            sample_efficiency_rows,
+            env=args.sample_env,
+            title=args.paper_title or pretty_env_title(args.sample_env),
+            step_limit=args.sample_step_limit,
+        )
+        plot_paper_train_loss(
+            args.out_dir / "paper_train_loss.png",
+            loss_rows,
+            title="Train Loss",
+            ylabel=args.paper_loss_metric,
+        )
+        print(f"Wrote paper plots to {args.out_dir}")
+        print(f"- {args.out_dir / 'paper_return_vs_env_steps.png'}")
+        print(f"- {args.out_dir / 'paper_return_vs_env_steps.csv'}")
+        print(f"- {args.out_dir / 'paper_train_loss.png'}")
+        print(f"- {args.out_dir / 'paper_train_loss.csv'}")
+        counts = sample_efficiency_source_counts(sample_efficiency_rows)
+        print(f"Sample-efficiency rows: {counts}")
+        if not sample_efficiency_has_jepa(sample_efficiency_rows):
+            print("WARNING: no JEPA actor-replay collection points were found.")
+        if not sample_efficiency_has_in_window_ppo(sample_efficiency_rows):
+            print(
+                "WARNING: no PPO evaluation points were found inside the step limit; "
+                "only the full-run PPO reference is available."
+            )
+        return
 
     jepa = load_jepa_summaries(args.jepa_root)
     ppo = load_ppo_summaries(args.ppo_root)
@@ -184,6 +228,21 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=500_000,
         help="Maximum real training-replay environment steps on the sample-efficiency plot.",
+    )
+    parser.add_argument(
+        "--paper-only",
+        action="store_true",
+        help="Only write publication-style return and train-loss plots.",
+    )
+    parser.add_argument(
+        "--paper-title",
+        default=None,
+        help="Title for the paper-style return plot.",
+    )
+    parser.add_argument(
+        "--paper-loss-metric",
+        default="model/total_loss",
+        help="JEPA model-training metric to plot in paper-only mode.",
     )
     return parser.parse_args()
 
@@ -1062,6 +1121,221 @@ def plot_sample_efficiency(
     fig.tight_layout()
     fig.savefig(path, dpi=180)
     plt.close(fig)
+
+
+def build_train_loss_rows(
+    root: Path,
+    *,
+    env: str,
+    metric: str,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for label, run_dir in latest_jepa_env_run_dirs(root, env):
+        point_index = 0
+        for metrics_path in sorted(run_dir.glob("none/run_*/metrics.jsonl")):
+            for item in read_jsonl(metrics_path):
+                value = maybe_float(item.get(metric))
+                if value is None:
+                    continue
+                point_index += 1
+                rows.append(
+                    {
+                        "label": label,
+                        "env": env,
+                        "point": point_index,
+                        "metric": metric,
+                        "value": value,
+                        "phase": item.get("phase"),
+                        "update": maybe_int(item.get("update")),
+                        "run_dir": str(run_dir),
+                    }
+                )
+    return rows
+
+
+def plot_paper_return_vs_env_steps(
+    path: Path,
+    rows: list[dict[str, Any]],
+    *,
+    env: str,
+    title: str,
+    step_limit: int,
+) -> None:
+    del env
+    fig, ax = plt.subplots(figsize=(4.2, 3.2))
+    jepa = aggregate_curve(
+        [
+            row
+            for row in rows
+            if row.get("source") == "jepa"
+            and row.get("phase") == "actor_replay_collection"
+        ],
+        x_key="step",
+        y_key="return",
+    )
+    ppo = aggregate_curve(
+        [row for row in rows if row.get("source") == "ppo"],
+        x_key="step",
+        y_key="return",
+    )
+    ppo_reference = [
+        row for row in rows if row.get("source") == "ppo_reference"
+    ]
+
+    plot_aggregate_curve(
+        ax,
+        ppo,
+        color="#ff4f6d",
+        label="PPO",
+        shade=False,
+    )
+    for row in ppo_reference[:1]:
+        value = maybe_float(row.get("return"))
+        if value is not None:
+            ax.axhline(
+                value,
+                color="#ff4f6d",
+                linestyle="--",
+                linewidth=1.8,
+                alpha=0.75,
+                label="PPO best",
+            )
+    plot_aggregate_curve(
+        ax,
+        jepa,
+        color="#0b63ce",
+        label="JEPA",
+        shade=True,
+    )
+
+    style_paper_axis(ax, title=title, xlabel="Env steps", ylabel="Return")
+    ax.set_xlim(0, step_limit)
+    ax.xaxis.set_major_formatter(FuncFormatter(format_k_tick))
+    ax.legend(
+        loc="lower center",
+        bbox_to_anchor=(0.5, -0.36),
+        ncol=3,
+        frameon=False,
+        handlelength=2.4,
+    )
+    fig.tight_layout()
+    fig.savefig(path, dpi=240, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_paper_train_loss(
+    path: Path,
+    rows: list[dict[str, Any]],
+    *,
+    title: str,
+    ylabel: str,
+) -> None:
+    fig, ax = plt.subplots(figsize=(4.2, 3.2))
+    curve = aggregate_curve(rows, x_key="point", y_key="value")
+    plot_aggregate_curve(
+        ax,
+        curve,
+        color="#0b63ce",
+        label="JEPA",
+        shade=True,
+    )
+    style_paper_axis(
+        ax,
+        title=title,
+        xlabel="Logged train checkpoint",
+        ylabel=ylabel,
+    )
+    if curve:
+        ax.legend(
+            loc="lower center",
+            bbox_to_anchor=(0.5, -0.36),
+            ncol=1,
+            frameon=False,
+            handlelength=2.4,
+        )
+    fig.tight_layout()
+    fig.savefig(path, dpi=240, bbox_inches="tight")
+    plt.close(fig)
+
+
+def aggregate_curve(
+    rows: list[dict[str, Any]],
+    *,
+    x_key: str,
+    y_key: str,
+) -> list[dict[str, float]]:
+    grouped: dict[float, list[float]] = {}
+    for row in rows:
+        x_value = maybe_float(row.get(x_key))
+        y_value = maybe_float(row.get(y_key))
+        if x_value is None or y_value is None:
+            continue
+        grouped.setdefault(x_value, []).append(y_value)
+
+    curve: list[dict[str, float]] = []
+    for x_value, values in sorted(grouped.items()):
+        if not values:
+            continue
+        mean = sum(values) / len(values)
+        curve.append(
+            {
+                "x": x_value,
+                "mean": mean,
+                "low": min(values),
+                "high": max(values),
+            }
+        )
+    return curve
+
+
+def plot_aggregate_curve(
+    ax: plt.Axes,
+    curve: list[dict[str, float]],
+    *,
+    color: str,
+    label: str,
+    shade: bool,
+) -> None:
+    if not curve:
+        return
+    xs = [row["x"] for row in curve]
+    means = [row["mean"] for row in curve]
+    lows = [row["low"] for row in curve]
+    highs = [row["high"] for row in curve]
+    if shade:
+        ax.fill_between(xs, lows, highs, color=color, alpha=0.18, linewidth=0)
+    ax.plot(xs, means, color=color, linewidth=2.8, label=label)
+
+
+def style_paper_axis(
+    ax: plt.Axes,
+    *,
+    title: str,
+    xlabel: str,
+    ylabel: str,
+) -> None:
+    ax.set_title(title, fontsize=16, pad=8)
+    ax.set_xlabel(xlabel, fontsize=13)
+    ax.set_ylabel(ylabel, fontsize=13)
+    ax.grid(True, color="#ececec", linewidth=1.0)
+    ax.set_axisbelow(True)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_linewidth(1.3)
+    ax.spines["bottom"].set_linewidth(1.3)
+    ax.tick_params(axis="both", labelsize=11, width=1.1)
+
+
+def format_k_tick(value: float, _: int) -> str:
+    if abs(value) < 1e-9:
+        return "0"
+    if abs(value) >= 1_000_000:
+        return f"{value / 1_000_000:g}M"
+    return f"{value / 1_000:g}K"
+
+
+def pretty_env_title(env: str) -> str:
+    return env.replace("_", " ").title()
 
 
 def load_policy_training_points(
