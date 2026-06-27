@@ -1,0 +1,22 @@
+env,control,policy_phase,num_selection_points,best_selection_step,best_selection_mean_return,last_selection_step,last_selection_mean_return,selected_steps,logged_best_step,logged_best_mean_return
+pusher_seed0,none,online_001_policy,4,250,-256.918726,750,-297.509023,0 250,250,-256.918726
+pusher_seed0,none,online_002_policy,4,0,-257.14836,750,-288.883839,0,0,-257.14836
+pusher_seed0,none,online_003_policy,4,0,-255.011405,750,-280.254436,0,0,-255.011405
+pusher_seed0,none,online_004_policy,4,0,-257.007155,750,-310.534195,0,0,-257.007155
+pusher_seed0,none,online_005_policy,4,0,-257.166464,750,-312.560415,0,0,-257.166464
+pusher_seed0,none,online_006_policy,4,0,-257.059755,750,-310.199832,0,0,-257.059755
+pusher_seed0,none,policy,13,1500,-337.797233,3000,-418.742662,0 250 750 1000 1500,1500,-337.797233
+reacher_seed0,none,online_001_policy,4,750,-31.132007,750,-31.132007,0 250 750,750,-31.132007
+reacher_seed0,none,online_002_policy,4,0,-31.132007,750,-32.760552,0,0,-31.132007
+reacher_seed0,none,online_003_policy,4,0,-31.132007,750,-39.318949,0,0,-31.132007
+reacher_seed0,none,online_004_policy,4,0,-31.132007,750,-37.735634,0,0,-31.132007
+reacher_seed0,none,online_005_policy,4,500,-30.341473,750,-34.374767,0 500,500,-30.341473
+reacher_seed0,none,online_006_policy,4,0,-31.132007,750,-38.648103,0,0,-31.132007
+reacher_seed0,none,policy,13,1000,-50.503598,3000,-52.801098,0 250 500 1000,1000,-50.503598
+reacher_seed1,none,online_001_policy,4,750,-29.301567,750,-29.301567,0 250 500 750,750,-29.301567
+reacher_seed1,none,online_002_policy,4,500,-23.910195,750,-24.128547,0 250 500,500,-23.910195
+reacher_seed1,none,online_003_policy,4,0,-29.301567,750,-32.470364,0,0,-29.301567
+reacher_seed1,none,online_004_policy,4,0,-29.301567,750,-31.980673,0,0,-29.301567
+reacher_seed1,none,online_005_policy,4,0,-29.301567,750,-31.506679,0,0,-29.301567
+reacher_seed1,none,online_006_policy,4,0,-29.301567,750,-32.254122,0,0,-29.301567
+reacher_seed1,none,policy,13,2500,-59.982415,3000,-61.039119,0 250 500 750 2000 2500,2500,-59.982415

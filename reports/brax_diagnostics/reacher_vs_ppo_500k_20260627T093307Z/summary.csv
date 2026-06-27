@@ -1,0 +1,5 @@
+env,jepa_status,jepa_passed,jepa_world_model_passed,jepa_policy_main_passed,jepa_initial_return,jepa_trained_return,jepa_improvement,jepa_online_improvement,jepa_acceptance_rate,jepa_open_loop_loss,jepa_control_open_loop_loss,jepa_recent_validation_improvement,jepa_anchor_validation_degradation,ppo_best_return,ppo_last_return,ppo_best_steps,ppo_last_steps,ppo_last_length,jepa_minus_ppo_best
+pusher_seed0,done,False,True,False,-667.182003,-274.472138,392.709865,-0.021113,1.0,0.011029,,2.6e-05,-0.000787,,,,,,
+pusher_seed1,not_launched,,,,,,,,,,,,,,,,,,
+reacher_seed0,done,False,True,False,-528.843207,-28.856408,499.986799,0.0,0.833333,0.015678,,-0.003395,0.002588,,,,,,
+reacher_seed1,done,False,True,False,-505.47681,-36.55246,468.92435,0.0,0.666667,0.016014,,8.9e-05,0.000378,,,,,,
