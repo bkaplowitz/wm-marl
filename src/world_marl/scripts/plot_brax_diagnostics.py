@@ -143,6 +143,15 @@ def main() -> None:
         "- "
         f"{args.out_dir / f'{args.sample_env}_return_vs_train_steps_{args.sample_step_limit // 1000}k.png'}"
     )
+    counts = sample_efficiency_source_counts(sample_efficiency_rows)
+    print(f"Sample-efficiency rows: {counts}")
+    if not sample_efficiency_has_jepa(sample_efficiency_rows):
+        print("WARNING: no JEPA actor-replay collection points were found.")
+    if not sample_efficiency_has_in_window_ppo(sample_efficiency_rows):
+        print(
+            "WARNING: no PPO evaluation points were found inside the step limit; "
+            "only the full-run PPO reference is available."
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -369,7 +378,8 @@ def write_markdown(path: Path, rows: list[dict[str, Any]]) -> None:
             "- `<env>_return_vs_train_steps_500k.png`: DreamerV3-style "
             "sample-efficiency curve bounded to 500k real training replay "
             "steps by default. JEPA points use actor-replay collection returns, "
-            "not policy-selection or validation returns.",
+            "not policy-selection or validation returns. PPO points use in-window "
+            "evals when present, with a dashed full-run best reference.",
         ]
     )
     path.write_text("\n".join(lines) + "\n")
@@ -806,29 +816,121 @@ def load_ppo_sample_efficiency_rows(
     step_limit: int,
 ) -> list[dict[str, Any]]:
     summary_path = root / env / "summary.json"
-    if not summary_path.exists():
+    points = load_ppo_history_points(root, env)
+    if not points:
         return []
 
-    payload = load_json_dict(summary_path)
     rows: list[dict[str, Any]] = []
-    for item in payload.get("history", []):
-        step = maybe_int(item.get("num_steps"))
-        value = maybe_float(item.get("eval/episode_reward"))
-        if step is None or value is None or step > step_limit:
-            continue
+    for step, value in points:
+        if step <= step_limit:
+            rows.append(
+                {
+                    "source": "ppo",
+                    "label": f"{env}_ppo",
+                    "env": env,
+                    "step": step,
+                    "return": value,
+                    "phase": "eval",
+                    "iteration": None,
+                    "run_dir": str(summary_path.parent),
+                }
+            )
+
+    boundary = interpolate_boundary_point(points, step_limit)
+    if boundary is not None and not any(row["step"] == step_limit for row in rows):
         rows.append(
             {
                 "source": "ppo",
                 "label": f"{env}_ppo",
                 "env": env,
-                "step": step,
-                "return": value,
-                "phase": "eval",
+                "step": step_limit,
+                "return": boundary,
+                "phase": "eval_interpolated_to_limit",
                 "iteration": None,
                 "run_dir": str(summary_path.parent),
             }
         )
+
+    best = max(points, key=lambda item: item[1])
+    rows.append(
+        {
+            "source": "ppo_reference",
+            "label": f"{env}_ppo_full_run_best",
+            "env": env,
+            "step": step_limit,
+            "return": best[1],
+            "phase": "full_run_best_reference",
+            "iteration": None,
+            "run_dir": str(summary_path.parent),
+        }
+    )
     return rows
+
+
+def load_ppo_history_points(root: Path, env: str) -> list[tuple[int, float]]:
+    rows: list[dict[str, Any]] = []
+    summary_path = root / env / "summary.json"
+    if summary_path.exists():
+        payload = load_json_dict(summary_path)
+        history = payload.get("history", [])
+        if isinstance(history, list):
+            rows.extend(row for row in history if isinstance(row, dict))
+
+    for path in sorted(
+        [
+            *root.glob(f"{env}*.log"),
+            *root.glob(f"{env}*.jsonl"),
+            *(root / env).glob("*.log"),
+            *(root / env).glob("*.jsonl"),
+        ]
+    ):
+        rows.extend(read_jsonl(path))
+
+    points_by_step: dict[int, float] = {}
+    for item in rows:
+        step = maybe_int(item.get("num_steps"))
+        value = maybe_float(item.get("eval/episode_reward"))
+        if step is None or value is None:
+            continue
+        points_by_step[step] = value
+    return sorted(points_by_step.items())
+
+
+def interpolate_boundary_point(
+    points: list[tuple[int, float]],
+    step_limit: int,
+) -> float | None:
+    if not points:
+        return None
+    for step, value in points:
+        if step == step_limit:
+            return value
+    before = [(step, value) for step, value in points if step < step_limit]
+    after = [(step, value) for step, value in points if step > step_limit]
+    if not before or not after:
+        return None
+    lo_step, lo_value = before[-1]
+    hi_step, hi_value = after[0]
+    if hi_step == lo_step:
+        return hi_value
+    weight = (step_limit - lo_step) / (hi_step - lo_step)
+    return lo_value + weight * (hi_value - lo_value)
+
+
+def sample_efficiency_source_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        source = str(row.get("source", ""))
+        counts[source] = counts.get(source, 0) + 1
+    return counts
+
+
+def sample_efficiency_has_in_window_ppo(rows: list[dict[str, Any]]) -> bool:
+    return any(row.get("source") == "ppo" for row in rows)
+
+
+def sample_efficiency_has_jepa(rows: list[dict[str, Any]]) -> bool:
+    return any(row.get("source") == "jepa" for row in rows)
 
 
 def load_jepa_sample_efficiency_rows(
@@ -930,6 +1032,15 @@ def plot_sample_efficiency(
                 markersize=4,
                 color="#333333",
                 label="PPO eval",
+            )
+        elif source == "ppo_reference":
+            ax.axhline(
+                ys[-1],
+                color="#333333",
+                linestyle="--",
+                linewidth=1.8,
+                alpha=0.8,
+                label="PPO full-run best",
             )
         else:
             ax.plot(
