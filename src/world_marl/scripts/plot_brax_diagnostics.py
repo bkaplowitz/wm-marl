@@ -262,6 +262,39 @@ def load_jepa_return_rows(
         history = load_json_list(run_path / "online_history.json")
 
     rows: list[dict[str, Any]] = []
+
+    initial_policy_return = maybe_float(outcome.get("policy_initial_mean"))
+    if initial_policy_return is not None:
+        rows.append(
+            {
+                "source": "jepa",
+                "label": label,
+                "env": env,
+                "step": 0,
+                "return": initial_policy_return,
+                "phase": "initial_policy",
+                "iteration": 0,
+                "run_dir": str(run_dir),
+            }
+        )
+
+    first_trained_return = maybe_float(outcome.get("policy_pre_online_trained_mean"))
+    if first_trained_return is None:
+        first_trained_return = maybe_float(outcome.get("policy_trained_mean"))
+    if first_trained_return is not None and initial_steps <= step_limit:
+        rows.append(
+            {
+                "source": "jepa",
+                "label": label,
+                "env": env,
+                "step": initial_steps,
+                "return": first_trained_return,
+                "phase": "initial_world_model_policy",
+                "iteration": 0,
+                "run_dir": str(run_dir),
+            }
+        )
+
     cumulative_steps = initial_steps
     for index, item in enumerate(history, start=1):
         if not isinstance(item, dict):
@@ -361,12 +394,7 @@ def plot_return_vs_env_steps(
 ) -> None:
     fig, ax = plt.subplots(figsize=(4.2, 3.2))
     jepa = aggregate_curve(
-        [
-            row
-            for row in rows
-            if row.get("source") == "jepa"
-            and row.get("phase") == "actor_replay_collection"
-        ],
+        [row for row in rows if row.get("source") == "jepa"],
         x_key="step",
         y_key="return",
     )
