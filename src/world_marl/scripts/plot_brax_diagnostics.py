@@ -352,8 +352,8 @@ def write_markdown(path: Path, rows: list[dict[str, Any]]) -> None:
             "- `summary.csv`: machine-readable aggregate table.",
             "- `policy_diagnostics.csv`: best real-env policy selection "
             "checkpoints by phase.",
-            "- `sample_efficiency.csv`: return checkpoints against real training "
-            "replay steps for the selected environment.",
+            "- `sample_efficiency.csv`: DreamerV3-style return checkpoints "
+            "against real training replay steps for the selected environment.",
             "- `summary.json`: same aggregate table in JSON.",
             "- `returns_vs_ppo.png`: JEPA final return against PPO best and last.",
             "- `jepa_improvement.png`: offline+online and online-only JEPA gains.",
@@ -366,8 +366,10 @@ def write_markdown(path: Path, rows: list[dict[str, Any]]) -> None:
             "- `jepa_policy_training_metrics.png`: imagined return, value loss, "
             "and action saturation during policy training.",
             "- `jepa_model_head_losses.png`: reward and control-value model losses.",
-            "- `<env>_return_vs_train_steps_500k.png`: sample-efficiency curve "
-            "bounded to 500k real training replay steps by default.",
+            "- `<env>_return_vs_train_steps_500k.png`: DreamerV3-style "
+            "sample-efficiency curve bounded to 500k real training replay "
+            "steps by default. JEPA points use actor-replay collection returns, "
+            "not policy-selection or validation returns.",
         ]
     )
     path.write_text("\n".join(lines) + "\n")
@@ -854,27 +856,6 @@ def load_jepa_sample_efficiency_rows(
     )
 
     rows: list[dict[str, Any]] = []
-    offline_return = maybe_float(
-        outcome.get("policy_pre_online_trained_mean")
-        if outcome.get("policy_pre_online_trained_mean") is not None
-        else outcome.get("policy_trained_mean")
-    )
-    if offline_return is None:
-        offline_return = summary_trained_return(run_dir / "summary.json")
-    if offline_return is not None and initial_train_steps <= step_limit:
-        rows.append(
-            {
-                "source": "jepa",
-                "label": label,
-                "env": env,
-                "step": initial_train_steps,
-                "return": offline_return,
-                "phase": "offline_policy",
-                "iteration": 0,
-                "run_dir": str(run_dir),
-            }
-        )
-
     online_history = outcome.get("online_history")
     if not isinstance(online_history, list):
         online_history = load_json_list(run_path / "online_history.json")
@@ -889,7 +870,7 @@ def load_jepa_sample_efficiency_rows(
         if added_steps is None:
             added_steps = online_collect_steps * num_envs
         cumulative_steps += added_steps
-        value = online_champion_return(item)
+        value = maybe_float(actor_replay.get("mean_return"))
         if value is None or cumulative_steps > step_limit:
             continue
         rows.append(
@@ -899,35 +880,12 @@ def load_jepa_sample_efficiency_rows(
                 "env": env,
                 "step": cumulative_steps,
                 "return": value,
-                "phase": "online_champion",
+                "phase": "actor_replay_collection",
                 "iteration": maybe_int(item.get("iteration")) or index,
                 "run_dir": str(run_dir),
             }
         )
     return rows
-
-
-def online_champion_return(item: dict[str, Any]) -> float | None:
-    for container_name in ("policy", "candidate_policy"):
-        container = item.get(container_name, {})
-        if not isinstance(container, dict):
-            continue
-        for key in (
-            "policy_champion_return",
-            "policy_trained_mean",
-            "policy_candidate_trained_mean",
-        ):
-            value = maybe_float(container.get(key))
-            if value is not None:
-                return value
-    return None
-
-
-def summary_trained_return(path: Path) -> float | None:
-    if not path.exists():
-        return None
-    payload = load_json_dict(path)
-    return maybe_float(payload.get("aggregate_policy_trained_mean"))
 
 
 def plot_sample_efficiency(
@@ -971,7 +929,7 @@ def plot_sample_efficiency(
                 linewidth=2.2,
                 markersize=4,
                 color="#333333",
-                label="PPO",
+                label="PPO eval",
             )
         else:
             ax.plot(
@@ -983,9 +941,9 @@ def plot_sample_efficiency(
                 label=f"JEPA {label}",
             )
 
-    ax.set_title(f"{env.title()} Return vs Real Training Replay Steps")
-    ax.set_xlabel("Real training replay environment steps")
-    ax.set_ylabel("Evaluation return")
+    ax.set_title(f"{env.title()} DreamerV3-Style Return vs Environment Steps")
+    ax.set_xlabel("Environment steps in training replay")
+    ax.set_ylabel("Episode return")
     ax.set_xlim(0, step_limit)
     ax.grid(alpha=0.25)
     if rows:
