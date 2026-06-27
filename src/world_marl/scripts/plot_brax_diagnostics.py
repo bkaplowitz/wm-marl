@@ -74,6 +74,13 @@ def main() -> None:
         args.out_dir / "policy_diagnostics.csv",
         build_policy_diagnostic_rows(args.jepa_root, envs),
     )
+    sample_efficiency_rows = build_sample_efficiency_rows(
+        args.jepa_root,
+        args.ppo_root,
+        env=args.sample_env,
+        step_limit=args.sample_step_limit,
+    )
+    write_csv(args.out_dir / "sample_efficiency.csv", sample_efficiency_rows)
 
     plot_returns(args.out_dir / "returns_vs_ppo.png", envs, jepa, ppo)
     plot_jepa_improvement(args.out_dir / "jepa_improvement.png", envs, jepa)
@@ -110,10 +117,18 @@ def main() -> None:
         args.jepa_root,
         envs,
     )
+    plot_sample_efficiency(
+        args.out_dir
+        / f"{args.sample_env}_return_vs_train_steps_{args.sample_step_limit // 1000}k.png",
+        sample_efficiency_rows,
+        env=args.sample_env,
+        step_limit=args.sample_step_limit,
+    )
 
     print(f"Wrote diagnostics to {args.out_dir}")
     print(f"- {args.out_dir / 'summary.csv'}")
     print(f"- {args.out_dir / 'policy_diagnostics.csv'}")
+    print(f"- {args.out_dir / 'sample_efficiency.csv'}")
     print(f"- {args.out_dir / 'diagnostics.md'}")
     print(f"- {args.out_dir / 'returns_vs_ppo.png'}")
     print(f"- {args.out_dir / 'jepa_improvement.png'}")
@@ -124,6 +139,10 @@ def main() -> None:
     print(f"- {args.out_dir / 'jepa_policy_selection_returns.png'}")
     print(f"- {args.out_dir / 'jepa_policy_training_metrics.png'}")
     print(f"- {args.out_dir / 'jepa_model_head_losses.png'}")
+    print(
+        "- "
+        f"{args.out_dir / f'{args.sample_env}_return_vs_train_steps_{args.sample_step_limit // 1000}k.png'}"
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -145,6 +164,17 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         required=True,
         help="Directory for CSV, JSON, and PNG diagnostics.",
+    )
+    parser.add_argument(
+        "--sample-env",
+        default="reacher",
+        help="Environment to plot for sample-efficiency diagnostics.",
+    )
+    parser.add_argument(
+        "--sample-step-limit",
+        type=int,
+        default=500_000,
+        help="Maximum real training-replay environment steps on the sample-efficiency plot.",
     )
     return parser.parse_args()
 
@@ -322,6 +352,8 @@ def write_markdown(path: Path, rows: list[dict[str, Any]]) -> None:
             "- `summary.csv`: machine-readable aggregate table.",
             "- `policy_diagnostics.csv`: best real-env policy selection "
             "checkpoints by phase.",
+            "- `sample_efficiency.csv`: return checkpoints against real training "
+            "replay steps for the selected environment.",
             "- `summary.json`: same aggregate table in JSON.",
             "- `returns_vs_ppo.png`: JEPA final return against PPO best and last.",
             "- `jepa_improvement.png`: offline+online and online-only JEPA gains.",
@@ -334,6 +366,8 @@ def write_markdown(path: Path, rows: list[dict[str, Any]]) -> None:
             "- `jepa_policy_training_metrics.png`: imagined return, value loss, "
             "and action saturation during policy training.",
             "- `jepa_model_head_losses.png`: reward and control-value model losses.",
+            "- `<env>_return_vs_train_steps_500k.png`: sample-efficiency curve "
+            "bounded to 500k real training replay steps by default.",
         ]
     )
     path.write_text("\n".join(lines) + "\n")
@@ -706,6 +740,261 @@ def plot_model_head_losses(
     plt.close(fig)
 
 
+def build_sample_efficiency_rows(
+    jepa_root: Path,
+    ppo_root: Path,
+    *,
+    env: str,
+    step_limit: int,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    rows.extend(load_ppo_sample_efficiency_rows(ppo_root, env, step_limit))
+    for label, run_dir in latest_jepa_env_run_dirs(jepa_root, env):
+        rows.extend(
+            load_jepa_sample_efficiency_rows(
+                label=label,
+                run_dir=run_dir,
+                env=env,
+                step_limit=step_limit,
+            )
+        )
+    return sorted(
+        rows,
+        key=lambda row: (
+            str(row.get("source", "")),
+            str(row.get("label", "")),
+            maybe_int(row.get("step")) or -1,
+            str(row.get("phase", "")),
+        ),
+    )
+
+
+def latest_jepa_env_run_dirs(root: Path, env: str) -> list[tuple[str, Path]]:
+    if not root.exists():
+        return []
+
+    bases: list[Path] = []
+    if any(root.glob("brax_jepa_*")):
+        bases.append(root)
+    bases.extend(
+        path
+        for path in sorted(root.iterdir())
+        if path.is_dir() and (path.name == env or path.name.startswith(f"{env}_"))
+    )
+
+    out: list[tuple[str, Path]] = []
+    seen: set[Path] = set()
+    for base in bases:
+        run_dirs = sorted(path for path in base.glob("brax_jepa_*") if path.is_dir())
+        if not run_dirs:
+            continue
+        run_dir = run_dirs[-1]
+        resolved = run_dir.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        label = env if base == root / env else base.name
+        out.append((label, run_dir))
+    return out
+
+
+def load_ppo_sample_efficiency_rows(
+    root: Path,
+    env: str,
+    step_limit: int,
+) -> list[dict[str, Any]]:
+    summary_path = root / env / "summary.json"
+    if not summary_path.exists():
+        return []
+
+    payload = load_json_dict(summary_path)
+    rows: list[dict[str, Any]] = []
+    for item in payload.get("history", []):
+        step = maybe_int(item.get("num_steps"))
+        value = maybe_float(item.get("eval/episode_reward"))
+        if step is None or value is None or step > step_limit:
+            continue
+        rows.append(
+            {
+                "source": "ppo",
+                "label": f"{env}_ppo",
+                "env": env,
+                "step": step,
+                "return": value,
+                "phase": "eval",
+                "iteration": None,
+                "run_dir": str(summary_path.parent),
+            }
+        )
+    return rows
+
+
+def load_jepa_sample_efficiency_rows(
+    *,
+    label: str,
+    run_dir: Path,
+    env: str,
+    step_limit: int,
+) -> list[dict[str, Any]]:
+    run_path = run_dir / "none" / "run_000"
+    outcome_path = run_path / "outcome.json"
+    outcome = load_json_dict(outcome_path) if outcome_path.exists() else {}
+    config = load_json_dict(run_path / "config.json")
+    args = config.get("args", {})
+
+    num_envs = maybe_int(args.get("num_envs")) or 1
+    collect_steps = maybe_int(args.get("collect_steps"))
+    online_collect_steps = (
+        maybe_int(args.get("online_collect_steps")) or collect_steps or 0
+    )
+    initial_train_steps = (
+        maybe_int(outcome.get("real_initial_train_replay_env_steps"))
+        or maybe_int(load_json_dict(run_path / "train_replay.json").get("env_steps"))
+        or ((collect_steps or 0) * num_envs)
+    )
+
+    rows: list[dict[str, Any]] = []
+    offline_return = maybe_float(
+        outcome.get("policy_pre_online_trained_mean")
+        if outcome.get("policy_pre_online_trained_mean") is not None
+        else outcome.get("policy_trained_mean")
+    )
+    if offline_return is None:
+        offline_return = summary_trained_return(run_dir / "summary.json")
+    if offline_return is not None and initial_train_steps <= step_limit:
+        rows.append(
+            {
+                "source": "jepa",
+                "label": label,
+                "env": env,
+                "step": initial_train_steps,
+                "return": offline_return,
+                "phase": "offline_policy",
+                "iteration": 0,
+                "run_dir": str(run_dir),
+            }
+        )
+
+    online_history = outcome.get("online_history")
+    if not isinstance(online_history, list):
+        online_history = load_json_list(run_path / "online_history.json")
+    cumulative_steps = initial_train_steps
+    for index, item in enumerate(online_history, start=1):
+        if not isinstance(item, dict):
+            continue
+        actor_replay = item.get("actor_replay", {})
+        if not isinstance(actor_replay, dict):
+            actor_replay = {}
+        added_steps = maybe_int(actor_replay.get("env_steps"))
+        if added_steps is None:
+            added_steps = online_collect_steps * num_envs
+        cumulative_steps += added_steps
+        value = online_champion_return(item)
+        if value is None or cumulative_steps > step_limit:
+            continue
+        rows.append(
+            {
+                "source": "jepa",
+                "label": label,
+                "env": env,
+                "step": cumulative_steps,
+                "return": value,
+                "phase": "online_champion",
+                "iteration": maybe_int(item.get("iteration")) or index,
+                "run_dir": str(run_dir),
+            }
+        )
+    return rows
+
+
+def online_champion_return(item: dict[str, Any]) -> float | None:
+    for container_name in ("policy", "candidate_policy"):
+        container = item.get(container_name, {})
+        if not isinstance(container, dict):
+            continue
+        for key in (
+            "policy_champion_return",
+            "policy_trained_mean",
+            "policy_candidate_trained_mean",
+        ):
+            value = maybe_float(container.get(key))
+            if value is not None:
+                return value
+    return None
+
+
+def summary_trained_return(path: Path) -> float | None:
+    if not path.exists():
+        return None
+    payload = load_json_dict(path)
+    return maybe_float(payload.get("aggregate_policy_trained_mean"))
+
+
+def plot_sample_efficiency(
+    path: Path,
+    rows: list[dict[str, Any]],
+    *,
+    env: str,
+    step_limit: int,
+) -> None:
+    fig, ax = plt.subplots(figsize=(8.5, 5.5))
+    if not rows:
+        ax.text(
+            0.5,
+            0.5,
+            f"No {env} sample-efficiency rows found",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault((str(row["source"]), str(row["label"])), []).append(row)
+
+    for (source, label), group in sorted(grouped.items()):
+        group = sorted(group, key=lambda row: maybe_int(row.get("step")) or -1)
+        steps = [maybe_int(row.get("step")) for row in group]
+        returns = [maybe_float(row.get("return")) for row in group]
+        points = [
+            (step, value)
+            for step, value in zip(steps, returns, strict=True)
+            if step is not None and value is not None and step <= step_limit
+        ]
+        if not points:
+            continue
+        xs, ys = zip(*points)
+        if source == "ppo":
+            ax.plot(
+                xs,
+                ys,
+                marker="o",
+                linewidth=2.2,
+                markersize=4,
+                color="#333333",
+                label="PPO",
+            )
+        else:
+            ax.plot(
+                xs,
+                ys,
+                marker="o",
+                linewidth=2.0,
+                markersize=4,
+                label=f"JEPA {label}",
+            )
+
+    ax.set_title(f"{env.title()} Return vs Real Training Replay Steps")
+    ax.set_xlabel("Real training replay environment steps")
+    ax.set_ylabel("Evaluation return")
+    ax.set_xlim(0, step_limit)
+    ax.grid(alpha=0.25)
+    if rows:
+        ax.legend(fontsize="small")
+    fig.tight_layout()
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
 def load_policy_training_points(
     root: Path,
     env: str,
@@ -746,6 +1035,26 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
         if isinstance(row, dict):
             rows.append(row)
     return rows
+
+
+def load_json_dict(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def load_json_list(path: Path) -> list[Any]:
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return []
+    return payload if isinstance(payload, list) else []
 
 
 def latest_jepa_run_dir(root: Path, env: str) -> Path | None:
