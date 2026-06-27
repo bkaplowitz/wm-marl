@@ -1,9 +1,0 @@
-env,control,policy_phase,num_selection_points,best_selection_step,best_selection_mean_return,last_selection_step,last_selection_mean_return,selected_steps,logged_best_step,logged_best_mean_return
-pusher,none,online_001_policy,7,0,-291.042432,3000,-458.428579,0,0,-291.042432
-pusher,none,online_002_policy,7,0,-291.105113,3000,-447.780073,0,0,-291.105113
-pusher,none,online_003_policy,7,0,-291.094145,3000,-422.246833,0,0,-291.094145
-pusher,none,policy,7,1000,-291.061381,3000,-316.139929,0 500 1000,1000,-291.061381
-reacher,none,online_001_policy,7,500,-40.750643,3000,-44.207451,0 500,500,-40.750643
-reacher,none,online_002_policy,7,500,-38.873685,3000,-42.173911,0 500,500,-38.873685
-reacher,none,online_003_policy,7,1000,-37.559989,3000,-42.514103,0 1000,1000,-37.559989
-reacher,none,policy,7,2500,-49.842896,3000,-52.161021,0 500 1000 1500 2000 2500,2500,-49.842896
