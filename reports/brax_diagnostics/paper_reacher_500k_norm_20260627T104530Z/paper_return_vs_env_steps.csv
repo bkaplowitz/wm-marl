@@ -1,0 +1,24 @@
+env,iteration,label,normalization_baseline_return,normalization_target_return,normalized_return,phase,reference_step,return,run_dir,source,step
+reacher,0,reacher_seed0,-528.8432068824768,-27.78355497866869,0.0,initial_policy,,-528.8432068824768,runs/brax_jepa_smallbatch_mainline_reacher_pusher/reacher_seed0/brax_jepa_20260626T213546Z,jepa,0
+reacher,0,reacher_seed0,-528.8432068824768,-27.78355497866869,94.60558163286524,initial_world_model_policy,,-54.812808871269226,runs/brax_jepa_smallbatch_mainline_reacher_pusher/reacher_seed0/brax_jepa_20260626T213546Z,jepa,131072
+reacher,1,reacher_seed0,-528.8432068824768,-27.78355497866869,95.72479631561558,actor_replay_collection,,-49.20487567782402,runs/brax_jepa_smallbatch_mainline_reacher_pusher/reacher_seed0/brax_jepa_20260626T213546Z,jepa,196608
+reacher,2,reacher_seed0,-528.8432068824768,-27.78355497866869,99.29363763081649,actor_replay_collection,,-31.322851806879044,runs/brax_jepa_smallbatch_mainline_reacher_pusher/reacher_seed0/brax_jepa_20260626T213546Z,jepa,262144
+reacher,3,reacher_seed0,-528.8432068824768,-27.78355497866869,99.83398614624328,actor_replay_collection,,-28.61538341641426,runs/brax_jepa_smallbatch_mainline_reacher_pusher/reacher_seed0/brax_jepa_20260626T213546Z,jepa,327680
+reacher,4,reacher_seed0,-528.8432068824768,-27.78355497866869,99.83622585275688,actor_replay_collection,,-28.604161150753498,runs/brax_jepa_smallbatch_mainline_reacher_pusher/reacher_seed0/brax_jepa_20260626T213546Z,jepa,393216
+reacher,5,reacher_seed0,-528.8432068824768,-27.78355497866869,100.0,actor_replay_collection,,-27.78355497866869,runs/brax_jepa_smallbatch_mainline_reacher_pusher/reacher_seed0/brax_jepa_20260626T213546Z,jepa,458752
+reacher,0,reacher_seed1,-528.8432068824768,-27.78355497866869,4.663396275000025,initial_policy,,-505.4768097400665,runs/brax_jepa_smallbatch_mainline_reacher_pusher/reacher_seed1/brax_jepa_20260627T011144Z,jepa,0
+reacher,0,reacher_seed1,-528.8432068824768,-27.78355497866869,93.14405228041474,initial_world_model_policy,,-62.13594275712967,runs/brax_jepa_smallbatch_mainline_reacher_pusher/reacher_seed1/brax_jepa_20260627T011144Z,jepa,131072
+reacher,1,reacher_seed1,-528.8432068824768,-27.78355497866869,93.69980689007312,actor_replay_collection,,-59.35128064453602,runs/brax_jepa_smallbatch_mainline_reacher_pusher/reacher_seed1/brax_jepa_20260627T011144Z,jepa,196608
+reacher,2,reacher_seed1,-528.8432068824768,-27.78355497866869,99.42794298496132,actor_replay_collection,,-30.649901866912842,runs/brax_jepa_smallbatch_mainline_reacher_pusher/reacher_seed1/brax_jepa_20260627T011144Z,jepa,262144
+reacher,3,reacher_seed1,-528.8432068824768,-27.78355497866869,98.62448816289279,actor_replay_collection,,-34.67568980157375,runs/brax_jepa_smallbatch_mainline_reacher_pusher/reacher_seed1/brax_jepa_20260627T011144Z,jepa,327680
+reacher,4,reacher_seed1,-528.8432068824768,-27.78355497866869,99.18504729555991,actor_replay_collection,,-31.866954162716866,runs/brax_jepa_smallbatch_mainline_reacher_pusher/reacher_seed1/brax_jepa_20260627T011144Z,jepa,393216
+reacher,5,reacher_seed1,-528.8432068824768,-27.78355497866869,99.25476148657866,actor_replay_collection,,-31.517644479870796,runs/brax_jepa_smallbatch_mainline_reacher_pusher/reacher_seed1/brax_jepa_20260627T011144Z,jepa,458752
+reacher,,PPO,-528.8432068824768,-27.78355497866869,90.54276479767084,eval,,-75.1699447631836,runs/brax_ppo_reacher_1m_a100/reacher,ppo,0
+reacher,,PPO,-528.8432068824768,-27.78355497866869,92.62456042084636,eval,,-64.73890686035156,runs/brax_ppo_reacher_1m_a100/reacher,ppo,81920
+reacher,,PPO,-528.8432068824768,-27.78355497866869,94.91304386422973,eval,,-53.272239685058594,runs/brax_ppo_reacher_1m_a100/reacher,ppo,163840
+reacher,,PPO,-528.8432068824768,-27.78355497866869,94.96267318169856,eval,,-53.02356719970703,runs/brax_ppo_reacher_1m_a100/reacher,ppo,245760
+reacher,,PPO,-528.8432068824768,-27.78355497866869,93.17322368650305,eval,,-61.989776611328125,runs/brax_ppo_reacher_1m_a100/reacher,ppo,327680
+reacher,,PPO,-528.8432068824768,-27.78355497866869,94.40288085298182,eval,,-55.828460693359375,runs/brax_ppo_reacher_1m_a100/reacher,ppo,409600
+reacher,,PPO,-528.8432068824768,-27.78355497866869,94.91578463772927,eval,,-53.258506774902344,runs/brax_ppo_reacher_1m_a100/reacher,ppo,491520
+reacher,,PPO,-528.8432068824768,-27.78355497866869,94.78513398876544,eval_interpolated_to_limit,,-53.91314446181059,runs/brax_ppo_reacher_1m_a100/reacher,ppo,500000
+reacher,,PPO full-run best,-528.8432068824768,-27.78355497866869,95.1560560692181,full_run_best_reference,1064960,-52.054603576660156,runs/brax_ppo_reacher_1m_a100/reacher,ppo_reference,500000
