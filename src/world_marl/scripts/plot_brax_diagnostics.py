@@ -32,6 +32,7 @@ def main() -> None:
         env=args.env,
         step_limit=args.step_limit,
     )
+    add_normalized_returns(return_rows)
     loss_rows = build_train_loss_rows(
         args.jepa_root,
         env=args.env,
@@ -45,6 +46,7 @@ def main() -> None:
         return_rows,
         title=args.title or pretty_env_title(args.env),
         step_limit=args.step_limit,
+        normalize_returns=args.normalize_returns,
     )
     plot_train_loss(
         args.out_dir / "paper_train_loss.png",
@@ -119,6 +121,14 @@ def parse_args() -> argparse.Namespace:
         help="JEPA model-training metric to plot.",
     )
     parser.add_argument(
+        "--normalize-returns",
+        action="store_true",
+        help=(
+            "Plot min-max normalized returns while keeping raw returns in the CSV. "
+            "Useful when raw negative-control returns make the first panel unreadable."
+        ),
+    )
+    parser.add_argument(
         "--paper-only",
         action="store_true",
         help=argparse.SUPPRESS,
@@ -151,6 +161,28 @@ def build_return_rows(
             maybe_int(row.get("step")) or -1,
         ),
     )
+
+
+def add_normalized_returns(rows: list[dict[str, Any]]) -> None:
+    values = [
+        value
+        for row in rows
+        if (value := maybe_float(row.get("return"))) is not None
+    ]
+    if not values:
+        return
+
+    baseline = min(values)
+    target = max(values)
+    denominator = target - baseline
+    for row in rows:
+        value = maybe_float(row.get("return"))
+        row["normalization_baseline_return"] = baseline
+        row["normalization_target_return"] = target
+        if value is None or abs(denominator) < 1e-12:
+            row["normalized_return"] = None
+        else:
+            row["normalized_return"] = 100.0 * (value - baseline) / denominator
 
 
 def load_ppo_return_rows(
@@ -391,23 +423,25 @@ def plot_return_vs_env_steps(
     *,
     title: str,
     step_limit: int,
+    normalize_returns: bool,
 ) -> None:
     fig, ax = plt.subplots(figsize=(4.2, 3.2))
+    y_key = "normalized_return" if normalize_returns else "return"
     jepa = aggregate_curve(
         [row for row in rows if row.get("source") == "jepa"],
         x_key="step",
-        y_key="return",
+        y_key=y_key,
     )
     ppo = aggregate_curve(
         [row for row in rows if row.get("source") == "ppo"],
         x_key="step",
-        y_key="return",
+        y_key=y_key,
     )
     ppo_reference = [row for row in rows if row.get("source") == "ppo_reference"]
 
     plot_aggregate_curve(ax, ppo, color="#ff4f6d", label="PPO", shade=False)
     for row in ppo_reference[:1]:
-        value = maybe_float(row.get("return"))
+        value = maybe_float(row.get(y_key))
         if value is not None:
             ax.axhline(
                 value,
@@ -419,8 +453,11 @@ def plot_return_vs_env_steps(
             )
     plot_aggregate_curve(ax, jepa, color="#0b63ce", label="JEPA", shade=True)
 
-    style_paper_axis(ax, title=title, xlabel="Env steps", ylabel="Return")
+    ylabel = "Normalized Return (%)" if normalize_returns else "Return"
+    style_paper_axis(ax, title=title, xlabel="Env steps", ylabel=ylabel)
     ax.set_xlim(0, step_limit)
+    if normalize_returns:
+        ax.set_ylim(-5, 105)
     ax.xaxis.set_major_formatter(FuncFormatter(format_k_tick))
     if rows:
         ax.legend(
