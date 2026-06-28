@@ -73,6 +73,14 @@ PRESETS: dict[str, dict[str, Any]] = {
         "final_policy_eval_episodes": 256,
     },
 }
+PRESETS["stabilized"] = {
+    **PRESETS["cadence"],
+    "policy_return_mode": "lambda",
+    "policy_actor_baseline": "value",
+    "policy_return_normalization": "batch",
+    "reward_prediction_mode": "symlog-twohot",
+    "value_prediction_mode": "symlog-twohot",
+}
 
 COMMON_PARAMS: dict[str, Any] = {
     "num_runs": 1,
@@ -81,6 +89,8 @@ COMMON_PARAMS: dict[str, Any] = {
     "policy_batch_size": 512,
     "policy_objective": "direct",
     "policy_return_mode": "reward-only",
+    "policy_actor_baseline": "none",
+    "policy_return_normalization": "none",
     "imag_horizon": 15,
     "final_policy_eval_episodes": 0,
     "online_policy_trust_coef": 1.0,
@@ -104,6 +114,11 @@ COMMON_PARAMS: dict[str, Any] = {
     "uncertainty_penalty": 0.1,
     "regularizer": "sigreg",
     "regularizer_weight": 0.05,
+    "reward_prediction_mode": "mse",
+    "value_prediction_mode": "mse",
+    "twohot_bins": 41,
+    "twohot_min": -20.0,
+    "twohot_max": 20.0,
     "controls": ("none",),
     "allow_fail": True,
 }
@@ -152,8 +167,10 @@ def main() -> None:
     print(f"- {out_root / 'tail.sh'}")
     print(f"- {out_root / 'summarize.sh'}")
     print()
-    print(f"Start with: nohup bash {shlex.quote(str(out_root / 'launcher.sh'))} "
-          f"> {shlex.quote(str(out_root / 'launcher.nohup.log'))} 2>&1 &")
+    print(
+        f"Start with: nohup bash {shlex.quote(str(out_root / 'launcher.sh'))} "
+        f"> {shlex.quote(str(out_root / 'launcher.nohup.log'))} 2>&1 &"
+    )
     print(f"Watch with: bash {shlex.quote(str(out_root / 'tail.sh'))}")
 
     if args.start:
@@ -201,10 +218,38 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--online-train-steps", type=int, default=None)
     parser.add_argument("--policy-train-steps", type=int, default=None)
     parser.add_argument("--online-policy-train-steps", type=int, default=None)
+    parser.add_argument(
+        "--policy-return-mode",
+        choices=("reward-only", "lambda"),
+        default=None,
+    )
+    parser.add_argument(
+        "--policy-actor-baseline",
+        choices=("none", "value"),
+        default=None,
+    )
+    parser.add_argument(
+        "--policy-return-normalization",
+        choices=("none", "batch"),
+        default=None,
+    )
     parser.add_argument("--policy-selection-episodes", type=int, default=None)
     parser.add_argument("--policy-eval-episodes", type=int, default=None)
     parser.add_argument("--policy-confirmation-episodes", type=int, default=None)
     parser.add_argument("--final-policy-eval-episodes", type=int, default=None)
+    parser.add_argument(
+        "--reward-prediction-mode",
+        choices=("mse", "symlog-twohot"),
+        default=None,
+    )
+    parser.add_argument(
+        "--value-prediction-mode",
+        choices=("mse", "symlog-twohot"),
+        default=None,
+    )
+    parser.add_argument("--twohot-bins", type=int, default=None)
+    parser.add_argument("--twohot-min", type=float, default=None)
+    parser.add_argument("--twohot-max", type=float, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--policy-batch-size", type=int, default=None)
     parser.add_argument("--latent-dim", type=int, default=None)
@@ -239,10 +284,18 @@ def apply_optional_overrides(args: argparse.Namespace, params: dict[str, Any]) -
         "online_train_steps",
         "policy_train_steps",
         "online_policy_train_steps",
+        "policy_return_mode",
+        "policy_actor_baseline",
+        "policy_return_normalization",
         "policy_selection_episodes",
         "policy_eval_episodes",
         "policy_confirmation_episodes",
         "final_policy_eval_episodes",
+        "reward_prediction_mode",
+        "value_prediction_mode",
+        "twohot_bins",
+        "twohot_min",
+        "twohot_max",
         "batch_size",
         "policy_batch_size",
         "latent_dim",

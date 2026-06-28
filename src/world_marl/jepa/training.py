@@ -12,7 +12,11 @@ import optax
 from flax import struct
 from flax.core import FrozenDict, freeze, unfreeze
 
-from world_marl.jepa.models import JepaConfig, JepaWorldModel
+from world_marl.jepa.models import (
+    JepaConfig,
+    JepaWorldModel,
+    symlog_twohot,
+)
 from world_marl.jepa.replay import ReplayBatch
 
 ControlMode = Literal[
@@ -22,6 +26,8 @@ ControlMode = Literal[
     "frozen-random-world-model",
 ]
 PolicyReturnMode = Literal["reward-only", "lambda"]
+PolicyActorBaseline = Literal["none", "value"]
+PolicyReturnNormalization = Literal["none", "batch"]
 
 MODEL_GROUPS = frozenset(
     {
@@ -245,6 +251,18 @@ def actor_value_from_latent(
     )
 
 
+def actor_value_logits_from_latent(
+    apply_fn,
+    params: FrozenDict,
+    latents: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    return apply_fn(
+        {"params": params},
+        latents,
+        method=JepaWorldModel.actor_value_logits_from_latent,
+    )
+
+
 def control_value_consistency_loss(
     params: FrozenDict,
     apply_fn,
@@ -263,7 +281,7 @@ def control_value_consistency_loss(
 
     predicted_latents = outputs["predicted_latents"]
     target_latents = jax.lax.stop_gradient(outputs["target_latents"])
-    reward_pred = outputs["reward_logits"]
+    reward_pred = outputs["reward_values"]
     continue_pred = jax.nn.sigmoid(outputs["continue_logits"])
     ensemble_axis = predicted_latents.ndim == target_latents.ndim + 1
 
@@ -384,7 +402,7 @@ def world_model_loss_with_outputs(
         axis=2,
     )
     continue_targets = 1.0 - done_targets
-    reward_pred = outputs["reward_logits"]
+    reward_logits = outputs["reward_logits"]
     continue_logits = outputs["continue_logits"]
     if ensemble_axis:
         reward_targets = reward_targets[..., None]
@@ -392,7 +410,15 @@ def world_model_loss_with_outputs(
     validity = prediction_validity(batch.dones, chunk_length, max_horizon)
     if ensemble_axis:
         validity = validity[..., None]
-    reward_loss = masked_mean(jnp.square(reward_pred - reward_targets), validity)
+    reward_loss_values = prediction_loss(
+        reward_logits,
+        reward_targets,
+        mode=config.reward_prediction_mode,
+        num_bins=config.twohot_bins,
+        low=config.twohot_min,
+        high=config.twohot_max,
+    )
+    reward_loss = masked_mean(reward_loss_values, validity)
     continue_loss = masked_mean(
         optax.sigmoid_binary_cross_entropy(continue_logits, continue_targets),
         validity,
@@ -413,7 +439,19 @@ def world_model_loss_with_outputs(
         + config.continue_weight * continue_loss
     )
     constant_continue = jnp.full_like(continue_targets, jnp.mean(continue_targets))
-    constant_reward = jnp.full_like(reward_targets, jnp.mean(reward_targets))
+    reward_mean = masked_mean(reward_targets, validity)
+    constant_reward = jnp.full_like(reward_targets, reward_mean)
+    constant_reward_loss = masked_mean(
+        constant_prediction_loss(
+            constant_reward,
+            reward_targets,
+            mode=config.reward_prediction_mode,
+            num_bins=config.twohot_bins,
+            low=config.twohot_min,
+            high=config.twohot_max,
+        ),
+        validity,
+    )
     terminal_logits = (
         jnp.mean(continue_logits, axis=-1) if ensemble_axis else continue_logits
     )
@@ -425,6 +463,11 @@ def world_model_loss_with_outputs(
         "model/regularizer_loss": regularizer,
         f"model/{regularizer_name}_loss": regularizer,
         "model/reward_loss": reward_loss,
+        "model/reward_constant_loss": constant_reward_loss,
+        "model/reward_prediction_mode_symlog_twohot": jnp.asarray(
+            float(config.reward_prediction_mode == "symlog_twohot"),
+            dtype=reward_loss.dtype,
+        ),
         "model/reward_constant_mse": masked_mean(
             jnp.square(constant_reward - reward_targets),
             validity,
@@ -432,7 +475,7 @@ def world_model_loss_with_outputs(
         "model/continue_loss": continue_loss,
         **ensemble_prediction_metrics(
             outputs["predicted_latents"],
-            outputs["reward_logits"],
+            outputs["reward_values"],
             outputs["continue_logits"],
         ),
         "model/continue_constant_bce": masked_mean(
@@ -489,6 +532,8 @@ def copy_policy_heads(
         "imag_horizon",
         "control",
         "policy_return_mode",
+        "policy_actor_baseline",
+        "policy_return_normalization",
     ),
 )
 def continuous_policy_train_step(
@@ -502,6 +547,8 @@ def continuous_policy_train_step(
     imag_horizon: int,
     control: ControlMode = "none",
     policy_return_mode: PolicyReturnMode = "reward-only",
+    policy_actor_baseline: PolicyActorBaseline = "none",
+    policy_return_normalization: PolicyReturnNormalization = "none",
     value_clip: float = 100.0,
     action_saturation_threshold: float = 0.95,
     start_actions: jax.Array | None = None,
@@ -553,7 +600,20 @@ def continuous_policy_train_step(
             )
         clipped_returns = jnp.clip(actor_returns, -value_clip, value_clip)
         weights = survival_weights(rollout["continues"], gamma=config.gamma)
-        return_loss = -weighted_mean(clipped_returns, weights)
+        if policy_actor_baseline == "none":
+            actor_scores = clipped_returns
+        elif policy_actor_baseline == "value":
+            actor_scores = clipped_returns - jax.lax.stop_gradient(
+                rollout["fixed_values"]
+            )
+        else:
+            raise ValueError(f"unknown policy_actor_baseline: {policy_actor_baseline}")
+        actor_objective_scores = normalize_weighted_values(
+            actor_scores,
+            weights,
+            mode=policy_return_normalization,
+        )
+        return_loss = -weighted_mean(actor_objective_scores, weights)
         if reference_actor_params is None:
             trust_action_l2 = jnp.asarray(0.0, dtype=return_loss.dtype)
         else:
@@ -594,6 +654,8 @@ def continuous_policy_train_step(
             rollout["trusted"],
             actor_returns,
             clipped_returns,
+            actor_scores,
+            actor_objective_scores,
             actor_loss,
         )
         metrics = {
@@ -603,6 +665,20 @@ def continuous_policy_train_step(
             "policy/trust_coef": jnp.asarray(policy_trust_coef, dtype=actor_loss.dtype),
             "policy/imagined_return": weighted_mean(actor_returns, weights),
             "policy/clipped_imagined_return": weighted_mean(clipped_returns, weights),
+            "policy/actor_score": weighted_mean(actor_scores, weights),
+            "policy/actor_objective_score": weighted_mean(
+                actor_objective_scores,
+                weights,
+            ),
+            "policy/actor_score_std": weighted_std(actor_scores, weights),
+            "policy/actor_uses_value_baseline": jnp.asarray(
+                float(policy_actor_baseline == "value"),
+                dtype=actor_loss.dtype,
+            ),
+            "policy/return_normalization_batch": jnp.asarray(
+                float(policy_return_normalization == "batch"),
+                dtype=actor_loss.dtype,
+            ),
             "policy/imagined_reward": weighted_mean(rollout["rewards"], weights),
             "policy/raw_imagined_reward": weighted_mean(
                 rollout["raw_rewards"],
@@ -644,13 +720,14 @@ def continuous_policy_train_step(
     state = state.apply_actor_gradients(actor_grads)
 
     def critic_loss_fn(params):
-        _, values = actor_value_from_latent(
+        _, value_logits = actor_value_logits_from_latent(
             state.apply_fn,
             params,
             critic_latents,
         )
-        value_loss = 0.5 * weighted_mean(
-            jnp.square(values - critic_targets),
+        values = value_predictions_from_logits(value_logits, config)
+        value_loss = weighted_mean(
+            value_prediction_loss(value_logits, critic_targets, config),
             critic_weights,
         )
         finite_fraction = _all_finite_fraction(values, critic_targets, value_loss)
@@ -890,12 +967,13 @@ def continuous_critic_warmup_step(
             batch.observations[:, 0],
             method=JepaWorldModel.encode,
         )
-        _, values = actor_value_from_latent(
+        _, value_logits = actor_value_logits_from_latent(
             state.apply_fn,
             params,
             z,
         )
-        value_loss = 0.5 * jnp.mean(jnp.square(values - targets))
+        values = value_predictions_from_logits(value_logits, config)
+        value_loss = jnp.mean(value_prediction_loss(value_logits, targets, config))
         finite_fraction = _all_finite_fraction(values, targets, value_loss)
         metrics = {
             "critic/total_loss": value_loss,
@@ -1450,6 +1528,98 @@ def survival_weights(continues: jax.Array, *, gamma: float) -> jax.Array:
 
 def weighted_mean(values: jax.Array, weights: jax.Array) -> jax.Array:
     return jnp.sum(values * weights) / (jnp.sum(weights) + 1e-6)
+
+
+def weighted_std(values: jax.Array, weights: jax.Array) -> jax.Array:
+    mean = weighted_mean(values, weights)
+    variance = weighted_mean(jnp.square(values - mean), weights)
+    return jnp.sqrt(jnp.maximum(variance, 1e-6))
+
+
+def normalize_weighted_values(
+    values: jax.Array,
+    weights: jax.Array,
+    *,
+    mode: PolicyReturnNormalization,
+) -> jax.Array:
+    if mode == "none":
+        return values
+    if mode == "batch":
+        mean = jax.lax.stop_gradient(weighted_mean(values, weights))
+        std = jax.lax.stop_gradient(weighted_std(values, weights))
+        return (values - mean) / (std + 1e-6)
+    raise ValueError(f"unknown normalization mode: {mode}")
+
+
+def prediction_loss(
+    logits: jax.Array,
+    targets: jax.Array,
+    *,
+    mode: str,
+    num_bins: int,
+    low: float,
+    high: float,
+) -> jax.Array:
+    if mode == "mse":
+        return jnp.square(logits - targets)
+    if mode == "symlog_twohot":
+        target_probs = symlog_twohot(targets, num_bins=num_bins, low=low, high=high)
+        return -jnp.sum(target_probs * jax.nn.log_softmax(logits, axis=-1), axis=-1)
+    raise ValueError(f"unknown prediction mode: {mode}")
+
+
+def constant_prediction_loss(
+    constant_values: jax.Array,
+    targets: jax.Array,
+    *,
+    mode: str,
+    num_bins: int,
+    low: float,
+    high: float,
+) -> jax.Array:
+    if mode == "mse":
+        return jnp.square(constant_values - targets)
+    if mode == "symlog_twohot":
+        target_probs = symlog_twohot(targets, num_bins=num_bins, low=low, high=high)
+        constant_probs = symlog_twohot(
+            constant_values,
+            num_bins=num_bins,
+            low=low,
+            high=high,
+        )
+        return -jnp.sum(target_probs * jnp.log(constant_probs + 1e-6), axis=-1)
+    raise ValueError(f"unknown prediction mode: {mode}")
+
+
+def value_predictions_from_logits(logits: jax.Array, config: JepaConfig) -> jax.Array:
+    if config.value_prediction_mode == "mse":
+        return jnp.squeeze(logits, axis=-1)
+    support = jnp.linspace(
+        config.twohot_min,
+        config.twohot_max,
+        config.twohot_bins,
+        dtype=logits.dtype,
+    )
+    encoded = jnp.sum(jax.nn.softmax(logits, axis=-1) * support, axis=-1)
+    return jnp.sign(encoded) * jnp.expm1(jnp.abs(encoded))
+
+
+def value_prediction_loss(
+    logits: jax.Array,
+    targets: jax.Array,
+    config: JepaConfig,
+) -> jax.Array:
+    if config.value_prediction_mode == "mse":
+        predictions = jnp.squeeze(logits, axis=-1)
+        return 0.5 * jnp.square(predictions - targets)
+    return prediction_loss(
+        logits,
+        targets,
+        mode=config.value_prediction_mode,
+        num_bins=config.twohot_bins,
+        low=config.twohot_min,
+        high=config.twohot_max,
+    )
 
 
 def _masked_adam(

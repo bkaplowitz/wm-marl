@@ -30,6 +30,11 @@ class JepaConfig:
     sigreg_num_proj: int = 1024
     reward_weight: float = 1.0
     continue_weight: float = 1.0
+    reward_prediction_mode: str = "mse"
+    value_prediction_mode: str = "mse"
+    twohot_bins: int = 41
+    twohot_min: float = -20.0
+    twohot_max: float = 20.0
     dynamics_ensemble_size: int = 1
     gamma: float = 0.99
     lambda_return: float = 0.95
@@ -43,6 +48,16 @@ class JepaConfig:
             raise ValueError("regularizer must be one of: sigreg, none")
         if self.target_gradient not in ("stopgrad", "symmetric"):
             raise ValueError("target_gradient must be one of: stopgrad, symmetric")
+        if self.reward_prediction_mode not in ("mse", "symlog_twohot"):
+            raise ValueError(
+                "reward_prediction_mode must be one of: mse, symlog_twohot"
+            )
+        if self.value_prediction_mode not in ("mse", "symlog_twohot"):
+            raise ValueError("value_prediction_mode must be one of: mse, symlog_twohot")
+        if self.twohot_bins < 3:
+            raise ValueError("twohot_bins must be >= 3")
+        if self.twohot_min >= self.twohot_max:
+            raise ValueError("twohot_min must be < twohot_max")
         if self.sigreg_knots < 2:
             raise ValueError("sigreg_knots must be >= 2")
         if self.sigreg_num_proj < 1:
@@ -145,6 +160,14 @@ class JepaWorldModel(nn.Module):
     config: JepaConfig
 
     def setup(self) -> None:
+        reward_output_dim = prediction_output_dim(
+            self.config.reward_prediction_mode,
+            self.config.twohot_bins,
+        )
+        value_output_dim = prediction_output_dim(
+            self.config.value_prediction_mode,
+            self.config.twohot_bins,
+        )
         self.encoder = MLPEncoder(
             latent_dim=self.config.latent_dim,
             hidden_dim=self.config.model_dim,
@@ -188,7 +211,11 @@ class JepaWorldModel(nn.Module):
                 name="predictor",
             )
             self.predictor_norm = nn.LayerNorm(name="predictor_norm")
-            self.reward_head = MLPHead(1, self.config.model_dim, name="reward_head")
+            self.reward_head = MLPHead(
+                reward_output_dim,
+                self.config.model_dim,
+                name="reward_head",
+            )
             self.continue_head = MLPHead(1, self.config.model_dim, name="continue_head")
         else:
             self.predictors = [
@@ -204,7 +231,11 @@ class JepaWorldModel(nn.Module):
                 for index in range(self.config.dynamics_ensemble_size)
             ]
             self.reward_heads = [
-                MLPHead(1, self.config.model_dim, name=f"reward_head_{index}")
+                MLPHead(
+                    reward_output_dim,
+                    self.config.model_dim,
+                    name=f"reward_head_{index}",
+                )
                 for index in range(self.config.dynamics_ensemble_size)
             ]
             self.continue_heads = [
@@ -216,7 +247,11 @@ class JepaWorldModel(nn.Module):
             self.config.model_dim,
             name="actor_head",
         )
-        self.value_head = MLPHead(1, self.config.model_dim, name="value_head")
+        self.value_head = MLPHead(
+            value_output_dim,
+            self.config.model_dim,
+            name="value_head",
+        )
 
     def __call__(self, observations: jax.Array) -> jax.Array:
         return self.encode(observations)
@@ -248,12 +283,28 @@ class JepaWorldModel(nn.Module):
         self,
         latents: jax.Array,
     ) -> tuple[jax.Array, jax.Array]:
+        logits, value_logits = self.actor_value_logits_from_latent(latents)
+        values = scalar_prediction_from_logits(
+            value_logits,
+            mode=self.config.value_prediction_mode,
+            num_bins=self.config.twohot_bins,
+            low=self.config.twohot_min,
+            high=self.config.twohot_max,
+        )
+        return logits, values
+
+    def actor_value_logits_from_latent(
+        self,
+        latents: jax.Array,
+    ) -> tuple[jax.Array, jax.Array]:
         flat = latents.reshape((-1, self.config.latent_dim))
         logits = self.actor_head(flat)
-        values = jnp.squeeze(self.value_head(flat), axis=-1)
+        value_logits = self.value_head(flat)
         return (
             logits.reshape((*latents.shape[:-1], self.config.action_dim)),
-            values.reshape(latents.shape[:-1]),
+            value_logits.reshape(
+                (*latents.shape[:-1], value_logits.shape[-1]),
+            ),
         )
 
     def sequence_outputs(
@@ -293,7 +344,8 @@ class JepaWorldModel(nn.Module):
         )
         predictions = []
         targets = []
-        rewards = []
+        reward_logits = []
+        reward_values = []
         continues = []
         batch_size = latents.shape[0]
         flat_batch = batch_size * chunk_length
@@ -314,7 +366,8 @@ class JepaWorldModel(nn.Module):
             horizon_ids = jnp.full((flat_batch,), step_index + 1, dtype=jnp.int32)
             current_latents = flat_latents[:, -1]
             head_predictions = []
-            head_rewards = []
+            head_reward_logits = []
+            head_reward_values = []
             head_continues = []
             for head_index in range(self.config.dynamics_ensemble_size):
                 next_latents = self.predict_latent(
@@ -327,11 +380,19 @@ class JepaWorldModel(nn.Module):
                         (batch_size, chunk_length, self.config.latent_dim)
                     )
                 )
-                head_rewards.append(
-                    jnp.squeeze(
-                        self.reward_from_hidden(last_h, head_index=head_index),
-                        axis=-1,
-                    ).reshape((batch_size, chunk_length))
+                current_reward_logits = self.reward_from_hidden(
+                    last_h,
+                    head_index=head_index,
+                )
+                head_reward_logits.append(
+                    current_reward_logits.reshape(
+                        (batch_size, chunk_length, current_reward_logits.shape[-1])
+                    )
+                )
+                head_reward_values.append(
+                    self.reward_value_from_logits(current_reward_logits).reshape(
+                        (batch_size, chunk_length)
+                    )
                 )
                 head_continues.append(
                     jnp.squeeze(
@@ -345,7 +406,8 @@ class JepaWorldModel(nn.Module):
             if self.config.target_gradient == "stopgrad":
                 target = jax.lax.stop_gradient(target)
             targets.append(target)
-            rewards.append(jnp.stack(head_rewards, axis=2))
+            reward_logits.append(jnp.stack(head_reward_logits, axis=2))
+            reward_values.append(jnp.stack(head_reward_values, axis=2))
             continues.append(jnp.stack(head_continues, axis=2))
             if step_index + 1 < max_horizon:
                 latent_history = append_history(
@@ -362,17 +424,22 @@ class JepaWorldModel(nn.Module):
                         dones[:, step_index + 1 : step_index + 1 + chunk_length],
                     )
         predicted_latents = jnp.stack(predictions, axis=2)
-        reward_logits = jnp.stack(rewards, axis=2)
+        reward_logits = jnp.stack(reward_logits, axis=2)
+        reward_values = jnp.stack(reward_values, axis=2)
         continue_logits = jnp.stack(continues, axis=2)
         if self.config.dynamics_ensemble_size == 1:
             predicted_latents = predicted_latents[..., 0, :]
-            reward_logits = reward_logits[..., 0]
+            reward_logits = reward_logits[..., 0, :]
+            reward_values = reward_values[..., 0]
             continue_logits = continue_logits[..., 0]
+        if self.config.reward_prediction_mode == "mse":
+            reward_logits = jnp.squeeze(reward_logits, axis=-1)
         return {
             "context_latents": context_latents,
             "predicted_latents": predicted_latents,
             "target_latents": jnp.stack(targets, axis=2),
             "reward_logits": reward_logits,
+            "reward_values": reward_values,
             "continue_logits": continue_logits,
         }
 
@@ -414,10 +481,21 @@ class JepaWorldModel(nn.Module):
             return self.predictor_norm(update)
         return self.predictor_norms[head_index](update)
 
-    def reward_from_hidden(self, hidden: jax.Array, *, head_index: int = 0) -> jax.Array:
+    def reward_from_hidden(
+        self, hidden: jax.Array, *, head_index: int = 0
+    ) -> jax.Array:
         if self.config.dynamics_ensemble_size == 1:
             return self.reward_head(hidden)
         return self.reward_heads[head_index](hidden)
+
+    def reward_value_from_logits(self, logits: jax.Array) -> jax.Array:
+        return scalar_prediction_from_logits(
+            logits,
+            mode=self.config.reward_prediction_mode,
+            num_bins=self.config.twohot_bins,
+            low=self.config.twohot_min,
+            high=self.config.twohot_max,
+        )
 
     def continue_from_hidden(
         self,
@@ -456,7 +534,7 @@ class JepaWorldModel(nn.Module):
             last_h + self.horizon_embed(horizon_ids),
             current_latents=latent_history[:, -1],
         )
-        reward = jnp.squeeze(self.reward_from_hidden(last_h), axis=-1)
+        reward = self.reward_value_from_logits(self.reward_from_hidden(last_h))
         continue_logit = jnp.squeeze(self.continue_from_hidden(last_h), axis=-1)
         return z_next, reward, continue_logit
 
@@ -480,9 +558,8 @@ class JepaWorldModel(nn.Module):
                 )
             )
             rewards.append(
-                jnp.squeeze(
-                    self.reward_from_hidden(last_h, head_index=head_index),
-                    axis=-1,
+                self.reward_value_from_logits(
+                    self.reward_from_hidden(last_h, head_index=head_index)
                 )
             )
             continue_logits.append(
@@ -566,6 +643,67 @@ def history_windows(values: jax.Array, window: int, *, pad: str) -> jax.Array:
 
 def append_history(history: jax.Array, values: jax.Array) -> jax.Array:
     return jnp.concatenate([history[:, :, 1:], values[:, :, None]], axis=2)
+
+
+def prediction_output_dim(mode: str, num_bins: int) -> int:
+    if mode == "mse":
+        return 1
+    if mode == "symlog_twohot":
+        return num_bins
+    raise ValueError(f"unknown prediction mode: {mode}")
+
+
+def symlog(values: jax.Array) -> jax.Array:
+    return jnp.sign(values) * jnp.log1p(jnp.abs(values))
+
+
+def symexp(values: jax.Array) -> jax.Array:
+    return jnp.sign(values) * jnp.expm1(jnp.abs(values))
+
+
+def twohot_support(num_bins: int, low: float, high: float) -> jax.Array:
+    return jnp.linspace(low, high, num_bins, dtype=jnp.float32)
+
+
+def symlog_twohot(
+    values: jax.Array, *, num_bins: int, low: float, high: float
+) -> jax.Array:
+    encoded = jnp.clip(symlog(values), low, high)
+    bin_width = (high - low) / float(num_bins - 1)
+    position = (encoded - low) / bin_width
+    lower = jnp.floor(position).astype(jnp.int32)
+    lower = jnp.clip(lower, 0, num_bins - 1)
+    upper = jnp.clip(lower + 1, 0, num_bins - 1)
+    upper_weight = position - lower.astype(encoded.dtype)
+    lower_weight = 1.0 - upper_weight
+    return (
+        jax.nn.one_hot(lower, num_bins, dtype=encoded.dtype) * lower_weight[..., None]
+        + jax.nn.one_hot(upper, num_bins, dtype=encoded.dtype) * upper_weight[..., None]
+    )
+
+
+def symlog_twohot_decode(
+    logits: jax.Array, *, num_bins: int, low: float, high: float
+) -> jax.Array:
+    probs = jax.nn.softmax(logits, axis=-1)
+    support = twohot_support(num_bins, low, high).astype(logits.dtype)
+    encoded = jnp.sum(probs * support, axis=-1)
+    return symexp(encoded)
+
+
+def scalar_prediction_from_logits(
+    logits: jax.Array,
+    *,
+    mode: str,
+    num_bins: int,
+    low: float,
+    high: float,
+) -> jax.Array:
+    if mode == "mse":
+        return jnp.squeeze(logits, axis=-1)
+    if mode == "symlog_twohot":
+        return symlog_twohot_decode(logits, num_bins=num_bins, low=low, high=high)
+    raise ValueError(f"unknown prediction mode: {mode}")
 
 
 def apply_rotary_position_embedding(x: jax.Array) -> jax.Array:

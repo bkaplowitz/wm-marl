@@ -146,6 +146,24 @@ def parse_args() -> argparse.Namespace:
             "the target critic is stronger."
         ),
     )
+    parser.add_argument(
+        "--policy-actor-baseline",
+        choices=("none", "value"),
+        default="none",
+        help=(
+            "Use no actor baseline or subtract the frozen value estimate from "
+            "imagined returns before the actor objective."
+        ),
+    )
+    parser.add_argument(
+        "--policy-return-normalization",
+        choices=("none", "batch"),
+        default="none",
+        help=(
+            "Normalize imagined returns/advantages inside each actor update. "
+            "Batch mode uses stop-gradient weighted batch statistics."
+        ),
+    )
     parser.add_argument("--value-clip", type=float, default=100.0)
     parser.add_argument("--action-saturation-threshold", type=float, default=0.95)
     parser.add_argument(
@@ -386,6 +404,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sigreg-num-proj", type=int, default=256)
     parser.add_argument("--reward-weight", type=float, default=1.0)
     parser.add_argument("--continue-weight", type=float, default=1.0)
+    parser.add_argument(
+        "--reward-prediction-mode",
+        choices=("mse", "symlog-twohot"),
+        default="mse",
+    )
+    parser.add_argument(
+        "--value-prediction-mode",
+        choices=("mse", "symlog-twohot"),
+        default="mse",
+    )
+    parser.add_argument("--twohot-bins", type=int, default=41)
+    parser.add_argument("--twohot-min", type=float, default=-20.0)
+    parser.add_argument("--twohot-max", type=float, default=20.0)
     parser.add_argument("--num-runs", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-cycles", type=int, default=1000)
@@ -503,6 +534,10 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--online-policy-trust-coef must be >= 0")
     if args.value_clip <= 0.0:
         parser.error("--value-clip must be > 0")
+    if args.twohot_bins < 3:
+        parser.error("--twohot-bins must be >= 3")
+    if args.twohot_min >= args.twohot_max:
+        parser.error("--twohot-min must be < --twohot-max")
     if not 0.0 < args.action_saturation_threshold <= 1.0:
         parser.error("--action-saturation-threshold must be in (0, 1]")
     for name in (
@@ -654,6 +689,11 @@ def run_one(
             sigreg_num_proj=args.sigreg_num_proj,
             reward_weight=args.reward_weight,
             continue_weight=args.continue_weight,
+            reward_prediction_mode=args.reward_prediction_mode.replace("-", "_"),
+            value_prediction_mode=args.value_prediction_mode.replace("-", "_"),
+            twohot_bins=args.twohot_bins,
+            twohot_min=args.twohot_min,
+            twohot_max=args.twohot_max,
             dynamics_ensemble_size=args.dynamics_ensemble_size,
             gamma=args.gamma,
             lambda_return=args.lambda_return,
@@ -2130,6 +2170,8 @@ def _maybe_train_policy(
                 imag_horizon=args.imag_horizon,
                 control=control,
                 policy_return_mode=args.policy_return_mode,
+                policy_actor_baseline=args.policy_actor_baseline,
+                policy_return_normalization=args.policy_return_normalization,
                 value_clip=args.value_clip,
                 action_saturation_threshold=args.action_saturation_threshold,
                 start_actions=start_actions,
@@ -2257,8 +2299,7 @@ def _maybe_train_policy(
         filename=f"{artifact_prefix}frozen_model_policy_loss.png",
     )
     selection_env_steps = sum(
-        _maybe_int(item.get("policy_selection_env_steps"))
-        for item in selection_history
+        _maybe_int(item.get("policy_selection_env_steps")) for item in selection_history
     )
     selection_completed_episode_steps = sum(
         _maybe_int(item.get("policy_selection_completed_episode_steps"))
@@ -2289,8 +2330,7 @@ def _maybe_train_policy(
     )
     policy_total_eval_env_steps = policy_nonselection_env_steps + selection_env_steps
     policy_total_completed_episode_steps = (
-        policy_nonselection_completed_episode_steps
-        + selection_completed_episode_steps
+        policy_nonselection_completed_episode_steps + selection_completed_episode_steps
     )
 
     initial_mean = initial_eval["mean_return"]
@@ -2324,6 +2364,8 @@ def _maybe_train_policy(
         "policy_train_steps": policy_train_steps,
         "policy_objective": args.policy_objective,
         "policy_return_mode": args.policy_return_mode,
+        "policy_actor_baseline": args.policy_actor_baseline,
+        "policy_return_normalization": args.policy_return_normalization,
         "policy_imag_horizon": args.imag_horizon,
         "num_policy_candidates": args.num_policy_candidates,
         "candidate_min_gap": args.candidate_min_gap,
@@ -2868,9 +2910,7 @@ def _real_step_accounting(
     )
     online_policy_completed_steps = sum(
         _maybe_int(
-            item.get("candidate_policy", {}).get(
-                "policy_total_completed_episode_steps"
-            )
+            item.get("candidate_policy", {}).get("policy_total_completed_episode_steps")
         )
         for item in online_history
     )
@@ -3428,7 +3468,10 @@ def _run_passed(
         and final_metrics["model/open_loop_loss"]
         <= initial_metrics["model/open_loop_loss"]
         and final_metrics["model/reward_loss"]
-        < final_metrics["model/reward_constant_mse"]
+        < final_metrics.get(
+            "model/reward_constant_loss",
+            final_metrics["model/reward_constant_mse"],
+        )
         and _continue_criterion_passed(final_metrics)
     )
 

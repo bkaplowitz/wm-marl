@@ -289,6 +289,10 @@ The current mainline is:
 - stop-gradient JEPA targets by default;
 - causal transformer dynamics with RoPE attention and GEGLU feed-forward blocks;
 - direct latent-imagination actor training;
+- optional symlog two-hot reward/value heads for Dreamer/STORM-style scale
+  stabilization;
+- optional batch-normalized imagined returns or value-baseline advantages for
+  actor stabilization;
 - frozen encoder during online world-model refits;
 - explicit anchor/recent replay mixing during online refits;
 - candidate refit gates on anchor and recent-policy validation;
