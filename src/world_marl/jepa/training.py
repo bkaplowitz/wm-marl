@@ -275,6 +275,18 @@ def actor_value_from_latent(
     )
 
 
+def actor_value_stats_from_latent(
+    apply_fn,
+    params: FrozenDict,
+    latents: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    return apply_fn(
+        {"params": params},
+        latents,
+        method=JepaWorldModel.actor_value_stats_from_latent,
+    )
+
+
 def actor_value_logits_from_latent(
     apply_fn,
     params: FrozenDict,
@@ -603,13 +615,14 @@ def continuous_policy_train_step(
     uncertainty_budget: float = float("inf"),
     reference_actor_params: FrozenDict | None = None,
     policy_trust_coef: float = 0.0,
+    actor_entropy_coef: float = 0.0,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     if config.action_mode != "continuous":
         raise ValueError("continuous_policy_train_step requires continuous actions")
-    del key
 
     def actor_loss_fn(params):
         rollout = continuous_imagine_rollout(
+            key,
             params,
             state.apply_fn,
             start_observations,
@@ -664,21 +677,26 @@ def continuous_policy_train_step(
                 jax.lax.stop_gradient,
                 reference_actor_params,
             )
-            reference_raw_actions, _ = actor_value_from_latent(
+            reference_action_means, _ = actor_value_from_latent(
                 state.apply_fn,
                 reference_params,
                 rollout["latents"],
             )
-            reference_normalized_actions = jnp.tanh(reference_raw_actions)
+            reference_normalized_actions = jnp.tanh(reference_action_means)
             action_delta_l2 = jnp.mean(
                 jnp.square(
-                    rollout["normalized_actions"]
+                    rollout["normalized_action_means"]
                     - jax.lax.stop_gradient(reference_normalized_actions),
                 ),
                 axis=-1,
             )
             trust_action_l2 = weighted_mean(action_delta_l2, weights)
-        actor_loss = return_loss + policy_trust_coef * trust_action_l2
+        entropy_bonus = weighted_mean(rollout["action_entropy"], weights)
+        actor_loss = (
+            return_loss
+            + policy_trust_coef * trust_action_l2
+            - actor_entropy_coef * entropy_bonus
+        )
         action_saturation = jnp.mean(
             (
                 jnp.abs(rollout["normalized_actions"]) >= action_saturation_threshold
@@ -688,6 +706,9 @@ def continuous_policy_train_step(
             rollout["latents"],
             rollout["actions"],
             rollout["normalized_actions"],
+            rollout["normalized_action_means"],
+            rollout["action_log_stds"],
+            rollout["action_entropy"],
             rollout["rewards"],
             rollout["continues"],
             rollout["raw_rewards"],
@@ -706,6 +727,14 @@ def continuous_policy_train_step(
             "policy/return_loss": return_loss,
             "policy/trust_action_l2": trust_action_l2,
             "policy/trust_coef": jnp.asarray(policy_trust_coef, dtype=actor_loss.dtype),
+            "policy/entropy_bonus": entropy_bonus,
+            "policy/actor_entropy_coef": jnp.asarray(
+                actor_entropy_coef,
+                dtype=actor_loss.dtype,
+            ),
+            "policy/action_log_std_mean": jnp.mean(rollout["action_log_stds"]),
+            "policy/action_log_std_min": jnp.min(rollout["action_log_stds"]),
+            "policy/action_log_std_max": jnp.max(rollout["action_log_stds"]),
             "policy/imagined_return": weighted_mean(actor_returns, weights),
             "policy/clipped_imagined_return": weighted_mean(clipped_returns, weights),
             "policy/actor_score": weighted_mean(actor_scores, weights),
@@ -759,6 +788,9 @@ def continuous_policy_train_step(
             "policy/action_abs_mean": jnp.mean(jnp.abs(rollout["actions"])),
             "policy/normalized_action_abs_mean": jnp.mean(
                 jnp.abs(rollout["normalized_actions"])
+            ),
+            "policy/normalized_action_mean_abs_mean": jnp.mean(
+                jnp.abs(rollout["normalized_action_means"])
             ),
             "policy/action_saturation_fraction": action_saturation,
             "policy/finite_fraction": finite_fraction,
@@ -1091,6 +1123,7 @@ def continuous_critic_warmup_step(
 
 
 def continuous_imagine_rollout(
+    key: jax.Array,
     params: FrozenDict,
     apply_fn,
     start_observations: jax.Array,
@@ -1121,13 +1154,25 @@ def continuous_imagine_rollout(
     initial_trusted = jnp.ones((batch_size,), dtype=context.dtype)
 
     def step(carry, _):
-        context, action_context, cumulative_uncertainty, active = carry
+        context, action_context, cumulative_uncertainty, active, rng = carry
+        rng, action_key = jax.random.split(rng)
         current_z = context[:, -1]
-        raw_actions, values = actor_value_from_latent(
+        action_means, action_log_stds, values = actor_value_stats_from_latent(
             apply_fn,
             params,
             current_z,
         )
+        if config.stochastic_actor:
+            noise = jax.random.normal(action_key, action_means.shape)
+            raw_actions = action_means + jnp.exp(action_log_stds) * noise
+            action_entropy = jnp.sum(
+                0.5 * jnp.log(2.0 * jnp.pi) + 0.5 + action_log_stds,
+                axis=-1,
+            )
+        else:
+            raw_actions = action_means
+            action_entropy = jnp.zeros((batch_size,), dtype=current_z.dtype)
+        normalized_action_means = jnp.tanh(action_means)
         normalized_actions = jnp.tanh(raw_actions)
         actions = scale_normalized_actions(
             normalized_actions,
@@ -1191,10 +1236,14 @@ def continuous_imagine_rollout(
             next_action_context,
             next_cumulative_uncertainty,
             trusted,
+            rng,
         ), {
             "latents": current_z,
             "actions": actions,
             "normalized_actions": normalized_actions,
+            "normalized_action_means": normalized_action_means,
+            "action_log_stds": action_log_stds,
+            "action_entropy": action_entropy,
             "values": values,
             "fixed_values": fixed_values,
             "raw_rewards": raw_rewards,
@@ -1204,9 +1253,9 @@ def continuous_imagine_rollout(
             "trusted": trusted,
         }
 
-    (final_context, _, _, _), rollout = jax.lax.scan(
+    (final_context, _, _, _, _), rollout = jax.lax.scan(
         step,
-        (context, action_context, initial_uncertainty, initial_trusted),
+        (context, action_context, initial_uncertainty, initial_trusted, key),
         xs=None,
         length=imag_horizon,
     )
@@ -1280,6 +1329,9 @@ def select_continuous_actions(
     config: JepaConfig,
     action_low: jax.Array,
     action_high: jax.Array,
+    *,
+    key: jax.Array | None = None,
+    stochastic: bool = False,
 ) -> jax.Array:
     if config.action_mode != "continuous":
         raise ValueError("select_continuous_actions requires continuous actions")
@@ -1289,11 +1341,18 @@ def select_continuous_actions(
         flat_obs,
         method=JepaWorldModel.encode,
     )
-    raw_actions, _ = actor_value_from_latent(
+    action_means, action_log_stds, _ = actor_value_stats_from_latent(
         state.apply_fn,
         state.params,
         z,
     )
+    if stochastic and config.stochastic_actor:
+        if key is None:
+            raise ValueError("key is required for stochastic continuous actions")
+        noise = jax.random.normal(key, action_means.shape)
+        raw_actions = action_means + jnp.exp(action_log_stds) * noise
+    else:
+        raw_actions = action_means
     normalized_actions = jnp.tanh(raw_actions)
     return scale_normalized_actions(
         normalized_actions,

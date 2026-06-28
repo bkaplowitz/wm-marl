@@ -5,6 +5,7 @@ from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
     JepaTrainState,
     actor_value_from_latent,
+    actor_value_stats_from_latent,
     continuous_candidate_distill_step,
     continuous_critic_warmup_step,
     continuous_policy_train_step,
@@ -26,6 +27,7 @@ __all__ = [
     "ReplayBatch",
     "SequenceReplayBuffer",
     "actor_value_from_latent",
+    "actor_value_stats_from_latent",
     "continuous_candidate_distill_step",
     "continuous_critic_warmup_step",
     "continuous_policy_train_step",

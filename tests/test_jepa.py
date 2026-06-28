@@ -628,6 +628,63 @@ def test_continuous_policy_update_freezes_world_model_and_bounds_actions():
             np.testing.assert_allclose(np.asarray(left), np.asarray(right))
 
 
+def test_stochastic_continuous_policy_update_reports_entropy_and_samples_actions():
+    config = JepaConfig(
+        observation_dim=4,
+        action_dim=2,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=1,
+        context_window=1,
+        sigreg_num_proj=32,
+        stochastic_actor=True,
+    )
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    observations = jnp.ones((8, config.observation_dim), dtype=jnp.float32)
+    action_low = -jnp.ones((config.action_dim,), dtype=jnp.float32)
+    action_high = jnp.ones((config.action_dim,), dtype=jnp.float32)
+
+    state, metrics = continuous_policy_train_step(
+        state,
+        jax.random.PRNGKey(1),
+        observations,
+        config,
+        action_low,
+        action_high,
+        imag_horizon=2,
+        actor_entropy_coef=0.01,
+    )
+    deterministic_actions = select_continuous_actions(
+        state,
+        observations,
+        config,
+        action_low,
+        action_high,
+    )
+    sampled_actions = select_continuous_actions(
+        state,
+        observations,
+        config,
+        action_low,
+        action_high,
+        key=jax.random.PRNGKey(2),
+        stochastic=True,
+    )
+
+    assert jnp.isfinite(metrics["policy/total_loss"])
+    assert jnp.isfinite(metrics["policy/entropy_bonus"])
+    assert metrics["policy/actor_entropy_coef"] == pytest.approx(0.01)
+    assert jnp.all(sampled_actions <= action_high + 1e-6)
+    assert jnp.all(sampled_actions >= action_low - 1e-6)
+    assert not np.allclose(
+        np.asarray(deterministic_actions),
+        np.asarray(sampled_actions),
+    )
+
+
 def test_continuous_critic_warmup_updates_value_only():
     config = JepaConfig(
         observation_dim=4,

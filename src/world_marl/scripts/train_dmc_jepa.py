@@ -122,6 +122,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-grad-clip-norm", type=float, default=100.0)
     parser.add_argument("--actor-grad-clip-norm", type=float, default=10.0)
     parser.add_argument("--critic-grad-clip-norm", type=float, default=100.0)
+    parser.add_argument(
+        "--stochastic-actor",
+        action="store_true",
+        help=(
+            "Use a tanh-normal actor during imagination training. Evaluation "
+            "still uses the deterministic mean action."
+        ),
+    )
+    parser.add_argument(
+        "--stochastic-collection",
+        action="store_true",
+        help="Sample from the tanh-normal actor during online actor replay collection.",
+    )
+    parser.add_argument("--actor-entropy-coef", type=float, default=0.0)
+    parser.add_argument("--actor-log-std-min", type=float, default=-5.0)
+    parser.add_argument("--actor-log-std-max", type=float, default=2.0)
     parser.add_argument("--policy-train-steps", type=int, default=0)
     parser.add_argument("--policy-batch-size", type=int, default=None)
     parser.add_argument("--critic-warmup-steps", type=int, default=1000)
@@ -547,6 +563,12 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--online-policy-trust-coef must be >= 0")
     if args.value_clip <= 0.0:
         parser.error("--value-clip must be > 0")
+    if args.actor_entropy_coef < 0.0:
+        parser.error("--actor-entropy-coef must be >= 0")
+    if args.actor_log_std_min >= args.actor_log_std_max:
+        parser.error("--actor-log-std-min must be < --actor-log-std-max")
+    if args.stochastic_collection and not args.stochastic_actor:
+        parser.error("--stochastic-collection requires --stochastic-actor")
     if args.twohot_bins < 3:
         parser.error("--twohot-bins must be >= 3")
     if args.twohot_min >= args.twohot_max:
@@ -708,6 +730,9 @@ def run_one(
             model_grad_clip_norm=args.model_grad_clip_norm,
             actor_grad_clip_norm=args.actor_grad_clip_norm,
             critic_grad_clip_norm=args.critic_grad_clip_norm,
+            stochastic_actor=args.stochastic_actor,
+            actor_log_std_min=args.actor_log_std_min,
+            actor_log_std_max=args.actor_log_std_max,
             regularizer=args.regularizer,
             regularizer_weight=args.regularizer_weight,
             sigreg_knots=args.sigreg_knots,
@@ -915,6 +940,8 @@ def run_one(
                 action_high=adapter.action_high,
                 desc=f"{control} {phase} collect actor replay",
                 quiet=args.quiet,
+                np_rng=np_rng,
+                stochastic_actions=args.stochastic_collection,
             )
             env_steps += added_env_steps
             collect_payload = {
@@ -968,6 +995,8 @@ def run_one(
                         action_high=adapter.action_high,
                         desc=f"{control} {phase} collect recent validation",
                         quiet=args.quiet,
+                        np_rng=np_rng,
+                        stochastic_actions=args.stochastic_collection,
                     )
                 )
                 env_steps += validation_env_steps
@@ -1358,13 +1387,17 @@ def _collect_policy_steps(
     action_high: np.ndarray,
     desc: str,
     quiet: bool,
+    np_rng: np.random.Generator,
+    stochastic_actions: bool = False,
 ) -> tuple[np.ndarray, int, dict[str, Any]]:
     action_low_jax = jnp.asarray(action_low, dtype=jnp.float32)
     action_high_jax = jnp.asarray(action_high, dtype=jnp.float32)
+    action_key = jax.random.PRNGKey(int(np_rng.integers(0, 2**31 - 1)))
     completed_returns: list[float] = []
     completed_lengths: list[int] = []
     progress = tqdm(range(steps), desc=desc, unit="step", disable=quiet)
     for _ in progress:
+        action_key, step_action_key = jax.random.split(action_key)
         actions = np.asarray(
             select_continuous_actions(
                 state,
@@ -1372,6 +1405,8 @@ def _collect_policy_steps(
                 config,
                 action_low_jax,
                 action_high_jax,
+                key=step_action_key,
+                stochastic=stochastic_actions,
             )
         )
         step = adapter.step(actions[:, None, :])
@@ -1394,6 +1429,7 @@ def _collect_policy_steps(
     metrics = {
         "env_steps": steps * adapter.num_envs,
         "steps_per_env": steps,
+        "stochastic_actions": stochastic_actions,
         "completed_episodes": len(completed_returns),
         "mean_return": (
             float(np.mean(completed_returns)) if completed_returns else None
@@ -2211,6 +2247,7 @@ def _maybe_train_policy(
                 uncertainty_budget=args.uncertainty_budget,
                 reference_actor_params=reference_actor_params,
                 policy_trust_coef=policy_trust_coef,
+                actor_entropy_coef=args.actor_entropy_coef,
             )
         policy_loss = float(metrics["policy/total_loss"])
         progress_score = float(
@@ -2394,6 +2431,11 @@ def _maybe_train_policy(
         "policy_return_mode": args.policy_return_mode,
         "policy_actor_baseline": args.policy_actor_baseline,
         "policy_return_normalization": args.policy_return_normalization,
+        "policy_stochastic_actor": args.stochastic_actor,
+        "policy_stochastic_collection": args.stochastic_collection,
+        "policy_actor_entropy_coef": args.actor_entropy_coef,
+        "policy_actor_log_std_min": args.actor_log_std_min,
+        "policy_actor_log_std_max": args.actor_log_std_max,
         "policy_imag_horizon": args.imag_horizon,
         "num_policy_candidates": args.num_policy_candidates,
         "candidate_min_gap": args.candidate_min_gap,

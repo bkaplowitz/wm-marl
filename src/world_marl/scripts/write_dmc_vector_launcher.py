@@ -97,6 +97,11 @@ COMMON_PARAMS: dict[str, Any] = {
     "model_grad_clip_norm": 100.0,
     "actor_grad_clip_norm": 10.0,
     "critic_grad_clip_norm": 100.0,
+    "stochastic_actor": False,
+    "stochastic_collection": False,
+    "actor_entropy_coef": 0.0,
+    "actor_log_std_min": -5.0,
+    "actor_log_std_max": 2.0,
     "online_policy_trust_coef": 1.0,
     "online_candidate_refit": True,
     "online_candidate_eval_interval": 250,
@@ -267,6 +272,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-grad-clip-norm", type=float, default=None)
     parser.add_argument("--actor-grad-clip-norm", type=float, default=None)
     parser.add_argument("--critic-grad-clip-norm", type=float, default=None)
+    parser.add_argument(
+        "--stochastic-actor",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--stochastic-collection",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--actor-entropy-coef", type=float, default=None)
+    parser.add_argument("--actor-log-std-min", type=float, default=None)
+    parser.add_argument("--actor-log-std-max", type=float, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--policy-batch-size", type=int, default=None)
     parser.add_argument("--latent-dim", type=int, default=None)
@@ -319,6 +337,11 @@ def apply_optional_overrides(args: argparse.Namespace, params: dict[str, Any]) -
         "model_grad_clip_norm",
         "actor_grad_clip_norm",
         "critic_grad_clip_norm",
+        "stochastic_actor",
+        "stochastic_collection",
+        "actor_entropy_coef",
+        "actor_log_std_min",
+        "actor_log_std_max",
         "batch_size",
         "policy_batch_size",
         "latent_dim",

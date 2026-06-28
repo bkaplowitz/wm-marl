@@ -27,6 +27,9 @@ class JepaConfig:
     model_grad_clip_norm: float = 100.0
     actor_grad_clip_norm: float = 10.0
     critic_grad_clip_norm: float = 100.0
+    stochastic_actor: bool = False
+    actor_log_std_min: float = -5.0
+    actor_log_std_max: float = 2.0
     regularizer: str = "sigreg"
     regularizer_weight: float = 0.05
     sigreg_knots: int = 17
@@ -82,6 +85,8 @@ class JepaConfig:
             raise ValueError("actor_grad_clip_norm must be >= 0")
         if self.critic_grad_clip_norm < 0.0:
             raise ValueError("critic_grad_clip_norm must be >= 0")
+        if self.actor_log_std_min >= self.actor_log_std_max:
+            raise ValueError("actor_log_std_min must be < actor_log_std_max")
         if self.model_dim % self.num_heads != 0:
             raise ValueError("model_dim must be divisible by num_heads")
         if (self.model_dim // self.num_heads) % 2 != 0:
@@ -256,8 +261,11 @@ class JepaWorldModel(nn.Module):
                 MLPHead(1, self.config.model_dim, name=f"continue_head_{index}")
                 for index in range(self.config.dynamics_ensemble_size)
             ]
+        actor_output_dim = self.config.action_dim
+        if self.config.action_mode == "continuous" and self.config.stochastic_actor:
+            actor_output_dim = 2 * self.config.action_dim
         self.actor_head = MLPHead(
-            self.config.action_dim,
+            actor_output_dim,
             self.config.model_dim,
             name="actor_head",
         )
@@ -297,7 +305,24 @@ class JepaWorldModel(nn.Module):
         self,
         latents: jax.Array,
     ) -> tuple[jax.Array, jax.Array]:
+        means, _, values = self.actor_value_stats_from_latent(latents)
+        return means, values
+
+    def actor_value_stats_from_latent(
+        self,
+        latents: jax.Array,
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
         logits, value_logits = self.actor_value_logits_from_latent(latents)
+        if self.config.action_mode == "continuous" and self.config.stochastic_actor:
+            means, log_stds = jnp.split(logits, 2, axis=-1)
+            log_stds = jnp.clip(
+                log_stds,
+                self.config.actor_log_std_min,
+                self.config.actor_log_std_max,
+            )
+        else:
+            means = logits
+            log_stds = jnp.zeros_like(means)
         values = scalar_prediction_from_logits(
             value_logits,
             mode=self.config.value_prediction_mode,
@@ -305,7 +330,7 @@ class JepaWorldModel(nn.Module):
             low=self.config.twohot_min,
             high=self.config.twohot_max,
         )
-        return logits, values
+        return means, log_stds, values
 
     def actor_value_logits_from_latent(
         self,
@@ -315,7 +340,7 @@ class JepaWorldModel(nn.Module):
         logits = self.actor_head(flat)
         value_logits = self.value_head(flat)
         return (
-            logits.reshape((*latents.shape[:-1], self.config.action_dim)),
+            logits.reshape((*latents.shape[:-1], logits.shape[-1])),
             value_logits.reshape(
                 (*latents.shape[:-1], value_logits.shape[-1]),
             ),
