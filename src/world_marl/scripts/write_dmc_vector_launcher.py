@@ -54,6 +54,24 @@ PRESETS: dict[str, dict[str, Any]] = {
         "policy_eval_episodes": 64,
         "policy_confirmation_episodes": 64,
     },
+    "cadence": {
+        "num_envs": 16,
+        "env_workers": 16,
+        "collect_steps": 8192,
+        "validation_steps": 2048,
+        "train_steps": 12000,
+        "policy_train_steps": 3000,
+        "online_iterations": 12,
+        "online_collect_steps": 2048,
+        "online_validation_steps": 1024,
+        "online_train_steps": 3000,
+        "online_policy_train_steps": 750,
+        "policy_selection_interval": 250,
+        "policy_selection_episodes": 32,
+        "policy_eval_episodes": 64,
+        "policy_confirmation_episodes": 64,
+        "final_policy_eval_episodes": 256,
+    },
 }
 
 COMMON_PARAMS: dict[str, Any] = {
@@ -64,6 +82,7 @@ COMMON_PARAMS: dict[str, Any] = {
     "policy_objective": "direct",
     "policy_return_mode": "reward-only",
     "imag_horizon": 15,
+    "final_policy_eval_episodes": 0,
     "online_policy_trust_coef": 1.0,
     "online_candidate_refit": True,
     "online_candidate_eval_interval": 250,
@@ -174,12 +193,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-envs", type=int, default=None)
     parser.add_argument("--env-workers", type=int, default=None)
     parser.add_argument("--collect-steps", type=int, default=None)
+    parser.add_argument("--validation-steps", type=int, default=None)
     parser.add_argument("--online-iterations", type=int, default=None)
     parser.add_argument("--online-collect-steps", type=int, default=None)
+    parser.add_argument("--online-validation-steps", type=int, default=None)
     parser.add_argument("--train-steps", type=int, default=None)
     parser.add_argument("--online-train-steps", type=int, default=None)
     parser.add_argument("--policy-train-steps", type=int, default=None)
     parser.add_argument("--online-policy-train-steps", type=int, default=None)
+    parser.add_argument("--policy-selection-episodes", type=int, default=None)
+    parser.add_argument("--policy-eval-episodes", type=int, default=None)
+    parser.add_argument("--policy-confirmation-episodes", type=int, default=None)
+    parser.add_argument("--final-policy-eval-episodes", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--policy-batch-size", type=int, default=None)
+    parser.add_argument("--latent-dim", type=int, default=None)
+    parser.add_argument("--model-dim", type=int, default=None)
+    parser.add_argument("--num-layers", type=int, default=None)
+    parser.add_argument("--num-heads", type=int, default=None)
     parser.add_argument(
         "--no-sync",
         dest="sync",
@@ -200,12 +231,24 @@ def apply_optional_overrides(args: argparse.Namespace, params: dict[str, Any]) -
         "num_envs",
         "env_workers",
         "collect_steps",
+        "validation_steps",
         "online_iterations",
         "online_collect_steps",
+        "online_validation_steps",
         "train_steps",
         "online_train_steps",
         "policy_train_steps",
         "online_policy_train_steps",
+        "policy_selection_episodes",
+        "policy_eval_episodes",
+        "policy_confirmation_episodes",
+        "final_policy_eval_episodes",
+        "batch_size",
+        "policy_batch_size",
+        "latent_dim",
+        "model_dim",
+        "num_layers",
+        "num_heads",
     ):
         value = getattr(args, name)
         if value is not None:
@@ -368,7 +411,7 @@ def write_summarize(out_root: Path) -> None:
             print("no summaries yet")
             raise SystemExit(0)
 
-        print("job,passed,world,policy,initial,trained,improve,online,model_accept,policy_accept,train_replay_steps,open_loop")
+        print("job,passed,world,policy,initial,trained,champion,final_eval,final_eval_std,improve,online,model_accept,policy_accept,train_replay_steps,strict_total_steps,open_loop")
         for path in paths:
             job = path.parts[-3]
             summary = json.loads(path.read_text())
@@ -379,11 +422,15 @@ def write_summarize(out_root: Path) -> None:
                 summary.get("policy_main_passed"),
                 summary.get("aggregate_policy_initial_mean"),
                 summary.get("aggregate_policy_trained_mean"),
+                summary.get("aggregate_policy_final_champion_return"),
+                summary.get("aggregate_final_policy_eval_mean"),
+                summary.get("aggregate_final_policy_eval_std"),
                 summary.get("aggregate_policy_improvement"),
                 summary.get("aggregate_policy_online_phase_improvement"),
                 summary.get("aggregate_model_update_acceptance_rate"),
                 summary.get("aggregate_policy_update_acceptance_rate"),
                 summary.get("aggregate_real_train_replay_env_steps"),
+                summary.get("aggregate_real_total_env_steps"),
                 summary.get("aggregate_final_open_loop_loss"),
             ]
             print(",".join("" if value is None else str(value) for value in values))

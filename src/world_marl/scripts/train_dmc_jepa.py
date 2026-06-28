@@ -207,6 +207,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--policy-confirmation-episodes", type=int, default=0)
     parser.add_argument("--policy-confirmation-num-envs", type=int, default=None)
     parser.add_argument(
+        "--final-policy-eval-episodes",
+        type=int,
+        default=0,
+        help=(
+            "Run an extra final evaluation of the accepted champion policy with "
+            "this many episodes. This does not affect training or policy "
+            "selection; it is intended for robust reporting."
+        ),
+    )
+    parser.add_argument("--final-policy-eval-num-envs", type=int, default=None)
+    parser.add_argument(
         "--policy-selection-interval",
         type=int,
         default=500,
@@ -445,6 +456,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
             parser.error(f"--{name.replace('_', '-')} must be >= 0")
     if args.policy_confirmation_episodes < 0:
         parser.error("--policy-confirmation-episodes must be >= 0")
+    if args.final_policy_eval_episodes < 0:
+        parser.error("--final-policy-eval-episodes must be >= 0")
     if args.online_collect_steps is not None and args.online_collect_steps < 1:
         parser.error("--online-collect-steps must be >= 1")
     if args.online_validation_steps is not None:
@@ -517,6 +530,11 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         and args.policy_selection_num_envs < 1
     ):
         parser.error("--policy-selection-num-envs must be >= 1")
+    if (
+        args.final_policy_eval_num_envs is not None
+        and args.final_policy_eval_num_envs < 1
+    ):
+        parser.error("--final-policy-eval-num-envs must be >= 1")
     if not (args.env.startswith("dmc:") or args.env.startswith("brax:")):
         parser.error("--env must be formatted as dmc:<domain>/<task> or brax:<env>")
     min_steps = min_sequence_steps
@@ -703,16 +721,18 @@ def run_one(
                 "action_dim": config.action_dim,
             },
         )
+        initial_train_replay_env_steps = env_steps
 
         validation_replay = _collect_validation_replay(
             args,
             config,
             seed=seed + 1_000_000,
         )
+        initial_validation_env_steps = args.validation_steps * args.num_envs
         logger.write_json(
             "validation_replay.json",
             {
-                "env_steps": args.validation_steps * args.num_envs,
+                "env_steps": initial_validation_env_steps,
                 "steps_per_env": args.validation_steps,
                 "size_per_env": validation_replay.size,
                 "seed": seed + 1_000_000,
@@ -1140,6 +1160,37 @@ def run_one(
         reload = {"reload_max_abs_prediction_diff": reload_diff}
         logger.write_json("reload_evaluation.json", reload)
 
+        final_policy_eval = None
+        if args.final_policy_eval_episodes > 0:
+            final_policy_eval_num_envs = args.final_policy_eval_num_envs or min(
+                args.num_envs,
+                args.final_policy_eval_episodes,
+            )
+            final_policy_eval = _evaluate_continuous_policy(
+                args,
+                state,
+                config,
+                seed=seed + 9_000_000,
+                num_envs=final_policy_eval_num_envs,
+                episodes=args.final_policy_eval_episodes,
+                action_low=jnp.asarray(adapter.action_low, dtype=jnp.float32),
+                action_high=jnp.asarray(adapter.action_high, dtype=jnp.float32),
+                desc=f"{control} final eval champion policy",
+            )
+            logger.write_json(
+                "final_champion_policy_evaluation.json",
+                final_policy_eval,
+            )
+            logger.append_metrics(
+                {
+                    "phase": "final_champion_policy_evaluation",
+                    "control": control,
+                    "policy_champion_iteration": champion_policy_iteration,
+                    "policy_champion_return": champion_policy_return,
+                    **final_policy_eval,
+                }
+            )
+
         world_model_passed = _run_passed(initial_metrics, final_metrics, reload_diff)
         outcome = {
             "run_index": run_index,
@@ -1164,12 +1215,39 @@ def run_one(
             - final_metrics["model/open_loop_loss"],
             "reload_max_abs_prediction_diff": reload_diff,
             "final_model_metrics": final_metrics,
+            "final_policy_eval": final_policy_eval,
+            "final_policy_eval_episodes": (
+                final_policy_eval["episodes"] if final_policy_eval else None
+            ),
+            "final_policy_eval_mean": (
+                final_policy_eval["mean_return"] if final_policy_eval else None
+            ),
+            "final_policy_eval_std": (
+                final_policy_eval["std_return"] if final_policy_eval else None
+            ),
+            "final_policy_eval_env_steps": (
+                final_policy_eval.get("env_steps") if final_policy_eval else None
+            ),
+            "final_policy_eval_completed_episode_steps": (
+                final_policy_eval.get("completed_episode_steps")
+                if final_policy_eval
+                else None
+            ),
             "online_iterations": args.online_iterations,
             "online_history": online_history,
             **policy_outcome["outcome"],
             "world_model_passed": world_model_passed,
             "passed": world_model_passed,
         }
+        outcome.update(
+            _real_step_accounting(
+                initial_train_replay_env_steps=initial_train_replay_env_steps,
+                initial_validation_env_steps=initial_validation_env_steps,
+                initial_policy_outcome=initial_policy_outcome,
+                online_history=online_history,
+                final_policy_eval=final_policy_eval,
+            )
+        )
         logger.write_json("outcome.json", outcome)
         return to_jsonable(outcome)
     finally:
@@ -2178,6 +2256,42 @@ def _maybe_train_policy(
         policy_loss_history,
         filename=f"{artifact_prefix}frozen_model_policy_loss.png",
     )
+    selection_env_steps = sum(
+        _maybe_int(item.get("policy_selection_env_steps"))
+        for item in selection_history
+    )
+    selection_completed_episode_steps = sum(
+        _maybe_int(item.get("policy_selection_completed_episode_steps"))
+        for item in selection_history
+    )
+    confirmation_eval_payloads = [
+        confirmation_random_eval,
+        confirmation_initial_eval,
+        confirmation_trained_eval,
+    ]
+    confirmation_env_steps = sum(
+        _eval_env_steps(item) for item in confirmation_eval_payloads
+    )
+    confirmation_completed_episode_steps = sum(
+        _eval_completed_episode_steps(item) for item in confirmation_eval_payloads
+    )
+    policy_eval_payloads = [
+        random_eval,
+        initial_eval,
+        trained_eval,
+        *confirmation_eval_payloads,
+    ]
+    policy_nonselection_env_steps = sum(
+        _eval_env_steps(item) for item in policy_eval_payloads
+    )
+    policy_nonselection_completed_episode_steps = sum(
+        _eval_completed_episode_steps(item) for item in policy_eval_payloads
+    )
+    policy_total_eval_env_steps = policy_nonselection_env_steps + selection_env_steps
+    policy_total_completed_episode_steps = (
+        policy_nonselection_completed_episode_steps
+        + selection_completed_episode_steps
+    )
 
     initial_mean = initial_eval["mean_return"]
     trained_mean = trained_eval["mean_return"]
@@ -2231,6 +2345,18 @@ def _maybe_train_policy(
         "policy_selection_interval": args.policy_selection_interval,
         "policy_selection_episodes": args.policy_selection_episodes,
         "policy_selection_num_envs": selection_num_envs,
+        "policy_selection_env_steps": selection_env_steps,
+        "policy_selection_completed_episode_steps": selection_completed_episode_steps,
+        "policy_nonselection_eval_env_steps": policy_nonselection_env_steps,
+        "policy_nonselection_completed_episode_steps": (
+            policy_nonselection_completed_episode_steps
+        ),
+        "policy_confirmation_env_steps": confirmation_env_steps,
+        "policy_confirmation_completed_episode_steps": (
+            confirmation_completed_episode_steps
+        ),
+        "policy_total_eval_env_steps": policy_total_eval_env_steps,
+        "policy_total_completed_episode_steps": policy_total_completed_episode_steps,
         "best_policy_step": best_policy_step if selection_enabled else None,
         "best_policy_selection_mean": (
             best_selection_mean if selection_enabled else None
@@ -2288,6 +2414,7 @@ def _evaluate_random_policy(
         del observations
         returns = []
         lengths = []
+        step_calls = 0
         with tqdm(
             total=target_episodes,
             desc=desc,
@@ -2297,6 +2424,7 @@ def _evaluate_random_policy(
             while len(returns) < target_episodes:
                 before = len(returns)
                 step = adapter.step(adapter.sample_actions(rng))
+                step_calls += 1
                 returns.extend(float(item[0]) for item in step.completed_returns)
                 lengths.extend(int(item) for item in step.completed_lengths)
                 _update_episode_progress(
@@ -2309,6 +2437,9 @@ def _evaluate_random_policy(
         lengths = lengths[:target_episodes]
         return {
             "episodes": len(returns),
+            "num_envs": num_envs,
+            "env_steps": step_calls * num_envs,
+            "completed_episode_steps": int(sum(lengths)),
             "mean_return": float(np.mean(returns)),
             "std_return": float(np.std(returns)),
             "mean_length": float(np.mean(lengths)),
@@ -2337,6 +2468,7 @@ def _evaluate_continuous_policy(
         observations = adapter.reset()
         returns = []
         lengths = []
+        step_calls = 0
         with tqdm(
             total=target_episodes,
             desc=desc,
@@ -2355,6 +2487,7 @@ def _evaluate_continuous_policy(
                     )
                 )
                 step = adapter.step(actions[:, None, :])
+                step_calls += 1
                 returns.extend(float(item[0]) for item in step.completed_returns)
                 lengths.extend(int(item) for item in step.completed_lengths)
                 observations = step.observations
@@ -2368,6 +2501,9 @@ def _evaluate_continuous_policy(
         lengths = lengths[:target_episodes]
         return {
             "episodes": len(returns),
+            "num_envs": num_envs,
+            "env_steps": step_calls * num_envs,
+            "completed_episode_steps": int(sum(lengths)),
             "mean_return": float(np.mean(returns)),
             "std_return": float(np.std(returns)),
             "mean_length": float(np.mean(lengths)),
@@ -2387,6 +2523,24 @@ def _update_episode_progress(
     progress.update(max(0, min(after, target_episodes) - min(before, target_episodes)))
 
 
+def _maybe_int(value: Any) -> int:
+    if value is None:
+        return 0
+    return int(value)
+
+
+def _eval_env_steps(evaluation: dict[str, Any] | None) -> int:
+    if evaluation is None:
+        return 0
+    return _maybe_int(evaluation.get("env_steps"))
+
+
+def _eval_completed_episode_steps(evaluation: dict[str, Any] | None) -> int:
+    if evaluation is None:
+        return 0
+    return _maybe_int(evaluation.get("completed_episode_steps"))
+
+
 def _policy_selection_record(
     *,
     step: int,
@@ -2400,6 +2554,10 @@ def _policy_selection_record(
         "policy_selection_std_return": evaluation["std_return"],
         "policy_selection_mean_length": evaluation["mean_length"],
         "policy_selection_episodes": evaluation["episodes"],
+        "policy_selection_env_steps": evaluation.get("env_steps"),
+        "policy_selection_completed_episode_steps": evaluation.get(
+            "completed_episode_steps"
+        ),
     }
 
 
@@ -2672,6 +2830,87 @@ def _online_history_metrics(
         "online_candidate_selected_updates": candidate_selected_updates,
         "online_candidate_final_update_acceptances": candidate_final_acceptances,
         "online_pipeline_completed": True,
+    }
+
+
+def _real_step_accounting(
+    *,
+    initial_train_replay_env_steps: int,
+    initial_validation_env_steps: int,
+    initial_policy_outcome: dict[str, Any],
+    online_history: list[dict[str, Any]],
+    final_policy_eval: dict[str, Any] | None = None,
+) -> dict[str, int]:
+    """Count real environment interactions used by one run.
+
+    The main sample-efficiency number is the train replay count. Validation and
+    policy-selection/evaluation interactions are kept separate because they are
+    real environment steps but are not added to the training replay.
+    """
+
+    online_actor_replay_env_steps = sum(
+        _maybe_int(item.get("actor_replay", {}).get("env_steps"))
+        for item in online_history
+    )
+    online_validation_env_steps = sum(
+        _maybe_int(item.get("recent_policy_validation", {}).get("env_steps"))
+        for item in online_history
+    )
+    initial_policy_eval_env_steps = _maybe_int(
+        initial_policy_outcome.get("policy_total_eval_env_steps")
+    )
+    online_policy_eval_env_steps = sum(
+        _maybe_int(item.get("candidate_policy", {}).get("policy_total_eval_env_steps"))
+        for item in online_history
+    )
+    initial_policy_completed_steps = _maybe_int(
+        initial_policy_outcome.get("policy_total_completed_episode_steps")
+    )
+    online_policy_completed_steps = sum(
+        _maybe_int(
+            item.get("candidate_policy", {}).get(
+                "policy_total_completed_episode_steps"
+            )
+        )
+        for item in online_history
+    )
+    final_policy_eval_env_steps = _eval_env_steps(final_policy_eval)
+    final_policy_completed_steps = _eval_completed_episode_steps(final_policy_eval)
+
+    train_replay_env_steps = (
+        initial_train_replay_env_steps + online_actor_replay_env_steps
+    )
+    validation_replay_env_steps = (
+        initial_validation_env_steps + online_validation_env_steps
+    )
+    policy_eval_env_steps = (
+        initial_policy_eval_env_steps
+        + online_policy_eval_env_steps
+        + final_policy_eval_env_steps
+    )
+    train_plus_validation_env_steps = (
+        train_replay_env_steps + validation_replay_env_steps
+    )
+    total_real_env_steps = train_plus_validation_env_steps + policy_eval_env_steps
+
+    return {
+        "real_initial_train_replay_env_steps": int(initial_train_replay_env_steps),
+        "real_online_actor_replay_env_steps": int(online_actor_replay_env_steps),
+        "real_train_replay_env_steps": int(train_replay_env_steps),
+        "real_initial_validation_env_steps": int(initial_validation_env_steps),
+        "real_online_validation_env_steps": int(online_validation_env_steps),
+        "real_validation_replay_env_steps": int(validation_replay_env_steps),
+        "real_train_plus_validation_env_steps": int(train_plus_validation_env_steps),
+        "real_initial_policy_eval_env_steps": int(initial_policy_eval_env_steps),
+        "real_online_policy_eval_env_steps": int(online_policy_eval_env_steps),
+        "real_final_policy_eval_env_steps": int(final_policy_eval_env_steps),
+        "real_policy_eval_env_steps": int(policy_eval_env_steps),
+        "real_policy_eval_completed_episode_steps": int(
+            initial_policy_completed_steps
+            + online_policy_completed_steps
+            + final_policy_completed_steps
+        ),
+        "real_total_env_steps": int(total_real_env_steps),
     }
 
 
@@ -3107,6 +3346,46 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         "aggregate_policy_final_champion_return": _mean(
             main,
             "online_policy_final_champion_return",
+        ),
+        "aggregate_final_policy_eval_mean": _mean(
+            main,
+            "final_policy_eval_mean",
+        ),
+        "aggregate_final_policy_eval_std": _mean(
+            main,
+            "final_policy_eval_std",
+        ),
+        "aggregate_final_policy_eval_episodes": _mean(
+            main,
+            "final_policy_eval_episodes",
+        ),
+        "aggregate_final_policy_eval_env_steps": _mean(
+            main,
+            "final_policy_eval_env_steps",
+        ),
+        "aggregate_real_train_replay_env_steps": _mean(
+            main,
+            "real_train_replay_env_steps",
+        ),
+        "aggregate_real_validation_replay_env_steps": _mean(
+            main,
+            "real_validation_replay_env_steps",
+        ),
+        "aggregate_real_train_plus_validation_env_steps": _mean(
+            main,
+            "real_train_plus_validation_env_steps",
+        ),
+        "aggregate_real_policy_eval_env_steps": _mean(
+            main,
+            "real_policy_eval_env_steps",
+        ),
+        "aggregate_real_total_env_steps": _mean(
+            main,
+            "real_total_env_steps",
+        ),
+        "aggregate_real_policy_eval_completed_episode_steps": _mean(
+            main,
+            "real_policy_eval_completed_episode_steps",
         ),
         "aggregate_policy_primary_improvement": _mean(
             main,

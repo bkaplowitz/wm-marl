@@ -276,6 +276,10 @@ The main comparisons are:
 These controls check whether policy improvement comes from action-conditioned
 latent dynamics rather than actor drift or evaluation noise.
 
+Controls are useful for confirmation runs, but they are not part of the fast
+tuning loop. During tuning, the main comparison is the `none` agent across
+architectural and training-cadence variants.
+
 ## Current Mainline
 
 The current mainline is:
@@ -288,4 +292,47 @@ The current mainline is:
 - frozen encoder during online world-model refits;
 - explicit anchor/recent replay mixing during online refits;
 - candidate refit gates on anchor and recent-policy validation;
-- optional control-value consistency loss during online refits.
+- optional control-value consistency loss during online refits;
+- conservative online actor updates with an action-change trust penalty;
+- champion actor selection across online phases, so an online policy update is
+  accepted only if real-environment evaluation does not regress beyond the
+  configured tolerance.
+
+The current working configuration for vector DMC/Brax Reacher-style tasks is the
+small-batch online-cadence setting:
+
+- 16 parallel environments;
+- 64 world-model sequences per update;
+- 32 steps per sequence;
+- 512 policy/imagination start states per actor update;
+- 128 latent dimensions;
+- 128 transformer hidden dimensions;
+- 2 transformer layers;
+- 4 attention heads;
+- context window 4;
+- model horizon 5;
+- imagination horizon 15;
+- 5 dynamics ensemble heads;
+- 6 online actor-collection/refit/policy-improvement cycles for the mainline
+  run, or 12 smaller `2048`-step online cycles for the DMC Reacher stability
+  sweep;
+- optional final champion evaluation with many episodes for reporting only.
+
+This differs from the earlier high-throughput configuration with 512 parallel
+environments and large world-model batches. The small-batch setup keeps the real
+sample count closer to Dreamer-style control benchmarks and gives the policy
+more frequent opportunities to steer the data distribution.
+
+## Real Step Accounting
+
+The training script reports real environment usage separately for:
+
+- training replay;
+- held-out validation replay;
+- policy selection, evaluation, and confirmation episodes;
+- the strict total across all real interactions.
+
+For sample-efficiency comparisons, the most optimistic number is training replay
+only. The strict number includes validation and policy evaluation interactions.
+Imagined transitions, world-model updates, and actor/critic optimizer updates
+are not counted as real environment steps.
