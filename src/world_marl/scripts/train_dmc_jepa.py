@@ -119,6 +119,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--actor-learning-rate", type=float, default=3e-4)
+    parser.add_argument("--model-grad-clip-norm", type=float, default=100.0)
+    parser.add_argument("--actor-grad-clip-norm", type=float, default=10.0)
+    parser.add_argument("--critic-grad-clip-norm", type=float, default=100.0)
     parser.add_argument("--policy-train-steps", type=int, default=0)
     parser.add_argument("--policy-batch-size", type=int, default=None)
     parser.add_argument("--critic-warmup-steps", type=int, default=1000)
@@ -417,6 +420,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--twohot-bins", type=int, default=41)
     parser.add_argument("--twohot-min", type=float, default=-20.0)
     parser.add_argument("--twohot-max", type=float, default=20.0)
+    parser.add_argument(
+        "--clip-imagined-rewards",
+        action="store_true",
+        help=(
+            "Clip model-predicted rewards inside imagined actor/planner "
+            "objectives. This is useful for bounded-reward control suites."
+        ),
+    )
+    parser.add_argument("--imagined-reward-min", type=float, default=0.0)
+    parser.add_argument("--imagined-reward-max", type=float, default=1.0)
     parser.add_argument("--num-runs", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-cycles", type=int, default=1000)
@@ -538,6 +551,15 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--twohot-bins must be >= 3")
     if args.twohot_min >= args.twohot_max:
         parser.error("--twohot-min must be < --twohot-max")
+    if args.imagined_reward_min >= args.imagined_reward_max:
+        parser.error("--imagined-reward-min must be < --imagined-reward-max")
+    for name in (
+        "model_grad_clip_norm",
+        "actor_grad_clip_norm",
+        "critic_grad_clip_norm",
+    ):
+        if getattr(args, name) < 0.0:
+            parser.error(f"--{name.replace('_', '-')} must be >= 0")
     if not 0.0 < args.action_saturation_threshold <= 1.0:
         parser.error("--action-saturation-threshold must be in (0, 1]")
     for name in (
@@ -683,6 +705,9 @@ def run_one(
             context_window=args.context_window,
             learning_rate=args.learning_rate,
             actor_learning_rate=args.actor_learning_rate,
+            model_grad_clip_norm=args.model_grad_clip_norm,
+            actor_grad_clip_norm=args.actor_grad_clip_norm,
+            critic_grad_clip_norm=args.critic_grad_clip_norm,
             regularizer=args.regularizer,
             regularizer_weight=args.regularizer_weight,
             sigreg_knots=args.sigreg_knots,
@@ -694,6 +719,9 @@ def run_one(
             twohot_bins=args.twohot_bins,
             twohot_min=args.twohot_min,
             twohot_max=args.twohot_max,
+            clip_imagined_rewards=args.clip_imagined_rewards,
+            imagined_reward_min=args.imagined_reward_min,
+            imagined_reward_max=args.imagined_reward_max,
             dynamics_ensemble_size=args.dynamics_ensemble_size,
             gamma=args.gamma,
             lambda_return=args.lambda_return,

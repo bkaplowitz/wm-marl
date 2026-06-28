@@ -144,14 +144,30 @@ def create_jepa_train_state(
         method=JepaWorldModel.initialize,
     )["params"]
     params = freeze(params)
-    model_tx = _masked_adam(params, MODEL_GROUPS, config.learning_rate)
+    model_tx = _masked_adam(
+        params,
+        MODEL_GROUPS,
+        config.learning_rate,
+        clip_norm=config.model_grad_clip_norm,
+    )
     frozen_encoder_model_tx = _masked_adam(
         params,
         ONLINE_FROZEN_ENCODER_MODEL_GROUPS,
         config.learning_rate,
+        clip_norm=config.model_grad_clip_norm,
     )
-    actor_tx = _masked_adam(params, ACTOR_GROUPS, config.actor_learning_rate)
-    critic_tx = _masked_adam(params, CRITIC_GROUPS, config.actor_learning_rate)
+    actor_tx = _masked_adam(
+        params,
+        ACTOR_GROUPS,
+        config.actor_learning_rate,
+        clip_norm=config.actor_grad_clip_norm,
+    )
+    critic_tx = _masked_adam(
+        params,
+        CRITIC_GROUPS,
+        config.actor_learning_rate,
+        clip_norm=config.critic_grad_clip_norm,
+    )
     return JepaTrainState(
         step=0,
         apply_fn=model.apply,
@@ -234,6 +250,14 @@ def train_model_step(
 
     (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
     del loss
+    metrics = {
+        **metrics,
+        "model/grad_norm": optax.global_norm(grads),
+        "model/grad_clip_norm": jnp.asarray(
+            config.model_grad_clip_norm,
+            dtype=metrics["model/total_loss"].dtype,
+        ),
+    }
     if freeze_encoder:
         return state.apply_frozen_encoder_model_gradients(grads), metrics
     return state.apply_model_gradients(grads), metrics
@@ -313,7 +337,7 @@ def control_value_consistency_loss(
         axis=2,
     )
     continue_targets = 1.0 - done_targets
-    validity = prediction_validity(batch.dones, chunk_length, max_horizon)
+    validity = transition_start_validity(batch.dones, chunk_length, max_horizon)
 
     if ensemble_axis:
         reward_targets = reward_targets[..., None]
@@ -407,9 +431,15 @@ def world_model_loss_with_outputs(
     if ensemble_axis:
         reward_targets = reward_targets[..., None]
         continue_targets = continue_targets[..., None]
-    validity = prediction_validity(batch.dones, chunk_length, max_horizon)
+    latent_validity = prediction_validity(batch.dones, chunk_length, max_horizon)
+    transition_validity = transition_start_validity(
+        batch.dones,
+        chunk_length,
+        max_horizon,
+    )
     if ensemble_axis:
-        validity = validity[..., None]
+        latent_validity = latent_validity[..., None]
+        transition_validity = transition_validity[..., None]
     reward_loss_values = prediction_loss(
         reward_logits,
         reward_targets,
@@ -418,14 +448,14 @@ def world_model_loss_with_outputs(
         low=config.twohot_min,
         high=config.twohot_max,
     )
-    reward_loss = masked_mean(reward_loss_values, validity)
+    reward_loss = masked_mean(reward_loss_values, transition_validity)
     continue_loss = masked_mean(
         optax.sigmoid_binary_cross_entropy(continue_logits, continue_targets),
-        validity,
+        transition_validity,
     )
     cosine = jnp.sum(pred * target, axis=-1)
-    jepa_loss = masked_mean(1.0 - cosine, validity)
-    jepa_cosine = masked_mean(cosine, validity)
+    jepa_loss = masked_mean(1.0 - cosine, latent_validity)
+    jepa_cosine = masked_mean(cosine, latent_validity)
 
     regularizer, regularizer_name, collapse = representation_regularizer(
         outputs["context_latents"],
@@ -439,7 +469,7 @@ def world_model_loss_with_outputs(
         + config.continue_weight * continue_loss
     )
     constant_continue = jnp.full_like(continue_targets, jnp.mean(continue_targets))
-    reward_mean = masked_mean(reward_targets, validity)
+    reward_mean = masked_mean(reward_targets, transition_validity)
     constant_reward = jnp.full_like(reward_targets, reward_mean)
     constant_reward_loss = masked_mean(
         constant_prediction_loss(
@@ -450,7 +480,7 @@ def world_model_loss_with_outputs(
             low=config.twohot_min,
             high=config.twohot_max,
         ),
-        validity,
+        transition_validity,
     )
     terminal_logits = (
         jnp.mean(continue_logits, axis=-1) if ensemble_axis else continue_logits
@@ -459,7 +489,8 @@ def world_model_loss_with_outputs(
         "model/total_loss": total_loss,
         "model/jepa_loss": jepa_loss,
         "model/jepa_pred_cosine": jepa_cosine,
-        "model/jepa_valid_fraction": jnp.mean(validity),
+        "model/jepa_valid_fraction": jnp.mean(latent_validity),
+        "model/transition_valid_fraction": jnp.mean(transition_validity),
         "model/regularizer_loss": regularizer,
         f"model/{regularizer_name}_loss": regularizer,
         "model/reward_loss": reward_loss,
@@ -470,7 +501,15 @@ def world_model_loss_with_outputs(
         ),
         "model/reward_constant_mse": masked_mean(
             jnp.square(constant_reward - reward_targets),
-            validity,
+            transition_validity,
+        ),
+        "model/reward_pred_below_min_frac": masked_mean(
+            (outputs["reward_values"] < config.imagined_reward_min).astype(jnp.float32),
+            transition_validity,
+        ),
+        "model/reward_pred_above_max_frac": masked_mean(
+            (outputs["reward_values"] > config.imagined_reward_max).astype(jnp.float32),
+            transition_validity,
         ),
         "model/continue_loss": continue_loss,
         **ensemble_prediction_metrics(
@@ -483,9 +522,13 @@ def world_model_loss_with_outputs(
                 jnp.log(constant_continue / (1.0 - constant_continue + 1e-6) + 1e-6),
                 continue_targets,
             ),
-            validity,
+            transition_validity,
         ),
-        **terminal_prediction_metrics(terminal_logits, done_targets),
+        **terminal_prediction_metrics(
+            terminal_logits,
+            done_targets,
+            mask=transition_validity[..., 0] if ensemble_axis else transition_validity,
+        ),
         **{f"collapse/{key}": value for key, value in collapse.items()},
     }
     return total_loss, metrics, outputs
@@ -684,6 +727,20 @@ def continuous_policy_train_step(
                 rollout["raw_rewards"],
                 weights,
             ),
+            "policy/raw_reward_below_min_frac": jnp.mean(
+                (
+                    rollout["raw_rewards"] < config.imagined_reward_min
+                ).astype(jnp.float32)
+            ),
+            "policy/raw_reward_above_max_frac": jnp.mean(
+                (
+                    rollout["raw_rewards"] > config.imagined_reward_max
+                ).astype(jnp.float32)
+            ),
+            "policy/clip_imagined_rewards": jnp.asarray(
+                float(config.clip_imagined_rewards),
+                dtype=return_loss.dtype,
+            ),
             "policy/imagined_continue": weighted_mean(rollout["continues"], weights),
             "policy/survival_weight_mean": jnp.mean(weights),
             "policy/uncertainty": weighted_mean(rollout["uncertainty"], weights),
@@ -717,6 +774,14 @@ def continuous_policy_train_step(
     )(state.params)
     del actor_loss
     metrics, critic_latents, critic_targets, critic_weights = actor_aux
+    metrics = {
+        **metrics,
+        "policy/actor_grad_norm": optax.global_norm(actor_grads),
+        "policy/actor_grad_clip_norm": jnp.asarray(
+            config.actor_grad_clip_norm,
+            dtype=metrics["policy/actor_loss"].dtype,
+        ),
+    }
     state = state.apply_actor_gradients(actor_grads)
 
     def critic_loss_fn(params):
@@ -741,6 +806,14 @@ def continuous_policy_train_step(
         critic_loss_fn,
         has_aux=True,
     )(state.params)
+    critic_metrics = {
+        **critic_metrics,
+        "policy/critic_grad_norm": optax.global_norm(critic_grads),
+        "policy/critic_grad_clip_norm": jnp.asarray(
+            config.critic_grad_clip_norm,
+            dtype=value_loss.dtype,
+        ),
+    }
     state = state.apply_critic_gradients(critic_grads)
     total_loss = metrics["policy/actor_loss"] + value_loss
     metrics = {
@@ -887,6 +960,14 @@ def continuous_candidate_distill_step(
 
     (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
     del loss
+    metrics = {
+        **metrics,
+        "policy/actor_grad_norm": optax.global_norm(grads),
+        "policy/actor_grad_clip_norm": jnp.asarray(
+            config.actor_grad_clip_norm,
+            dtype=metrics["policy/total_loss"].dtype,
+        ),
+    }
     return state.apply_actor_gradients(grads), metrics
 
 
@@ -925,7 +1006,16 @@ def score_continuous_action_candidates(
             method=JepaWorldModel.predict_next_from_history,
         )
         continues = jax.nn.sigmoid(continue_logits)
-        returns = returns + discount * weights * rewards
+        actor_rewards = (
+            jnp.clip(
+                rewards,
+                config.imagined_reward_min,
+                config.imagined_reward_max,
+            )
+            if config.clip_imagined_rewards
+            else rewards
+        )
+        returns = returns + discount * weights * actor_rewards
         weights = weights * continues
         discount = discount * config.gamma
         raw_actions, _ = actor_value_from_latent(
@@ -989,6 +1079,14 @@ def continuous_critic_warmup_step(
 
     (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
     del loss
+    metrics = {
+        **metrics,
+        "critic/grad_norm": optax.global_norm(grads),
+        "critic/grad_clip_norm": jnp.asarray(
+            config.critic_grad_clip_norm,
+            dtype=metrics["critic/total_loss"].dtype,
+        ),
+    }
     return state.apply_critic_gradients(grads), metrics
 
 
@@ -1066,7 +1164,16 @@ def continuous_imagine_rollout(
             (uncertainty <= uncertainty_threshold)
             & (next_cumulative_uncertainty <= uncertainty_budget)
         ).astype(context.dtype)
-        rewards = (raw_rewards - uncertainty_penalty * uncertainty) * trusted
+        actor_raw_rewards = (
+            jnp.clip(
+                raw_rewards,
+                config.imagined_reward_min,
+                config.imagined_reward_max,
+            )
+            if config.clip_imagined_rewards
+            else raw_rewards
+        )
+        rewards = (actor_raw_rewards - uncertainty_penalty * uncertainty) * trusted
         continues = continues * trusted
         _, fixed_values = actor_value_from_latent(
             apply_fn,
@@ -1490,23 +1597,58 @@ def prediction_validity(
     return jnp.stack(validity, axis=2)
 
 
+def transition_start_validity(
+    dones: jax.Array,
+    chunk_length: int,
+    max_horizon: int,
+) -> jax.Array:
+    """Mask transition heads without hiding terminal transitions.
+
+    Latent targets after a terminal transition are invalid because auto-reset can
+    put the next observation in a new episode. Reward and continue labels for the
+    terminal transition itself are still valid, so horizon 1 uses an all-ones
+    mask and longer horizons only require earlier transitions to be nonterminal.
+    """
+
+    masks = []
+    not_done = 1.0 - dones
+    for horizon_index in range(max_horizon):
+        if horizon_index == 0:
+            masks.append(jnp.ones_like(dones[:, :chunk_length]))
+            continue
+        windows = [
+            not_done[:, offset : offset + chunk_length]
+            for offset in range(horizon_index)
+        ]
+        masks.append(jnp.prod(jnp.stack(windows, axis=0), axis=0))
+    return jnp.stack(masks, axis=2)
+
+
 def terminal_prediction_metrics(
     continue_logits: jax.Array,
     dones: jax.Array,
+    *,
+    mask: jax.Array | None = None,
 ) -> dict[str, jax.Array]:
     terminal_targets = dones.astype(jnp.float32)
+    if mask is None:
+        mask = jnp.ones_like(terminal_targets)
     terminal_probs = 1.0 - jax.nn.sigmoid(continue_logits)
     terminal_pred = terminal_probs >= 0.5
     terminal_true = terminal_targets >= 0.5
     nonterminal_true = ~terminal_true
-    terminal_recall = jnp.sum((terminal_pred & terminal_true).astype(jnp.float32)) / (
-        jnp.sum(terminal_true.astype(jnp.float32)) + 1e-6
+    terminal_weight = mask * terminal_true.astype(jnp.float32)
+    nonterminal_weight = mask * nonterminal_true.astype(jnp.float32)
+    terminal_recall = (
+        jnp.sum(mask * (terminal_pred & terminal_true).astype(jnp.float32))
+        / (jnp.sum(terminal_weight) + 1e-6)
     )
-    nonterminal_recall = jnp.sum(
-        ((~terminal_pred) & nonterminal_true).astype(jnp.float32)
-    ) / (jnp.sum(nonterminal_true.astype(jnp.float32)) + 1e-6)
+    nonterminal_recall = (
+        jnp.sum(mask * ((~terminal_pred) & nonterminal_true).astype(jnp.float32))
+        / (jnp.sum(nonterminal_weight) + 1e-6)
+    )
     return {
-        "model/terminal_positive_fraction": jnp.mean(terminal_targets),
+        "model/terminal_positive_fraction": masked_mean(terminal_targets, mask),
         "model/terminal_recall": terminal_recall,
         "model/nonterminal_recall": nonterminal_recall,
         "model/terminal_balanced_accuracy": 0.5
@@ -1626,11 +1768,17 @@ def _masked_adam(
     params: FrozenDict,
     trainable_groups: frozenset[str],
     learning_rate: float,
+    *,
+    clip_norm: float,
 ) -> optax.GradientTransformation:
     labels = _label_params(params, trainable_groups)
+    train_steps: list[optax.GradientTransformation] = []
+    if clip_norm > 0.0:
+        train_steps.append(optax.clip_by_global_norm(clip_norm))
+    train_steps.append(optax.adam(learning_rate, eps=1e-5))
     return optax.multi_transform(
         {
-            "train": optax.adam(learning_rate, eps=1e-5),
+            "train": optax.chain(*train_steps),
             "freeze": optax.set_to_zero(),
         },
         labels,

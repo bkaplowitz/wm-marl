@@ -24,6 +24,9 @@ class JepaConfig:
     context_window: int = 1
     learning_rate: float = 3e-4
     actor_learning_rate: float = 3e-4
+    model_grad_clip_norm: float = 100.0
+    actor_grad_clip_norm: float = 10.0
+    critic_grad_clip_norm: float = 100.0
     regularizer: str = "sigreg"
     regularizer_weight: float = 0.05
     sigreg_knots: int = 17
@@ -35,6 +38,9 @@ class JepaConfig:
     twohot_bins: int = 41
     twohot_min: float = -20.0
     twohot_max: float = 20.0
+    clip_imagined_rewards: bool = False
+    imagined_reward_min: float = 0.0
+    imagined_reward_max: float = 1.0
     dynamics_ensemble_size: int = 1
     gamma: float = 0.99
     lambda_return: float = 0.95
@@ -58,6 +64,8 @@ class JepaConfig:
             raise ValueError("twohot_bins must be >= 3")
         if self.twohot_min >= self.twohot_max:
             raise ValueError("twohot_min must be < twohot_max")
+        if self.imagined_reward_min >= self.imagined_reward_max:
+            raise ValueError("imagined_reward_min must be < imagined_reward_max")
         if self.sigreg_knots < 2:
             raise ValueError("sigreg_knots must be >= 2")
         if self.sigreg_num_proj < 1:
@@ -68,6 +76,12 @@ class JepaConfig:
             raise ValueError("context_window must be >= 1")
         if self.dynamics_ensemble_size < 1:
             raise ValueError("dynamics_ensemble_size must be >= 1")
+        if self.model_grad_clip_norm < 0.0:
+            raise ValueError("model_grad_clip_norm must be >= 0")
+        if self.actor_grad_clip_norm < 0.0:
+            raise ValueError("actor_grad_clip_norm must be >= 0")
+        if self.critic_grad_clip_norm < 0.0:
+            raise ValueError("critic_grad_clip_norm must be >= 0")
         if self.model_dim % self.num_heads != 0:
             raise ValueError("model_dim must be divisible by num_heads")
         if (self.model_dim // self.num_heads) % 2 != 0:
@@ -363,7 +377,10 @@ class JepaWorldModel(nn.Module):
             )
             h = self.dynamics_hidden(flat_latents, flat_actions, dones=flat_dones)
             last_h = h[:, -1]
-            horizon_ids = jnp.full((flat_batch,), step_index + 1, dtype=jnp.int32)
+            # Recurrent imagination calls the next-step API repeatedly with the
+            # one-step horizon id. Train the autoregressive path with the same
+            # convention so actor rollouts do not see a different interface.
+            horizon_ids = jnp.ones((flat_batch,), dtype=jnp.int32)
             current_latents = flat_latents[:, -1]
             head_predictions = []
             head_reward_logits = []

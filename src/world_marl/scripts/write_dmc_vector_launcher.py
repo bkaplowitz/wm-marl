@@ -78,8 +78,9 @@ PRESETS["stabilized"] = {
     "policy_return_mode": "lambda",
     "policy_actor_baseline": "value",
     "policy_return_normalization": "batch",
-    "reward_prediction_mode": "symlog-twohot",
+    "reward_prediction_mode": "mse",
     "value_prediction_mode": "symlog-twohot",
+    "clip_imagined_rewards": True,
 }
 
 COMMON_PARAMS: dict[str, Any] = {
@@ -93,6 +94,9 @@ COMMON_PARAMS: dict[str, Any] = {
     "policy_return_normalization": "none",
     "imag_horizon": 15,
     "final_policy_eval_episodes": 0,
+    "model_grad_clip_norm": 100.0,
+    "actor_grad_clip_norm": 10.0,
+    "critic_grad_clip_norm": 100.0,
     "online_policy_trust_coef": 1.0,
     "online_candidate_refit": True,
     "online_candidate_eval_interval": 250,
@@ -119,6 +123,9 @@ COMMON_PARAMS: dict[str, Any] = {
     "twohot_bins": 41,
     "twohot_min": -20.0,
     "twohot_max": 20.0,
+    "clip_imagined_rewards": False,
+    "imagined_reward_min": 0.0,
+    "imagined_reward_max": 1.0,
     "controls": ("none",),
     "allow_fail": True,
 }
@@ -250,6 +257,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--twohot-bins", type=int, default=None)
     parser.add_argument("--twohot-min", type=float, default=None)
     parser.add_argument("--twohot-max", type=float, default=None)
+    parser.add_argument(
+        "--clip-imagined-rewards",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--imagined-reward-min", type=float, default=None)
+    parser.add_argument("--imagined-reward-max", type=float, default=None)
+    parser.add_argument("--model-grad-clip-norm", type=float, default=None)
+    parser.add_argument("--actor-grad-clip-norm", type=float, default=None)
+    parser.add_argument("--critic-grad-clip-norm", type=float, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--policy-batch-size", type=int, default=None)
     parser.add_argument("--latent-dim", type=int, default=None)
@@ -296,6 +313,12 @@ def apply_optional_overrides(args: argparse.Namespace, params: dict[str, Any]) -
         "twohot_bins",
         "twohot_min",
         "twohot_max",
+        "clip_imagined_rewards",
+        "imagined_reward_min",
+        "imagined_reward_max",
+        "model_grad_clip_norm",
+        "actor_grad_clip_norm",
+        "critic_grad_clip_norm",
         "batch_size",
         "policy_batch_size",
         "latent_dim",

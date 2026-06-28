@@ -24,6 +24,7 @@ from world_marl.jepa.training import (
     reward_only_returns,
     select_continuous_actions,
     train_model_step,
+    transition_start_validity,
 )
 from world_marl.scripts.train_dmc_jepa import (
     _action_contrast_metrics,
@@ -858,6 +859,14 @@ def test_prediction_validity_masks_terminal_crossing_targets():
     validity = prediction_validity(dones, chunk_length=2, max_horizon=2)
 
     expected = np.asarray([[[1.0, 0.0], [0.0, 0.0]]], dtype=np.float32)
+    np.testing.assert_allclose(np.asarray(validity), expected)
+
+
+def test_transition_start_validity_keeps_terminal_transition_labels():
+    dones = jnp.asarray([[0.0, 1.0, 0.0, 0.0]])
+    validity = transition_start_validity(dones, chunk_length=2, max_horizon=2)
+
+    expected = np.asarray([[[1.0, 1.0], [1.0, 0.0]]], dtype=np.float32)
     np.testing.assert_allclose(np.asarray(validity), expected)
 
 
