@@ -160,7 +160,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--wm-flow-type",
-        choices=("gaussian", "linear", "discrete"),
+        choices=("gaussian", "linear", "discrete", "transformer"),
         default="linear",
     )
     parser.add_argument(
@@ -497,7 +497,6 @@ def _warmup_policy_before_world_model(
                 rollout.last_values,
                 update_key,
             )
-            jax.block_until_ready(jnp.asarray(update_metrics["total_loss"]))
         env_steps += args.num_envs * args.rollout_steps
         real_env_steps += args.num_envs * args.rollout_steps
         completed_real_episodes = int(rollout.metrics.get("completed_episodes") or 0)
@@ -681,10 +680,9 @@ def run_training(
                 axis=0,
             )
             state_dim = int(prefit_batch.states.shape[-1])
-            num_categories = (
-                args.wm_num_categories if args.wm_flow_type == "discrete" else 0
-            )
-            if args.wm_flow_type == "discrete":
+            is_discrete_flow = args.wm_flow_type in {"discrete", "transformer"}
+            num_categories = args.wm_num_categories if is_discrete_flow else 0
+            if is_discrete_flow:
                 transition_dim = adapter.num_agents * state_dim
                 if num_categories <= 0 or transition_dim % num_categories != 0:
                     raise ValueError(
@@ -699,8 +697,11 @@ def run_training(
                 hidden_dims=(args.wm_hidden_dim, args.wm_hidden_dim),
                 learning_rate=args.wm_learning_rate,
                 integration_steps=args.wm_integration_steps,
-                flow_type=args.wm_flow_type,
+                flow_type="discrete" if is_discrete_flow else args.wm_flow_type,
                 num_categories=num_categories,
+                discrete_arch=(
+                    "transformer" if args.wm_flow_type == "transformer" else "mlp"
+                ),
             )
             rng, world_model_key = jax.random.split(rng)
             world_model_state = create_world_model_state(
@@ -719,7 +720,6 @@ def run_training(
                 world_model_config,
                 steps=args.wm_fit_steps,
             )
-            jax.block_until_ready(world_model_loss_history)
             loss_history = [float(value) for value in world_model_loss_history]
             logger.write_json(
                 "world_model_prefit.json",
@@ -827,7 +827,6 @@ def run_training(
                     rollout.last_values,
                     update_key,
                 )
-                jax.block_until_ready(jnp.asarray(update_metrics["total_loss"]))
 
             env_steps += args.num_envs * args.rollout_steps
             row = {
