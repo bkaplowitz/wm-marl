@@ -274,6 +274,8 @@ def run_trial(
         print(f"[trial {trial.number}] gpu={gpu} dry-run: {' '.join(command)}")
         return 0.0
 
+    trial_run = init_wandb_trial_run(args, trial, gpu, params, command, trial_dir)
+    wandb_stream_state: dict[str, Any] = {"step": 0, "lines": {}}
     with log_path.open("wb") as log_file:
         process = subprocess.Popen(
             command,
@@ -285,6 +287,7 @@ def run_trial(
         last_step = -1
         while process.poll() is None:
             time.sleep(args.monitor_interval_seconds)
+            stream_wandb_trial_metrics(trial_run, trial_dir, wandb_stream_state)
             progress = extract_progress(trial_dir)
             if progress is None:
                 continue
@@ -311,6 +314,7 @@ def run_trial(
                 terminate_process(process)
                 raise import_optuna().TrialPruned()
         return_code = process.returncode
+    stream_wandb_trial_metrics(trial_run, trial_dir, wandb_stream_state)
     metrics = extract_final_metrics(trial_dir)
     metrics["return_code"] = return_code
     score = score_metrics(metrics, args)
@@ -333,7 +337,7 @@ def run_trial(
         },
         step=trial.number * 1000 + 999,
     )
-    log_trial_to_wandb(args, trial, gpu, params, trial_dir, metrics, score, command)
+    finish_wandb_trial_run(args, trial_run, trial_dir, metrics, score)
     if return_code != 0:
         raise RuntimeError(f"trial {trial.number} failed with return code {return_code}")
     return score
@@ -414,6 +418,166 @@ def safe_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def init_wandb_trial_run(
+    args: argparse.Namespace,
+    trial,
+    gpu: str,
+    params: dict[str, Any],
+    command: list[str],
+    trial_dir: Path,
+) -> Any | None:
+    if args.wandb_mode == "disabled":
+        return None
+    with WANDB_LOCK:
+        try:
+            import wandb
+        except ImportError as exc:
+            raise SystemExit(
+                "W&B is not installed. Run with: uv run --extra hpo "
+                "world-marl-optuna-dmc-jepa ..."
+            ) from exc
+        group = args.wandb_group or args.study_name
+        run = wandb.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            group=group,
+            name=f"{args.study_name}-trial-{trial.number:04d}",
+            mode=args.wandb_mode,
+            tags=[*args.wandb_tags, "trial"],
+            config={
+                "trial_number": trial.number,
+                "gpu": gpu,
+                "task": args.task,
+                "seed": args.seed + trial.number,
+                "command": " ".join(command),
+                "trial_dir": str(trial_dir),
+                **params,
+            },
+            reinit=True,
+        )
+        define_wandb_trial_metrics(run)
+        run.log(
+            {
+                "trial/started": True,
+                "trial/number": trial.number,
+                "trial/gpu": safe_int(gpu),
+                "model/model_dim": params.get("model_dim"),
+                "model/num_heads": params.get("num_heads"),
+                "optim/learning_rate": params.get("learning_rate"),
+                "optim/actor_learning_rate": params.get("actor_learning_rate"),
+            },
+            step=0,
+        )
+        return run
+
+
+def define_wandb_trial_metrics(wandb_run) -> None:
+    for metric in ("train/*", "return/*", "policy/*", "model/*", "collapse/*"):
+        try:
+            wandb_run.define_metric(metric)
+        except Exception:
+            pass
+
+
+def stream_wandb_trial_metrics(
+    wandb_run,
+    trial_dir: Path,
+    state: dict[str, Any],
+) -> None:
+    if wandb_run is None:
+        return
+    line_counts: dict[str, int] = state.setdefault("lines", {})
+    for path in sorted((trial_dir / "run").glob("*/none/run_000/metrics.jsonl")):
+        key = str(path)
+        seen = line_counts.get(key, 0)
+        lines = path.read_text(errors="replace").splitlines()
+        if seen >= len(lines):
+            continue
+        for line in lines[seen:]:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            payload = wandb_trial_payload(row)
+            if not payload:
+                continue
+            step = int(state.get("step", 0))
+            payload["trial/stream_step"] = step
+            with WANDB_LOCK:
+                wandb_run.log(payload, step=step)
+            state["step"] = step + 1
+        line_counts[key] = len(lines)
+
+
+def wandb_trial_payload(row: dict[str, Any]) -> dict[str, float | int | bool]:
+    flat = wandb_scalars(flatten_dict(row))
+    payload = prefix_keys(flat, "metrics/")
+    env_steps = first_number(row.get("env_steps"))
+    if env_steps is not None:
+        payload["env_steps"] = env_steps
+
+    phase = str(row.get("phase") or row.get("policy_phase") or "")
+    aliases: dict[str, Any] = {}
+    for source, target in [
+        ("loss", "train/loss"),
+        ("jepa", "train/jepa"),
+        ("model/loss", "train/model_loss"),
+        ("model/jepa_loss", "train/jepa_loss"),
+        ("model/reward_loss", "train/reward_loss"),
+        ("model/continue_loss", "train/continue_loss"),
+        ("model/value_loss", "train/value_loss"),
+        ("model/open_loop_loss", "model/open_loop_loss"),
+        ("policy/loss", "policy/loss"),
+        ("policy/imagined_return", "policy/imagined_return"),
+        ("policy_selection_mean_return", "return/policy_selection_mean"),
+        ("policy_selection_best_mean_return", "return/policy_selection_best"),
+        ("mean_return", "return/mean"),
+        ("std_return", "return/std"),
+        ("episode_return_mean", "return/episode_mean"),
+        ("episode_return_std", "return/episode_std"),
+    ]:
+        if source in row:
+            aliases[target] = row[source]
+    if phase and "mean_return" in row:
+        aliases[f"return/{phase}_mean"] = row["mean_return"]
+    if phase and "std_return" in row:
+        aliases[f"return/{phase}_std"] = row["std_return"]
+    payload.update(wandb_scalars(aliases))
+    return payload
+
+
+def finish_wandb_trial_run(
+    args: argparse.Namespace,
+    wandb_run,
+    trial_dir: Path,
+    metrics: dict[str, Any],
+    score: float,
+) -> None:
+    if wandb_run is None:
+        return
+    try:
+        with WANDB_LOCK:
+            wandb_run.log(prefix_keys(wandb_scalars(metrics), "final/"))
+            wandb_run.summary["score"] = score
+            for key, value in metrics.items():
+                if is_json_scalar(value):
+                    wandb_run.summary[key] = value
+            if args.wandb_artifact:
+                log_wandb_artifact(wandb_run, trial_dir, trial_number_from_dir(trial_dir))
+    finally:
+        with WANDB_LOCK:
+            wandb_run.finish()
+
+
+def trial_number_from_dir(trial_dir: Path) -> int:
+    try:
+        return int(trial_dir.name.split("_")[-1])
+    except (IndexError, ValueError):
+        return 0
 
 
 def sample_params(trial) -> dict[str, Any]:
