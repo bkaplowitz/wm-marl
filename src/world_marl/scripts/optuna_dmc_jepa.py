@@ -398,6 +398,7 @@ def init_wandb_controller(args: argparse.Namespace, n_jobs: int) -> Any | None:
             },
             step=0,
         )
+        next(WANDB_CONTROLLER_STEP)
         return run
 
 
@@ -466,7 +467,7 @@ def stream_wandb_trial_metrics(
             step = int(state.get("step", 0))
             payload[f"trial/{trial_number:04d}/stream_step"] = step
             with WANDB_LOCK:
-                wandb_run.log(payload, step=step)
+                wandb_run.log(payload, step=next(WANDB_CONTROLLER_STEP))
             state["step"] = step + 1
         line_counts[key] = len(lines)
 
@@ -528,7 +529,8 @@ def log_wandb_completed_trial(
             {
                 f"trial/{trial_number:04d}/score": score,
                 **prefix_keys(wandb_scalars(metrics), prefix),
-            }
+            },
+            step=next(WANDB_CONTROLLER_STEP),
         )
         wandb_run.summary[f"trial/{trial_number:04d}/score"] = score
         for key, value in metrics.items():
