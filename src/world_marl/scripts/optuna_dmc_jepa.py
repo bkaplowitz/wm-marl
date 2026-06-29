@@ -130,32 +130,44 @@ def main() -> None:
         for _ in range(args.jobs_per_gpu):
             gpu_slots.put(gpu)
     n_jobs = max(1, len(args.gpus) * args.jobs_per_gpu)
+    controller_run = init_wandb_controller(args, n_jobs)
 
     def objective(trial) -> float:
         gpu = gpu_slots.get()
         try:
-            return run_trial(args, trial, gpu)
+            return run_trial(args, trial, gpu, controller_run)
         finally:
             gpu_slots.put(gpu)
 
-    study.optimize(
-        objective,
-        n_trials=args.n_trials,
-        n_jobs=n_jobs,
-        timeout=args.timeout_seconds,
-        gc_after_trial=True,
-    )
-    write_trials_csv(args, study)
-    best = best_trial_or_none(study)
-    write_json(
-        args.out_root / "best_trial.json",
-        {
-            "number": best.number if best is not None else None,
-            "value": best.value if best is not None else None,
-            "params": best.params if best is not None else None,
-            "user_attrs": dict(best.user_attrs) if best is not None else {},
-        },
-    )
+    try:
+        study.optimize(
+            objective,
+            n_trials=args.n_trials,
+            n_jobs=n_jobs,
+            timeout=args.timeout_seconds,
+            gc_after_trial=True,
+        )
+        write_trials_csv(args, study)
+        best = best_trial_or_none(study)
+        write_json(
+            args.out_root / "best_trial.json",
+            {
+                "number": best.number if best is not None else None,
+                "value": best.value if best is not None else None,
+                "params": best.params if best is not None else None,
+                "user_attrs": dict(best.user_attrs) if best is not None else {},
+            },
+        )
+        log_wandb_controller_event(
+            controller_run,
+            {
+                "hpo/completed": True,
+                "hpo/best_value": best.value if best is not None else None,
+                "hpo/best_trial": best.number if best is not None else None,
+            },
+        )
+    finally:
+        finish_wandb_controller(controller_run)
 
 
 def parse_args() -> argparse.Namespace:
@@ -204,7 +216,12 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def run_trial(args: argparse.Namespace, trial, gpu: str) -> float:
+def run_trial(
+    args: argparse.Namespace,
+    trial,
+    gpu: str,
+    controller_run: Any | None,
+) -> float:
     params = sample_params(trial)
     trial_dir = args.out_root / f"trial_{trial.number:04d}"
     if trial_dir.exists():
@@ -235,6 +252,21 @@ def run_trial(args: argparse.Namespace, trial, gpu: str) -> float:
             "command": command,
         },
     )
+    log_wandb_controller_event(
+        controller_run,
+        {
+            "hpo/trial_started": 1,
+            "hpo/active_trial": trial.number,
+            f"trial/{trial.number:04d}/gpu": safe_int(gpu),
+            f"trial/{trial.number:04d}/model_dim": params.get("model_dim"),
+            f"trial/{trial.number:04d}/num_heads": params.get("num_heads"),
+            f"trial/{trial.number:04d}/learning_rate": params.get("learning_rate"),
+            f"trial/{trial.number:04d}/actor_learning_rate": params.get(
+                "actor_learning_rate"
+            ),
+        },
+        step=trial.number,
+    )
 
     if args.dry_run:
         print(f"[trial {trial.number}] gpu={gpu} dry-run: {' '.join(command)}")
@@ -260,6 +292,19 @@ def run_trial(args: argparse.Namespace, trial, gpu: str) -> float:
             last_step = step
             trial.report(value, step=step)
             trial.set_user_attr(f"intermediate_{step}", value)
+            log_wandb_controller_event(
+                controller_run,
+                {
+                    f"trial/{trial.number:04d}/intermediate_score": value,
+                    f"trial/{trial.number:04d}/intermediate_step": step,
+                    f"trial/{trial.number:04d}/gpu": safe_int(gpu),
+                    **prefix_keys(
+                        wandb_scalars(flatten_dict(metrics)),
+                        f"trial/{trial.number:04d}/progress/",
+                    ),
+                },
+                step=trial.number * 1000 + step,
+            )
             if trial.should_prune():
                 terminate_process(process)
                 raise import_optuna().TrialPruned()
@@ -272,10 +317,101 @@ def run_trial(args: argparse.Namespace, trial, gpu: str) -> float:
         if is_json_scalar(value):
             trial.set_user_attr(key, value)
     write_json(trial_dir / "trial_result.json", metrics | {"score": score})
+    log_wandb_controller_event(
+        controller_run,
+        {
+            "hpo/trial_finished": 1,
+            "hpo/last_finished_trial": trial.number,
+            f"trial/{trial.number:04d}/score": score,
+            f"trial/{trial.number:04d}/return_code": return_code,
+            **prefix_keys(
+                wandb_scalars(metrics),
+                f"trial/{trial.number:04d}/final/",
+            ),
+        },
+        step=trial.number * 1000 + 999,
+    )
     log_trial_to_wandb(args, trial, gpu, params, trial_dir, metrics, score, command)
     if return_code != 0:
         raise RuntimeError(f"trial {trial.number} failed with return code {return_code}")
     return score
+
+
+def init_wandb_controller(args: argparse.Namespace, n_jobs: int) -> Any | None:
+    if args.wandb_mode == "disabled":
+        return None
+    with WANDB_LOCK:
+        try:
+            import wandb
+        except ImportError as exc:
+            raise SystemExit(
+                "W&B is not installed. Run with: uv run --extra hpo "
+                "world-marl-optuna-dmc-jepa ..."
+            ) from exc
+        group = args.wandb_group or args.study_name
+        run = wandb.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            group=group,
+            name=f"{args.study_name}-controller",
+            mode=args.wandb_mode,
+            tags=[*args.wandb_tags, "controller"],
+            config={
+                "task": args.task,
+                "seed": args.seed,
+                "n_trials": args.n_trials,
+                "gpus": args.gpus,
+                "jobs_per_gpu": args.jobs_per_gpu,
+                "n_jobs": n_jobs,
+                "study_name": args.study_name,
+                "storage": args.storage,
+                "out_root": str(args.out_root),
+                "enable_pruning": args.enable_pruning,
+                "sampler_seed": args.sampler_seed,
+                "fast_preset": FAST_PRESET,
+                "base_params": BASE_PARAMS,
+            },
+            reinit=True,
+        )
+        run.log(
+            {
+                "hpo/started": True,
+                "hpo/n_trials": args.n_trials,
+                "hpo/n_jobs": n_jobs,
+                "hpo/jobs_per_gpu": args.jobs_per_gpu,
+            },
+            step=0,
+        )
+        return run
+
+
+def log_wandb_controller_event(
+    controller_run: Any | None,
+    payload: dict[str, Any],
+    *,
+    step: int | None = None,
+) -> None:
+    if controller_run is None:
+        return
+    scalars = wandb_scalars(payload)
+    if not scalars:
+        return
+    with WANDB_LOCK:
+        controller_run.log(scalars, step=step)
+
+
+def finish_wandb_controller(controller_run: Any | None) -> None:
+    if controller_run is None:
+        return
+    with WANDB_LOCK:
+        controller_run.finish()
+
+
+def safe_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def sample_params(trial) -> dict[str, Any]:
