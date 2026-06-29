@@ -33,6 +33,10 @@ cuda12 = [
 dmc = [
   "dm-control>=1.0",
 ]
+hpo = [
+  "optuna>=3.6",
+  "wandb>=0.17",
+]
 brax = [
   "brax==0.10.3",
 ]
@@ -51,6 +55,7 @@ world-marl-validate-dmc-world-model = "world_marl.scripts.train_dmc_jepa:main"
 world-marl-validate-single-agent-world-model = "world_marl.scripts.train_dmc_jepa:main"
 world-marl-plot-brax-diagnostics = "world_marl.scripts.plot_brax_diagnostics:main"
 world-marl-write-dmc-vector-launcher = "world_marl.scripts.write_dmc_vector_launcher:main"
+world-marl-optuna-dmc-jepa = "world_marl.scripts.optuna_dmc_jepa:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
