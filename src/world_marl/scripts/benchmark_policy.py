@@ -274,9 +274,7 @@ def summarize_arm(
     runtime_values = [float(run["runtime_seconds"]) for run in runs]
     trained_values = [float(run["outcome"]["trained_mean"]) for run in runs]
     real_steps = [float(run["outcome"]["real_env_steps"]) for run in runs]
-    real_episodes = [
-        float(run["outcome"]["cumulative_real_episodes"]) for run in runs
-    ]
+    real_episodes = [float(run["outcome"]["cumulative_real_episodes"]) for run in runs]
     total_updates = [float(run["total_updates"]) for run in runs]
     return {
         "arm_dir": str(arm_dir),
@@ -328,7 +326,9 @@ def run_arm(
     return arm_summary
 
 
-def compare_arms(model_free: dict[str, Any], model_based: dict[str, Any]) -> dict[str, Any]:
+def compare_arms(
+    model_free: dict[str, Any], model_based: dict[str, Any]
+) -> dict[str, Any]:
     free = model_free["aggregate"]
     based = model_based["aggregate"]
 
