@@ -9,6 +9,7 @@ summary, metrics.jsonl rows, and a run-directory artifact.
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import math
 import os
@@ -88,6 +89,7 @@ BASE_PARAMS: dict[str, Any] = {
     "allow_fail": True,
 }
 WANDB_LOCK = threading.Lock()
+WANDB_CONTROLLER_STEP = itertools.count()
 
 
 def main() -> None:
@@ -397,7 +399,7 @@ def log_wandb_controller_event(
     if not scalars:
         return
     with WANDB_LOCK:
-        controller_run.log(scalars, step=step)
+        controller_run.log(scalars, step=next(WANDB_CONTROLLER_STEP))
 
 
 def finish_wandb_controller(controller_run: Any | None) -> None:
