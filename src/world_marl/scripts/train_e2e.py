@@ -610,16 +610,13 @@ def run_training(
             config,
             observation_mode=observation_mode,
         )
-        initial_result = evaluate_policy(
-            adapter,
-            policy_from_train_state(
-                args.algorithm,
-                train_state,
-                adapter=adapter,
-                deterministic=not args.stochastic_eval,
-                seed=seed + 2,
-                observation_mode=observation_mode,
-            ),
+        initial_result = _evaluate_train_state(
+            adapter=adapter,
+            train_state=train_state,
+            algorithm=args.algorithm,
+            observation_mode=observation_mode,
+            deterministic=not args.stochastic_eval,
+            seed=seed + 2,
             episodes=args.eval_episodes,
             max_steps=args.eval_max_steps,
         ).to_dict()
