@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 import pytest
@@ -122,9 +123,116 @@ def test_dotenv_does_not_override_existing_runpod_api_key(tmp_path, monkeypatch)
 def test_ssh_info_not_ready_reports_pod_status(tmp_path, monkeypatch):
     monkeypatch.setattr(
         runpod,
-        "run_json",
-        lambda _: {"error": "pod not ready", "status": "INITIALIZING"},
+        "fetch_pod_rest",
+        lambda _: {
+            "id": "pod-id",
+            "publicIp": None,
+            "portMappings": None,
+            "desiredStatus": "INITIALIZING",
+        },
     )
 
-    with pytest.raises(RuntimeError, match="ssh info not ready.*INITIALIZING"):
+    with pytest.raises(RuntimeError, match="not ready.*INITIALIZING"):
         runpod.get_ssh_info("pod-id", tmp_path / "key")
+
+
+def _create_args(**overrides) -> argparse.Namespace:
+    values = {
+        "template_id": "runpod-torch-v240",
+        "gpu_id": "NVIDIA L40S",
+        "gpu_count": 1,
+        "cloud_type": "SECURE",
+        "volume_gb": 100,
+        "container_disk_gb": 50,
+        "volume_mount_path": "/workspace",
+        "ports": "22/tcp",
+        "stop_after": None,
+        "terminate_after": None,
+        "auto_stop_hours": 0.0,
+        "ssh_key": "~/.ssh/runpod_key",
+    }
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+def test_create_pod_cmd_injects_public_key_env(tmp_path):
+    key = tmp_path / "runpod_key"
+    key.write_text("PRIVATE", encoding="utf-8")
+    (tmp_path / "runpod_key.pub").write_text(
+        "ssh-ed25519 AAAATEST me@host\n", encoding="utf-8"
+    )
+
+    cmd = runpod.build_create_pod_cmd(_create_args(ssh_key=str(key)), "pod-name")
+
+    assert "--env" in cmd
+    env_json = cmd[cmd.index("--env") + 1]
+    assert json.loads(env_json) == {"PUBLIC_KEY": "ssh-ed25519 AAAATEST me@host"}
+
+
+def test_create_pod_cmd_requires_public_key_file(tmp_path):
+    key = tmp_path / "runpod_key"  # no .pub sibling
+    key.write_text("PRIVATE", encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="public key"):
+        runpod.build_create_pod_cmd(_create_args(ssh_key=str(key)), "pod-name")
+
+
+def test_parse_direct_ssh_info_uses_public_ip_and_port22(tmp_path):
+    pod = {
+        "id": "p",
+        "publicIp": "1.2.3.4",
+        "portMappings": {"22": 18151},
+        "desiredStatus": "RUNNING",
+    }
+
+    info = runpod.parse_direct_ssh_info(pod, tmp_path / "key")
+
+    assert info.user == "root"
+    assert info.host == "1.2.3.4"
+    assert info.port == 18151
+    assert info.key_path == tmp_path / "key"
+
+
+def test_parse_direct_ssh_info_not_ready_without_port_mapping(tmp_path):
+    pod = {
+        "id": "p",
+        "publicIp": None,
+        "portMappings": None,
+        "desiredStatus": "INITIALIZING",
+    }
+
+    with pytest.raises(RuntimeError, match="not ready.*INITIALIZING"):
+        runpod.parse_direct_ssh_info(pod, tmp_path / "key")
+
+
+def test_get_ssh_info_returns_direct_tcp_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        runpod,
+        "fetch_pod_rest",
+        lambda _: {
+            "id": "pod-id",
+            "publicIp": "5.6.7.8",
+            "portMappings": {"22": 12345},
+            "desiredStatus": "RUNNING",
+        },
+    )
+
+    info = runpod.get_ssh_info("pod-id", tmp_path / "key")
+
+    assert (info.user, info.host, info.port) == ("root", "5.6.7.8", 12345)
+
+
+def test_sync_repo_excludes_dotenv(tmp_path, monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(runpod, "run", lambda cmd, **kwargs: calls.append(cmd))
+    info = runpod.SshInfo(
+        user="root", host="1.2.3.4", port=22, key_path=tmp_path / "key"
+    )
+
+    runpod.sync_repo(tmp_path, "/root/wm-marl", info)
+
+    rsync_calls = [c for c in calls if c and c[0] == "rsync"]
+    assert rsync_calls, "expected an rsync invocation"
+    argv = rsync_calls[0]
+    excludes = [argv[i + 1] for i, a in enumerate(argv) if a == "--exclude"]
+    assert ".env" in excludes

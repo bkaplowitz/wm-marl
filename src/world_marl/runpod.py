@@ -9,6 +9,7 @@ import shlex
 import subprocess
 import sys
 import time
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -343,6 +344,15 @@ def build_job_spec(args: argparse.Namespace, run_id: str) -> JobSpec:
     )
 
 
+def read_public_key(ssh_key: str) -> str:
+    pub_path = Path(str(Path(ssh_key).expanduser()) + ".pub")
+    if not pub_path.exists():
+        raise SystemExit(
+            f"SSH public key not found: {pub_path}; needed to inject PUBLIC_KEY into the pod"
+        )
+    return pub_path.read_text(encoding="utf-8").strip()
+
+
 def build_create_pod_cmd(args: argparse.Namespace, pod_name: str) -> list[str]:
     cmd = [
         "runpodctl",
@@ -368,6 +378,8 @@ def build_create_pod_cmd(args: argparse.Namespace, pod_name: str) -> list[str]:
         args.volume_mount_path,
         "--ports",
         args.ports,
+        "--env",
+        json.dumps({"PUBLIC_KEY": read_public_key(args.ssh_key)}),
     ]
     stop_after = args.stop_after
     if not stop_after and not args.terminate_after and args.auto_stop_hours > 0:
@@ -455,50 +467,35 @@ def wait_for_ssh(pod_id: str, ssh_key: Path, args: argparse.Namespace) -> SshInf
 
 
 def get_ssh_info(pod_id: str, fallback_key: Path) -> SshInfo:
-    payload = run_json(["runpodctl", "--output", "json", "ssh", "info", pod_id])
+    return parse_direct_ssh_info(fetch_pod_rest(pod_id), fallback_key)
+
+
+def fetch_pod_rest(pod_id: str) -> dict[str, Any]:
+    api_key = os.environ.get("RUNPOD_API_KEY", "")
+    request = urllib.request.Request(
+        f"https://rest.runpod.io/v1/pods/{pod_id}",
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        payload = json.loads(response.read().decode("utf-8"))
     if not isinstance(payload, dict):
-        raise RuntimeError(f"unexpected ssh info payload: {payload!r}")
-    if payload.get("error"):
-        status = payload.get("status", "unknown")
+        raise RuntimeError(f"unexpected pod payload for {pod_id}: {payload!r}")
+    return payload
+
+
+def parse_direct_ssh_info(pod: dict[str, Any], key_path: Path) -> SshInfo:
+    public_ip = pod.get("publicIp")
+    port_mappings = pod.get("portMappings") or {}
+    public_port = port_mappings.get("22")
+    if not public_ip or not public_port:
+        status = pod.get("desiredStatus", "unknown")
         raise RuntimeError(
-            f"ssh info not ready for pod {pod_id}: status={status}, "
-            f"error={payload['error']}"
+            f"ssh endpoint not ready for pod {pod.get('id')}: status={status}, "
+            f"publicIp={public_ip!r}, port22={public_port!r}"
         )
-
-    command = str(payload.get("command") or "")
-    user = payload.get("user")
-    host = payload.get("host")
-    port = payload.get("port")
-
-    if not user or not host:
-        parsed = parse_ssh_command(command)
-        user = user or parsed.user
-        host = host or parsed.host
-        port = port or parsed.port
-
-    if not isinstance(user, str) or not isinstance(host, str):
-        raise RuntimeError(f"could not parse ssh info: {payload!r}")
-
-    resolved_port = int(port) if port not in (None, "") else None
-    return SshInfo(user=user, host=host, port=resolved_port, key_path=fallback_key)
-
-
-def parse_ssh_command(command: str) -> SshInfo:
-    parts = shlex.split(command)
-    if not parts or parts[0] != "ssh":
-        raise RuntimeError(f"could not parse ssh command: {command!r}")
-    user_host = next((part for part in parts[1:] if "@" in part), "")
-    if "@" not in user_host:
-        raise RuntimeError(f"could not parse ssh user/host: {command!r}")
-    user, host = user_host.split("@", 1)
-    port: int | None = None
-    key_path = Path("~/.ssh/runpod_key").expanduser()
-    for idx, part in enumerate(parts):
-        if part == "-p" and idx + 1 < len(parts):
-            port = int(parts[idx + 1])
-        if part == "-i" and idx + 1 < len(parts):
-            key_path = Path(parts[idx + 1]).expanduser()
-    return SshInfo(user=user, host=host, port=port, key_path=key_path)
+    return SshInfo(
+        user="root", host=str(public_ip), port=int(public_port), key_path=key_path
+    )
 
 
 def ssh_base(info: SshInfo) -> list[str]:
@@ -551,6 +548,8 @@ def sync_repo(repo_root: Path, remote_repo_dir: str, info: SshInfo) -> None:
             "runs/",
             "--exclude",
             "__pycache__/",
+            "--exclude",
+            ".env",
             "-e",
             shlex.join(ssh_cmd),
             f"{repo_root}/",
@@ -635,8 +634,8 @@ def print_dry_run(
     print(f"local outputs: {job.local_out_dir}")
     print("\ncommands:")
     print(shlex.join(create_cmd))
-    print("runpodctl --output json ssh info <pod-id>")
-    print("ssh <pod-ssh-target> true")
+    print("GET https://rest.runpod.io/v1/pods/<pod-id>  (publicIp + portMappings[22])")
+    print("ssh -i <key> root@<publicIp> -p <port22> true")
     print(f"rsync repo to <pod-ssh-target>:{remote_repo_dir}/")
     if skip_uv_sync:
         print("skip uv sync")
