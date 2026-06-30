@@ -64,13 +64,13 @@ def default_train_args(args: argparse.Namespace) -> list[str]:
         "--wm-random-rollouts",
         "2000",
         "--wm-initial-rollouts",
-        "500",
+        "5000",
         "--wm-fit-steps",
         str(args.prefit_train_steps),
         "--wm-learning-rate",
         "0.001",
         "--wm-hidden-dim",
-        "128",
+        "256",
         "--wm-integration-steps",
         "10",
         "--wm-flow-type",
@@ -102,6 +102,8 @@ def default_train_args(args: argparse.Namespace) -> list[str]:
 
 @dataclass(frozen=True)
 class JobSpec:
+    """Specification for a job to run on a Runpod pod."""
+
     remote_out_dir: str
     local_out_dir: Path
     command: list[str]
@@ -109,6 +111,8 @@ class JobSpec:
 
 @dataclass(frozen=True)
 class SshInfo:
+    """SSH information for a Runpod pod."""
+
     user: str
     host: str
     port: int | None
@@ -116,10 +120,12 @@ class SshInfo:
 
     @property
     def target(self) -> str:
+        """The target for SSHing into the pod."""
         return f"{self.user}@{self.host}"
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--job",
@@ -164,7 +170,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--prefit-train-steps",
         type=int,
-        default=500000,
+        default=100000,
         help="Alias for train-e2e --wm-fit-steps.",
     )
     parser.add_argument(
@@ -267,6 +273,7 @@ def main() -> int:
 
 
 def ensure_runpod_api_key(repo_root: Path) -> None:
+    """Ensure the Runpod API key is set."""
     if os.environ.get("RUNPOD_API_KEY"):
         return
     env_path = repo_root / ".env"
@@ -281,6 +288,7 @@ def ensure_runpod_api_key(repo_root: Path) -> None:
 
 
 def read_dotenv_value(env_path: Path, key: str) -> str | None:
+    """Read a value from a .env file."""
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -294,12 +302,14 @@ def read_dotenv_value(env_path: Path, key: str) -> str | None:
 
 
 def strip_dotenv_quotes(value: str) -> str:
+    """Strip quotes from a value read from a .env file."""
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         return value[1:-1]
     return value
 
 
 def build_job_spec(args: argparse.Namespace, run_id: str) -> JobSpec:
+    """Build a job specification for a Runpod pod."""
     remote_out_dir = f"{args.remote_out_root.rstrip('/')}/{args.job}/{run_id}"
     local_out_dir = Path(args.local_out_root).expanduser().resolve() / args.job / run_id
     if args.job == "train-e2e":
@@ -346,6 +356,7 @@ def build_job_spec(args: argparse.Namespace, run_id: str) -> JobSpec:
 
 
 def read_public_key(ssh_key: str) -> str:
+    """Read the public key from the SSH key file."""
     pub_path = Path(str(Path(ssh_key).expanduser()) + ".pub")
     if not pub_path.exists():
         raise SystemExit(
@@ -355,6 +366,7 @@ def read_public_key(ssh_key: str) -> str:
 
 
 def build_create_pod_cmd(args: argparse.Namespace, pod_name: str) -> list[str]:
+    """Build the command to create a Runpod pod."""
     cmd = [
         "runpodctl",
         "--output",
@@ -394,6 +406,7 @@ def build_create_pod_cmd(args: argparse.Namespace, pod_name: str) -> list[str]:
 
 
 def run_json(cmd: list[str]) -> Any:
+    """Run a command and return the JSON output."""
     result = run(cmd, capture_output=True)
     try:
         return json.loads(result.stdout)
@@ -409,6 +422,7 @@ def run(
     capture_output: bool = False,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
+    """Run a command and print it to the console."""
     print(f"+ {shlex.join(cmd)}", flush=True)
     return subprocess.run(
         cmd,
@@ -419,6 +433,7 @@ def run(
 
 
 def extract_pod_id(payload: Any) -> str:
+    """Extract the pod ID from the Runpod API response."""
     if isinstance(payload, dict):
         for key in ("id", "pod_id", "podId"):
             value = payload.get(key)
@@ -431,12 +446,14 @@ def extract_pod_id(payload: Any) -> str:
 
 
 def require_local_tools(names: list[str]) -> None:
+    """Require the local tools to be present."""
     missing = [name for name in names if not shutil_which(name)]
     if missing:
         raise SystemExit(f"missing required command(s): {', '.join(missing)}")
 
 
 def shutil_which(name: str) -> str | None:
+    """Find a command in the PATH."""
     for entry in os.environ.get("PATH", "").split(os.pathsep):
         candidate = Path(entry) / name
         if candidate.is_file() and os.access(candidate, os.X_OK):
@@ -445,6 +462,7 @@ def shutil_which(name: str) -> str | None:
 
 
 def require_repo(repo_root: Path) -> None:
+    """Require the repository to be valid."""
     pyproject = repo_root / "pyproject.toml"
     package_dir = repo_root / "src" / "world_marl"
     if not pyproject.exists() or not package_dir.is_dir():
@@ -452,6 +470,7 @@ def require_repo(repo_root: Path) -> None:
 
 
 def wait_for_ssh(pod_id: str, ssh_key: Path, args: argparse.Namespace) -> SshInfo:
+    """Wait for the SSH to become ready for a Runpod pod."""
     deadline = time.monotonic() + args.ssh_timeout_seconds
     last_error = ""
     while time.monotonic() < deadline:
@@ -468,10 +487,12 @@ def wait_for_ssh(pod_id: str, ssh_key: Path, args: argparse.Namespace) -> SshInf
 
 
 def get_ssh_info(pod_id: str, fallback_key: Path) -> SshInfo:
+    """Get the SSH information for a Runpod pod."""
     return parse_direct_ssh_info(fetch_pod_rest(pod_id), fallback_key)
 
 
 def fetch_pod_rest(pod_id: str) -> dict[str, Any]:
+    """Fetch the pod information from the Runpod API."""
     api_key = os.environ.get("RUNPOD_API_KEY", "")
     request = urllib.request.Request(
         f"https://rest.runpod.io/v1/pods/{pod_id}",
@@ -485,6 +506,7 @@ def fetch_pod_rest(pod_id: str) -> dict[str, Any]:
 
 
 def parse_direct_ssh_info(pod: dict[str, Any], key_path: Path) -> SshInfo:
+    """Parse the SSH information for a Runpod pod."""
     public_ip = pod.get("publicIp")
     port_mappings = pod.get("portMappings") or {}
     public_port = port_mappings.get("22")
@@ -500,6 +522,7 @@ def parse_direct_ssh_info(pod: dict[str, Any], key_path: Path) -> SshInfo:
 
 
 def ssh_base(info: SshInfo) -> list[str]:
+    """Build the base SSH command for a Runpod pod."""
     cmd = [
         "ssh",
         "-i",
@@ -518,10 +541,12 @@ def ssh_base(info: SshInfo) -> list[str]:
 
 
 def probe_ssh(info: SshInfo) -> None:
+    """Probe the SSH connection to a Runpod pod."""
     run([*ssh_base(info), "true"], capture_output=True)
 
 
 def ensure_remote_rsync(info: SshInfo) -> None:
+    """Ensure the remote rsync is installed on a Runpod pod."""
     script = (
         "command -v rsync >/dev/null 2>&1 || "
         "(apt-get update && apt-get install -y rsync)"
@@ -530,6 +555,7 @@ def ensure_remote_rsync(info: SshInfo) -> None:
 
 
 def sync_repo(repo_root: Path, remote_repo_dir: str, info: SshInfo) -> None:
+    """Sync the repository to a Runpod pod."""
     run([*ssh_base(info), f"mkdir -p {shlex.quote(remote_repo_dir)}"])
     ssh_cmd = [
         "ssh",
@@ -573,6 +599,7 @@ def run_remote_job(
     info: SshInfo,
     skip_uv_sync: bool,
 ) -> None:
+    """Run a job on a Runpod pod."""
     commands = [
         "set -euo pipefail",
         f"cd {shlex.quote(remote_repo_dir)}",
@@ -583,7 +610,7 @@ def run_remote_job(
     commands.extend(
         [
             "uv run world-marl-verify-install",
-            "uv run python -c \"import jax; devs = jax.devices(); "
+            'uv run python -c "import jax; devs = jax.devices(); '
             "assert any(d.platform == 'gpu' for d in devs), "
             "f'no GPU visible to JAX (silent CPU fallback): {devs}'; "
             "print('jax devices:', devs)\"",
@@ -594,6 +621,7 @@ def run_remote_job(
 
 
 def download_outputs(remote_out_dir: str, local_out_dir: Path, info: SshInfo) -> None:
+    """Download the outputs from a Runpod pod."""
     local_out_dir.mkdir(parents=True, exist_ok=True)
     ssh_cmd = [
         "ssh",
@@ -621,6 +649,7 @@ def download_outputs(remote_out_dir: str, local_out_dir: Path, info: SshInfo) ->
 
 
 def stop_for_inspection(pod_id: str, remote_out_dir: str) -> None:
+    """Stop the pod and print a message to inspect the remote outputs after restart."""
     print(
         f"stopping pod {pod_id}; inspect remote outputs at {remote_out_dir} after restart",
         file=sys.stderr,
@@ -630,6 +659,7 @@ def stop_for_inspection(pod_id: str, remote_out_dir: str) -> None:
 
 
 def delete_pod(pod_id: str) -> bool:
+    """Delete the pod and return True if successful."""
     result = run(["runpodctl", "pod", "delete", pod_id], check=False)
     return result.returncode == 0
 
@@ -644,6 +674,7 @@ def print_dry_run(
     remote_repo_dir: str,
     skip_uv_sync: bool,
 ) -> None:
+    """Print a dry run of the pod creation and job execution."""
     print(f"pod name: {pod_name}")
     print(f"repo root: {repo_root}")
     print(f"ssh key: {ssh_key}")
