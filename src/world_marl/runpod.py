@@ -164,13 +164,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--prefit-train-steps",
         type=int,
-        default=5000,
+        default=500000,
         help="Alias for train-e2e --wm-fit-steps.",
     )
     parser.add_argument(
         "--policy-warmstart-updates",
         type=int,
-        default=1,
+        default=3,
         help="Alias for train-e2e --wm-policy-warmup-updates.",
     )
     parser.add_argument(
