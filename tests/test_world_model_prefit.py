@@ -6,7 +6,11 @@ import numpy as np
 
 from flow_matching.models import MLPVectorField
 from world_marl.algs.ippo import IPPOConfig, create_train_state as create_ippo_state
-from world_marl.algs.mappo import MAPPOConfig, create_train_state as create_mappo_state
+from world_marl.algs.mappo import (
+    MAPPOConfig,
+    create_train_state as create_mappo_state,
+    MAPPORolloutBatch,
+)
 from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
 from world_marl.world_model import (
     VectorTransitionBatch,
@@ -637,6 +641,7 @@ def test_simulate_mappo_model_rollout_matches_explicit_python_loop():
         config=config,
         reward_done_fn=_reward_done_actions,
     )
+    assert isinstance(rollout.batch, MAPPORolloutBatch)
     stacked, final_states, last_values = _explicit_imagined_unroll(
         model_state,
         policy_state,

@@ -6,6 +6,8 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.axes import Axes
 import numpy as np
 
 from flow_matching.distributions import (
@@ -17,7 +19,7 @@ from flow_matching.paths import conditional_vector_field, sample_conditional_pat
 from flow_matching.simulate import euler_integrate
 
 
-def _finish_figure(fig: plt.Figure, output: Path | None) -> None:
+def _finish_figure(fig: Figure, output: Path | None) -> None:
     """Save or show a figure and always close it."""
     if output is not None:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -28,7 +30,7 @@ def _finish_figure(fig: plt.Figure, output: Path | None) -> None:
 
 
 def _hist2d(
-    ax: plt.Axes,
+    ax: Axes,
     samples: jax.Array,
     *,
     scale: float,
@@ -78,7 +80,7 @@ def _grid_points(scale: float, bins: int) -> jax.Array:
 
 
 def _imshow_log_density(
-    ax: plt.Axes,
+    ax: Axes,
     log_density: jax.Array,
     *,
     scale: float,
@@ -99,7 +101,7 @@ def _imshow_log_density(
 
 
 def _plot_source_target_density_backgrounds(
-    ax: plt.Axes,
+    ax: Axes,
     gmm: GaussianMixture2D,
     *,
     scale: float,
@@ -122,7 +124,7 @@ def _plot_source_target_density_backgrounds(
     )
 
 
-def _configure_density_axis(ax: plt.Axes, title: str, scale: float) -> None:
+def _configure_density_axis(ax: Axes, title: str, scale: float) -> None:
     ax.set_title(title)
     ax.set_xlim(-scale, scale)
     ax.set_ylim(-scale, scale)
@@ -132,7 +134,7 @@ def _configure_density_axis(ax: plt.Axes, title: str, scale: float) -> None:
 
 
 def _scatter_conditioning_sample(
-    ax: plt.Axes,
+    ax: Axes,
     x1: jax.Array,
     *,
     s: float,
@@ -151,7 +153,7 @@ def _scatter_conditioning_sample(
 
 
 def _scatter_marginals(
-    ax: plt.Axes,
+    ax: Axes,
     samples_by_time: jax.Array,
     ts: jax.Array,
     *,
@@ -207,7 +209,7 @@ def create_source_and_target_figure(
     gmm: GaussianMixture2D,
     bins: int = 200,
     scale: float = 15.0,
-) -> plt.Figure:
+) -> Figure:
     """Create the original three-panel source/target density heatmap figure."""
     xy = _grid_points(scale, bins)
     source_log_density = _standard_normal_log_density(xy)
@@ -257,7 +259,7 @@ def create_conditional_probability_path_figure(
     num_marginals: int = 7,
     scale: float = 15.0,
     background_bins: int = 200,
-) -> plt.Figure:
+) -> Figure:
     """Create the original-style conditional path figure with density backgrounds."""
     key_x1, *sample_keys = jax.random.split(key, num_marginals + 1)
     x1 = sample_gmm(key_x1, gmm, n=1)
@@ -288,7 +290,7 @@ def create_analytic_flow_path_figure(
     num_marginals: int = 3,
     scale: float = 15.0,
     background_bins: int = 200,
-) -> plt.Figure:
+) -> Figure:
     """Create a 3-panel analytic conditional ODE flow figure."""
     key_x1, key_x0, *path_keys = jax.random.split(key, num_marginals + 2)
     x1 = sample_gmm(key_x1, gmm, n=1)
@@ -355,7 +357,7 @@ def create_learned_flow_path_figure(
     num_marginals: int = 3,
     scale: float = 15.0,
     background_bins: int = 200,
-) -> plt.Figure:
+) -> Figure:
     """Create a 3-panel learned marginal ODE flow figure."""
 
     def drift(xt: jax.Array, t: jax.Array) -> jax.Array:

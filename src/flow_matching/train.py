@@ -3,9 +3,9 @@
 from functools import partial
 from typing import Any
 
-import flax
 import jax
 import jax.numpy as jnp
+from flax import linen as nn
 import optax
 from flax.training.train_state import TrainState
 
@@ -24,7 +24,7 @@ from flow_matching.paths import (
 
 def create_train_state(
     key: jax.Array,
-    model: flax.linen.Module,
+    model: nn.Module,
     learning_rate: float,
     dim: int = 2,
 ) -> TrainState:
@@ -76,7 +76,7 @@ def train_step(
 
 def create_conditioned_train_state(
     key: jax.Array,
-    model: flax.linen.Module,
+    model: nn.Module,
     learning_rate: float,
     *,
     dim: int,
@@ -100,7 +100,7 @@ def create_conditioned_train_state(
 
 def create_discrete_conditioned_train_state(
     key: jax.Array,
-    model: flax.linen.Module,
+    model: nn.Module,
     learning_rate: float,
     *,
     num_factors: int,
@@ -202,7 +202,7 @@ def conditioned_discrete_train_step(
 
 def create_llada2_train_state(
     key: jax.Array,
-    model: flax.linen.Module,
+    model: nn.Module,
     learning_rate: float,
     *,
     num_factors: int,

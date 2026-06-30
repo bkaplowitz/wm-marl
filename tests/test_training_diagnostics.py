@@ -3,7 +3,11 @@ from __future__ import annotations
 import jax
 
 from world_marl.algs.ippo import IPPOConfig, create_train_state as create_ippo_state
-from world_marl.algs.mappo import MAPPOConfig, create_train_state as create_mappo_state
+from world_marl.algs.mappo import (
+    MAPPOConfig,
+    create_train_state as create_mappo_state,
+    MAPPORolloutBatch,
+)
 from world_marl.envs.jaxmarl_coin_adapter import JaxMARLCoinGameVectorAdapter
 from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
 from world_marl.training import (
@@ -45,6 +49,7 @@ def test_ippo_rollout_writes_diagnostics(dummy_env_factory):
 
 def test_mappo_vector_rollout_writes_diagnostics():
     adapter = JaxMARLCoinGameVectorAdapter(num_envs=1, max_cycles=5, seed=0)
+    assert isinstance(adapter, MeltingPotVectorAdapter)
     try:
         config = MAPPOConfig(network_arch="mlp")
         observation_shape = adapter.observation_shape
@@ -71,6 +76,7 @@ def test_mappo_vector_rollout_writes_diagnostics():
         )
         metrics = rollout.metrics
         assert rollout.batch.observations.shape[-1] == 36
+        assert isinstance(rollout.batch, MAPPORolloutBatch)
         assert rollout.batch.central_observations.shape[-1] == 74
         assert sum(metrics["action_counts"]) == 6
         assert len(metrics["action_frequencies"]) == adapter.action_dim
