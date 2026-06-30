@@ -222,6 +222,21 @@ def test_get_ssh_info_returns_direct_tcp_endpoint(tmp_path, monkeypatch):
     assert (info.user, info.host, info.port) == ("root", "5.6.7.8", 12345)
 
 
+def test_ensure_remote_rsync_installs_via_ssh(tmp_path, monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(runpod, "run", lambda cmd, **kwargs: calls.append(cmd))
+    info = runpod.SshInfo(
+        user="root", host="1.2.3.4", port=22, key_path=tmp_path / "key"
+    )
+
+    runpod.ensure_remote_rsync(info)
+
+    assert calls, "expected an ssh call"
+    remote_script = calls[0][-1]
+    assert "rsync" in remote_script
+    assert "apt-get install" in remote_script
+
+
 def test_sync_repo_excludes_dotenv(tmp_path, monkeypatch):
     calls: list[list[str]] = []
     monkeypatch.setattr(runpod, "run", lambda cmd, **kwargs: calls.append(cmd))

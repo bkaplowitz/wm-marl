@@ -238,6 +238,7 @@ def main() -> int:
         print(f"created pod: {pod_id}", flush=True)
 
         ssh_info = wait_for_ssh(pod_id, ssh_key, args)
+        ensure_remote_rsync(ssh_info)
         sync_repo(repo_root, args.remote_repo_dir, ssh_info)
         run_remote_job(args.remote_repo_dir, job.command, ssh_info, args.skip_uv_sync)
         download_outputs(job.remote_out_dir, job.local_out_dir, ssh_info)
@@ -520,6 +521,14 @@ def probe_ssh(info: SshInfo) -> None:
     run([*ssh_base(info), "true"], capture_output=True)
 
 
+def ensure_remote_rsync(info: SshInfo) -> None:
+    script = (
+        "command -v rsync >/dev/null 2>&1 || "
+        "(apt-get update && apt-get install -y rsync)"
+    )
+    run([*ssh_base(info), script])
+
+
 def sync_repo(repo_root: Path, remote_repo_dir: str, info: SshInfo) -> None:
     run([*ssh_base(info), f"mkdir -p {shlex.quote(remote_repo_dir)}"])
     ssh_cmd = [
@@ -636,6 +645,7 @@ def print_dry_run(
     print(shlex.join(create_cmd))
     print("GET https://rest.runpod.io/v1/pods/<pod-id>  (publicIp + portMappings[22])")
     print("ssh -i <key> root@<publicIp> -p <port22> true")
+    print("ssh <pod-ssh-target> 'command -v rsync || apt-get install -y rsync'")
     print(f"rsync repo to <pod-ssh-target>:{remote_repo_dir}/")
     if skip_uv_sync:
         print("skip uv sync")
