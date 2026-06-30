@@ -845,7 +845,7 @@ def run_training(
                         rollout_steps=args.rollout_steps,
                         config=world_model_config,
                         reward_done_fn=reward_done_fn,
-                )
+                    )
                 imagined_env_steps += args.num_envs * args.rollout_steps
             else:
                 rng, rollout_key, update_key = jax.random.split(rng, 3)

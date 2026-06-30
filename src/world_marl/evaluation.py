@@ -138,7 +138,9 @@ def evaluate_policy_scan(
 
     boundary = np.zeros(num_steps, dtype=bool)
     boundary[np.arange(max_cycles - 1, num_steps, max_cycles)] = True
-    if not np.array_equal(dones_all, np.broadcast_to(boundary[:, None], dones_all.shape)):
+    if not np.array_equal(
+        dones_all, np.broadcast_to(boundary[:, None], dones_all.shape)
+    ):
         raise RuntimeError(
             "scan eval requires lockstep episodes aligned to max_cycles (coins); "
             "dones did not fire on the expected block boundaries"
