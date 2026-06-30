@@ -180,9 +180,7 @@ def fit_world_model_steps(
     return model_state, rng, loss_history[-1], loss_history
 
 
-@partial(
-    jax.jit, static_argnames=("config", "steps", "step_offset", "total_steps")
-)
+@partial(jax.jit, static_argnames=("config", "steps", "step_offset", "total_steps"))
 def _fit_world_model_updates(
     model_state: TrainState,
     rng: jax.Array,
@@ -221,9 +219,7 @@ def _fit_world_model_updates(
             )
         else:
             block_sizes = jnp.full((steps,), config.block_size, dtype=jnp.int32)
-        global_steps = jnp.arange(
-            step_offset, step_offset + steps, dtype=jnp.float32
-        )
+        global_steps = jnp.arange(step_offset, step_offset + steps, dtype=jnp.float32)
         noise_iters = config.masked_embed_noise_iters
 
         def llada2_update(carry, xs):
