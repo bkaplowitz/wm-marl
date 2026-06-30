@@ -52,6 +52,52 @@ def test_compare_defaults_match_wide_transformer_run(tmp_path):
     )
 
 
+def _benchmark_args(tmp_path, **overrides) -> argparse.Namespace:
+    values = {
+        "job": "benchmark-policy",
+        "job_args": [],
+        "remote_out_root": "/workspace/outputs/wm_marl",
+        "local_out_root": str(tmp_path),
+        "no_policy_warmstart": False,
+        "policy_warmstart_updates": 1,
+        "prefit_train_steps": 5000,
+    }
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+def test_benchmark_policy_job_is_accepted(monkeypatch):
+    monkeypatch.setattr(
+        sys, "argv", ["world-marl-runpod", "--job", "benchmark-policy"]
+    )
+
+    args = runpod.parse_args()
+
+    assert args.job == "benchmark-policy"
+
+
+def test_benchmark_policy_puts_own_flags_before_train_args(tmp_path):
+    job = runpod.build_job_spec(_benchmark_args(tmp_path), "20260630T120000Z")
+
+    assert job.command[:3] == ["uv", "run", "world-marl-benchmark-policy"]
+    separator = job.command.index("--")
+    out_dir_idx = job.command.index("--out-dir")
+    flow_idx = job.command.index("--model-flow-types")
+    # benchmark_policy reads its own flags only before the REMAINDER separator
+    assert out_dir_idx < separator
+    assert flow_idx < separator
+    assert job.command[flow_idx + 1] == "transformer"
+    assert job.command[out_dir_idx + 1] == (
+        "/workspace/outputs/wm_marl/benchmark-policy/20260630T120000Z"
+    )
+    # train-e2e args are forwarded after the separator
+    substrate_idx = job.command.index("--substrate")
+    assert substrate_idx > separator
+    assert job.command[substrate_idx + 1] == "coins"
+    # the wrapper-managed out-dir must not leak into the train-e2e REMAINDER
+    assert "--out-dir" not in job.command[separator + 1 :]
+
+
 def test_loads_runpod_api_key_from_dotenv_when_missing(tmp_path, monkeypatch):
     monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
     (tmp_path / ".env").write_text(

@@ -27,6 +27,10 @@ DEFAULT_COMPARE_ARGS = [
     "--rollout-envs",
     "6000",
 ]
+DEFAULT_BENCHMARK_ARGS = [
+    "--model-flow-types",
+    "transformer",
+]
 DEFAULT_XLA_FLAGS = "--xla_gpu_enable_triton_gemm=false"
 
 
@@ -118,7 +122,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--job",
-        choices=("train-e2e", "compare-world-models"),
+        choices=("train-e2e", "compare-world-models", "benchmark-policy"),
         default="compare-world-models",
         help="Remote wm-marl job to run.",
     )
@@ -307,6 +311,20 @@ def build_job_spec(args: argparse.Namespace, run_id: str) -> JobSpec:
             remote_out_dir=remote_out_dir,
             local_out_dir=local_out_dir,
             command=["uv", "run", "world-marl-train-e2e", *job_args],
+        )
+    if args.job == "benchmark-policy":
+        train_args = [*default_train_args(args), *args.job_args]
+        job_args = [
+            *DEFAULT_BENCHMARK_ARGS,
+            "--out-dir",
+            remote_out_dir,
+            "--",
+            *train_args,
+        ]
+        return JobSpec(
+            remote_out_dir=remote_out_dir,
+            local_out_dir=local_out_dir,
+            command=["uv", "run", "world-marl-benchmark-policy", *job_args],
         )
     job_args = [*(args.job_args or DEFAULT_COMPARE_ARGS), "--out-dir", remote_out_dir]
     return JobSpec(
