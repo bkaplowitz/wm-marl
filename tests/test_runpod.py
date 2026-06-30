@@ -237,6 +237,28 @@ def test_ensure_remote_rsync_installs_via_ssh(tmp_path, monkeypatch):
     assert "apt-get install" in remote_script
 
 
+def test_run_remote_job_asserts_gpu_before_job(tmp_path, monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(runpod, "run", lambda cmd, **kwargs: calls.append(cmd))
+    info = runpod.SshInfo(
+        user="root", host="1.2.3.4", port=22, key_path=tmp_path / "key"
+    )
+
+    runpod.run_remote_job(
+        "/root/wm-marl",
+        ["uv", "run", "world-marl-benchmark-policy"],
+        info,
+        skip_uv_sync=True,
+    )
+
+    assert calls, "expected an ssh call"
+    script = calls[0][-1]
+    assert "jax.devices()" in script
+    gpu_idx = script.index("jax.devices()")
+    job_idx = script.index("world-marl-benchmark-policy")
+    assert gpu_idx < job_idx, "GPU assertion must run before the benchmark job"
+
+
 def test_sync_repo_excludes_dotenv(tmp_path, monkeypatch):
     calls: list[list[str]] = []
     monkeypatch.setattr(runpod, "run", lambda cmd, **kwargs: calls.append(cmd))

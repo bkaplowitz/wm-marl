@@ -580,7 +580,16 @@ def run_remote_job(
     ]
     if not skip_uv_sync:
         commands.append("uv sync --python 3.11 --extra dev --extra cuda12")
-    commands.extend(["uv run world-marl-verify-install", shlex.join(job_command)])
+    commands.extend(
+        [
+            "uv run world-marl-verify-install",
+            "uv run python -c \"import jax; devs = jax.devices(); "
+            "assert any(d.platform == 'gpu' for d in devs), "
+            "f'no GPU visible to JAX (silent CPU fallback): {devs}'; "
+            "print('jax devices:', devs)\"",
+            shlex.join(job_command),
+        ]
+    )
     run([*ssh_base(info), "bash", "-lc", "\n".join(commands)])
 
 
@@ -651,6 +660,8 @@ def print_dry_run(
         print("skip uv sync")
     else:
         print("uv sync --python 3.11 --extra dev --extra cuda12")
+    print("uv run world-marl-verify-install")
+    print("assert jax.devices() shows a GPU (fail fast on silent CPU fallback)")
     print(shlex.join(job.command))
     print(f"rsync <pod-ssh-target>:{job.remote_out_dir}/ {job.local_out_dir}/")
     print("success cleanup: runpodctl pod delete <pod-id>")
