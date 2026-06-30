@@ -40,9 +40,6 @@ markers = [
 ]
 testpaths = ["tests"]
 
-[tool.pyright]
-exclude = [".venv"]
-
 [tool.basedpyright]
 exclude = [".venv"]
 
