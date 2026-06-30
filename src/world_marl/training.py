@@ -143,6 +143,117 @@ def collect_rollout(
     )
 
 
+def collect_rollout_scan(
+    adapter: Any,
+    train_state: TrainState,
+    observations: np.ndarray,
+    rng: jax.Array,
+    *,
+    rollout_steps: int,
+    gamma: float = 0.99,
+    gae_lambda: float = 0.95,
+) -> RolloutResult:
+    """On-device equivalent of ``collect_rollout`` for the JaxMARL CoinGame adapter.
+
+    Runs the whole real-env rollout through one cached ``lax.scan``
+    (``adapter.scan_rollout``) instead of a host Python loop, so per-step
+    inference and env stepping stay on the accelerator. PRNG threading mirrors
+    ``collect_rollout`` exactly (policy key split first, then env keys), so the
+    returned ``RolloutBatch`` / ``last_values`` / ``next_observations`` match the
+    host loop bit-for-bit: integer actions exact, continuous tensors to float
+    tolerance.
+    """
+    if rollout_steps < 1:
+        raise ValueError("rollout_steps must be >= 1")
+
+    ys, last_obs_flat = adapter.scan_rollout(
+        _ippo_infer_with_entropy,
+        train_state,
+        rollout_steps,
+        policy_key=rng,
+        observations=observations,
+    )
+    obs_seq, action_seq, logp_seq, value_seq, entropy_seq, reward_seq, done_seq = ys
+
+    batch = RolloutBatch(
+        observations=jnp.asarray(obs_seq, dtype=jnp.float32),
+        actions=jnp.asarray(action_seq, dtype=jnp.int32),
+        log_probs=jnp.asarray(logp_seq, dtype=jnp.float32),
+        rewards=jnp.asarray(reward_seq, dtype=jnp.float32),
+        dones=jnp.asarray(done_seq, dtype=jnp.float32),
+        values=jnp.asarray(value_seq, dtype=jnp.float32),
+    )
+
+    value_fn = jax.jit(
+        lambda state, flat_obs: state.apply_fn({"params": state.params}, flat_obs)[1]
+    )
+    last_values = value_fn(train_state, last_obs_flat)
+    next_observations = np.asarray(last_obs_flat, dtype=np.float32).reshape(
+        (adapter.num_envs, adapter.num_agents, -1)
+    )
+
+    # Replay the host adapter's episode bookkeeping over the collected batch
+    # (pure host-side aggregation, not env stepping) so completed-episode metrics
+    # match ``collect_rollout`` exactly, including the partial episode carried
+    # across calls. Coins is lockstep, so per-agent dones equal ``done["__all__"]``.
+    num_envs = adapter.num_envs
+    num_agents = adapter.num_agents
+    rewards_ea = np.asarray(reward_seq, dtype=np.float32).reshape(
+        (rollout_steps, num_envs, num_agents)
+    )
+    dones_ea = np.asarray(done_seq).reshape((rollout_steps, num_envs, num_agents))
+    ep_returns = adapter._episode_returns.copy()
+    ep_lengths = adapter._episode_lengths.copy()
+    completed_returns: list[tuple[float, ...]] = []
+    completed_lengths: list[int] = []
+    for t in range(rollout_steps):
+        ep_returns += rewards_ea[t]
+        ep_lengths += 1
+        for env_index in np.flatnonzero(dones_ea[t].all(axis=1)):
+            completed_returns.append(tuple(float(x) for x in ep_returns[env_index]))
+            completed_lengths.append(int(ep_lengths[env_index]))
+            ep_returns[env_index] = 0.0
+            ep_lengths[env_index] = 0
+    adapter._episode_returns = ep_returns
+    adapter._episode_lengths = ep_lengths
+
+    completed_array = (
+        np.asarray(completed_returns, dtype=np.float32)
+        if completed_returns
+        else np.asarray([], dtype=np.float32)
+    )
+    metrics = {
+        "rollout_mean_reward": float(batch.rewards.mean()),
+        "completed_episodes": len(completed_returns),
+        "episode_return_mean": (
+            float(completed_array.mean()) if completed_returns else None
+        ),
+        "episode_length_mean": (
+            float(np.mean(completed_lengths)) if completed_lengths else None
+        ),
+    }
+    metrics.update(
+        _rollout_diagnostics(
+            batch=batch,
+            last_values=last_values,
+            entropies=np.asarray(entropy_seq, dtype=np.float32),
+            completed_returns=completed_returns,
+            step_infos=[{} for _ in range(rollout_steps * num_envs)],
+            action_dim=adapter.action_dim,
+            num_envs=num_envs,
+            num_agents=num_agents,
+            gamma=gamma,
+            gae_lambda=gae_lambda,
+        )
+    )
+    return RolloutResult(
+        batch=batch,
+        next_observations=next_observations,
+        last_values=last_values,
+        metrics=metrics,
+    )
+
+
 def collect_mappo_rollout(
     adapter: MeltingPotVectorAdapter,
     train_state: TrainState,

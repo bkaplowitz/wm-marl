@@ -34,7 +34,9 @@ from world_marl.envs.jaxmarl_coin_adapter import (
 )
 from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
 from world_marl.evaluation import (
+    EvaluationResult,
     evaluate_policy,
+    evaluate_policy_scan,
     mappo_train_state_policy,
     random_policy,
     train_state_policy,
@@ -45,6 +47,7 @@ from world_marl.training import (
     central_observation_shape,
     collect_mappo_rollout,
     collect_rollout,
+    collect_rollout_scan,
     training_window_means,
 )
 from world_marl.world_model import (
@@ -327,6 +330,51 @@ def _make_reward_done_fn(args: argparse.Namespace):
     )
 
 
+def _evaluate_train_state(
+    *,
+    adapter: TrainingAdapter,
+    train_state,
+    algorithm: str,
+    observation_mode: ObservationMode,
+    deterministic: bool,
+    seed: int,
+    episodes: int,
+    max_steps: int | None,
+) -> EvaluationResult:
+    """Evaluate a train state on the accelerator for vector IPPO (coins), else
+    via the host loop. The scan reproduces the host loop's deterministic episodes
+    exactly, so the logged value is unchanged -- only the rollout leaves the CPU.
+    The scan does not advance the adapter PRNG state; callers reusing the adapter
+    for training reset it afterwards.
+    """
+    if (
+        algorithm == "ippo"
+        and observation_mode == "vector"
+        and hasattr(adapter, "scan_rewards_dones")
+    ):
+        return evaluate_policy_scan(
+            adapter,
+            train_state,
+            episodes=episodes,
+            deterministic=deterministic,
+            observation_mode=observation_mode,
+            seed=seed,
+        )
+    return evaluate_policy(
+        adapter,
+        policy_from_train_state(
+            algorithm,
+            train_state,
+            adapter=adapter,
+            deterministic=deterministic,
+            seed=seed,
+            observation_mode=observation_mode,
+        ),
+        episodes=episodes,
+        max_steps=max_steps,
+    )
+
+
 def evaluate_checkpoint_mode(args: argparse.Namespace) -> None:
     checkpoint_dir = Path(args.eval_checkpoint)
     metadata = load_metadata(checkpoint_dir)
@@ -360,16 +408,13 @@ def evaluate_checkpoint_mode(args: argparse.Namespace) -> None:
         )
         params = load_params(checkpoint_dir / "checkpoint.msgpack", train_state.params)
         train_state = train_state.replace(params=params)
-        result = evaluate_policy(
-            adapter,
-            policy_from_train_state(
-                algorithm,
-                train_state,
-                adapter=adapter,
-                deterministic=not args.stochastic_eval,
-                seed=args.seed,
-                observation_mode=metadata.get("observation_mode", "image"),
-            ),
+        result = _evaluate_train_state(
+            adapter=adapter,
+            train_state=train_state,
+            algorithm=algorithm,
+            observation_mode=metadata.get("observation_mode", "image"),
+            deterministic=not args.stochastic_eval,
+            seed=args.seed,
             episodes=args.eval_episodes,
             max_steps=args.eval_max_steps,
         )
@@ -610,7 +655,11 @@ def run_training(
                     config,
                 )
             )
-            collect_fn = collect_rollout
+            collect_fn = (
+                collect_rollout_scan
+                if observation_mode == "vector" and hasattr(adapter, "scan_rollout")
+                else collect_rollout
+            )
 
         if args.prefit_world_model:
             if args.wm_policy_warmup_updates:
