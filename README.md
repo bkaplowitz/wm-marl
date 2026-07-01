@@ -141,6 +141,28 @@ failures:
 - generic info/event counters, including coin-related and `coin_consumed` keys
   if the Melting Pot wrapper exposes them.
 
+### Config files & wandb
+
+Instead of a long flag list, load defaults from a YAML file. Keys are the argparse
+dest names (underscores); explicit CLI flags still override, and an unknown key is a
+hard error.
+
+```bash
+uv run world-marl-train-e2e --config configs/train_e2e.example.yaml
+uv run world-marl-train-e2e --config configs/train_e2e.example.yaml --wm-fit-steps 5000
+```
+
+Add `--wandb` to mirror every `metrics.jsonl` row to Weights & Biases (all runs of an
+experiment share a `group`; the local artifacts above are still written):
+
+```bash
+uv run world-marl-train-e2e --config configs/train_e2e.example.yaml --wandb \
+  --wandb-project world-marl
+```
+
+Authenticate once with `wandb login` (or set `WANDB_API_KEY`); use `WANDB_MODE=offline`
+to log without a network connection.
+
 
 ## Tests
 

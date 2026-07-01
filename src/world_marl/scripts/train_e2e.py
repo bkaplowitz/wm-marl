@@ -16,6 +16,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import numpy as np
+from omegaconf import OmegaConf
 
 from world_marl.algs.ippo import (
     IPPOConfig,
@@ -103,6 +104,17 @@ class RunTimer:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="YAML file of defaults; explicit CLI flags override its values.",
+    )
+    parser.add_argument(
+        "--wandb",
+        action="store_true",
+        help="Mirror per-update metrics to Weights & Biases.",
+    )
+    parser.add_argument("--wandb-project", default="world-marl")
     parser.add_argument("--algorithm", choices=("ippo", "mappo"), default="ippo")
     parser.add_argument("--substrate", default="coins")
     parser.add_argument("--num-envs", type=int, default=4)
@@ -192,6 +204,18 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=argparse.SUPPRESS,
     )
+
+    known, _ = parser.parse_known_args()
+    if known.config:
+        raw = OmegaConf.to_container(OmegaConf.load(known.config), resolve=True)
+        if not isinstance(raw, dict):
+            parser.error(f"{known.config} must contain a top-level mapping")
+        overrides = {str(key): value for key, value in raw.items()}
+        unknown = set(overrides) - set(vars(known))
+        if unknown:
+            parser.error(f"unknown keys in {known.config}: {sorted(unknown)}")
+        parser.set_defaults(**overrides)
+
     args = parser.parse_args()
     if args.prefit_world_model:
         if args.wm_random_rollouts < 1:
@@ -571,7 +595,18 @@ def run_training(
     run_index: int,
     control: str | None,
 ) -> RunOutcome:
-    logger = RunLogger(run_dir)
+    wandb_run = None
+    if args.wandb:
+        import wandb
+
+        wandb_run = wandb.init(
+            project=args.wandb_project,
+            group=run_dir.parent.name,
+            name=name,
+            config=vars(args),
+            reinit=True,
+        )
+    logger = RunLogger(run_dir, wandb_run=wandb_run)
     timer = RunTimer()
     seed = args.seed + run_index * 10_000 + (5_000 if control else 0)
     rng = jax.random.PRNGKey(seed)
@@ -970,6 +1005,8 @@ def run_training(
         cumulative_real_episodes=cumulative_real_episodes,
     )
     logger.write_json("outcome.json", outcome.to_dict())
+    if wandb_run is not None:
+        wandb_run.finish()
     return outcome
 
 

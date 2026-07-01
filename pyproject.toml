@@ -13,9 +13,11 @@ dependencies = [
   "jaxmarl[algs]==0.1.0",
   "matplotlib",
   "numpy",
+  "omegaconf",
   "optax",
   "shimmy[meltingpot]==2.0.1",
   "tqdm",
+  "wandb",
 ]
 description = "JaxMARL-style PPO validation on Melting Pot substrates through Shimmy."
 name = "world-marl"

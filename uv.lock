@@ -2076,9 +2076,11 @@ dependencies = [
     { name = "jaxmarl", extra = ["algs"] },
     { name = "matplotlib" },
     { name = "numpy" },
+    { name = "omegaconf" },
     { name = "optax" },
     { name = "shimmy", extra = ["meltingpot"] },
     { name = "tqdm" },
+    { name = "wandb" },
 ]
 
 [package.optional-dependencies]
@@ -2103,12 +2105,14 @@ requires-dist = [
     { name = "jaxmarl", extras = ["algs"], specifier = "==0.1.0" },
     { name = "matplotlib" },
     { name = "numpy" },
+    { name = "omegaconf" },
     { name = "optax" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.18" },
     { name = "shimmy", extras = ["meltingpot"], specifier = "==2.0.1" },
     { name = "tqdm" },
+    { name = "wandb" },
 ]
 provides-extras = ["cuda12", "dev"]
 

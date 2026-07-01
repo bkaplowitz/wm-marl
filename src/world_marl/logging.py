@@ -65,10 +65,11 @@ def to_jsonable(value: Any) -> Any:
 class RunLogger:
     """Writes JSON artifacts and metrics rows to a run directory."""
 
-    def __init__(self, run_dir: str | Path) -> None:
+    def __init__(self, run_dir: str | Path, *, wandb_run: Any = None) -> None:
         self.run_dir = Path(run_dir)
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.metrics_path = self.run_dir / "metrics.jsonl"
+        self.wandb_run = wandb_run
 
     def write_json(self, name: str, payload: Any) -> Path:
         path = self.run_dir / name
@@ -81,6 +82,8 @@ class RunLogger:
     def append_metrics(self, row: dict[str, Any]) -> None:
         with self.metrics_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(to_jsonable(row), sort_keys=True) + "\n")
+        if self.wandb_run is not None:
+            self.wandb_run.log(to_jsonable(row))
 
     def plot_returns(
         self, rows: list[dict[str, Any]], filename: str = "returns.png"
