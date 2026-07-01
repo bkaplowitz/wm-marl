@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from functools import partial
+from typing import TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
@@ -11,7 +12,6 @@ import numpy as np
 from flax.training.train_state import TrainState
 
 from flow_matching.train import topk_checkpoint_merge, wsd_block_size_schedule
-from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
 from world_marl.training import build_central_observations
 from world_marl.world_model import (
     VectorTransitionBatch,
@@ -19,6 +19,9 @@ from world_marl.world_model import (
     _num_factors,
     train_world_model_step,
 )
+
+if TYPE_CHECKING:
+    from world_marl.scripts.train_e2e import TrainingAdapter
 
 
 def flatten_state_observations(observations: np.ndarray) -> np.ndarray:
@@ -30,7 +33,7 @@ def flatten_state_observations(observations: np.ndarray) -> np.ndarray:
 
 
 def collect_random_transition_batch(
-    adapter: MeltingPotVectorAdapter,
+    adapter: TrainingAdapter,
     observations: np.ndarray,
     rng: np.random.Generator,
     *,
@@ -60,7 +63,7 @@ def collect_random_transition_batch(
 
 
 def collect_policy_transition_batch(
-    adapter: MeltingPotVectorAdapter,
+    adapter: TrainingAdapter,
     train_state: TrainState,
     observations: np.ndarray,
     rng: jax.Array,

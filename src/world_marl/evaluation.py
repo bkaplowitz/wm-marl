@@ -15,7 +15,6 @@ from flax.training.train_state import TrainState
 from world_marl.algs.ippo import select_actions
 from world_marl.algs.mappo import select_actions as select_mappo_actions
 from world_marl.envs.meltingpot_adapter import (
-    MeltingPotVectorAdapter,
     flatten_agent_batch,
     unflatten_agent_actions,
 )
@@ -94,9 +93,7 @@ def evaluate_policy(
     )
 
 
-def random_policy(
-    adapter: MeltingPotVectorAdapter, rng: np.random.Generator
-) -> PolicyFn:
+def random_policy(adapter: TrainingAdapter, rng: np.random.Generator) -> PolicyFn:
     """Create a random action policy for an adapter."""
 
     def act(observations: np.ndarray) -> np.ndarray:
