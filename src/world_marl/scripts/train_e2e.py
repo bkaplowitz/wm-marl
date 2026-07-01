@@ -58,7 +58,9 @@ from world_marl.world_model import (
 )
 from world_marl.world_model_training import (
     collect_policy_transition_batch,
+    collect_policy_transition_batch_scan,
     collect_random_transition_batch,
+    collect_random_transition_batch_scan,
     concatenate_transition_batches,
     fit_world_model_steps,
     sample_initial_states,
@@ -693,31 +695,63 @@ def run_training(
                 )
 
             reward_done_fn = _make_reward_done_fn(args)
-            random_batch, observations, random_start_states, random_stats = (
-                collect_random_transition_batch(
-                    adapter,
-                    observations,
-                    np.random.default_rng(seed + 3),
-                    rollout_steps=args.wm_random_rollouts,
-                )
+            use_scan_collect = (
+                observation_mode == "vector"
+                and args.algorithm == "ippo"
+                and hasattr(adapter, "scan_rollout")
             )
+            if use_scan_collect:
+                rng, random_collect_key = jax.random.split(rng)
+                random_batch, observations, random_start_states, random_stats = (
+                    collect_random_transition_batch_scan(
+                        adapter,
+                        observations,
+                        random_collect_key,
+                        rollout_steps=args.wm_random_rollouts,
+                    )
+                )
+            else:
+                random_batch, observations, random_start_states, random_stats = (
+                    collect_random_transition_batch(
+                        adapter,
+                        observations,
+                        np.random.default_rng(seed + 3),
+                        rollout_steps=args.wm_random_rollouts,
+                    )
+                )
             real_env_steps += random_stats.real_env_steps
             cumulative_real_episodes += random_stats.completed_episodes
             rng, policy_collect_key = jax.random.split(rng)
-            (
-                policy_batch,
-                observations,
-                rng,
-                policy_start_states,
-                policy_stats,
-            ) = collect_policy_transition_batch(
-                adapter,
-                train_state,
-                observations,
-                policy_collect_key,
-                rollout_steps=args.wm_initial_rollouts,
-                algorithm=args.algorithm,
-            )
+            if use_scan_collect:
+                (
+                    policy_batch,
+                    observations,
+                    rng,
+                    policy_start_states,
+                    policy_stats,
+                ) = collect_policy_transition_batch_scan(
+                    adapter,
+                    train_state,
+                    observations,
+                    policy_collect_key,
+                    rollout_steps=args.wm_initial_rollouts,
+                    algorithm=args.algorithm,
+                )
+            else:
+                (
+                    policy_batch,
+                    observations,
+                    rng,
+                    policy_start_states,
+                    policy_stats,
+                ) = collect_policy_transition_batch(
+                    adapter,
+                    train_state,
+                    observations,
+                    policy_collect_key,
+                    rollout_steps=args.wm_initial_rollouts,
+                    algorithm=args.algorithm,
+                )
             real_env_steps += policy_stats.real_env_steps
             cumulative_real_episodes += policy_stats.completed_episodes
             prefit_batch = concatenate_transition_batches([random_batch, policy_batch])

@@ -12,7 +12,7 @@ import numpy as np
 from flax.training.train_state import TrainState
 
 from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
-from world_marl.training import build_central_observations
+from world_marl.training import _ippo_infer_with_entropy, build_central_observations
 from world_marl.world_model import (
     VectorTransitionBatch,
     _apply_vector_policy,
@@ -190,6 +190,204 @@ def concatenate_transition_batches(
         next_states=jnp.concatenate([batch.next_states for batch in batches], axis=0),
         rewards=jnp.concatenate([batch.rewards for batch in batches], axis=0),
         dones=jnp.concatenate([batch.dones for batch in batches], axis=0),
+    )
+
+
+def _transition_batch_from_scan(
+    ys,
+    last_obs_flat: jax.Array,
+    *,
+    num_envs: int,
+    num_agents: int,
+    rollout_steps: int,
+) -> VectorTransitionBatch:
+    """Repackage ``adapter.scan_rollout`` outputs into a ``VectorTransitionBatch``.
+
+    ``scan_rollout`` stacks per-step arrays as ``[T, E*A, ...]`` and returns the
+    post-rollout ``last_obs_flat[E*A, d]``. The host collectors store one
+    ``[E, A, d]`` row per step and concatenate over ``T`` (env-major within each
+    step), so the folded layout is ``[T*E, A, ...]``; ``next_states[t]`` is
+    ``obs[t+1]`` with ``last_obs_flat`` closing the final step.
+    """
+    obs_seq, action_seq, _log_probs, _values, _entropies, reward_seq, done_seq = ys
+    state_dim = obs_seq.shape[-1]
+
+    def fold(array: jax.Array) -> jax.Array:
+        reshaped = array.reshape((rollout_steps, num_envs, num_agents) + array.shape[2:])
+        return reshaped.reshape((rollout_steps * num_envs, num_agents) + array.shape[2:])
+
+    states = jnp.asarray(obs_seq, dtype=jnp.float32).reshape(
+        (rollout_steps, num_envs, num_agents, state_dim)
+    )
+    last = jnp.asarray(last_obs_flat, dtype=jnp.float32).reshape(
+        (1, num_envs, num_agents, state_dim)
+    )
+    next_states = jnp.concatenate([states[1:], last], axis=0)
+    return VectorTransitionBatch(
+        states=states.reshape((rollout_steps * num_envs, num_agents, state_dim)),
+        actions=fold(jnp.asarray(action_seq, dtype=jnp.int32)),
+        next_states=next_states.reshape(
+            (rollout_steps * num_envs, num_agents, state_dim)
+        ),
+        rewards=fold(jnp.asarray(reward_seq, dtype=jnp.float32)),
+        dones=fold(jnp.asarray(done_seq, dtype=jnp.float32)),
+    )
+
+
+def _replay_scan_episode_bookkeeping(
+    adapter,
+    ys,
+    rollout_steps: int,
+) -> tuple[list[tuple[float, ...]], list[int]]:
+    """Advance the adapter's episode accumulators over a scan batch (host-side).
+
+    ``scan_rollout`` advances ``adapter._state``/``_keys`` but not the episode
+    return/length accumulators, so -- exactly as ``collect_rollout_scan`` does --
+    replay them over the collected ``(reward, done)`` sequences and write the
+    partial-episode state back, so a chained collector (random -> policy) and the
+    following training loop resume from the right boundary.
+    """
+    _obs, _actions, _log_probs, _values, _entropies, reward_seq, done_seq = ys
+    num_envs = adapter.num_envs
+    num_agents = adapter.num_agents
+    rewards_ea = np.asarray(reward_seq, dtype=np.float32).reshape(
+        (rollout_steps, num_envs, num_agents)
+    )
+    dones_ea = np.asarray(done_seq).reshape((rollout_steps, num_envs, num_agents))
+    ep_returns = adapter._episode_returns.copy()
+    ep_lengths = adapter._episode_lengths.copy()
+    completed_returns: list[tuple[float, ...]] = []
+    completed_lengths: list[int] = []
+    for t in range(rollout_steps):
+        ep_returns += rewards_ea[t]
+        ep_lengths += 1
+        for env_index in np.flatnonzero(dones_ea[t].all(axis=1)):
+            completed_returns.append(tuple(float(x) for x in ep_returns[env_index]))
+            completed_lengths.append(int(ep_lengths[env_index]))
+            ep_returns[env_index] = 0.0
+            ep_lengths[env_index] = 0
+    adapter._episode_returns = ep_returns
+    adapter._episode_lengths = ep_lengths
+    return completed_returns, completed_lengths
+
+
+def collect_random_transition_batch_scan(
+    adapter,
+    observations: np.ndarray,
+    key: jax.Array,
+    *,
+    rollout_steps: int,
+) -> tuple[VectorTransitionBatch, np.ndarray, jnp.ndarray, TransitionCollectionStats]:
+    """On-device twin of ``collect_random_transition_batch`` via ``lax.scan``.
+
+    Reuses the adapter's proven ``scan_rollout`` with a uniform on-device action
+    sampler, so the whole random-action rollout runs on the accelerator instead of
+    a host Python loop. Uniform sampling matches ``sample_actions`` (uniform over
+    the action set), but the PRNG source differs (jax vs numpy ``Generator``), so
+    this is distribution-equivalent, not bit-for-bit, with the host version.
+    """
+    if rollout_steps < 1:
+        raise ValueError("rollout_steps must be >= 1")
+    action_dim = adapter.action_dim
+
+    def random_infer(_state, action_key, flat_obs):
+        num_rows = flat_obs.shape[0]
+        actions = jax.random.randint(action_key, (num_rows,), 0, action_dim)
+        zeros = jnp.zeros((num_rows,), dtype=jnp.float32)
+        return actions.astype(jnp.int32), zeros, zeros, zeros
+
+    ys, last_obs_flat = adapter.scan_rollout(
+        random_infer,
+        None,
+        rollout_steps,
+        policy_key=key,
+        observations=observations,
+    )
+    batch = _transition_batch_from_scan(
+        ys,
+        last_obs_flat,
+        num_envs=adapter.num_envs,
+        num_agents=adapter.num_agents,
+        rollout_steps=rollout_steps,
+    )
+    completed_returns, completed_lengths = _replay_scan_episode_bookkeeping(
+        adapter, ys, rollout_steps
+    )
+    last_observations = np.asarray(last_obs_flat, dtype=np.float32).reshape(
+        (adapter.num_envs, adapter.num_agents, -1)
+    )
+    return (
+        batch,
+        last_observations,
+        batch.states,
+        _collection_stats(
+            real_env_steps=rollout_steps * adapter.num_envs,
+            completed_returns=completed_returns,
+            completed_lengths=completed_lengths,
+        ),
+    )
+
+
+def collect_policy_transition_batch_scan(
+    adapter,
+    train_state: TrainState,
+    observations: np.ndarray,
+    key: jax.Array,
+    *,
+    rollout_steps: int,
+    algorithm: str,
+) -> tuple[
+    VectorTransitionBatch,
+    np.ndarray,
+    jax.Array,
+    jnp.ndarray,
+    TransitionCollectionStats,
+]:
+    """On-device twin of ``collect_policy_transition_batch`` (IPPO) via ``lax.scan``.
+
+    Reuses ``scan_rollout`` with ``_ippo_infer_with_entropy`` -- the same inference
+    the host loop applies -- and mirrors its ``policy-key-then-env-key`` split
+    order, so the collected batch matches the host loop bit-for-bit (integer
+    actions exact, continuous tensors to float tolerance). MAPPO needs central
+    observations that ``scan_rollout`` does not thread, so it stays on the host.
+    """
+    if rollout_steps < 1:
+        raise ValueError("rollout_steps must be >= 1")
+    if algorithm != "ippo":
+        raise ValueError(
+            f"scan policy collection supports 'ippo' only (got {algorithm!r})"
+        )
+
+    ys, last_obs_flat = adapter.scan_rollout(
+        _ippo_infer_with_entropy,
+        train_state,
+        rollout_steps,
+        policy_key=key,
+        observations=observations,
+    )
+    batch = _transition_batch_from_scan(
+        ys,
+        last_obs_flat,
+        num_envs=adapter.num_envs,
+        num_agents=adapter.num_agents,
+        rollout_steps=rollout_steps,
+    )
+    completed_returns, completed_lengths = _replay_scan_episode_bookkeeping(
+        adapter, ys, rollout_steps
+    )
+    last_observations = np.asarray(last_obs_flat, dtype=np.float32).reshape(
+        (adapter.num_envs, adapter.num_agents, -1)
+    )
+    return (
+        batch,
+        last_observations,
+        jax.random.fold_in(key, rollout_steps),
+        batch.states,
+        _collection_stats(
+            real_env_steps=rollout_steps * adapter.num_envs,
+            completed_returns=completed_returns,
+            completed_lengths=completed_lengths,
+        ),
     )
 
 
