@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from argparse import Namespace
-
 import jax
 
+from world_marl.config import TrainConfig
 from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
 from world_marl.envs.jaxmarl_coin_adapter import JaxMARLCoinGameVectorAdapter
 from world_marl.scripts.train_e2e import (
@@ -14,8 +13,8 @@ from world_marl.scripts.train_e2e import (
 )
 
 
-def _args(*, algorithm: str) -> Namespace:
-    return Namespace(
+def _args(*, algorithm: str) -> TrainConfig:
+    return TrainConfig(
         algorithm=algorithm,
         substrate="coins",
         num_envs=1,

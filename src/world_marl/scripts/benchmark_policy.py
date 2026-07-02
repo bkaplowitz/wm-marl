@@ -11,6 +11,7 @@ from typing import Any
 
 import numpy as np
 
+from world_marl.config import TrainConfig
 from world_marl.logging import RunLogger, timestamp, to_jsonable
 from world_marl.scripts import train_e2e
 
@@ -98,7 +99,7 @@ def _arm_train_args(
     arm: str,
     out_dir: Path,
     model_flow_type: str | None = None,
-) -> argparse.Namespace:
+) -> TrainConfig:
     if arm == "model_free":
         args = _strip_model_free_ignored_options(train_args)
     elif arm == "model_based":
@@ -114,7 +115,7 @@ def _arm_train_args(
     parsed = _parse_train_args(args)
     parsed.negative_control = "none"
     parsed.out_dir = str(out_dir)
-    return parsed
+    return TrainConfig.from_namespace(parsed)
 
 
 def _strip_option(args: list[str], option: str, *, values: int) -> list[str]:

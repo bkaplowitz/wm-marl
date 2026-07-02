@@ -17,6 +17,7 @@ import json
 import sys
 from pathlib import Path
 
+from world_marl.config import TrainConfig
 from world_marl.scripts import train_e2e
 
 
@@ -70,11 +71,11 @@ def _tiny_coins_args(out_dir: Path, monkeypatch) -> argparse.Namespace:
 def test_coins_prefit_run_training_completes_and_writes_artifacts(
     tmp_path, monkeypatch
 ):
-    args = _tiny_coins_args(tmp_path, monkeypatch)
+    cfg = TrainConfig.from_namespace(_tiny_coins_args(tmp_path, monkeypatch))
     run_dir = tmp_path / "run_000"
 
     outcome = train_e2e.run_training(
-        args,
+        cfg,
         run_dir=run_dir,
         name="run_000",
         run_index=0,
