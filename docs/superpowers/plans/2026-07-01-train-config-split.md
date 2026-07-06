@@ -47,7 +47,7 @@
 **Interfaces:**
 - Produces: `world_marl.config.TrainConfig` — a mutable dataclass with the 41 fields below (all defaulted) and `@classmethod from_namespace(cls, namespace: argparse.Namespace) -> TrainConfig` returning `cls(**vars(namespace))`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/test_train_config.py`:
 
@@ -82,12 +82,12 @@ def test_from_namespace_round_trips(monkeypatch):
 
 Rationale: `asdict(TrainConfig()) == vars(parse_args([]))` checks BOTH field-name parity and default parity in one assertion (empty argv is safe — no required flags; the `prefit_world_model`/`wm_policy_warmup_updates` validation branches are skipped at defaults). `from_namespace` uses `cls(**vars(namespace))`, so a missing/renamed/extra field raises `TypeError` on construction — drift cannot pass silently.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `cd /Users/bkaplowitz/Developer/work/feat-train-config-split && uv run pytest tests/test_train_config.py -q`
 Expected: FAIL / collection error — `ModuleNotFoundError: No module named 'world_marl.config'`.
 
-- [ ] **Step 3: Create `src/world_marl/config.py`**
+- [x] **Step 3: Create `src/world_marl/config.py`**
 
 ```python
 """Typed training configuration for the ``train_e2e`` core.
@@ -154,17 +154,17 @@ class TrainConfig:
 
 (Field order matches the `add_argument` order in `parse_args`, except `eval_checkpoint` sits last exactly as in argparse. `choices=` sets are intentionally left as plain strings for this branch.)
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/test_train_config.py -q`
 Expected: PASS (2 passed). If `test_trainconfig_defaults_match_argparse` fails, the diff of the two dicts names the drifted field — fix the dataclass field/default to match argparse.
 
-- [ ] **Step 5: Lint**
+- [x] **Step 5: Lint**
 
 Run: `uv run ruff format src/world_marl/config.py tests/test_train_config.py && uv run ruff check src/world_marl/config.py tests/test_train_config.py`
 Expected: no errors.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/world_marl/config.py tests/test_train_config.py
@@ -186,7 +186,7 @@ Atomic type cutover: `run_training`'s parameter type changes and it starts calli
 - Consumes: `world_marl.config.TrainConfig`, `TrainConfig.from_namespace` (Task 1).
 - Produces: `run_training(cfg: TrainConfig, *, run_dir, name, run_index, control) -> RunOutcome`; `algorithm_config_from_args(cfg: TrainConfig, control=None)`; `evaluate_checkpoint_mode(cfg: TrainConfig)`; `_make_training_adapter(cfg: TrainConfig, *, seed)`; `evaluate_random_baseline(cfg: TrainConfig, *, seed)`; `benchmark_policy._arm_train_args(...) -> TrainConfig`.
 
-- [ ] **Step 1: Import `TrainConfig` in `train_e2e.py`**
+- [x] **Step 1: Import `TrainConfig` in `train_e2e.py`**
 
 Add after the `from world_marl.logging import …` line (currently line 45), grouped with the other `world_marl.*` imports:
 
@@ -194,7 +194,7 @@ Add after the `from world_marl.logging import …` line (currently line 45), gro
 from world_marl.config import TrainConfig
 ```
 
-- [ ] **Step 2: Retype the config-taking helpers and rename `args`→`cfg` in their bodies**
+- [x] **Step 2: Retype the config-taking helpers and rename `args`→`cfg` in their bodies**
 
 For each of these functions, change the parameter `args: argparse.Namespace` → `cfg: TrainConfig` and replace every `args.` with `cfg.` inside the body. The inner locals named `config` (the algo config) are a different name and stay untouched.
 
@@ -225,7 +225,7 @@ def evaluate_checkpoint_mode(cfg: TrainConfig) -> None:
 
 (Continue renaming the rest of `evaluate_checkpoint_mode`'s `args.` reads: `cfg.stochastic_eval`, `cfg.seed`, `cfg.eval_episodes`, `cfg.eval_max_steps`.)
 
-- [ ] **Step 3: Retype `run_training` and switch `vars(args)` → `dataclasses.asdict(cfg)`**
+- [x] **Step 3: Retype `run_training` and switch `vars(args)` → `dataclasses.asdict(cfg)`**
 
 Signature (590-597) → `def run_training(cfg: TrainConfig, *, run_dir: Path, name: str, run_index: int, control: str | None) -> RunOutcome:`. Rename every `args.` in the body to `cfg.` (`cfg.wandb`, `cfg.wandb_project`, `cfg.seed`, `cfg.substrate`, `cfg.prefit_world_model`, `cfg.algorithm`, `cfg.stochastic_eval`, …). Change the two `vars(args)` sites:
 
@@ -234,7 +234,7 @@ Signature (590-597) → `def run_training(cfg: TrainConfig, *, run_dir: Path, na
 
 Everything else (including `config = algorithm_config_from_args(cfg, control)` at 613, `dataclasses.asdict(config)` at 628, and `wandb_run.finish()` at 1008) is unchanged.
 
-- [ ] **Step 4: Build the config in `main()`**
+- [x] **Step 4: Build the config in `main()`**
 
 Replace `main()` (1081-1118) so it parses argv then constructs the config once and drives everything with `cfg`:
 
@@ -279,7 +279,7 @@ def main() -> None:
         raise SystemExit(1)
 ```
 
-- [ ] **Step 5: Convert `benchmark_policy._arm_train_args` to return `TrainConfig`**
+- [x] **Step 5: Convert `benchmark_policy._arm_train_args` to return `TrainConfig`**
 
 Add the import after `from world_marl.scripts import train_e2e` (line 15):
 
@@ -298,7 +298,7 @@ Change `_arm_train_args` (95-117): keep the two Namespace fixups on `parsed`, th
 
 `run_arm` needs no other change: `train_args` is now a `TrainConfig`, and `train_args.num_runs` / `train_args.min_improvement` / the `train_e2e.run_training(train_args, …)` call all work against the typed object.
 
-- [ ] **Step 6: Update the two direct-caller tests**
+- [x] **Step 6: Update the two direct-caller tests**
 
 `tests/test_train_e2e_coins_e2e.py` — convert at the call site (import + wrap). After `args = _tiny_coins_args(tmp_path, monkeypatch)` (line 73), pass a `TrainConfig`:
 
@@ -348,24 +348,24 @@ def _args(*, algorithm: str) -> TrainConfig:
 
 The existing `args.prefit_world_model = False` mutation in `test_coins_selects_mlp_policy_config_without_prefit` still works (mutable dataclass). Drop the now-unused `from argparse import Namespace` import.
 
-- [ ] **Step 7: Lint the changed files**
+- [x] **Step 7: Lint the changed files**
 
 Run: `uv run ruff format src/world_marl/scripts/train_e2e.py src/world_marl/scripts/benchmark_policy.py tests/test_train_e2e_coins_e2e.py tests/test_train_e2e_prefit.py && uv run ruff check` (same paths)
 Expected: no errors. Then sanity-check nothing else still does `vars(`/`argparse.Namespace` on the config: `rg -n "vars\(args\)|vars\(cfg\)" src/world_marl/scripts/train_e2e.py` should return nothing.
 
-- [ ] **Step 8: Run the affected pure/light tests**
+- [x] **Step 8: Run the affected pure/light tests**
 
 Run: `uv run pytest tests/test_train_config.py tests/test_config_and_wandb.py tests/test_train_e2e_prefit.py tests/test_runpod.py -q`
 Expected: PASS. (`test_train_e2e_prefit` exercises the retyped `algorithm_config_from_args`/`_make_training_adapter` against a `TrainConfig`; `test_runpod` proves the untouched CLI contract still parses.)
 
-- [ ] **Step 9: Run the end-to-end direct-caller test (real short compute — confirm first)**
+- [x] **Step 9: Run the end-to-end direct-caller test (real short compute — confirm first)**
 
 This test runs a tiny real training loop (`--total-env-steps 8`, coins). Per the no-unilateral-heavy-runs rule, confirm it is OK to run (it is short, seconds-to-a-minute on CPU) before executing:
 
 Run: `uv run pytest tests/test_train_e2e_coins_e2e.py -q`
 Expected: PASS — the converted `run_training(cfg, …)` call completes and writes artifacts.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add src/world_marl/scripts/train_e2e.py src/world_marl/scripts/benchmark_policy.py tests/test_train_e2e_coins_e2e.py tests/test_train_e2e_prefit.py
