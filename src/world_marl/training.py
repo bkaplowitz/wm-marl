@@ -56,7 +56,7 @@ def collect_rollout(
     step_infos: list[dict[str, Any]] = []
     completed_returns: list[tuple[float, ...]] = []
     completed_lengths: list[int] = []
-    infer_fn = jax.jit(_ippo_infer_with_entropy)
+    get_action_and_value = jax.jit(_ippo_get_action_and_value)
     value_fn = jax.jit(
         lambda state, flat_obs: state.apply_fn(
             {"params": state.params},
@@ -68,7 +68,7 @@ def collect_rollout(
     for _ in range(rollout_steps):
         flat_observations = flatten_agent_batch(current_observations)
         rng, action_rng = jax.random.split(rng)
-        actions, log_probs, values, entropies = infer_fn(
+        actions, log_probs, values, entropies = get_action_and_value(
             train_state,
             action_rng,
             jnp.asarray(flat_observations),
@@ -186,12 +186,12 @@ def train_real_scan(
     num_envs = adapter.num_envs
     num_agents = adapter.num_agents
 
-    infer_fn = (
-        _mappo_scan_infer(num_envs, num_agents)
+    get_action_and_value = (
+        _mappo_get_action_and_value(num_envs, num_agents)
         if is_mappo
-        else _ippo_infer_with_entropy
+        else _ippo_get_action_and_value
     )
-    run = adapter._build_rollout_scan(infer_fn, rollout_steps)
+    run = adapter._build_rollout_scan(get_action_and_value, rollout_steps)
     update_fn = mappo_update if is_mappo else ppo_update
 
     def central_flat(obs_flat):
@@ -357,7 +357,7 @@ def collect_mappo_rollout(
     step_infos: list[dict[str, Any]] = []
     completed_returns: list[tuple[float, ...]] = []
     completed_lengths: list[int] = []
-    infer_fn = jax.jit(_mappo_infer_with_entropy)
+    get_action_and_value = jax.jit(_mappo_get_action_and_value)
     value_fn = jax.jit(
         lambda state, flat_obs, flat_central_obs: state.apply_fn(
             {"params": state.params},
@@ -375,7 +375,7 @@ def collect_mappo_rollout(
         flat_observations = flatten_agent_batch(current_observations)
         flat_central_observations = flatten_agent_batch(central_observations)
         rng, action_rng = jax.random.split(rng)
-        actions, log_probs, values, entropies = infer_fn(
+        actions, log_probs, values, entropies = get_action_and_value(
             train_state,
             action_rng,
             jnp.asarray(flat_observations),
@@ -536,7 +536,7 @@ def build_central_observations(
     return np.concatenate([central, target_ids], axis=-1)
 
 
-def _ippo_infer_with_entropy(state, key, flat_obs):
+def _ippo_get_action_and_value(state, key, flat_obs):
     policy, values = state.apply_fn({"params": state.params}, flat_obs)
     actions = policy.sample(seed=key)
     return (
@@ -547,7 +547,7 @@ def _ippo_infer_with_entropy(state, key, flat_obs):
     )
 
 
-def _mappo_infer_with_entropy(state, key, flat_obs, flat_central_obs):
+def _mappo_get_action_and_value(state, key, flat_obs, flat_central_obs):
     policy, values = state.apply_fn(
         {"params": state.params},
         flat_obs,
@@ -563,20 +563,20 @@ def _mappo_infer_with_entropy(state, key, flat_obs, flat_central_obs):
 
 
 @functools.lru_cache(maxsize=None)
-def _mappo_scan_infer(num_envs: int, num_agents: int):
-    """MAPPO inference in ``scan_rollout``'s 3-arg shape, rebuilding central obs.
+def _mappo_get_action_and_value(num_envs: int, num_agents: int):
+    """MAPPO ``get_action_and_value`` in ``scan_rollout``'s 3-arg shape.
 
-    Cached per env geometry so the returned closure keeps a stable identity —
-    ``scan_rollout`` caches compiled programs by ``id(infer_fn)``.
+    Rebuilds centralized-critic obs from the joint obs. Cached per env geometry so the returned closure keeps a stable identity —
+    ``scan_rollout`` caches compiled programs by ``id(get_action_and_value)``.
     """
 
-    def infer(state, key, flat_obs):
+    def get_action_and_value(state, key, flat_obs):
         central = build_vector_central(
             flat_obs.reshape((num_envs, num_agents, -1)), jnp
         ).reshape((num_envs * num_agents, -1))
-        return _mappo_infer_with_entropy(state, key, flat_obs, central)
+        return _mappo_get_action_and_value(state, key, flat_obs, central)
 
-    return infer
+    return get_action_and_value
 
 
 def _rollout_diagnostics(

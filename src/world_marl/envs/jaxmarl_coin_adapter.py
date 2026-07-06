@@ -100,7 +100,7 @@ class JaxMARLCoinGameVectorAdapter:
         self._state = None
         self._episode_returns = np.zeros((num_envs, self.num_agents), dtype=np.float32)
         self._episode_lengths = np.zeros((num_envs,), dtype=np.int32)
-        # Jitted rollout scans, keyed by (id(infer_fn), num_steps), so the
+        # Jitted rollout scans, keyed by (id(get_action_and_value), num_steps), so the
         # compile is paid once and reused across PPO updates (train_state flows
         # as a traced arg, so changing params does not retrigger a recompile).
         self._rollout_scan_jit: dict[tuple[int, int], Callable] = {}
@@ -203,25 +203,26 @@ class JaxMARLCoinGameVectorAdapter:
         return run(self._keys, policy_key)
 
     def scan_rollout(
-        self, infer_fn, train_state, num_steps, *, policy_key, observations
+        self, get_action_and_value, train_state, num_steps, *, policy_key, observations
     ):
         """On-device PPO rollout from the adapter's CURRENT carry (mid-stream).
 
         Mirrors ``collect_rollout``'s per-step PRNG order -- split the policy key
         first (action sampling), then the env keys (``env.step``) -- so a jitted
-        ``lax.scan`` reproduces the host loop bit-for-bit. ``infer_fn(train_state,
-        action_key, obs_flat[E*A, d]) -> (actions[E*A] int, log_probs, values,
-        entropies)`` is applied each step; ``actions`` and the aux arrays are
+        ``lax.scan`` reproduces the host loop bit-for-bit.
+        ``get_action_and_value(train_state, action_key, obs_flat[E*A, d]) ->
+        (actions[E*A] int, log_probs, values, entropies)`` is applied each
+        step; ``actions`` and the aux arrays are
         recorded verbatim. Starts from ``(self._state, self._keys, observations)``
         and advances ``self._state`` / ``self._keys`` to the post-rollout carry,
         matching how ``step`` threads them. Returns ``(ys, last_obs_flat[E*A, d])``
         where ``ys`` stacks ``(obs, actions, log_probs, values, entropies,
         rewards, dones)`` over ``num_steps``.
         """
-        run = self._rollout_scan_jit.get((id(infer_fn), num_steps))
+        run = self._rollout_scan_jit.get((id(get_action_and_value), num_steps))
         if run is None:
-            run = self._build_rollout_scan(infer_fn, num_steps)
-            self._rollout_scan_jit[(id(infer_fn), num_steps)] = run
+            run = self._build_rollout_scan(get_action_and_value, num_steps)
+            self._rollout_scan_jit[(id(get_action_and_value), num_steps)] = run
 
         obs_flat0 = jnp.asarray(observations, dtype=jnp.float32).reshape(
             (self.num_envs * self.num_agents, -1)
@@ -233,28 +234,30 @@ class JaxMARLCoinGameVectorAdapter:
         self._keys = final_keys
         return ys, last_obs_flat
 
-    def _build_rollout_scan(self, infer_fn, num_steps):
+    def _build_rollout_scan(self, get_action_and_value, num_steps):
         agents = self.agents
         num_envs = self.num_envs
         num_agents = self.num_agents
-        flat = num_envs * num_agents
+        num_all_env_agents = num_envs * num_agents
 
         def stack_obs_flat(obs):
             return (
                 jnp.stack([obs[a].reshape((num_envs, -1)) for a in agents], axis=1)
-                .reshape((flat, -1))
+                .reshape((num_all_env_agents, -1))
                 .astype(jnp.float32)
             )
 
-        def stack_scalar(values):
-            return jnp.stack([values[a] for a in agents], axis=1).reshape((flat,))
+        def stack_all_agents_vals(values):
+            return jnp.stack([values[a] for a in agents], axis=1).reshape(
+                (num_all_env_agents,)
+            )
 
         @jax.jit
         def run(train_state, init_state, init_keys, policy_key, init_obs_flat):
-            def body(carry, _):
+            def step(carry, _):
                 state, keys, obs_flat, pkey = carry
                 pkey, action_key = jax.random.split(pkey)
-                actions, log_probs, values, entropies = infer_fn(
+                actions, log_probs, values, entropies = get_action_and_value(
                     train_state, action_key, obs_flat
                 )
                 actions = actions.astype(jnp.int32)
@@ -270,15 +273,15 @@ class JaxMARLCoinGameVectorAdapter:
                     log_probs,
                     values,
                     entropies,
-                    stack_scalar(reward),
-                    stack_scalar(done),
+                    stack_all_agents_vals(reward),
+                    stack_all_agents_vals(done),
                 )
                 carry_n = (state_n, split[:, 0], stack_obs_flat(obs_n), pkey)
                 return carry_n, ys
 
             init = (init_state, init_keys, init_obs_flat, policy_key)
             (final_state, final_keys, last_obs_flat, _), ys = jax.lax.scan(
-                body, init, None, length=num_steps
+                step, init, None, length=num_steps
             )
             return ys, last_obs_flat, final_state, final_keys
 
