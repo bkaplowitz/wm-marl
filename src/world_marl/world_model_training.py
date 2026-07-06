@@ -28,7 +28,7 @@ TrainingAdapter = MeltingPotVectorAdapter | JaxMARLCoinGameVectorAdapter
 
 
 @dataclass(frozen=True)
-class TransitionCollectionStats:
+class EpisodeCounts:
     real_env_steps: int
     completed_episodes: int
     episode_return_mean: float | None
@@ -53,14 +53,14 @@ def collect_random_transition_batch(
     VectorTransitionBatch,
     np.ndarray,
     jnp.ndarray,
-    TransitionCollectionStats,
+    EpisodeCounts,
 ]:
     """Collect vector-state transitions using adapter-sampled random actions."""
     if rollout_steps < 1:
         raise ValueError("rollout_steps must be >= 1")
 
     current_observations = observations
-    rows = _TransitionRows()
+    rows = _ListofTransitions()
     completed_returns: list[tuple[float, ...]] = []
     completed_lengths: list[int] = []
     for _ in range(rollout_steps):
@@ -83,7 +83,7 @@ def collect_random_transition_batch(
         batch,
         current_observations,
         batch.states,
-        _collection_stats(
+        _transition_stats(
             real_env_steps=rollout_steps * adapter.num_envs,
             completed_returns=completed_returns,
             completed_lengths=completed_lengths,
@@ -104,7 +104,7 @@ def collect_policy_transition_batch(
     np.ndarray,
     jax.Array,
     jnp.ndarray,
-    TransitionCollectionStats,
+    EpisodeCounts,
 ]:
     """Collect vector-state transitions using the current IPPO/MAPPO policy."""
     if rollout_steps < 1:
@@ -113,7 +113,7 @@ def collect_policy_transition_batch(
         raise ValueError(f"unsupported algorithm {algorithm!r}")
 
     current_observations = observations
-    rows = _TransitionRows()
+    rows = _ListofTransitions()
     completed_returns: list[tuple[float, ...]] = []
     completed_lengths: list[int] = []
     for _ in range(rollout_steps):
@@ -154,7 +154,7 @@ def collect_policy_transition_batch(
         current_observations,
         rng,
         batch.states,
-        _collection_stats(
+        _transition_stats(
             real_env_steps=rollout_steps * adapter.num_envs,
             completed_returns=completed_returns,
             completed_lengths=completed_lengths,
@@ -162,18 +162,18 @@ def collect_policy_transition_batch(
     )
 
 
-def _collection_stats(
+def _transition_stats(
     *,
     real_env_steps: int,
     completed_returns: Sequence[tuple[float, ...]],
     completed_lengths: Sequence[int],
-) -> TransitionCollectionStats:
+) -> EpisodeCounts:
     completed_array = (
         np.asarray(completed_returns, dtype=np.float32)
         if completed_returns
         else np.asarray([], dtype=np.float32)
     )
-    return TransitionCollectionStats(
+    return EpisodeCounts(
         real_env_steps=real_env_steps,
         completed_episodes=len(completed_returns),
         episode_return_mean=(
@@ -288,7 +288,7 @@ def collect_random_transition_batch_scan(
     key: jax.Array,
     *,
     rollout_steps: int,
-) -> tuple[VectorTransitionBatch, np.ndarray, jnp.ndarray, TransitionCollectionStats]:
+) -> tuple[VectorTransitionBatch, np.ndarray, jnp.ndarray, EpisodeCounts]:
     """On-device twin of ``collect_random_transition_batch`` via ``lax.scan``.
 
     Reuses the adapter's proven ``scan_rollout`` with a uniform on-device action
@@ -301,14 +301,14 @@ def collect_random_transition_batch_scan(
         raise ValueError("rollout_steps must be >= 1")
     action_dim = adapter.action_dim
 
-    def random_infer(_state, action_key, flat_obs):
+    def random_action(_state, action_key, flat_obs):
         num_rows = flat_obs.shape[0]
         actions = jax.random.randint(action_key, (num_rows,), 0, action_dim)
         zeros = jnp.zeros((num_rows,), dtype=jnp.float32)
         return actions.astype(jnp.int32), zeros, zeros, zeros
 
     ys, last_obs_flat = adapter.scan_rollout(
-        random_infer,
+        random_action,
         None,
         rollout_steps,
         policy_key=key,
@@ -331,7 +331,7 @@ def collect_random_transition_batch_scan(
         batch,
         last_observations,
         batch.states,
-        _collection_stats(
+        _transition_stats(
             real_env_steps=rollout_steps * adapter.num_envs,
             completed_returns=completed_returns,
             completed_lengths=completed_lengths,
@@ -352,7 +352,7 @@ def collect_policy_transition_batch_scan(
     np.ndarray,
     jax.Array,
     jnp.ndarray,
-    TransitionCollectionStats,
+    EpisodeCounts,
 ]:
     """On-device twin of ``collect_policy_transition_batch`` via ``lax.scan``.
 
@@ -398,7 +398,7 @@ def collect_policy_transition_batch_scan(
         last_observations,
         jax.random.fold_in(key, rollout_steps),
         batch.states,
-        _collection_stats(
+        _transition_stats(
             real_env_steps=rollout_steps * adapter.num_envs,
             completed_returns=completed_returns,
             completed_lengths=completed_lengths,
@@ -467,7 +467,7 @@ def sample_initial_states(
     return states[indices]
 
 
-class _TransitionRows:
+class _ListofTransitions:
     def __init__(self) -> None:
         self.states: list[np.ndarray] = []
         self.actions: list[np.ndarray] = []
