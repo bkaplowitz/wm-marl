@@ -11,7 +11,7 @@ import numpy as np
 from flax.training.train_state import TrainState
 
 from world_marl.algs.gae import compute_gae
-from world_marl.algs.ippo import RolloutBatch
+from world_marl.algs.ippo import RolloutBatch, ppo_update
 from world_marl.algs.mappo import MAPPORolloutBatch
 from world_marl.envs.meltingpot_adapter import (
     MeltingPotVectorAdapter,
@@ -252,6 +252,153 @@ def collect_rollout_scan(
         last_values=last_values,
         metrics=metrics,
     )
+
+
+def train_ippo_real_scan(
+    adapter: Any,
+    train_state: TrainState,
+    observations: np.ndarray,
+    rng: jax.Array,
+    *,
+    num_updates: int,
+    config: Any,
+    rollout_steps: int,
+    freeze_policy: bool = False,
+):
+    """Fold the whole model-free IPPO update loop into a single ``lax.scan``.
+
+    Reproduces the host loop (``collect_rollout_scan`` + a standalone jitted
+    ``ppo_update``, called ``num_updates`` times) but keeps every intermediate on
+    device: the env ``state``/``keys``/flat-obs and the per-env episode
+    return/length accumulators ride in the scan carry, so nothing syncs to the
+    host until the stacked metrics are read afterwards. Coins is lockstep and
+    fixed-horizon, so per-agent dones equal ``done["__all__"]`` and completions
+    are timer-driven. Per update the carried key is split three ways
+    (``rng, rollout_key, update_key``) exactly like the model-free branch. The
+    adapter's mutable carry is written back at the end so a chained caller (e.g.
+    warmup then main) resumes correctly. Returns ``(final_train_state,
+    final_observations, final_rng, stacked_metrics)`` where ``stacked_metrics``
+    maps each metric name to a ``[num_updates]`` device array (``nan`` marks an
+    update with no completed episode; the host maps that to ``None``).
+    """
+    if rollout_steps < 1:
+        raise ValueError("rollout_steps must be >= 1")
+    if num_updates < 1:
+        raise ValueError("num_updates must be >= 1")
+
+    num_envs = adapter.num_envs
+    num_agents = adapter.num_agents
+
+    run = adapter._build_rollout_scan(_ippo_infer_with_entropy, rollout_steps)
+
+    def value_fn(state, flat_obs):
+        return state.apply_fn({"params": state.params}, flat_obs)[1]
+
+    def bookkeep(ep_return, ep_length, rewards_ea, dones_ea):
+        def step(carry, xs):
+            ep_ret, ep_len, ret_sum, len_sum, n_comp = carry
+            reward, done = xs
+            ep_ret = ep_ret + reward
+            ep_len = ep_len + 1
+            done_env = done.all(axis=1)
+            ret_sum = ret_sum + jnp.sum(jnp.where(done_env[:, None], ep_ret, 0.0))
+            len_sum = len_sum + jnp.sum(jnp.where(done_env, ep_len, 0))
+            n_comp = n_comp + jnp.sum(done_env.astype(jnp.int32))
+            ep_ret = jnp.where(done_env[:, None], 0.0, ep_ret)
+            ep_len = jnp.where(done_env, 0, ep_len)
+            return (ep_ret, ep_len, ret_sum, len_sum, n_comp), None
+
+        init = (ep_return, ep_length, jnp.float32(0.0), jnp.int32(0), jnp.int32(0))
+        (ep_ret_f, ep_len_f, ret_sum, len_sum, n_comp), _ = jax.lax.scan(
+            step, init, (rewards_ea, dones_ea)
+        )
+        return ep_ret_f, ep_len_f, ret_sum, len_sum, n_comp
+
+    def outer_body(carry, _):
+        ts, key, state, keys, obs_flat, ep_return, ep_length = carry
+        key, rollout_key, update_key = jax.random.split(key, 3)
+        ys, last_obs_flat, final_state, final_keys = run(
+            ts, state, keys, rollout_key, obs_flat
+        )
+        obs_seq, action_seq, logp_seq, value_seq, _entropy_seq, reward_seq, done_seq = ys
+        batch = RolloutBatch(
+            observations=jnp.asarray(obs_seq, dtype=jnp.float32),
+            actions=jnp.asarray(action_seq, dtype=jnp.int32),
+            log_probs=jnp.asarray(logp_seq, dtype=jnp.float32),
+            rewards=jnp.asarray(reward_seq, dtype=jnp.float32),
+            dones=jnp.asarray(done_seq, dtype=jnp.float32),
+            values=jnp.asarray(value_seq, dtype=jnp.float32),
+        )
+        last_values = value_fn(ts, last_obs_flat)
+
+        if freeze_policy:
+            new_ts = ts
+            ppo_metrics: dict[str, Any] = {}
+        else:
+            new_ts, update_metrics = ppo_update(
+                ts, batch, last_values, update_key, config
+            )
+            ppo_metrics = {f"ppo/{key_}": val for key_, val in update_metrics.items()}
+
+        rewards_ea = reward_seq.reshape((rollout_steps, num_envs, num_agents))
+        dones_ea = done_seq.reshape((rollout_steps, num_envs, num_agents))
+        ep_return_n, ep_length_n, ret_sum, len_sum, n_comp = bookkeep(
+            ep_return, ep_length, rewards_ea, dones_ea
+        )
+        n_comp_f = n_comp.astype(jnp.float32)
+        episode_return_mean = jnp.where(
+            n_comp > 0, ret_sum / (n_comp_f * num_agents), jnp.nan
+        )
+        episode_length_mean = jnp.where(
+            n_comp > 0, len_sum.astype(jnp.float32) / n_comp_f, jnp.nan
+        )
+        out = {
+            "rollout_mean_reward": jnp.mean(batch.rewards),
+            "completed_episodes": n_comp,
+            "episode_return_mean": episode_return_mean,
+            "episode_length_mean": episode_length_mean,
+        }
+        out.update(ppo_metrics)
+        new_carry = (
+            new_ts,
+            key,
+            final_state,
+            final_keys,
+            last_obs_flat,
+            ep_return_n,
+            ep_length_n,
+        )
+        return new_carry, out
+
+    obs_flat0 = jnp.asarray(observations, dtype=jnp.float32).reshape(
+        (num_envs * num_agents, -1)
+    )
+    ep_return0 = jnp.asarray(adapter._episode_returns, dtype=jnp.float32)
+    ep_length0 = jnp.asarray(adapter._episode_lengths, dtype=jnp.int32)
+    init_carry = (
+        train_state,
+        rng,
+        adapter._state,
+        adapter._keys,
+        obs_flat0,
+        ep_return0,
+        ep_length0,
+    )
+    (final_ts, final_rng, final_state, final_keys, last_obs_flat, ep_return_f, ep_length_f), stacked = (
+        jax.lax.scan(outer_body, init_carry, None, length=num_updates)
+    )
+
+    adapter._state = final_state
+    adapter._keys = final_keys
+    adapter._episode_returns = np.asarray(ep_return_f, dtype=np.float32)
+    adapter._episode_lengths = np.asarray(
+        ep_length_f, dtype=adapter._episode_lengths.dtype
+    )
+
+    final_observations = np.asarray(last_obs_flat, dtype=np.float32).reshape(
+        (num_envs, num_agents, -1)
+    )
+    return final_ts, final_observations, final_rng, stacked
 
 
 def collect_mappo_rollout(
