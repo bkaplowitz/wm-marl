@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import Any
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 
 from world_marl.envs.meltingpot_adapter import VectorStep
@@ -86,6 +87,10 @@ class GymnaxVectorAdapter:
         self._state = None
         self._episode_returns = np.zeros((num_envs, 1), dtype=np.float32)
         self._episode_lengths = np.zeros((num_envs,), dtype=np.int32)
+        # Jitted rollout scans, keyed by (id(get_action_and_value), num_steps), so
+        # the compile is paid once and reused across PPO updates (train_state flows
+        # as a traced arg, so changing params does not retrigger a recompile).
+        self._rollout_scan_jit: dict[tuple[int, int], Callable] = {}
 
     def reset(self) -> np.ndarray:
         split_keys = self._split(self._keys)
@@ -138,6 +143,89 @@ class GymnaxVectorAdapter:
             step_infos=tuple({} for _ in range(self.num_envs)),
             infos=tuple(infos),
         )
+
+    def scan_rollout(
+        self,
+        get_action_and_value: Callable,
+        train_state: Any,
+        num_steps: int,
+        *,
+        policy_key: jax.Array,
+        observations: np.ndarray,
+    ) -> tuple[tuple[jax.Array, ...], jax.Array]:
+        """Run ``num_steps`` policy steps fully on device with ``lax.scan``.
+
+        Mirrors ``JaxMARLCoinGameVectorAdapter.scan_rollout``: starts from the
+        adapter's current carry, splits the policy key then the env keys in the
+        same order as the host loop (so it reproduces ``collect_rollout``
+        bit-for-bit on integer actions), returns the stacked
+        ``(obs, actions, log_probs, values, entropies, rewards, dones)`` plus
+        the last flat observations, and advances ``_state``/``_keys`` — but not
+        the episode accumulators, which the caller replays from the dones.
+
+        The adapter deliberately has no ``scan_rewards_dones``: that eval path
+        (``evaluate_policy_scan``) assumes lockstep fixed-horizon episodes and
+        raises for early-terminating envs like CartPole, so evaluation stays on
+        the host loop.
+        """
+        cache_key = (id(get_action_and_value), num_steps)
+        run = self._rollout_scan_jit.get(cache_key)
+        if run is None:
+            run = self._build_rollout_scan(get_action_and_value, num_steps)
+            self._rollout_scan_jit[cache_key] = run
+
+        obs_flat0 = jnp.asarray(observations, dtype=jnp.float32).reshape(
+            (self.num_envs * self.num_agents, -1)
+        )
+        ys, last_obs_flat, final_state, final_keys = run(
+            train_state, self._state, self._keys, policy_key, obs_flat0
+        )
+        self._state = final_state
+        self._keys = final_keys
+        return ys, last_obs_flat
+
+    def _build_rollout_scan(
+        self, get_action_and_value: Callable, num_steps: int
+    ) -> Callable:
+        num_envs = self.num_envs
+        env_params = self.env_params
+
+        @jax.jit
+        def run(train_state, init_state, init_keys, policy_key, init_obs_flat):
+            def step(carry, _):
+                state, keys, obs_flat, pkey = carry
+                pkey, action_key = jax.random.split(pkey)
+                actions, log_probs, values, entropies = get_action_and_value(
+                    train_state, action_key, obs_flat
+                )
+                actions = actions.astype(jnp.int32)
+                split = self._split(keys)
+                obs_n, state_n, reward, done, _ = self._step(
+                    split[:, 1],
+                    state,
+                    actions.reshape((num_envs,)),
+                    env_params,
+                )
+                ys = (
+                    obs_flat,
+                    actions,
+                    log_probs,
+                    values,
+                    entropies,
+                    reward.reshape((num_envs,)).astype(jnp.float32),
+                    done.reshape((num_envs,)),
+                )
+                obs_flat_n = obs_n.reshape((num_envs, -1)).astype(jnp.float32)
+                carry_n = (state_n, split[:, 0], obs_flat_n, pkey)
+                return carry_n, ys
+
+            init = (init_state, init_keys, init_obs_flat, policy_key)
+            (final_state, final_keys, last_obs_flat, _), ys = jax.lax.scan(
+                step, init, None, length=num_steps
+            )
+            return ys, last_obs_flat, final_state, final_keys
+
+        return run
 
     def sample_actions(self, rng: np.random.Generator) -> np.ndarray:
         return rng.integers(

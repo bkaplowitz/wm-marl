@@ -94,6 +94,10 @@ class BraxVectorAdapter:
 
         self._episode_returns = np.zeros((self.num_envs, 1), dtype=np.float32)
         self._episode_lengths = np.zeros((self.num_envs,), dtype=np.int32)
+        # Jitted rollout scans, keyed by (id(get_action_and_value), num_steps), so
+        # the compile is paid once and reused across calls (train_state flows as a
+        # traced arg, so changing params does not retrigger a recompile).
+        self._rollout_scan_jit: dict[tuple[int, int], Callable] = {}
 
     def reset(self) -> np.ndarray:
         self._episode_returns[:] = 0.0
@@ -154,6 +158,122 @@ class BraxVectorAdapter:
             step_infos=tuple({} for _ in range(self.num_envs)),
             infos=tuple(infos),
         )
+
+    def scan_rollout(
+        self,
+        get_action_and_value: Callable,
+        train_state: Any,
+        num_steps: int,
+        *,
+        policy_key: jax.Array,
+        observations: np.ndarray,
+    ) -> tuple[tuple[jax.Array, ...], jax.Array]:
+        """Run ``num_steps`` policy steps fully on device with ``lax.scan``.
+
+        Same contract as ``JaxMARLCoinGameVectorAdapter.scan_rollout``: starts
+        from the adapter's current carry, returns the stacked
+        ``(obs, actions, log_probs, values, entropies, rewards, dones)`` plus
+        the last flat observations, and advances ``_state`` — but not the
+        episode accumulators, which the caller replays from the recorded dones
+        (``_replay_scan_episode_bookkeeping``); the in-scan truncation timer
+        starts from ``_episode_lengths`` and runs the identical recurrence, so
+        the replayed lengths land on the same boundary.
+
+        Deviations from the host loop, both intentional: recorded ``actions``
+        are the raw policy outputs (a clipped copy is what steps the env,
+        matching ``step``), and in-scan resets draw fresh keys from a single
+        ``fold_in`` per call rather than one per reset event, so reset streams
+        are distribution-equivalent — not bit-for-bit — with the host loop.
+        Rewards are recorded pre-reset and ``dones`` fold in the ``max_cycles``
+        truncation, exactly like ``step``. No ``scan_rewards_dones`` is
+        provided: that eval path assumes lockstep fixed-horizon episodes and
+        raises for early-terminating envs.
+        """
+        cache_key = (id(get_action_and_value), num_steps)
+        run = self._rollout_scan_jit.get(cache_key)
+        if run is None:
+            run = self._build_rollout_scan(get_action_and_value, num_steps)
+            self._rollout_scan_jit[cache_key] = run
+
+        obs_flat0 = jnp.asarray(observations, dtype=jnp.float32).reshape(
+            (self.num_envs * self.num_agents, -1)
+        )
+        reset_key = jax.random.fold_in(self._base_key, self._reset_counter)
+        self._reset_counter += 1
+        lengths0 = jnp.asarray(self._episode_lengths, dtype=jnp.int32)
+        ys, last_obs_flat, final_state = run(
+            train_state, self._state, reset_key, policy_key, obs_flat0, lengths0
+        )
+        self._state = final_state
+        return ys, last_obs_flat
+
+    def _build_rollout_scan(
+        self, get_action_and_value: Callable, num_steps: int
+    ) -> Callable:
+        num_envs = self.num_envs
+        action_dim = self.action_dim
+        max_cycles = self.max_cycles
+        auto_reset = self.auto_reset
+
+        @jax.jit
+        def run(
+            train_state, init_state, reset_key, policy_key, init_obs_flat, init_lengths
+        ):
+            def step(carry, _):
+                state, obs_flat, lengths, pkey, rkey = carry
+                pkey, action_key = jax.random.split(pkey)
+                actions, log_probs, values, entropies = get_action_and_value(
+                    train_state, action_key, obs_flat
+                )
+                actions = actions.astype(jnp.float32)
+                action_batch = jnp.clip(
+                    actions.reshape((num_envs, action_dim)),
+                    self.action_low,
+                    self.action_high,
+                )
+                state_n = self._step(state, action_batch)
+                reward = state_n.reward.reshape((num_envs,)).astype(jnp.float32)
+                lengths_n = lengths + 1
+                done_mask = jnp.logical_or(
+                    state_n.done.reshape((num_envs,)) > 0.5,
+                    lengths_n >= max_cycles,
+                )
+                if auto_reset:
+                    rkey, step_reset_key = jax.random.split(rkey)
+                    reset_keys = jax.random.split(step_reset_key, num_envs)
+
+                    def with_reset(operand):
+                        stepped, keys = operand
+                        return _select_reset_state(
+                            self._reset(keys), stepped, done_mask, num_envs=num_envs
+                        )
+
+                    state_n = jax.lax.cond(
+                        jnp.any(done_mask),
+                        with_reset,
+                        lambda operand: operand[0],
+                        (state_n, reset_keys),
+                    )
+                    lengths_n = jnp.where(done_mask, 0, lengths_n)
+                obs_flat_n = state_n.obs.reshape((num_envs, -1)).astype(jnp.float32)
+                ys = (
+                    obs_flat,
+                    actions,
+                    log_probs,
+                    values,
+                    entropies,
+                    reward,
+                    done_mask,
+                )
+                return (state_n, obs_flat_n, lengths_n, pkey, rkey), ys
+
+            init = (init_state, init_obs_flat, init_lengths, policy_key, reset_key)
+            (final_state, last_obs_flat, _, _, _), ys = jax.lax.scan(
+                step, init, None, length=num_steps
+            )
+            return ys, last_obs_flat, final_state
+
+        return run
 
     def sample_actions(self, rng: np.random.Generator) -> np.ndarray:
         actions = rng.uniform(
