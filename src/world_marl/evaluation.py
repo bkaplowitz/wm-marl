@@ -18,7 +18,7 @@ from world_marl.envs.meltingpot_adapter import (
     flatten_agent_batch,
     unflatten_agent_actions,
 )
-from world_marl.training import build_central_observations
+from world_marl.training import build_central_observations, build_vector_central
 from world_marl.training import ObservationMode
 
 if TYPE_CHECKING:
@@ -101,20 +101,103 @@ def evaluate_policy_scan(
     deterministic: bool = True,
     observation_mode: ObservationMode = "vector",
     seed: int = 0,
+    algorithm: str = "ippo",
 ) -> EvaluationResult:
-    """On-device equivalent of ``evaluate_policy`` for lockstep coins episodes.
+    """On-device equivalent of ``evaluate_policy`` for vector-mode policies.
 
     Drives the policy through ``adapter.scan_rewards_dones`` (a single jitted
     ``lax.scan``) so the whole eval rollout stays on the accelerator -- no
-    per-step host round-trips. Coins is lockstep (all envs reset together every
-    ``max_cycles`` steps), so ``ceil(episodes/num_envs)`` waves of ``max_cycles``
-    steps yield exactly ``episodes`` fixed-length episodes and the per-wave block
-    sum of rewards reproduces the loop accumulator bit-for-bit.
+    per-step host round-trips. MAPPO rebuilds its centralized critic input on
+    device with the same ``build_vector_central`` the training scan uses, after
+    the float32 cast the loop path applies.
+    """
+    if observation_mode != "vector":
+        raise ValueError("scan eval is only wired for vector observations")
+
+    num_envs = adapter.num_envs
+    num_agents = adapter.num_agents
+
+    if algorithm == "ippo":
+
+        def action_fn(
+            observations: jnp.ndarray, action_key: jax.Array
+        ) -> jnp.ndarray:
+            flat_obs = observations.reshape((num_envs * num_agents, -1))
+            actions = select_actions(
+                train_state, action_key, flat_obs, deterministic=deterministic
+            )[0]
+            return actions.reshape((num_envs, num_agents))
+
+    elif algorithm == "mappo":
+
+        def action_fn(
+            observations: jnp.ndarray, action_key: jax.Array
+        ) -> jnp.ndarray:
+            observations = observations.astype(jnp.float32)
+            flat_obs = observations.reshape((num_envs * num_agents, -1))
+            flat_central = build_vector_central(observations, jnp).reshape(
+                (num_envs * num_agents, -1)
+            )
+            actions = select_mappo_actions(
+                train_state,
+                action_key,
+                flat_obs,
+                flat_central,
+                deterministic=deterministic,
+            )[0]
+            return actions.reshape((num_envs, num_agents))
+
+    else:
+        raise ValueError(f"unsupported algorithm {algorithm!r}")
+
+    return _scan_eval(
+        adapter, action_fn, episodes=episodes, policy_key=jax.random.PRNGKey(seed)
+    )
+
+
+def evaluate_random_policy_scan(
+    adapter: TrainingAdapter,
+    *,
+    episodes: int,
+    seed: int = 0,
+) -> EvaluationResult:
+    """On-device random baseline: uniform actions from the jax PRNG stream.
+
+    Replaces the loop-based ``evaluate_policy(random_policy(...))`` baseline on
+    scannable adapters; statistically equivalent to (not bit-comparable with)
+    the numpy-RNG loop baseline.
+    """
+    num_envs = adapter.num_envs
+    num_agents = adapter.num_agents
+    action_dim = adapter.action_dim
+
+    def action_fn(observations: jnp.ndarray, action_key: jax.Array) -> jnp.ndarray:
+        del observations
+        return jax.random.randint(
+            action_key, (num_envs, num_agents), 0, action_dim
+        )
+
+    return _scan_eval(
+        adapter, action_fn, episodes=episodes, policy_key=jax.random.PRNGKey(seed)
+    )
+
+
+def _scan_eval(
+    adapter: TrainingAdapter,
+    action_fn: Callable[[jnp.ndarray, jax.Array], jnp.ndarray],
+    *,
+    episodes: int,
+    policy_key: jax.Array,
+) -> EvaluationResult:
+    """Run ``adapter.scan_rewards_dones`` and reconstruct per-episode returns.
+
+    Coins is lockstep (all envs reset together every ``max_cycles`` steps), so
+    ``ceil(episodes/num_envs)`` waves of ``max_cycles`` steps yield exactly
+    ``episodes`` fixed-length episodes and the per-wave block sum of rewards
+    reproduces the loop accumulator bit-for-bit.
     """
     if episodes < 1:
         raise ValueError("episodes must be >= 1")
-    if observation_mode != "vector":
-        raise ValueError("scan eval is only wired for vector observations (coins)")
 
     num_envs = adapter.num_envs
     num_agents = adapter.num_agents
@@ -122,15 +205,8 @@ def evaluate_policy_scan(
     waves = math.ceil(episodes / num_envs)
     num_steps = waves * max_cycles
 
-    def action_fn(observations: jnp.ndarray, action_key: jax.Array) -> jnp.ndarray:
-        flat_obs = observations.reshape((num_envs * num_agents, -1))
-        actions = select_actions(
-            train_state, action_key, flat_obs, deterministic=deterministic
-        )[0]
-        return actions.reshape((num_envs, num_agents))
-
     rewards, dones_all = adapter.scan_rewards_dones(
-        action_fn, num_steps, policy_key=jax.random.PRNGKey(seed)
+        action_fn, num_steps, policy_key=policy_key
     )
     rewards = np.asarray(rewards)  # [T, E, A]
     dones_all = np.asarray(dones_all)  # [T, E]

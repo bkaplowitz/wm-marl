@@ -44,6 +44,7 @@ from world_marl.evaluation import (
     EvaluationResult,
     evaluate_policy,
     evaluate_policy_scan,
+    evaluate_random_policy_scan,
     mappo_train_state_policy,
     random_policy,
     train_state_policy,
@@ -384,17 +385,13 @@ def _evaluate_train_state(
     episodes: int,
     max_steps: int | None,
 ) -> EvaluationResult:
-    """Evaluate a train state on the accelerator for vector IPPO (coins), else
-    via the Python loop. The scan reproduces the Python loop's deterministic episodes
-    exactly, so the logged value is unchanged -- only the rollout leaves the CPU.
-    The scan does not advance the adapter PRNG state; callers reusing the adapter
-    for training reset it afterwards.
+    """Evaluate a train state on the accelerator for vector policies, else via
+    the Python loop (MeltingPot only). The scan reproduces the Python loop's
+    deterministic episodes exactly, so the logged value is unchanged -- only the
+    rollout leaves the CPU. The scan does not advance the adapter PRNG state;
+    callers reusing the adapter for training reset it afterwards.
     """
-    if (
-        algorithm == "ippo"
-        and observation_mode == "vector"
-        and hasattr(adapter, "scan_rewards_dones")
-    ):
+    if observation_mode == "vector" and hasattr(adapter, "scan_rewards_dones"):
         return evaluate_policy_scan(
             adapter,
             train_state,
@@ -402,6 +399,7 @@ def _evaluate_train_state(
             deterministic=deterministic,
             observation_mode=observation_mode,
             seed=seed,
+            algorithm=algorithm,
         )
     return evaluate_policy(
         adapter,
@@ -467,12 +465,19 @@ def evaluate_checkpoint_mode(cfg: TrainConfig) -> None:
 def evaluate_random_baseline(cfg: TrainConfig, seed: int) -> dict[str, Any]:
     adapter = _make_training_adapter(cfg, seed=seed)
     try:
-        result = evaluate_policy(
-            adapter,
-            random_policy(adapter, np.random.default_rng(seed)),
-            episodes=cfg.eval_episodes,
-            max_steps=cfg.eval_max_steps,
-        )
+        if hasattr(adapter, "scan_rewards_dones"):
+            result = evaluate_random_policy_scan(
+                adapter,
+                episodes=cfg.eval_episodes,
+                seed=seed,
+            )
+        else:
+            result = evaluate_policy(
+                adapter,
+                random_policy(adapter, np.random.default_rng(seed)),
+                episodes=cfg.eval_episodes,
+                max_steps=cfg.eval_max_steps,
+            )
         return result.to_dict()
     finally:
         adapter.close()
