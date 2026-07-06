@@ -28,7 +28,9 @@ from world_marl.world_model import (
     train_world_model_step,
 )
 from world_marl.world_model_training import (
+    collect_policy_transition_batch,
     collect_policy_transition_batch_host,
+    collect_random_transition_batch,
     collect_random_transition_batch_host,
     concatenate_transition_batches,
 )
@@ -237,14 +239,28 @@ def _collect_combined_batch(
     random_rollouts: int,
     initial_rollouts: int,
 ) -> tuple[VectorTransitionBatch, np.ndarray, jax.Array]:
-    random_batch, observations, _, _ = collect_random_transition_batch_host(
-        adapter,
-        observations,
-        np.random.default_rng(random_seed),
-        rollout_steps=random_rollouts,
-    )
+    on_device = hasattr(adapter, "rollout")
+    if on_device:
+        random_batch, observations, _, _ = collect_random_transition_batch(
+            adapter,
+            observations,
+            jax.random.PRNGKey(random_seed),
+            rollout_steps=random_rollouts,
+        )
+    else:
+        random_batch, observations, _, _ = collect_random_transition_batch_host(
+            adapter,
+            observations,
+            np.random.default_rng(random_seed),
+            rollout_steps=random_rollouts,
+        )
     rng, policy_key = jax.random.split(rng)
-    policy_batch, observations, rng, _, _ = collect_policy_transition_batch_host(
+    collect_policy = (
+        collect_policy_transition_batch
+        if on_device
+        else collect_policy_transition_batch_host
+    )
+    policy_batch, observations, rng, _, _ = collect_policy(
         adapter,
         policy_state,
         observations,

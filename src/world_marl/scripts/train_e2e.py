@@ -37,6 +37,7 @@ from world_marl.evaluation import (
     EvaluationResult,
     evaluate_policy,
     evaluate_policy_host,
+    evaluate_random_policy,
     mappo_train_state_policy,
     random_policy,
     train_state_policy,
@@ -339,21 +340,19 @@ def _evaluate_train_state(
     episodes: int,
     max_steps: int | None,
 ) -> EvaluationResult:
-    """Evaluate a train state on the accelerator for vector IPPO (coins), else
-    via the host loop. The scan reproduces the host loop's deterministic episodes
-    exactly, so the logged value is unchanged -- only the rollout leaves the CPU.
-    The scan does not advance the adapter PRNG state; callers reusing the adapter
-    for training reset it afterwards.
+    """Evaluate a train state on the accelerator for vector policies (coins,
+    IPPO and MAPPO alike), else via the host loop (MeltingPot). The on-device
+    rollout reproduces the host loop's deterministic episodes exactly, so the
+    logged value is unchanged -- only the rollout leaves the CPU. It does not
+    advance the adapter PRNG state; callers reusing the adapter for training
+    reset it afterwards.
     """
-    if (
-        algorithm == "ippo"
-        and observation_mode == "vector"
-        and hasattr(adapter, "rollout_rewards_dones")
-    ):
+    if observation_mode == "vector" and hasattr(adapter, "rollout_rewards_dones"):
         return evaluate_policy(
             adapter,
             train_state,
             episodes=episodes,
+            algorithm=algorithm,
             deterministic=deterministic,
             observation_mode=observation_mode,
             seed=seed,
@@ -424,12 +423,17 @@ def evaluate_checkpoint_mode(args: argparse.Namespace) -> None:
 def evaluate_random_baseline(args: argparse.Namespace, seed: int) -> dict[str, Any]:
     adapter = _make_training_adapter(args, seed=seed)
     try:
-        result = evaluate_policy_host(
-            adapter,
-            random_policy(adapter, np.random.default_rng(seed)),
-            episodes=args.eval_episodes,
-            max_steps=args.eval_max_steps,
-        )
+        if hasattr(adapter, "rollout_rewards_dones"):
+            result = evaluate_random_policy(
+                adapter, episodes=args.eval_episodes, seed=seed
+            )
+        else:
+            result = evaluate_policy_host(
+                adapter,
+                random_policy(adapter, np.random.default_rng(seed)),
+                episodes=args.eval_episodes,
+                max_steps=args.eval_max_steps,
+            )
         return result.to_dict()
     finally:
         adapter.close()

@@ -19,7 +19,7 @@ from world_marl.envs.meltingpot_adapter import (
     flatten_agent_batch,
     unflatten_agent_actions,
 )
-from world_marl.training import build_central_observations
+from world_marl.training import build_central_observations, build_vector_central
 from world_marl.training import ObservationMode
 
 if TYPE_CHECKING:
@@ -98,41 +98,28 @@ def evaluate_policy_host(
     )
 
 
-def evaluate_policy(
+def _evaluate_on_device(
     adapter: TrainingAdapter,
-    train_state: TrainState,
+    action_fn: Callable[[jnp.ndarray, jax.Array], jnp.ndarray],
     *,
     episodes: int,
-    deterministic: bool = True,
-    observation_mode: ObservationMode = "vector",
-    seed: int = 0,
+    seed: int,
 ) -> EvaluationResult:
-    """On-device equivalent of ``evaluate_policy_host`` for lockstep coins episodes.
+    """Roll ``action_fn`` through ``adapter.rollout_rewards_dones`` and reduce
+    the lockstep episode blocks to an ``EvaluationResult``.
 
-    Drives the policy through ``adapter.rollout_rewards_dones`` (a single jitted
-    ``lax.scan``) so the whole eval rollout stays on the accelerator -- no
-    per-step host round-trips. Coins is lockstep (all envs reset together every
-    ``max_cycles`` steps), so ``ceil(episodes/num_envs)`` waves of ``max_cycles``
-    steps yield exactly ``episodes`` fixed-length episodes and the per-wave block
-    sum of rewards reproduces the host accumulator bit-for-bit.
+    Coins is lockstep (all envs reset together every ``max_cycles`` steps), so
+    ``ceil(episodes/num_envs)`` waves of ``max_cycles`` steps yield exactly
+    ``episodes`` fixed-length episodes and the per-wave block sum of rewards
+    reproduces the host accumulator bit-for-bit.
     """
     if episodes < 1:
         raise ValueError("episodes must be >= 1")
-    if observation_mode != "vector":
-        raise ValueError("on-device eval is only wired for vector observations (coins)")
-
     num_envs = adapter.num_envs
     num_agents = adapter.num_agents
     max_cycles = adapter.max_cycles
     waves = math.ceil(episodes / num_envs)
     num_steps = waves * max_cycles
-
-    def action_fn(observations: jnp.ndarray, action_key: jax.Array) -> jnp.ndarray:
-        flat_obs = observations.reshape((num_envs * num_agents, -1))
-        actions = select_actions(
-            train_state, action_key, flat_obs, deterministic=deterministic
-        )[0]
-        return actions.reshape((num_envs, num_agents))
 
     rewards, dones_all = adapter.rollout_rewards_dones(
         action_fn, num_steps, policy_key=jax.random.PRNGKey(seed)
@@ -164,6 +151,83 @@ def evaluate_policy(
         episodes=episodes,
         steps=num_steps * num_envs,
     )
+
+
+def evaluate_policy(
+    adapter: TrainingAdapter,
+    train_state: TrainState,
+    *,
+    episodes: int,
+    algorithm: str = "ippo",
+    deterministic: bool = True,
+    observation_mode: ObservationMode = "vector",
+    seed: int = 0,
+) -> EvaluationResult:
+    """On-device equivalent of ``evaluate_policy_host`` for lockstep coins episodes.
+
+    Drives an IPPO or MAPPO policy through ``adapter.rollout_rewards_dones`` (a
+    single jitted ``lax.scan``) so the whole eval rollout stays on the
+    accelerator -- no per-step host round-trips. MAPPO's centralized-critic
+    observations are rebuilt on-device with ``build_vector_central``, matching
+    the host policy's numpy construction.
+    """
+    if observation_mode != "vector":
+        raise ValueError("on-device eval is only wired for vector observations (coins)")
+
+    num_envs = adapter.num_envs
+    num_agents = adapter.num_agents
+
+    if algorithm == "mappo":
+
+        def action_fn(observations: jnp.ndarray, action_key: jax.Array) -> jnp.ndarray:
+            flat_obs = observations.reshape((num_envs * num_agents, -1))
+            flat_central_obs = build_vector_central(observations, jnp).reshape(
+                (num_envs * num_agents, -1)
+            )
+            actions = select_mappo_actions(
+                train_state,
+                action_key,
+                flat_obs,
+                flat_central_obs,
+                deterministic=deterministic,
+            )[0]
+            return actions.reshape((num_envs, num_agents))
+    elif algorithm == "ippo":
+
+        def action_fn(observations: jnp.ndarray, action_key: jax.Array) -> jnp.ndarray:
+            flat_obs = observations.reshape((num_envs * num_agents, -1))
+            actions = select_actions(
+                train_state, action_key, flat_obs, deterministic=deterministic
+            )[0]
+            return actions.reshape((num_envs, num_agents))
+    else:
+        raise ValueError(f"unsupported algorithm {algorithm!r}")
+
+    return _evaluate_on_device(adapter, action_fn, episodes=episodes, seed=seed)
+
+
+def evaluate_random_policy(
+    adapter: TrainingAdapter,
+    *,
+    episodes: int,
+    seed: int = 0,
+) -> EvaluationResult:
+    """On-device uniform-random baseline for lockstep coins episodes.
+
+    Counterpart of ``evaluate_policy_host`` + ``random_policy`` for adapters
+    with ``rollout_rewards_dones``: actions are drawn from the jitted rollout's
+    own ``jax.random`` stream instead of a host numpy generator, so the whole
+    baseline eval stays on the accelerator.
+    """
+    num_envs = adapter.num_envs
+    num_agents = adapter.num_agents
+    action_dim = adapter.action_dim
+
+    def action_fn(observations: jnp.ndarray, action_key: jax.Array) -> jnp.ndarray:
+        del observations
+        return jax.random.randint(action_key, (num_envs, num_agents), 0, action_dim)
+
+    return _evaluate_on_device(adapter, action_fn, episodes=episodes, seed=seed)
 
 
 def random_policy(
