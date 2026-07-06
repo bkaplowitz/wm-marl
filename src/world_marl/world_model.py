@@ -11,14 +11,19 @@ import jax
 import jax.numpy as jnp
 from flax.training.train_state import TrainState
 
-from flow_matching.models import (
+from flow_matching.llada2 import (
     BlockDiffusionTransformer,
+    create_llada2_train_state,
+    llada2_bdlm_loss,
+    llada2_train_step,
+    sample_llada2_block_diffusion,
+)
+from flow_matching.models import (
     MLPVectorField,
     TokenizedDiscreteDenoiser,
     TokenizedDiscreteTransformer,
 )
 from flow_matching.simulate import (
-    sample_llada2_block_diffusion,
     sample_marginal_discrete_flow_model,
     sample_marginal_flow_model,
 )
@@ -29,9 +34,6 @@ from flow_matching.train import (
     conditioned_train_step,
     create_conditioned_train_state,
     create_discrete_conditioned_train_state,
-    create_llada2_train_state,
-    llada2_bdlm_loss,
-    llada2_train_step,
 )
 from world_marl.algs.ippo import RolloutBatch
 from world_marl.algs.mappo import MAPPORolloutBatch

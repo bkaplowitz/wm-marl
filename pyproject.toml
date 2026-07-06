@@ -25,7 +25,7 @@ version = "0.1.0"
 
 [project.optional-dependencies]
 cuda12 = ["jax[cuda12]==0.4.36"]
-dev = ["pre-commit>=4.3", "pytest>=8", "ruff==0.15.18"]
+dev = ["pre-commit>=4.6", "pytest>=8", "ruff==0.15.18"]
 
 [project.scripts]
 world-marl-train-e2e = "world_marl.scripts.train_e2e:main"

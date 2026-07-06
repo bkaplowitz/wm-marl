@@ -16,18 +16,17 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from flow_matching.models import BlockDiffusionTransformer, apply_rope
-from flow_matching.paths import (
+from flow_matching.llada2 import (
+    BlockDiffusionTransformer,
+    apply_rope,
     block_diffusion_attention_mask,
     complementary_absorbing_pair,
-    mask_schedule,
-    sample_absorbing_path,
-)
-from flow_matching.simulate import sample_llada2_block_diffusion
-from flow_matching.train import (
     create_llada2_train_state,
     llada2_bdlm_loss,
     llada2_train_step,
+    mask_schedule,
+    sample_absorbing_path,
+    sample_llada2_block_diffusion,
     topk_checkpoint_merge,
     wsd_block_size_schedule,
 )
@@ -125,7 +124,9 @@ def test_doc_level_mask_blocks_cross_doc_attention():
         [0] * (length // 2) + [1] * (length - length // 2), dtype=jnp.int32
     )
     restricted = np.asarray(
-        block_diffusion_attention_mask(2, 2, 4, include_clean_copy=True, doc_ids=doc_ids)
+        block_diffusion_attention_mask(
+            2, 2, 4, include_clean_copy=True, doc_ids=doc_ids
+        )
     )
     same_doc = np.asarray(doc_ids)[:, None] == np.asarray(doc_ids)[None, :]
     assert np.all(restricted <= base)  # restriction only removes edges, never adds
@@ -171,9 +172,7 @@ def test_mask_schedule_endpoints_and_nonlinearity():
 def test_wsd_schedule_grows_full_shrinks_and_divides_d():
     divisors = tuple(s for s in range(1, D + 1) if D % s == 0)  # (1,2,4,8)
     total = 100
-    sched = [
-        wsd_block_size_schedule(s, total, divisors=divisors) for s in range(total)
-    ]
+    sched = [wsd_block_size_schedule(s, total, divisors=divisors) for s in range(total)]
     assert all(b in divisors for b in sched)  # every block size divides d
     assert max(sched) == D  # stable phase reaches the full sequence (MDLM)
     assert sched[0] <= sched[total // 2]  # warmup does not shrink
@@ -220,7 +219,9 @@ def _make_tokens(key, batch=16):
     k1, k2, k3 = jax.random.split(key, 3)
     x0 = jax.random.randint(k1, (batch, D), 0, V, dtype=jnp.int32)
     prev = jax.random.randint(k2, (batch, D), 0, V, dtype=jnp.int32)
-    actions = jax.random.randint(k3, (batch, NUM_AGENTS), 0, NUM_ACTIONS, dtype=jnp.int32)
+    actions = jax.random.randint(
+        k3, (batch, NUM_AGENTS), 0, NUM_ACTIONS, dtype=jnp.int32
+    )
     return x0, prev, actions
 
 
@@ -231,8 +232,15 @@ def test_init_loss_near_uniform_ce_not_double():
     x0, prev, actions = _make_tokens(jax.random.PRNGKey(1))
     loss = float(
         llada2_bdlm_loss(
-            state.params, state.apply_fn, jax.random.PRNGKey(2), x0, prev, actions, V,
-            block_size=4, complementary=True,
+            state.params,
+            state.apply_fn,
+            jax.random.PRNGKey(2),
+            x0,
+            prev,
+            actions,
+            V,
+            block_size=4,
+            complementary=True,
         )
     )
     assert np.isfinite(loss)
@@ -249,9 +257,18 @@ def test_loss_counts_only_masked_positions():
     def loss_at(band, key):
         return float(
             llada2_bdlm_loss(
-                state.params, state.apply_fn, key, x0, prev, actions, V,
-                block_size=D, complementary=False, cap_lambda=0.0,
-                alpha_min=band, alpha_max=band + 1e-3,
+                state.params,
+                state.apply_fn,
+                key,
+                x0,
+                prev,
+                actions,
+                V,
+                block_size=D,
+                complementary=False,
+                cap_lambda=0.0,
+                alpha_min=band,
+                alpha_max=band + 1e-3,
             )
         )
 
@@ -270,9 +287,17 @@ def test_cap_and_moe_aux_are_finite_and_contribute():
     def loss(cap_lambda, moe_aux_coeff):
         return float(
             llada2_bdlm_loss(
-                state.params, state.apply_fn, key, x0, prev, actions, V,
-                block_size=4, complementary=True,
-                cap_lambda=cap_lambda, moe_aux_coeff=moe_aux_coeff,
+                state.params,
+                state.apply_fn,
+                key,
+                x0,
+                prev,
+                actions,
+                V,
+                block_size=4,
+                complementary=True,
+                cap_lambda=cap_lambda,
+                moe_aux_coeff=moe_aux_coeff,
             )
         )
 
@@ -327,12 +352,22 @@ def test_sampler_output_valid_and_no_mask_leftover():
         sample_llada2_block_diffusion,
         static_argnums=(0,),
         static_argnames=(
-            "num_factors", "num_categories", "block_size", "steps_per_block",
+            "num_factors",
+            "num_categories",
+            "block_size",
+            "steps_per_block",
         ),
     )
     out = sampler(
-        state.apply_fn, state.params, jax.random.PRNGKey(18), prev, actions,
-        num_factors=D, num_categories=V, block_size=4, steps_per_block=4,
+        state.apply_fn,
+        state.params,
+        jax.random.PRNGKey(18),
+        prev,
+        actions,
+        num_factors=D,
+        num_categories=V,
+        block_size=4,
+        steps_per_block=4,
         confidence_threshold=0.9,
     )
     out = np.asarray(out)
@@ -370,7 +405,9 @@ def _wm_batch(key, config, batch=32):
     next_states = _unpack_discrete_onehot(
         jax.random.randint(k2, (batch, d), 0, V, dtype=jnp.int32), config
     )
-    actions = jax.random.randint(k3, (batch, NUM_AGENTS), 0, NUM_ACTIONS, dtype=jnp.int32)
+    actions = jax.random.randint(
+        k3, (batch, NUM_AGENTS), 0, NUM_ACTIONS, dtype=jnp.int32
+    )
     return VectorTransitionBatch(
         states=states,
         actions=actions,
@@ -433,6 +470,5 @@ def test_fit_world_model_steps_checkpoint_merge():
     assert history.shape[0] == 60
     assert jnp.isfinite(history).all()
     assert all(
-        bool(jnp.all(jnp.isfinite(p)))
-        for p in jax.tree_util.tree_leaves(state.params)
+        bool(jnp.all(jnp.isfinite(p))) for p in jax.tree_util.tree_leaves(state.params)
     )

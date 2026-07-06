@@ -11,7 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 from flax.training.train_state import TrainState
 
-from flow_matching.train import topk_checkpoint_merge, wsd_block_size_schedule
+from flow_matching.llada2 import topk_checkpoint_merge, wsd_block_size_schedule
 from world_marl.training import build_central_observations
 from world_marl.world_model import (
     VectorTransitionBatch,
