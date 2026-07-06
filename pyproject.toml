@@ -41,6 +41,7 @@ markers = [
   "integration: tests requiring installed Melting Pot/dmlab2d runtime",
 ]
 testpaths = ["tests"]
+pythonpath = ["."]
 
 [tool.pyright]
 exclude = [".venv"]

@@ -2,18 +2,32 @@ from __future__ import annotations
 
 import jax
 import numpy as np
+import pytest
 
 from world_marl.algs.ippo import IPPOConfig, create_train_state as create_ippo_state
 from world_marl.algs.ippo import ppo_update
+from world_marl.algs.mappo import (
+    MAPPOConfig,
+    create_train_state as create_mappo_state,
+    mappo_update,
+)
 from world_marl.envs.jaxmarl_coin_adapter import JaxMARLCoinGameVectorAdapter
-from world_marl.training import collect_rollout_scan, train_ippo_real_scan
+from world_marl.training import (
+    central_observation_shape,
+    collect_mappo_rollout,
+    collect_rollout,
+    train_real_scan,
+)
 from world_marl.world_model import (
     VectorWorldModelConfig,
     create_world_model_state,
     simulate_ippo_model_rollout,
-    train_ippo_imagined_scan,
+    simulate_mappo_model_rollout,
+    train_imagined_scan,
 )
 from world_marl.world_model_training import sample_initial_states
+
+ALGORITHMS = ("ippo", "mappo")
 
 
 def _imagined_reward_done(states, actions, next_states):
@@ -27,33 +41,87 @@ def _make_adapter(num_envs=4, max_cycles=8, seed=3):
     )
 
 
-def _make_coins_state(adapter, seed: int = 5):
-    config = IPPOConfig(network_arch="mlp")
-    return create_ippo_state(
-        jax.random.PRNGKey(seed),
-        adapter.observation_shape,
-        adapter.action_dim,
-        config,
-    )
+def _make_policy_state(adapter, algorithm: str, seed: int = 5):
+    if algorithm == "mappo":
+        config = MAPPOConfig(network_arch="mlp")
+        state = create_mappo_state(
+            jax.random.PRNGKey(seed),
+            adapter.observation_shape,
+            central_observation_shape(
+                adapter.observation_shape,
+                adapter.num_agents,
+                observation_mode="vector",
+            ),
+            adapter.action_dim,
+            config,
+        )
+    else:
+        config = IPPOConfig(network_arch="mlp")
+        state = create_ippo_state(
+            jax.random.PRNGKey(seed),
+            adapter.observation_shape,
+            adapter.action_dim,
+            config,
+        )
+    return state, config
 
 
-def _host_oracle(adapter, train_state, observations, rng, *, num_updates, config, rollout_steps, freeze_policy):
+def _host_oracle(
+    adapter,
+    train_state,
+    observations,
+    rng,
+    *,
+    num_updates,
+    config,
+    rollout_steps,
+    algorithm,
+    freeze_policy,
+):
     """The trusted host loop: exactly ``run_training``'s model-free branch.
 
-    Calls the already-parity-tested ``collect_rollout_scan`` + standalone jitted
-    ``ppo_update`` in a Python loop, threading state through the (stateful)
-    adapter and the local ``rng``/``observations`` just as the production loop
-    does. Returns ``(train_state, observations, rng, per_update_metrics)``.
+    Calls the host collector (``collect_rollout`` / ``collect_mappo_rollout``,
+    whose PRNG threading the adapter scan reproduces bit-for-bit on integer
+    actions) + a standalone jitted update in a Python loop, threading state
+    through the (stateful) adapter and the local ``rng``/``observations`` just
+    as the production MeltingPot loop does. Returns
+    ``(train_state, observations, rng, per_update_metrics)``.
     """
+    if algorithm == "mappo":
+        update = mappo_update
+
+        def collect(state, obs, key):
+            return collect_mappo_rollout(
+                adapter,
+                state,
+                obs,
+                key,
+                rollout_steps=rollout_steps,
+                gamma=config.gamma,
+                gae_lambda=config.gae_lambda,
+                observation_mode="vector",
+            )
+    else:
+        update = ppo_update
+
+        def collect(state, obs, key):
+            return collect_rollout(
+                adapter,
+                state,
+                obs,
+                key,
+                rollout_steps=rollout_steps,
+                gamma=config.gamma,
+                gae_lambda=config.gae_lambda,
+            )
+
     update_fn = jax.jit(
-        lambda st, batch, last_values, uk: ppo_update(st, batch, last_values, uk, config)
+        lambda st, batch, last_values, uk: update(st, batch, last_values, uk, config)
     )
     per_update: list[dict] = []
     for _ in range(num_updates):
         rng, rollout_key, update_key = jax.random.split(rng, 3)
-        rollout = collect_rollout_scan(
-            adapter, train_state, observations, rollout_key, rollout_steps=rollout_steps
-        )
+        rollout = collect(train_state, observations, rollout_key)
         observations = rollout.next_observations
         update_metrics: dict = {}
         if not freeze_policy:
@@ -80,19 +148,21 @@ def _assert_params_close(host_state, scan_state, *, atol):
         np.testing.assert_allclose(np.asarray(s), np.asarray(h), rtol=0, atol=atol)
 
 
-def test_train_ippo_real_scan_matches_host_single_update():
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+def test_train_real_scan_matches_host_single_update(algorithm):
     """N=1 is the tight logic oracle: same start params -> the folded scan runs
     the *identical* rollout (bit-for-bit), gradient, and update as the host loop.
-    The only admissible drift is XLA fusing ``ppo_update`` inlined-in-scan vs the
+    The only admissible drift is XLA fusing the update inlined-in-scan vs the
     standalone jit, so params/ppo metrics match to a tight float tolerance while
     the carried ``rng`` (structural), ``completed_episodes`` and
     ``episode_length_mean`` (fixed-horizon coins -> timer-driven) match exactly.
     """
     num_envs, max_cycles, seed = 4, 8, 3
     rollout_steps = 12  # crosses one max_cycles boundary -> reset-on-done
-    config = IPPOConfig(network_arch="mlp")
 
-    train_state = _make_coins_state(_make_adapter(num_envs, max_cycles, seed))
+    train_state, config = _make_policy_state(
+        _make_adapter(num_envs, max_cycles, seed), algorithm
+    )
     key = jax.random.PRNGKey(seed)
 
     host_adapter = _make_adapter(num_envs, max_cycles, seed)
@@ -105,12 +175,13 @@ def test_train_ippo_real_scan_matches_host_single_update():
         num_updates=1,
         config=config,
         rollout_steps=rollout_steps,
+        algorithm=algorithm,
         freeze_policy=False,
     )
 
     scan_adapter = _make_adapter(num_envs, max_cycles, seed)
     obs0_scan = scan_adapter.reset()
-    scan_state, scan_obs, scan_rng, scan_metrics = train_ippo_real_scan(
+    scan_state, scan_obs, scan_rng, scan_metrics = train_real_scan(
         scan_adapter,
         train_state,
         obs0_scan,
@@ -118,6 +189,7 @@ def test_train_ippo_real_scan_matches_host_single_update():
         num_updates=1,
         config=config,
         rollout_steps=rollout_steps,
+        algorithm=algorithm,
         freeze_policy=False,
     )
 
@@ -125,7 +197,9 @@ def test_train_ippo_real_scan_matches_host_single_update():
     np.testing.assert_array_equal(np.asarray(scan_rng), np.asarray(host_rng))
 
     # Fixed-horizon coins -> episode counts/lengths are timer-driven (exact).
-    assert int(scan_metrics["completed_episodes"][0]) == host_rows[0]["completed_episodes"]
+    assert (
+        int(scan_metrics["completed_episodes"][0]) == host_rows[0]["completed_episodes"]
+    )
     np.testing.assert_allclose(
         np.asarray(scan_metrics["episode_length_mean"][0]),
         host_rows[0]["episode_length_mean"],
@@ -149,7 +223,8 @@ def test_train_ippo_real_scan_matches_host_single_update():
     )
 
 
-def test_train_ippo_real_scan_matches_host_multi_update():
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+def test_train_real_scan_matches_host_multi_update(algorithm):
     """N>1 pins the carry threading across a boundary. The carried ``rng`` and
     the timer-driven episode counts/lengths must match exactly every update
     (proving the reset-on-done accumulators thread across the max_cycles reset),
@@ -157,9 +232,10 @@ def test_train_ippo_real_scan_matches_host_multi_update():
     """
     num_envs, max_cycles, seed = 4, 8, 3
     rollout_steps, num_updates = 12, 3
-    config = IPPOConfig(network_arch="mlp")
 
-    train_state = _make_coins_state(_make_adapter(num_envs, max_cycles, seed))
+    train_state, config = _make_policy_state(
+        _make_adapter(num_envs, max_cycles, seed), algorithm
+    )
     key = jax.random.PRNGKey(seed)
 
     host_adapter = _make_adapter(num_envs, max_cycles, seed)
@@ -172,12 +248,13 @@ def test_train_ippo_real_scan_matches_host_multi_update():
         num_updates=num_updates,
         config=config,
         rollout_steps=rollout_steps,
+        algorithm=algorithm,
         freeze_policy=False,
     )
 
     scan_adapter = _make_adapter(num_envs, max_cycles, seed)
     obs0_scan = scan_adapter.reset()
-    scan_state, _scan_obs, scan_rng, scan_metrics = train_ippo_real_scan(
+    scan_state, _scan_obs, scan_rng, scan_metrics = train_real_scan(
         scan_adapter,
         train_state,
         obs0_scan,
@@ -185,6 +262,7 @@ def test_train_ippo_real_scan_matches_host_multi_update():
         num_updates=num_updates,
         config=config,
         rollout_steps=rollout_steps,
+        algorithm=algorithm,
         freeze_policy=False,
     )
 
@@ -202,7 +280,7 @@ def test_train_ippo_real_scan_matches_host_multi_update():
             atol=1e-5,
         )
 
-    # Compounded inlined-vs-standalone ppo fusion drift -> loose stability check.
+    # Compounded inlined-vs-standalone update fusion drift -> loose stability check.
     _assert_params_close(host_state, scan_state, atol=1e-3)
     for i in range(num_updates):
         for field in ("ppo/total_loss", "rollout_mean_reward", "episode_return_mean"):
@@ -214,20 +292,22 @@ def test_train_ippo_real_scan_matches_host_multi_update():
             )
 
 
-def test_train_ippo_real_scan_freeze_policy_leaves_params_unchanged():
-    """With ``freeze_policy`` the scan must skip ``ppo_update`` and return the
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+def test_train_real_scan_freeze_policy_leaves_params_unchanged(algorithm):
+    """With ``freeze_policy`` the scan must skip the update and return the
     start params unchanged, while still advancing the env carry and rollout
     metrics (the warmup path uses this before the world model is fit).
     """
     num_envs, max_cycles, seed = 4, 8, 3
-    config = IPPOConfig(network_arch="mlp")
 
-    train_state = _make_coins_state(_make_adapter(num_envs, max_cycles, seed))
+    train_state, config = _make_policy_state(
+        _make_adapter(num_envs, max_cycles, seed), algorithm
+    )
     key = jax.random.PRNGKey(seed)
 
     scan_adapter = _make_adapter(num_envs, max_cycles, seed)
     obs0 = scan_adapter.reset()
-    scan_state, _obs, _rng, scan_metrics = train_ippo_real_scan(
+    scan_state, _obs, _rng, scan_metrics = train_real_scan(
         scan_adapter,
         train_state,
         obs0,
@@ -235,6 +315,7 @@ def test_train_ippo_real_scan_freeze_policy_leaves_params_unchanged():
         num_updates=2,
         config=config,
         rollout_steps=12,
+        algorithm=algorithm,
         freeze_policy=True,
     )
 
@@ -242,7 +323,23 @@ def test_train_ippo_real_scan_freeze_policy_leaves_params_unchanged():
     assert scan_metrics["rollout_mean_reward"].shape == (2,)
 
 
-def _make_imagined_setup(pool_size=5, num_envs=3):
+def test_train_real_scan_rejects_unknown_algorithm():
+    adapter = _make_adapter()
+    train_state, config = _make_policy_state(adapter, "ippo")
+    with pytest.raises(ValueError, match="algorithm"):
+        train_real_scan(
+            adapter,
+            train_state,
+            adapter.reset(),
+            jax.random.PRNGKey(0),
+            num_updates=1,
+            config=config,
+            rollout_steps=4,
+            algorithm="qmix",
+        )
+
+
+def _make_imagined_setup(algorithm: str, pool_size=5, num_envs=3):
     wm_config = VectorWorldModelConfig(
         state_dim=4,
         num_agents=2,
@@ -250,26 +347,71 @@ def _make_imagined_setup(pool_size=5, num_envs=3):
         hidden_dims=(8,),
         integration_steps=1,
     )
-    ippo_config = IPPOConfig(network_arch="mlp", num_minibatches=1)
+    if algorithm == "mappo":
+        policy_config = MAPPOConfig(network_arch="mlp", num_minibatches=1)
+        train_state = create_mappo_state(
+            jax.random.PRNGKey(1),
+            (wm_config.state_dim,),
+            central_observation_shape(
+                (wm_config.state_dim,),
+                wm_config.num_agents,
+                observation_mode="vector",
+            ),
+            wm_config.action_dim,
+            policy_config,
+        )
+    else:
+        policy_config = IPPOConfig(network_arch="mlp", num_minibatches=1)
+        train_state = create_ippo_state(
+            jax.random.PRNGKey(1),
+            (wm_config.state_dim,),
+            wm_config.action_dim,
+            policy_config,
+        )
     model_state = create_world_model_state(jax.random.PRNGKey(0), wm_config)
-    train_state = create_ippo_state(jax.random.PRNGKey(1), (4,), 3, ippo_config)
     model_start_states = jax.random.normal(
         jax.random.PRNGKey(7), (pool_size, wm_config.num_agents, wm_config.state_dim)
     )
-    return model_state, train_state, model_start_states, wm_config, ippo_config, num_envs
+    return (
+        model_state,
+        train_state,
+        model_start_states,
+        wm_config,
+        policy_config,
+        num_envs,
+    )
 
 
 def _host_imagined_oracle(
-    model_state, train_state, model_start_states, rng, *, num_updates, ippo_config, world_model_config, rollout_steps, num_envs, freeze_policy
+    model_state,
+    train_state,
+    model_start_states,
+    rng,
+    *,
+    num_updates,
+    policy_config,
+    world_model_config,
+    rollout_steps,
+    num_envs,
+    algorithm,
+    freeze_policy,
 ):
     """The trusted host loop: exactly ``run_training``'s imagined (prefit) branch.
 
     Per update splits the key four ways (``rng, rollout_key, start_key,
     update_key``), resamples ``initial_states`` from the fixed pool, runs the
-    on-device imagined rollout, and applies a standalone jitted ``ppo_update``.
+    on-device imagined rollout, and applies a standalone jitted update.
     """
+    if algorithm == "mappo":
+        update = mappo_update
+        simulate = simulate_mappo_model_rollout
+    else:
+        update = ppo_update
+        simulate = simulate_ippo_model_rollout
     update_fn = jax.jit(
-        lambda st, batch, last_values, uk: ppo_update(st, batch, last_values, uk, ippo_config)
+        lambda st, batch, last_values, uk: update(
+            st, batch, last_values, uk, policy_config
+        )
     )
     per_update: list[dict] = []
     for _ in range(num_updates):
@@ -277,7 +419,7 @@ def _host_imagined_oracle(
         initial_states = sample_initial_states(
             model_start_states, start_key, num_envs=num_envs
         )
-        rollout = simulate_ippo_model_rollout(
+        rollout = simulate(
             model_state,
             train_state,
             initial_states,
@@ -301,13 +443,16 @@ def _host_imagined_oracle(
     return train_state, rng, per_update
 
 
-def test_train_ippo_imagined_scan_matches_host_single_update():
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+def test_train_imagined_scan_matches_host_single_update(algorithm):
     """N=1 tight logic oracle for the imagined (prefit) branch: same start
     params + start_key + rollout_key -> identical imagined rollout and gradient,
     so params/ppo/reward metrics match tight and the carried ``rng`` (4-way split
     threaded structurally) matches exactly.
     """
-    model_state, train_state, pool, wm_config, ippo_config, num_envs = _make_imagined_setup()
+    model_state, train_state, pool, wm_config, policy_config, num_envs = (
+        _make_imagined_setup(algorithm)
+    )
     key = jax.random.PRNGKey(4)
 
     host_state, host_rng, host_rows = _host_imagined_oracle(
@@ -316,23 +461,25 @@ def test_train_ippo_imagined_scan_matches_host_single_update():
         pool,
         key,
         num_updates=1,
-        ippo_config=ippo_config,
+        policy_config=policy_config,
         world_model_config=wm_config,
         rollout_steps=3,
         num_envs=num_envs,
+        algorithm=algorithm,
         freeze_policy=False,
     )
-    scan_state, scan_rng, scan_metrics = train_ippo_imagined_scan(
+    scan_state, scan_rng, scan_metrics = train_imagined_scan(
         model_state,
         train_state,
         pool,
         key,
         num_updates=1,
-        ippo_config=ippo_config,
+        policy_config=policy_config,
         world_model_config=wm_config,
         rollout_steps=3,
         reward_done_fn=_imagined_reward_done,
         num_envs=num_envs,
+        algorithm=algorithm,
         freeze_policy=False,
     )
 
@@ -348,12 +495,15 @@ def test_train_ippo_imagined_scan_matches_host_single_update():
     _assert_params_close(host_state, scan_state, atol=1e-5)
 
 
-def test_train_ippo_imagined_scan_matches_host_multi_update():
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+def test_train_imagined_scan_matches_host_multi_update(algorithm):
     """N>1 pins carry threading (train_state + 4-way rng across updates). The
     carried ``rng`` matches exactly; compounded fusion drift is tolerated on
     params and reward metrics.
     """
-    model_state, train_state, pool, wm_config, ippo_config, num_envs = _make_imagined_setup()
+    model_state, train_state, pool, wm_config, policy_config, num_envs = (
+        _make_imagined_setup(algorithm)
+    )
     key = jax.random.PRNGKey(4)
     num_updates = 3
 
@@ -363,23 +513,25 @@ def test_train_ippo_imagined_scan_matches_host_multi_update():
         pool,
         key,
         num_updates=num_updates,
-        ippo_config=ippo_config,
+        policy_config=policy_config,
         world_model_config=wm_config,
         rollout_steps=3,
         num_envs=num_envs,
+        algorithm=algorithm,
         freeze_policy=False,
     )
-    scan_state, scan_rng, scan_metrics = train_ippo_imagined_scan(
+    scan_state, scan_rng, scan_metrics = train_imagined_scan(
         model_state,
         train_state,
         pool,
         key,
         num_updates=num_updates,
-        ippo_config=ippo_config,
+        policy_config=policy_config,
         world_model_config=wm_config,
         rollout_steps=3,
         reward_done_fn=_imagined_reward_done,
         num_envs=num_envs,
+        algorithm=algorithm,
         freeze_policy=False,
     )
 
@@ -395,21 +547,25 @@ def test_train_ippo_imagined_scan_matches_host_multi_update():
             )
 
 
-def test_train_ippo_imagined_scan_freeze_policy_leaves_params_unchanged():
-    model_state, train_state, pool, wm_config, ippo_config, num_envs = _make_imagined_setup()
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+def test_train_imagined_scan_freeze_policy_leaves_params_unchanged(algorithm):
+    model_state, train_state, pool, wm_config, policy_config, num_envs = (
+        _make_imagined_setup(algorithm)
+    )
     key = jax.random.PRNGKey(4)
 
-    scan_state, _rng, scan_metrics = train_ippo_imagined_scan(
+    scan_state, _rng, scan_metrics = train_imagined_scan(
         model_state,
         train_state,
         pool,
         key,
         num_updates=2,
-        ippo_config=ippo_config,
+        policy_config=policy_config,
         world_model_config=wm_config,
         rollout_steps=3,
         reward_done_fn=_imagined_reward_done,
         num_envs=num_envs,
+        algorithm=algorithm,
         freeze_policy=True,
     )
     _assert_params_close(train_state, scan_state, atol=0.0)

@@ -29,7 +29,7 @@ from flow_matching.train import (
     create_discrete_conditioned_train_state,
 )
 from world_marl.algs.ippo import RolloutBatch, ppo_update
-from world_marl.algs.mappo import MAPPORolloutBatch
+from world_marl.algs.mappo import MAPPORolloutBatch, mappo_update
 from world_marl.training import RolloutResult, build_vector_central
 
 # (states, env_actions, next_states) -> (rewards, dones), each [env, agent].
@@ -338,35 +338,40 @@ def _imagined_rollout(
     return stacked, final_states, last_values
 
 
-def train_ippo_imagined_scan(
+def train_imagined_scan(
     model_state: TrainState,
     train_state: TrainState,
     model_start_states: jnp.ndarray,
     rng: jax.Array,
     *,
     num_updates: int,
-    ippo_config: Any,
+    policy_config: Any,
     world_model_config: VectorWorldModelConfig,
     rollout_steps: int,
     reward_done_fn: RewardDoneFn,
     num_envs: int,
+    algorithm: str,
     freeze_policy: bool = False,
 ):
-    """Fold the whole imagined (prefit) IPPO update loop into one ``lax.scan``.
+    """Fold the whole imagined (prefit) PPO update loop into one ``lax.scan``.
 
     Reproduces ``run_training``'s prefit branch (resample initial states, run
-    ``_imagined_rollout``, apply ``ppo_update``) ``num_updates`` times while
-    keeping everything on device: only the policy ``train_state`` and ``rng``
-    ride in the carry (the world model is frozen; initial states are resampled
-    per update from the fixed ``model_start_states`` pool). Per update the key is
-    split four ways (``rng, rollout_key, start_key, update_key``) exactly like the
-    host branch. Returns ``(final_train_state, final_rng, stacked_metrics)`` with
-    each metric stacked to ``[num_updates]``.
+    ``_imagined_rollout``, apply the PPO/MAPPO update) ``num_updates`` times
+    while keeping everything on device: only the policy ``train_state`` and
+    ``rng`` ride in the carry (the world model is frozen; initial states are
+    resampled per update from the fixed ``model_start_states`` pool). Per update
+    the key is split four ways (``rng, rollout_key, start_key, update_key``)
+    exactly like the host branch. Returns ``(final_train_state, final_rng,
+    stacked_metrics)`` with each metric stacked to ``[num_updates]``.
     """
     if rollout_steps < 1:
         raise ValueError("rollout_steps must be >= 1")
     if num_updates < 1:
         raise ValueError("num_updates must be >= 1")
+    if algorithm not in {"ippo", "mappo"}:
+        raise ValueError(f"unsupported algorithm {algorithm!r}")
+    is_mappo = algorithm == "mappo"
+    update_fn = mappo_update if is_mappo else ppo_update
 
     from world_marl.world_model_training import sample_initial_states
 
@@ -383,24 +388,31 @@ def train_ippo_imagined_scan(
             rollout_key,
             rollout_steps=rollout_steps,
             config=world_model_config,
-            is_mappo=False,
+            is_mappo=is_mappo,
             reward_done_fn=reward_done_fn,
         )
-        batch = RolloutBatch(
-            observations=stacked["observations"],
-            actions=stacked["actions"],
-            log_probs=stacked["log_probs"],
-            rewards=stacked["rewards"],
-            dones=stacked["dones"],
-            values=stacked["values"],
-        )
+        common = {
+            "observations": stacked["observations"],
+            "actions": stacked["actions"],
+            "log_probs": stacked["log_probs"],
+            "rewards": stacked["rewards"],
+            "dones": stacked["dones"],
+            "values": stacked["values"],
+        }
+        if is_mappo:
+            batch = MAPPORolloutBatch(
+                central_observations=stacked["central_observations"],
+                **common,
+            )
+        else:
+            batch = RolloutBatch(**common)
         mean_reward = jnp.mean(batch.rewards)
         if freeze_policy:
             new_ts = ts
             ppo_metrics: dict[str, Any] = {}
         else:
-            new_ts, update_metrics = ppo_update(
-                ts, batch, last_values, update_key, ippo_config
+            new_ts, update_metrics = update_fn(
+                ts, batch, last_values, update_key, policy_config
             )
             ppo_metrics = {f"ppo/{key_}": val for key_, val in update_metrics.items()}
         out = {

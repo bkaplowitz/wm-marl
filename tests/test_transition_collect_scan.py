@@ -4,7 +4,9 @@ import jax
 import numpy as np
 
 from world_marl.algs.ippo import IPPOConfig, create_train_state as create_ippo_state
+from world_marl.algs.mappo import MAPPOConfig, create_train_state as create_mappo_state
 from world_marl.envs.jaxmarl_coin_adapter import JaxMARLCoinGameVectorAdapter
+from world_marl.training import central_observation_shape
 from world_marl.world_model_training import (
     collect_policy_transition_batch,
     collect_policy_transition_batch_scan,
@@ -24,6 +26,21 @@ def _make_coins_state(adapter, seed: int = 5):
     return create_ippo_state(
         jax.random.PRNGKey(seed),
         adapter.observation_shape,
+        adapter.action_dim,
+        config,
+    )
+
+
+def _make_coins_mappo_state(adapter, seed: int = 5):
+    config = MAPPOConfig(network_arch="mlp")
+    return create_mappo_state(
+        jax.random.PRNGKey(seed),
+        adapter.observation_shape,
+        central_observation_shape(
+            adapter.observation_shape,
+            adapter.num_agents,
+            observation_mode="vector",
+        ),
         adapter.action_dim,
         config,
     )
@@ -182,7 +199,7 @@ def test_random_then_policy_scan_handoff_is_continuous():
             adapter, observations, random_key, rollout_steps=10
         )
     )
-    key, policy_key = jax.random.split(key)
+    _key, policy_key = jax.random.split(key)
     policy_batch, _p_obs, _p_rng, _p_starts, _p_stats = (
         collect_policy_transition_batch_scan(
             adapter,
@@ -206,7 +223,67 @@ def test_random_then_policy_scan_handoff_is_continuous():
     assert combined.states.shape[0] == (10 + 10) * num_envs
 
 
-def test_policy_scan_rejects_mappo():
+def test_policy_scan_matches_host_collect_policy_coins_mappo():
+    """The MAPPO policy collector's scan twin must reproduce the host loop.
+
+    Same contract as the IPPO case, with the centralized-critic observations
+    rebuilt on-device inside ``_mappo_scan_infer`` (host builds them in numpy):
+    integer actions are the exact PRNG canary, tensors match to float tolerance.
+    """
+    num_envs, max_cycles, seed = 4, 8, 3
+    rollout_steps = 12  # crosses one max_cycles boundary
+
+    state = _make_coins_mappo_state(_make_adapter(num_envs, max_cycles, seed))
+    key = jax.random.PRNGKey(seed)
+
+    host_adapter = _make_adapter(num_envs, max_cycles, seed)
+    obs0_host = host_adapter.reset()
+    host_batch, host_obs, _host_rng, host_starts, host_stats = (
+        collect_policy_transition_batch(
+            host_adapter,
+            state,
+            obs0_host,
+            key,
+            rollout_steps=rollout_steps,
+            algorithm="mappo",
+        )
+    )
+
+    scan_adapter = _make_adapter(num_envs, max_cycles, seed)
+    obs0_scan = scan_adapter.reset()
+    scan_batch, scan_obs, _scan_rng, scan_starts, scan_stats = (
+        collect_policy_transition_batch_scan(
+            scan_adapter,
+            state,
+            obs0_scan,
+            key,
+            rollout_steps=rollout_steps,
+            algorithm="mappo",
+        )
+    )
+
+    np.testing.assert_array_equal(
+        np.asarray(scan_batch.actions), np.asarray(host_batch.actions)
+    )
+    for field in ("states", "next_states", "rewards", "dones"):
+        np.testing.assert_allclose(
+            np.asarray(getattr(scan_batch, field)),
+            np.asarray(getattr(host_batch, field)),
+            rtol=0,
+            atol=1e-5,
+            err_msg=field,
+        )
+    np.testing.assert_allclose(
+        np.asarray(scan_starts), np.asarray(host_starts), rtol=0, atol=1e-5
+    )
+    np.testing.assert_allclose(
+        np.asarray(scan_obs), np.asarray(host_obs), rtol=0, atol=1e-5
+    )
+    assert scan_stats.real_env_steps == host_stats.real_env_steps
+    assert scan_stats.completed_episodes == host_stats.completed_episodes
+
+
+def test_policy_scan_rejects_unknown_algorithm():
     adapter = _make_adapter()
     state = _make_coins_state(adapter)
     obs0 = adapter.reset()
@@ -217,9 +294,11 @@ def test_policy_scan_rejects_mappo():
             obs0,
             jax.random.PRNGKey(0),
             rollout_steps=4,
-            algorithm="mappo",
+            algorithm="qmix",
         )
     except ValueError as exc:
-        assert "ippo" in str(exc)
+        assert "algorithm" in str(exc)
     else:  # pragma: no cover - guard must raise
-        raise AssertionError("expected ValueError for mappo scan collection")
+        raise AssertionError(
+            "expected ValueError for unknown-algorithm scan collection"
+        )

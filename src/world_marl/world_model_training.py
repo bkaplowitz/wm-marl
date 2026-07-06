@@ -11,13 +11,20 @@ import jax.numpy as jnp
 import numpy as np
 from flax.training.train_state import TrainState
 
+from world_marl.envs.jaxmarl_coin_adapter import JaxMARLCoinGameVectorAdapter
 from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
-from world_marl.training import _ippo_infer_with_entropy, build_central_observations
+from world_marl.training import (
+    _ippo_infer_with_entropy,
+    _mappo_scan_infer,
+    build_central_observations,
+)
 from world_marl.world_model import (
     VectorTransitionBatch,
     _apply_vector_policy,
     train_world_model_step,
 )
+
+TrainingAdapter = MeltingPotVectorAdapter | JaxMARLCoinGameVectorAdapter
 
 
 @dataclass(frozen=True)
@@ -37,7 +44,7 @@ def flatten_state_observations(observations: np.ndarray) -> np.ndarray:
 
 
 def collect_random_transition_batch(
-    adapter: MeltingPotVectorAdapter,
+    adapter: TrainingAdapter,
     observations: np.ndarray,
     rng: np.random.Generator,
     *,
@@ -85,7 +92,7 @@ def collect_random_transition_batch(
 
 
 def collect_policy_transition_batch(
-    adapter: MeltingPotVectorAdapter,
+    adapter: TrainingAdapter,
     train_state: TrainState,
     observations: np.ndarray,
     rng: jax.Array,
@@ -213,8 +220,12 @@ def _transition_batch_from_scan(
     state_dim = obs_seq.shape[-1]
 
     def fold(array: jax.Array) -> jax.Array:
-        reshaped = array.reshape((rollout_steps, num_envs, num_agents) + array.shape[2:])
-        return reshaped.reshape((rollout_steps * num_envs, num_agents) + array.shape[2:])
+        reshaped = array.reshape(
+            (rollout_steps, num_envs, num_agents) + array.shape[2:]
+        )
+        return reshaped.reshape(
+            (rollout_steps * num_envs, num_agents) + array.shape[2:]
+        )
 
     states = jnp.asarray(obs_seq, dtype=jnp.float32).reshape(
         (rollout_steps, num_envs, num_agents, state_dim)
@@ -242,7 +253,7 @@ def _replay_scan_episode_bookkeeping(
     """Advance the adapter's episode accumulators over a scan batch (host-side).
 
     ``scan_rollout`` advances ``adapter._state``/``_keys`` but not the episode
-    return/length accumulators, so -- exactly as ``collect_rollout_scan`` does --
+    return/length accumulators, so -- exactly as ``train_real_scan`` does --
     replay them over the collected ``(reward, done)`` sequences and write the
     partial-episode state back, so a chained collector (random -> policy) and the
     following training loop resume from the right boundary.
@@ -343,23 +354,27 @@ def collect_policy_transition_batch_scan(
     jnp.ndarray,
     TransitionCollectionStats,
 ]:
-    """On-device twin of ``collect_policy_transition_batch`` (IPPO) via ``lax.scan``.
+    """On-device twin of ``collect_policy_transition_batch`` via ``lax.scan``.
 
-    Reuses ``scan_rollout`` with ``_ippo_infer_with_entropy`` -- the same inference
-    the host loop applies -- and mirrors its ``policy-key-then-env-key`` split
-    order, so the collected batch matches the host loop bit-for-bit (integer
-    actions exact, continuous tensors to float tolerance). MAPPO needs central
-    observations that ``scan_rollout`` does not thread, so it stays on the host.
+    Reuses ``scan_rollout`` with the same inference the host loop applies --
+    ``_ippo_infer_with_entropy``, or its MAPPO wrapper that rebuilds central
+    observations from the joint obs -- and mirrors its
+    ``policy-key-then-env-key`` split order, so the collected batch matches the
+    host loop bit-for-bit (integer actions exact, continuous tensors to float
+    tolerance).
     """
     if rollout_steps < 1:
         raise ValueError("rollout_steps must be >= 1")
-    if algorithm != "ippo":
-        raise ValueError(
-            f"scan policy collection supports 'ippo' only (got {algorithm!r})"
-        )
+    if algorithm not in {"ippo", "mappo"}:
+        raise ValueError(f"unsupported algorithm {algorithm!r}")
+    infer_fn = (
+        _mappo_scan_infer(adapter.num_envs, adapter.num_agents)
+        if algorithm == "mappo"
+        else _ippo_infer_with_entropy
+    )
 
     ys, last_obs_flat = adapter.scan_rollout(
-        _ippo_infer_with_entropy,
+        infer_fn,
         train_state,
         rollout_steps,
         policy_key=key,
