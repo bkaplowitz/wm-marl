@@ -22,7 +22,13 @@ GymnaxFactory = Callable[[], tuple[Any, Any]]
 
 
 class GymnaxVectorAdapter:
-    """Wrap a single-agent Gymnax environment as a vectorized training adapter."""
+    """Wrap a single-agent Gymnax environment as a vectorized training adapter.
+
+    ``auto_reset`` is accepted for signature parity with the other adapters but
+    is **not honored**: gymnax's ``step`` always auto-resets internally at the
+    episode boundary, so the returned boundary observation is the env's own
+    fresh-episode observation.
+    """
 
     def __init__(
         self,

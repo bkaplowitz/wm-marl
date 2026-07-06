@@ -14,7 +14,12 @@ from world_marl.envs.meltingpot_adapter import VectorStep
 BraxEnvFactory = Callable[[], Any]
 
 
-def make_brax_env(env_id: str, *, backend: str | None = None):
+def make_brax_env(
+    env_id: str,
+    *,
+    backend: str | None = None,
+    episode_length: int = 1000,
+):
     """Build a Brax environment by name."""
 
     from brax import envs
@@ -22,11 +27,18 @@ def make_brax_env(env_id: str, *, backend: str | None = None):
     kwargs = {}
     if backend is not None:
         kwargs["backend"] = backend
-    return envs.create(env_name=env_id, **kwargs)
+    return envs.create(env_name=env_id, episode_length=episode_length, **kwargs)
 
 
 class BraxVectorAdapter:
-    """Wrap Brax environments in the repo's single-agent vector contract."""
+    """Wrap Brax environments in the repo's single-agent vector contract.
+
+    ``auto_reset=False`` is **not honored** for the underlying dynamics:
+    ``brax.envs.create`` always applies Brax's ``AutoResetWrapper``, which
+    restores a done env to its original fixed initial state on the next step.
+    Setting ``auto_reset=False`` only skips the adapter's re-randomized resets;
+    the underlying environment keeps restarting either way.
+    """
 
     def __init__(
         self,
@@ -53,7 +65,16 @@ class BraxVectorAdapter:
         self.agents = ("agent_0",)
         self.num_agents = 1
 
-        self._env = (env_factory or (lambda: make_brax_env(env_id, backend=backend)))()
+        self._env = (
+            env_factory
+            or (
+                lambda: make_brax_env(
+                    env_id,
+                    backend=backend,
+                    episode_length=max_cycles,
+                )
+            )
+        )()
         self._reset = jax.jit(jax.vmap(self._env.reset))
         self._step = jax.jit(jax.vmap(self._env.step))
         self._base_key = jax.random.PRNGKey(seed)

@@ -75,3 +75,13 @@ def test_brax_adapter_reset_step_and_completion():
         assert second.completed_lengths == (2, 2)
     finally:
         adapter.close()
+
+
+def test_default_factory_forwards_episode_length_to_brax():
+    pytest.importorskip("brax")
+
+    adapter = BraxVectorAdapter("fast", num_envs=1, max_cycles=7)
+    try:
+        assert adapter._env.episode_length == 7
+    finally:
+        adapter.close()
