@@ -52,6 +52,7 @@ from world_marl.scripts.verify_fitted_env import (
     _write_loss_csv,
 )
 from world_marl.world_model import (
+    LLaDA2WorldModelConfig,
     VectorTransitionBatch,
     VectorWorldModelConfig,
     _cond_dim,
@@ -736,7 +737,7 @@ def main() -> None:
         # ffn width = 4x model_dim per layer; single source of truth for transformer
         # depth (len) and per-layer/MoE-expert width (the LLaDA2 backbone reads [0]).
         ffn_hidden_dims = (4 * args.transformer_dim,) * args.transformer_layers
-        decode_config = VectorWorldModelConfig(
+        decode_config = LLaDA2WorldModelConfig(
             state_dim=state_dim,
             num_agents=adapter.num_agents,
             action_dim=adapter.action_dim,

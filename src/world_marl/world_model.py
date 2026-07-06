@@ -73,9 +73,18 @@ class VectorWorldModelConfig:
     model_dim: int = 64
     num_heads: int = 4
     ffn_hidden_dims: tuple[int, ...] = (256, 256)
-    # LLaDA2.0 block-diffusion arm (only consulted when flow_type == "llada2").
-    # num_layers and the per-layer MoE expert width derive from ffn_hidden_dims, so
-    # capacity has a single source of truth across the transformer arms.
+
+
+@dataclass(frozen=True)
+class LLaDA2WorldModelConfig(VectorWorldModelConfig):
+    """LLaDA2.0 block-diffusion arm knobs; required when ``flow_type == "llada2"``.
+
+    num_layers and the per-layer MoE expert width derive from the inherited
+    ffn_hidden_dims, so capacity has a single source of truth across the
+    transformer arms. Stays frozen/hashable like the base (static jit arg).
+    """
+
+    flow_type: str = "llada2"
     block_size: int = 4
     num_experts: int = 1  # 1 -> dense SwiGLU (no router); >1 -> MoE top-k
     expert_top_k: int = 1
@@ -103,6 +112,8 @@ def create_world_model_state(
     config: VectorWorldModelConfig,
 ) -> TrainState:
     if config.flow_type == "llada2":
+        if not isinstance(config, LLaDA2WorldModelConfig):
+            raise TypeError("flow_type 'llada2' requires an LLaDA2WorldModelConfig")
         model = BlockDiffusionTransformer(
             num_categories=config.num_categories,
             num_actions=config.action_dim,
@@ -161,6 +172,8 @@ def world_model_loss(
     config: VectorWorldModelConfig,
 ) -> jnp.ndarray:
     if config.flow_type == "llada2":
+        if not isinstance(config, LLaDA2WorldModelConfig):
+            raise TypeError("flow_type 'llada2' requires an LLaDA2WorldModelConfig")
         prev_tokens = _pack_discrete_tokens(batch.states, config)
         x0 = _pack_discrete_tokens(batch.next_states, config)
         return llada2_bdlm_loss(
@@ -211,6 +224,8 @@ def train_world_model_step(
     structural check on absence, never a value comparison.
     """
     if config.flow_type == "llada2":
+        if not isinstance(config, LLaDA2WorldModelConfig):
+            raise TypeError("flow_type 'llada2' requires an LLaDA2WorldModelConfig")
         prev_tokens = _pack_discrete_tokens(batch.states, config)
         x0 = _pack_discrete_tokens(batch.next_states, config)
         bs = config.block_size if block_size is None else block_size
@@ -250,6 +265,8 @@ def predict_next(
 ) -> jnp.ndarray:
     """Sample next-states from the conditioned flow (next-state only)."""
     if config.flow_type == "llada2":
+        if not isinstance(config, LLaDA2WorldModelConfig):
+            raise TypeError("flow_type 'llada2' requires an LLaDA2WorldModelConfig")
         prev_tokens = _pack_discrete_tokens(states, config)
         tokens = sample_llada2_block_diffusion(
             state.apply_fn,

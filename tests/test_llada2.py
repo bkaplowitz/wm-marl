@@ -31,8 +31,8 @@ from flow_matching.llada2 import (
     wsd_block_size_schedule,
 )
 from world_marl.world_model import (
+    LLaDA2WorldModelConfig,
     VectorTransitionBatch,
-    VectorWorldModelConfig,
     _num_factors,
     _unpack_discrete_onehot,
     create_world_model_state,
@@ -379,11 +379,10 @@ def test_sampler_output_valid_and_no_mask_leftover():
 # world_model.py integration: create -> train (WSD) -> predict_next
 # --------------------------------------------------------------------------- #
 def _wm_config(**overrides):
-    base = VectorWorldModelConfig(
+    base = LLaDA2WorldModelConfig(
         state_dim=STATE_DIM,
         num_agents=NUM_AGENTS,
         action_dim=NUM_ACTIONS,
-        flow_type="llada2",
         num_categories=V,
         model_dim=32,
         num_heads=4,
