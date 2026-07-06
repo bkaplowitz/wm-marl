@@ -9,6 +9,7 @@ from world_marl.algs.mappo import (
     create_train_state as create_mappo_state,
 )
 from world_marl.config import TrainConfig
+from world_marl.envs.gymnax_adapter import GymnaxVectorAdapter
 from world_marl.envs.jaxmarl_coin_adapter import JaxMARLCoinGameVectorAdapter
 from world_marl.evaluation import (
     evaluate_policy,
@@ -19,7 +20,7 @@ from world_marl.evaluation import (
 from world_marl.training import central_observation_shape
 
 
-def _make_coins_state(adapter, seed: int = 5):
+def _make_ippo_state(adapter, seed: int = 5):
     config = IPPOConfig(network_arch="mlp")
     return create_ippo_state(
         jax.random.PRNGKey(seed),
@@ -39,7 +40,7 @@ def test_scan_eval_matches_loop_eval_coins():
     """
     num_envs, max_cycles, seed, episodes = 4, 8, 3, 8
 
-    state = _make_coins_state(
+    state = _make_ippo_state(
         JaxMARLCoinGameVectorAdapter(
             num_envs=num_envs, max_cycles=max_cycles, seed=seed
         )
@@ -83,7 +84,7 @@ def test_scan_eval_matches_loop_eval_coins_stochastic():
     """
     num_envs, max_cycles, seed, episodes = 4, 8, 3, 8
 
-    state = _make_coins_state(
+    state = _make_ippo_state(
         JaxMARLCoinGameVectorAdapter(
             num_envs=num_envs, max_cycles=max_cycles, seed=seed
         )
@@ -213,3 +214,47 @@ def test_random_baseline_uses_scan_on_scannable_adapters(monkeypatch):
     cfg = TrainConfig(substrate="coins", num_envs=4, max_cycles=8, eval_episodes=8)
     baseline = train_e2e.evaluate_random_baseline(cfg, seed=3)
     assert baseline["episodes"] == 8
+
+
+def test_scan_eval_matches_loop_eval_gymnax_cartpole():
+    """Early-terminating episodes must segment identically to the loop.
+
+    CartPole episodes end at different steps per env, so returns cannot come
+    from lockstep block sums -- the scan has to reconstruct episodes from the
+    dones and emit them in the loop's (step, env) completion order.
+    """
+    num_envs, max_cycles, seed, episodes = 4, 32, 3, 8
+
+    state = _make_ippo_state(
+        GymnaxVectorAdapter(
+            "CartPole-v1", num_envs=num_envs, max_cycles=max_cycles, seed=seed
+        )
+    )
+
+    loop_adapter = GymnaxVectorAdapter(
+        "CartPole-v1", num_envs=num_envs, max_cycles=max_cycles, seed=seed
+    )
+    policy_fn = train_state_policy(
+        state,
+        num_envs=num_envs,
+        num_agents=loop_adapter.num_agents,
+        deterministic=True,
+        observation_mode="vector",
+    )
+    loop = evaluate_policy(loop_adapter, policy_fn, episodes=episodes)
+
+    scan_adapter = GymnaxVectorAdapter(
+        "CartPole-v1", num_envs=num_envs, max_cycles=max_cycles, seed=seed
+    )
+    scan = evaluate_policy_scan(
+        scan_adapter,
+        state,
+        episodes=episodes,
+        deterministic=True,
+        observation_mode="vector",
+    )
+
+    assert scan.episodes == loop.episodes == episodes
+    np.testing.assert_array_equal(scan.lengths, loop.lengths)
+    np.testing.assert_array_equal(scan.returns, loop.returns)
+    assert any(length < max_cycles for length in scan.lengths.tolist())

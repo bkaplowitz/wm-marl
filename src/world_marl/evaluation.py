@@ -191,10 +191,13 @@ def _scan_eval(
 ) -> EvaluationResult:
     """Run ``adapter.scan_rewards_dones`` and reconstruct per-episode returns.
 
-    Coins is lockstep (all envs reset together every ``max_cycles`` steps), so
-    ``ceil(episodes/num_envs)`` waves of ``max_cycles`` steps yield exactly
-    ``episodes`` fixed-length episodes and the per-wave block sum of rewards
-    reproduces the loop accumulator bit-for-bit.
+    Episodes are segmented per env from the dones (cumsum diffs in float64, so
+    integer-valued rewards stay exact) and emitted in the loop's completion
+    order: ``np.nonzero`` on ``dones[T, E]`` yields events sorted by step then
+    env, exactly how ``evaluate_policy`` extends ``completed_returns``. The
+    env caps episodes at ``max_cycles`` (coins lockstep resets, gymnax
+    ``max_steps_in_episode``), so ``ceil(episodes/num_envs)`` waves of
+    ``max_cycles`` steps always complete at least ``episodes`` episodes.
     """
     if episodes < 1:
         raise ValueError("episodes must be >= 1")
@@ -208,26 +211,37 @@ def _scan_eval(
     rewards, dones_all = adapter.scan_rewards_dones(
         action_fn, num_steps, policy_key=policy_key
     )
-    rewards = np.asarray(rewards)  # [T, E, A]
-    dones_all = np.asarray(dones_all)  # [T, E]
+    rewards = np.asarray(rewards, dtype=np.float64)  # [T, E, A]
+    dones_all = np.asarray(dones_all).astype(bool)  # [T, E]
 
-    boundary = np.zeros(num_steps, dtype=bool)
-    boundary[np.arange(max_cycles - 1, num_steps, max_cycles)] = True
-    if not np.array_equal(
-        dones_all, np.broadcast_to(boundary[:, None], dones_all.shape)
-    ):
+    t_idx, e_idx = np.nonzero(dones_all)
+    if t_idx.size < episodes:
         raise RuntimeError(
-            "scan eval requires lockstep episodes aligned to max_cycles (coins); "
-            "dones did not fire on the expected block boundaries"
+            f"only collected {t_idx.size} of {episodes} episodes "
+            f"after {num_steps} scanned steps"
         )
 
-    block_returns = rewards.reshape((waves, max_cycles, num_envs, num_agents)).sum(
-        axis=1
-    )  # [waves, E, A]
-    returns = block_returns.reshape((waves * num_envs, num_agents))[:episodes].astype(
-        np.float32
-    )
-    lengths = np.full((episodes,), max_cycles, dtype=np.int32)
+    csum = np.concatenate(
+        [np.zeros((1, num_envs, num_agents)), np.cumsum(rewards, axis=0)],
+        axis=0,
+    )  # [T+1, E, A]
+    order = np.argsort(e_idx, kind="stable")  # env-grouped, step order preserved
+    te = t_idx[order]
+    ee = e_idx[order]
+    starts = np.zeros_like(te)
+    not_first = np.zeros(te.shape, dtype=bool)
+    not_first[1:] = ee[1:] == ee[:-1]
+    starts[not_first] = te[np.flatnonzero(not_first) - 1] + 1
+    episode_returns = csum[te + 1, ee] - csum[starts, ee]  # [events, A]
+    episode_lengths = te - starts + 1
+
+    returns_by_completion = np.empty_like(episode_returns)
+    returns_by_completion[order] = episode_returns
+    lengths_by_completion = np.empty(te.shape, dtype=np.int64)
+    lengths_by_completion[order] = episode_lengths
+
+    returns = returns_by_completion[:episodes].astype(np.float32)
+    lengths = lengths_by_completion[:episodes].astype(np.int32)
     return EvaluationResult(
         returns=returns,
         lengths=lengths,

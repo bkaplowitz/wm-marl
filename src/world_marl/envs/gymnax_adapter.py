@@ -144,6 +144,54 @@ class GymnaxVectorAdapter:
             infos=tuple(infos),
         )
 
+    def scan_rewards_dones(
+        self,
+        action_fn: Callable,
+        num_steps: int,
+        *,
+        policy_key: jax.Array,
+    ) -> tuple[jax.Array, jax.Array]:
+        """Fully-jitted on-device eval rollout via ``lax.scan``.
+
+        ``action_fn(obs[E,1,d], key) -> actions[E,1]`` is applied each step. The
+        rollout starts from a fresh reset using the constructor PRNG state and
+        does not touch the host-side episode bookkeeping, so it reads the same
+        env-key stream that ``reset``/``step`` would consume. Returns
+        ``(rewards[T,E,1] float32, dones_all[T,E] bool)`` as device arrays.
+        Unlike coins, episodes may terminate early; ``max_steps_in_episode``
+        still caps them at ``max_cycles``.
+        """
+        num_envs = self.num_envs
+        env_params = self.env_params
+
+        def stack_obs(obs):
+            return obs.reshape((num_envs, 1, -1)).astype(jnp.float32)
+
+        @jax.jit
+        def run(init_keys, pkey):
+            split0 = self._split(init_keys)
+            obs0, state0 = self._reset(split0[:, 1], env_params)
+
+            def body(carry, _):
+                keys, state, obs, pkey = carry
+                split = self._split(keys)
+                pkey, action_key = jax.random.split(pkey)
+                actions = action_fn(obs, action_key).astype(jnp.int32)
+                obs_n, state_n, reward, done, _ = self._step(
+                    split[:, 1], state, actions[:, 0], env_params
+                )
+                carry_n = (split[:, 0], state_n, stack_obs(obs_n), pkey)
+                return carry_n, (
+                    reward.reshape((num_envs, 1)).astype(jnp.float32),
+                    done.reshape((num_envs,)),
+                )
+
+            init = (split0[:, 0], state0, stack_obs(obs0), pkey)
+            _, outputs = jax.lax.scan(body, init, None, length=num_steps)
+            return outputs
+
+        return run(self._keys, policy_key)
+
     def scan_rollout(
         self,
         get_action_and_value: Callable,
@@ -162,11 +210,6 @@ class GymnaxVectorAdapter:
         ``(obs, actions, log_probs, values, entropies, rewards, dones)`` plus
         the last flat observations, and advances ``_state``/``_keys`` — but not
         the episode accumulators, which the caller replays from the dones.
-
-        The adapter deliberately has no ``scan_rewards_dones``: that eval path
-        (``evaluate_policy_scan``) assumes lockstep fixed-horizon episodes and
-        raises for early-terminating envs like CartPole, so evaluation stays on
-        the Python loop.
         """
         cache_key = (id(get_action_and_value), num_steps)
         run = self._rollout_scan_jit.get(cache_key)
