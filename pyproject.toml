@@ -8,6 +8,7 @@ dependencies = [
   "dm-meltingpot==2.4.0",
   "dmlab2d==1.0.0",
   "flax",
+  "gymnax==0.0.9",
   "jax==0.4.36",
   "jaxlib==0.4.36",
   "jaxmarl[algs]==0.1.0",
@@ -26,8 +27,10 @@ requires-python = ">=3.11,<3.12"
 version = "0.1.0"
 
 [project.optional-dependencies]
+brax = ["brax==0.10.3"]
 cuda12 = ["jax[cuda12]==0.4.36"]
 dev = ["pre-commit>=4.6", "pytest>=8", "ruff==0.15.18"]
+dmc = ["dm-control>=1.0"]
 
 [project.scripts]
 world-marl-benchmark-policy = "world_marl.scripts.benchmark_policy:main"

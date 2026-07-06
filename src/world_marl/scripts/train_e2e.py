@@ -30,6 +30,11 @@ from world_marl.algs.mappo import (
 )
 from world_marl.checkpointing import load_metadata, load_params, save_checkpoint
 from world_marl.config import TrainConfig
+from world_marl.envs.gymnax_adapter import (
+    GymnaxVectorAdapter,
+    gymnax_env_name,
+    is_gymnax_substrate,
+)
 from world_marl.envs.jaxmarl_coin_adapter import (
     JaxMARLCoinGameVectorAdapter,
     coin_game_reward_done,
@@ -64,7 +69,9 @@ from world_marl.world_model_training import (
     fit_world_model_steps,
 )
 
-TrainingAdapter = MeltingPotVectorAdapter | JaxMARLCoinGameVectorAdapter
+TrainingAdapter = (
+    MeltingPotVectorAdapter | JaxMARLCoinGameVectorAdapter | GymnaxVectorAdapter
+)
 
 
 @dataclass(frozen=True)
@@ -239,8 +246,10 @@ def algorithm_config_from_args(
     control: str | None = None,
 ) -> IPPOConfig | MAPPOConfig:
     config_cls = MAPPOConfig if cfg.algorithm == "mappo" else IPPOConfig
-    uses_vector_policy = cfg.substrate == "coins" or getattr(
-        cfg, "prefit_world_model", False
+    uses_vector_policy = (
+        cfg.substrate == "coins"
+        or is_gymnax_substrate(cfg.substrate)
+        or getattr(cfg, "prefit_world_model", False)
     )
     config = config_cls(
         learning_rate=cfg.learning_rate,
@@ -329,6 +338,13 @@ def _policy_observation_shape(
 def _make_training_adapter(cfg: TrainConfig, *, seed: int) -> TrainingAdapter:
     if cfg.substrate == "coins":
         return JaxMARLCoinGameVectorAdapter(
+            num_envs=cfg.num_envs,
+            max_cycles=cfg.max_cycles,
+            seed=seed,
+        )
+    if is_gymnax_substrate(cfg.substrate):
+        return GymnaxVectorAdapter(
+            env_name=gymnax_env_name(cfg.substrate),
             num_envs=cfg.num_envs,
             max_cycles=cfg.max_cycles,
             seed=seed,
@@ -604,7 +620,11 @@ def run_training(
     config = algorithm_config_from_args(cfg, control)
     freeze_policy = control == "freeze-policy"
     observation_mode: ObservationMode = (
-        "vector" if cfg.substrate == "coins" or cfg.prefit_world_model else "image"
+        "vector"
+        if cfg.substrate == "coins"
+        or is_gymnax_substrate(cfg.substrate)
+        or cfg.prefit_world_model
+        else "image"
     )
 
     logger.write_json(

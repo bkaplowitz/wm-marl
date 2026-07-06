@@ -163,6 +163,34 @@ uv run world-marl-train-e2e --config configs/train_e2e.example.yaml --wandb \
 Authenticate once with `wandb login` (or set `WANDB_API_KEY`); use `WANDB_MODE=offline`
 to log without a network connection.
 
+### Single-agent adapters & the JEPA world model
+
+Three single-agent adapters expose the same vector-env contract as the
+Melting Pot and CoinGame adapters (observations `[env, agent, ...]` with a
+singleton agent axis):
+
+- `GymnaxVectorAdapter` — discrete-action Gymnax tasks. Wired into
+  `world-marl-train-e2e`: pass `--substrate gymnax:<env_name>` (e.g.
+  `gymnax:CartPole-v1`) to train IPPO/MAPPO with the vector/MLP policy path.
+- `BraxVectorAdapter` / `DMCVectorAdapter` — continuous-control Brax and
+  DeepMind Control Suite tasks. These are library adapters (not wired into
+  the discrete-action `train_e2e` pipeline); their heavy dependencies are
+  optional extras:
+
+```bash
+uv sync --extra brax   # brax
+uv sync --extra dmc    # dm-control
+```
+
+`world_marl.jepa` is a SIGReg-JEPA latent world model for continuous control:
+a shared-encoder self-predictive transformer that fits
+`p(z_next, reward, continue | z, continuous_action)` with a sketched
+isotropic-Gaussian (LeJEPA-style) collapse regularizer, plus replay,
+open-loop evaluation, and latent-policy training utilities
+(`src/world_marl/jepa/ARCHITECTURE.md` has the full design). The end-to-end
+DMC/Brax validation harness that drives it lives on the `singlerl_jepa`
+branch and is not part of the main pipeline yet.
+
 
 ## Tests
 

@@ -20,3 +20,5 @@ AGENTS.md
 CLAUDE.md
 .env
 docs/superpowers/
+artifacts/
+reports/
