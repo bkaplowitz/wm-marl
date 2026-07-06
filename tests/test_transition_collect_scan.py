@@ -227,8 +227,9 @@ def test_policy_scan_matches_host_collect_policy_coins_mappo():
     """The MAPPO policy collector's scan twin must reproduce the host loop.
 
     Same contract as the IPPO case, with the centralized-critic observations
-    rebuilt on-device inside ``_mappo_scan_infer`` (host builds them in numpy):
-    integer actions are the exact PRNG canary, tensors match to float tolerance.
+    rebuilt on-device inside ``_make_mappo_get_action_and_value`` (host builds
+    them in numpy): integer actions are the exact PRNG canary, tensors match
+    to float tolerance.
     """
     num_envs, max_cycles, seed = 4, 8, 3
     rollout_steps = 12  # crosses one max_cycles boundary

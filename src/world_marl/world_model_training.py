@@ -14,8 +14,8 @@ from flax.training.train_state import TrainState
 from world_marl.envs.jaxmarl_coin_adapter import JaxMARLCoinGameVectorAdapter
 from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
 from world_marl.training import (
-    _ippo_infer_with_entropy,
-    _mappo_scan_infer,
+    _ippo_get_action_and_value,
+    _mappo_get_action_and_value,
     build_central_observations,
 )
 from world_marl.world_model import (
@@ -357,7 +357,7 @@ def collect_policy_transition_batch_scan(
     """On-device twin of ``collect_policy_transition_batch`` via ``lax.scan``.
 
     Reuses ``scan_rollout`` with the same inference the host loop applies --
-    ``_ippo_infer_with_entropy``, or its MAPPO wrapper that rebuilds central
+    ``_ippo_get_action_and_value``, or its MAPPO wrapper that rebuilds central
     observations from the joint obs -- and mirrors its
     ``policy-key-then-env-key`` split order, so the collected batch matches the
     host loop bit-for-bit (integer actions exact, continuous tensors to float
@@ -367,14 +367,14 @@ def collect_policy_transition_batch_scan(
         raise ValueError("rollout_steps must be >= 1")
     if algorithm not in {"ippo", "mappo"}:
         raise ValueError(f"unsupported algorithm {algorithm!r}")
-    infer_fn = (
-        _mappo_scan_infer(adapter.num_envs, adapter.num_agents)
+    get_action_and_value = (
+        _mappo_get_action_and_value(adapter.num_envs, adapter.num_agents)
         if algorithm == "mappo"
-        else _ippo_infer_with_entropy
+        else _ippo_get_action_and_value
     )
 
     ys, last_obs_flat = adapter.scan_rollout(
-        infer_fn,
+        get_action_and_value,
         train_state,
         rollout_steps,
         policy_key=key,
