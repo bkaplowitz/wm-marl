@@ -33,13 +33,11 @@ def test_random_prefit_collection_uses_flat_vector_states(
     adapter = MeltingPotVectorAdapter(num_envs=1, env_factory=dummy_env_factory)
     try:
         observations = adapter.reset()
-        batch, next_observations, start_states, stats = (
-            collect_random_transition_batch(
-                adapter,
-                observations,
-                np.random.default_rng(0),
-                rollout_steps=2,
-            )
+        batch, next_observations, start_states, stats = collect_random_transition_batch(
+            adapter,
+            observations,
+            np.random.default_rng(0),
+            rollout_steps=2,
         )
 
         state_dim = int(np.prod(adapter.observation_shape))

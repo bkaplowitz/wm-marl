@@ -183,7 +183,9 @@ class JaxMARLCoinGameVectorAdapter:
 
         return run(self._keys, policy_key)
 
-    def scan_rollout(self, infer_fn, train_state, num_steps, *, policy_key, observations):
+    def scan_rollout(
+        self, infer_fn, train_state, num_steps, *, policy_key, observations
+    ):
         """On-device PPO rollout from the adapter's CURRENT carry (mid-stream).
 
         Mirrors ``collect_rollout``'s per-step PRNG order -- split the policy key
@@ -219,9 +221,11 @@ class JaxMARLCoinGameVectorAdapter:
         flat = num_envs * num_agents
 
         def stack_obs_flat(obs):
-            return jnp.stack(
-                [obs[a].reshape((num_envs, -1)) for a in agents], axis=1
-            ).reshape((flat, -1)).astype(jnp.float32)
+            return (
+                jnp.stack([obs[a].reshape((num_envs, -1)) for a in agents], axis=1)
+                .reshape((flat, -1))
+                .astype(jnp.float32)
+            )
 
         def stack_scalar(values):
             return jnp.stack([values[a] for a in agents], axis=1).reshape((flat,))
