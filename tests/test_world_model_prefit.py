@@ -8,7 +8,7 @@ from flow_matching.models import MLPVectorField
 from world_marl.algs.ippo import IPPOConfig, create_train_state as create_ippo_state
 from world_marl.algs.mappo import MAPPOConfig, create_train_state as create_mappo_state
 from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
-from tests.conftest import DummyParallelEnv
+from conftest import DummyParallelEnv
 from world_marl.world_model import (
     VectorTransitionBatch,
     VectorWorldModelConfig,
