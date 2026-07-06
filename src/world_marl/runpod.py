@@ -31,6 +31,7 @@ DEFAULT_COMPARE_ARGS = [
 DEFAULT_BENCHMARK_ARGS = [
     "--model-flow-types",
     "transformer",
+    "discrete",
 ]
 DEFAULT_XLA_FLAGS = "--xla_gpu_enable_triton_gemm=false"
 

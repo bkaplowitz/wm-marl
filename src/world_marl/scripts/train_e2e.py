@@ -49,21 +49,19 @@ from world_marl.training import (
     central_observation_shape,
     collect_mappo_rollout,
     collect_rollout,
-    collect_rollout_scan,
+    train_real_scan,
     training_window_means,
 )
 from world_marl.world_model import (
     VectorWorldModelConfig,
     create_world_model_state,
-    simulate_ippo_model_rollout,
-    simulate_mappo_model_rollout,
+    train_imagined_scan,
 )
 from world_marl.world_model_training import (
-    collect_policy_transition_batch,
-    collect_random_transition_batch,
+    collect_policy_transition_batch_scan,
+    collect_random_transition_batch_scan,
     concatenate_transition_batches,
     fit_world_model_steps,
-    sample_initial_states,
 )
 
 TrainingAdapter = MeltingPotVectorAdapter | JaxMARLCoinGameVectorAdapter
@@ -531,63 +529,53 @@ def _collect_real_env_rollout(
     )
 
 
-def _warmup_policy_before_world_model(
-    cfg: TrainConfig,
+def _rows_from_stacked(
+    stacked: dict[str, Any],
     *,
-    adapter: TrainingAdapter,
-    train_state,
-    observations: np.ndarray,
-    rng: jax.Array,
-    config: IPPOConfig | MAPPOConfig,
-    update_fn,
-    collect_fn,
-    observation_mode: ObservationMode,
-    freeze_policy: bool,
-) -> tuple[Any, np.ndarray, jax.Array, list[dict[str, Any]]]:
-    rows: list[dict[str, Any]] = []
+    steps_per_update: int,
+    real: bool,
+    real_env_steps: int,
+    imagined_env_steps: int,
+    cumulative_real_episodes: int,
+    extra_fields: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], int, int, int]:
+    """Convert stacked scan metrics into host-schema rows, advancing the counters."""
+    host = {key: np.asarray(value) for key, value in jax.device_get(stacked).items()}
+    num_updates = int(host["rollout_mean_reward"].shape[0])
     env_steps = 0
-    real_env_steps = 0
-    cumulative_real_episodes = 0
-    for update in range(1, cfg.wm_policy_warmup_updates + 1):
-        rng, rollout_key, update_key = jax.random.split(rng, 3)
-        rollout = _collect_real_env_rollout(
-            cfg,
-            collect_fn,
-            adapter,
-            train_state,
-            observations,
-            rollout_key,
-            config,
-            observation_mode,
-        )
-        observations = rollout.next_observations
-        update_metrics: dict[str, Any] = {}
-        if not freeze_policy:
-            train_state, update_metrics = update_fn(
-                train_state,
-                rollout.batch,
-                rollout.last_values,
-                update_key,
-            )
-        env_steps += cfg.num_envs * cfg.rollout_steps
-        real_env_steps += cfg.num_envs * cfg.rollout_steps
-        completed_real_episodes = int(rollout.metrics.get("completed_episodes") or 0)
-        cumulative_real_episodes += completed_real_episodes
+    rows: list[dict[str, Any]] = []
+    for index in range(num_updates):
+        metrics: dict[str, Any] = {}
+        for key, values in host.items():
+            value = values[index]
+            if key == "completed_episodes":
+                metrics[key] = int(value)
+            elif key in {"episode_return_mean", "episode_length_mean"} and np.isnan(
+                value
+            ):
+                metrics[key] = None
+            else:
+                metrics[key] = float(value)
+        completed = metrics.get("completed_episodes", 0) if real else 0
+        env_steps += steps_per_update
+        if real:
+            real_env_steps += steps_per_update
+            cumulative_real_episodes += completed
+        else:
+            imagined_env_steps += steps_per_update
         rows.append(
-            to_jsonable(
-                {
-                    "update": update,
-                    "env_steps": env_steps,
-                    "real_env_steps": real_env_steps,
-                    "imagined_env_steps": 0,
-                    "completed_real_episodes": completed_real_episodes,
-                    "cumulative_real_episodes": cumulative_real_episodes,
-                    **rollout.metrics,
-                    **{f"ppo/{key}": value for key, value in update_metrics.items()},
-                }
-            )
+            {
+                "update": index + 1,
+                "env_steps": env_steps,
+                "real_env_steps": real_env_steps,
+                "imagined_env_steps": imagined_env_steps,
+                "completed_real_episodes": completed,
+                "cumulative_real_episodes": cumulative_real_episodes,
+                **(extra_fields or {}),
+                **metrics,
+            }
         )
-    return train_state, observations, rng, rows
+    return rows, real_env_steps, imagined_env_steps, cumulative_real_episodes
 
 
 def run_training(
@@ -637,6 +625,7 @@ def run_training(
     logger.write_json("random_baseline.json", random_result)
 
     adapter = _make_training_adapter(cfg, seed=seed)
+    scan_path = hasattr(adapter, "scan_rollout")
     rows: list[dict[str, Any]] = []
     try:
         observations = adapter.reset()
@@ -669,60 +658,33 @@ def run_training(
         imagined_env_steps = 0
         cumulative_real_episodes = 0
 
-        if cfg.algorithm == "mappo":
-            if not isinstance(config, MAPPOConfig):
-                raise TypeError("MAPPO updates require a MAPPOConfig")
-            mappo_config = config
-            update_fn = jax.jit(
-                lambda state, batch, last_values, update_rng: mappo_update(
-                    state,
-                    batch,
-                    last_values,
-                    update_rng,
-                    mappo_config,
-                )
-            )
-            collect_fn = collect_mappo_rollout
-        else:
-            if not isinstance(config, IPPOConfig):
-                raise TypeError("IPPO updates require an IPPOConfig")
-            ippo_config = config
-            update_fn = jax.jit(
-                lambda state, batch, last_values, update_rng: ppo_update(
-                    state,
-                    batch,
-                    last_values,
-                    update_rng,
-                    ippo_config,
-                )
-            )
-            collect_fn = (
-                collect_rollout_scan
-                if observation_mode == "vector" and hasattr(adapter, "scan_rollout")
-                else collect_rollout
-            )
-
         if cfg.prefit_world_model:
+            reward_done_fn = _make_reward_done_fn(cfg)
             if cfg.wm_policy_warmup_updates:
-                train_state, observations, rng, warmup_rows = (
-                    _warmup_policy_before_world_model(
-                        cfg,
-                        adapter=adapter,
-                        train_state=train_state,
-                        observations=observations,
-                        rng=rng,
-                        config=config,
-                        update_fn=update_fn,
-                        collect_fn=collect_fn,
-                        observation_mode=observation_mode,
-                        freeze_policy=freeze_policy,
-                    )
+                train_state, observations, rng, warmup_stacked = train_real_scan(
+                    adapter,
+                    train_state,
+                    observations,
+                    rng,
+                    num_updates=cfg.wm_policy_warmup_updates,
+                    config=config,
+                    rollout_steps=cfg.rollout_steps,
+                    algorithm=cfg.algorithm,
+                    freeze_policy=freeze_policy,
                 )
-                if warmup_rows:
-                    real_env_steps += int(warmup_rows[-1]["real_env_steps"])
-                    cumulative_real_episodes += int(
-                        warmup_rows[-1]["cumulative_real_episodes"]
-                    )
+                (
+                    warmup_rows,
+                    real_env_steps,
+                    _,
+                    cumulative_real_episodes,
+                ) = _rows_from_stacked(
+                    warmup_stacked,
+                    steps_per_update=cfg.num_envs * cfg.rollout_steps,
+                    real=True,
+                    real_env_steps=real_env_steps,
+                    imagined_env_steps=0,
+                    cumulative_real_episodes=cumulative_real_episodes,
+                )
                 logger.write_json(
                     "world_model_policy_warmup.json",
                     {
@@ -736,12 +698,12 @@ def run_training(
                     },
                 )
 
-            reward_done_fn = _make_reward_done_fn(cfg)
+            rng, random_collect_key = jax.random.split(rng)
             random_batch, observations, random_start_states, random_stats = (
-                collect_random_transition_batch(
+                collect_random_transition_batch_scan(
                     adapter,
                     observations,
-                    np.random.default_rng(seed + 3),
+                    random_collect_key,
                     rollout_steps=cfg.wm_random_rollouts,
                 )
             )
@@ -754,7 +716,7 @@ def run_training(
                 rng,
                 policy_start_states,
                 policy_stats,
-            ) = collect_policy_transition_batch(
+            ) = collect_policy_transition_batch_scan(
                 adapter,
                 train_state,
                 observations,
@@ -852,45 +814,104 @@ def run_training(
             observations = adapter.reset()
 
         updates = max(1, cfg.total_env_steps // (cfg.num_envs * cfg.rollout_steps))
-        env_steps = 0
-        for update in range(1, updates + 1):
-            completed_real_episodes = 0
-            if cfg.prefit_world_model:
-                if (
-                    world_model_state is None
-                    or world_model_config is None
-                    or model_start_states is None
-                    or reward_done_fn is None
-                ):
-                    raise RuntimeError("world model prefit did not initialize")
-                rng, rollout_key, start_key, update_key = jax.random.split(rng, 4)
-                initial_states = sample_initial_states(
-                    model_start_states,
-                    start_key,
-                    num_envs=cfg.num_envs,
+        if cfg.prefit_world_model:
+            if (
+                world_model_state is None
+                or world_model_config is None
+                or model_start_states is None
+                or reward_done_fn is None
+                or world_model_prefit_loss is None
+            ):
+                raise RuntimeError("world model prefit did not initialize")
+            train_state, rng, main_stacked = train_imagined_scan(
+                world_model_state,
+                train_state,
+                model_start_states,
+                rng,
+                num_updates=updates,
+                policy_config=config,
+                world_model_config=world_model_config,
+                rollout_steps=cfg.rollout_steps,
+                reward_done_fn=reward_done_fn,
+                num_envs=cfg.num_envs,
+                algorithm=cfg.algorithm,
+                freeze_policy=freeze_policy,
+            )
+            (
+                main_rows,
+                real_env_steps,
+                imagined_env_steps,
+                cumulative_real_episodes,
+            ) = _rows_from_stacked(
+                main_stacked,
+                steps_per_update=cfg.num_envs * cfg.rollout_steps,
+                real=False,
+                real_env_steps=real_env_steps,
+                imagined_env_steps=imagined_env_steps,
+                cumulative_real_episodes=cumulative_real_episodes,
+                extra_fields={
+                    "control": control,
+                    "world_model/prefit_loss": float(world_model_prefit_loss),
+                },
+            )
+        elif scan_path:
+            train_state, observations, rng, main_stacked = train_real_scan(
+                adapter,
+                train_state,
+                observations,
+                rng,
+                num_updates=updates,
+                config=config,
+                rollout_steps=cfg.rollout_steps,
+                algorithm=cfg.algorithm,
+                freeze_policy=freeze_policy,
+            )
+            (
+                main_rows,
+                real_env_steps,
+                imagined_env_steps,
+                cumulative_real_episodes,
+            ) = _rows_from_stacked(
+                main_stacked,
+                steps_per_update=cfg.num_envs * cfg.rollout_steps,
+                real=True,
+                real_env_steps=real_env_steps,
+                imagined_env_steps=imagined_env_steps,
+                cumulative_real_episodes=cumulative_real_episodes,
+                extra_fields={"control": control},
+            )
+        else:
+            if cfg.algorithm == "mappo":
+                if not isinstance(config, MAPPOConfig):
+                    raise TypeError("MAPPO updates require a MAPPOConfig")
+                mappo_config = config
+                update_fn = jax.jit(
+                    lambda state, batch, last_values, update_rng: mappo_update(
+                        state,
+                        batch,
+                        last_values,
+                        update_rng,
+                        mappo_config,
+                    )
                 )
-                if cfg.algorithm == "mappo":
-                    rollout = simulate_mappo_model_rollout(
-                        world_model_state,
-                        train_state,
-                        initial_states,
-                        rollout_key,
-                        rollout_steps=cfg.rollout_steps,
-                        config=world_model_config,
-                        reward_done_fn=reward_done_fn,
-                    )
-                else:
-                    rollout = simulate_ippo_model_rollout(
-                        world_model_state,
-                        train_state,
-                        initial_states,
-                        rollout_key,
-                        rollout_steps=cfg.rollout_steps,
-                        config=world_model_config,
-                        reward_done_fn=reward_done_fn,
-                    )
-                imagined_env_steps += cfg.num_envs * cfg.rollout_steps
+                collect_fn = collect_mappo_rollout
             else:
+                if not isinstance(config, IPPOConfig):
+                    raise TypeError("IPPO updates require an IPPOConfig")
+                ippo_config = config
+                update_fn = jax.jit(
+                    lambda state, batch, last_values, update_rng: ppo_update(
+                        state,
+                        batch,
+                        last_values,
+                        update_rng,
+                        ippo_config,
+                    )
+                )
+                collect_fn = collect_rollout
+            main_rows = []
+            env_steps = 0
+            for update in range(1, updates + 1):
                 rng, rollout_key, update_key = jax.random.split(rng, 3)
                 rollout = _collect_real_env_rollout(
                     cfg,
@@ -908,29 +929,31 @@ def run_training(
                     rollout.metrics.get("completed_episodes") or 0
                 )
                 cumulative_real_episodes += completed_real_episodes
-            update_metrics: dict[str, Any] = {}
-            if not freeze_policy:
-                train_state, update_metrics = update_fn(
-                    train_state,
-                    rollout.batch,
-                    rollout.last_values,
-                    update_key,
+                update_metrics: dict[str, Any] = {}
+                if not freeze_policy:
+                    train_state, update_metrics = update_fn(
+                        train_state,
+                        rollout.batch,
+                        rollout.last_values,
+                        update_key,
+                    )
+                env_steps += cfg.num_envs * cfg.rollout_steps
+                main_rows.append(
+                    {
+                        "update": update,
+                        "env_steps": env_steps,
+                        "real_env_steps": real_env_steps,
+                        "imagined_env_steps": imagined_env_steps,
+                        "completed_real_episodes": completed_real_episodes,
+                        "cumulative_real_episodes": cumulative_real_episodes,
+                        "control": control,
+                        **rollout.metrics,
+                        **{
+                            f"ppo/{key}": value for key, value in update_metrics.items()
+                        },
+                    }
                 )
-
-            env_steps += cfg.num_envs * cfg.rollout_steps
-            row = {
-                "update": update,
-                "env_steps": env_steps,
-                "real_env_steps": real_env_steps,
-                "imagined_env_steps": imagined_env_steps,
-                "completed_real_episodes": completed_real_episodes,
-                "cumulative_real_episodes": cumulative_real_episodes,
-                "control": control,
-                **rollout.metrics,
-                **{f"ppo/{key}": value for key, value in update_metrics.items()},
-            }
-            if world_model_prefit_loss is not None:
-                row["world_model/prefit_loss"] = world_model_prefit_loss
+        for row in main_rows:
             rows.append(to_jsonable(row))
             logger.append_metrics(row)
 

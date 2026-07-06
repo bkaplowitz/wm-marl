@@ -35,8 +35,8 @@ from flow_matching.train import (
     create_conditioned_train_state,
     create_discrete_conditioned_train_state,
 )
-from world_marl.algs.ippo import RolloutBatch
-from world_marl.algs.mappo import MAPPORolloutBatch
+from world_marl.algs.ippo import RolloutBatch, ppo_update
+from world_marl.algs.mappo import MAPPORolloutBatch, mappo_update
 from world_marl.training import RolloutResult, build_vector_central
 
 # (states, env_actions, next_states) -> (rewards, dones), each [env, agent].
@@ -481,6 +481,96 @@ def _imagined_rollout(
     )
     last_values = _apply_vector_policy(policy_state, last_flat, last_central)[1]
     return stacked, final_states, last_values
+
+
+def train_imagined_scan(
+    model_state: TrainState,
+    train_state: TrainState,
+    model_start_states: jnp.ndarray,
+    rng: jax.Array,
+    *,
+    num_updates: int,
+    policy_config: Any,
+    world_model_config: VectorWorldModelConfig,
+    rollout_steps: int,
+    reward_done_fn: RewardDoneFn,
+    num_envs: int,
+    algorithm: str,
+    freeze_policy: bool = False,
+):
+    """Fold the whole imagined (prefit) PPO update loop into one ``lax.scan``.
+
+    Reproduces ``run_training``'s prefit branch (resample initial states, run
+    ``_imagined_rollout``, apply the PPO/MAPPO update) ``num_updates`` times
+    while keeping everything on device: only the policy ``train_state`` and
+    ``rng`` ride in the carry (the world model is frozen; initial states are
+    resampled per update from the fixed ``model_start_states`` pool). Per update
+    the key is split four ways (``rng, rollout_key, start_key, update_key``)
+    exactly like the host branch. Returns ``(final_train_state, final_rng,
+    stacked_metrics)`` with each metric stacked to ``[num_updates]``.
+    """
+    if rollout_steps < 1:
+        raise ValueError("rollout_steps must be >= 1")
+    if num_updates < 1:
+        raise ValueError("num_updates must be >= 1")
+    if algorithm not in {"ippo", "mappo"}:
+        raise ValueError(f"unsupported algorithm {algorithm!r}")
+    is_mappo = algorithm == "mappo"
+    update_fn = mappo_update if is_mappo else ppo_update
+
+    from world_marl.world_model_training import sample_initial_states
+
+    def outer_body(carry, _):
+        ts, key = carry
+        key, rollout_key, start_key, update_key = jax.random.split(key, 4)
+        initial_states = sample_initial_states(
+            model_start_states, start_key, num_envs=num_envs
+        )
+        stacked, _final_states, last_values = _imagined_rollout(
+            model_state,
+            ts,
+            initial_states,
+            rollout_key,
+            rollout_steps=rollout_steps,
+            config=world_model_config,
+            is_mappo=is_mappo,
+            reward_done_fn=reward_done_fn,
+        )
+        common = {
+            "observations": stacked["observations"],
+            "actions": stacked["actions"],
+            "log_probs": stacked["log_probs"],
+            "rewards": stacked["rewards"],
+            "dones": stacked["dones"],
+            "values": stacked["values"],
+        }
+        if is_mappo:
+            batch = MAPPORolloutBatch(
+                central_observations=stacked["central_observations"],
+                **common,
+            )
+        else:
+            batch = RolloutBatch(**common)
+        mean_reward = jnp.mean(batch.rewards)
+        if freeze_policy:
+            new_ts = ts
+            ppo_metrics: dict[str, Any] = {}
+        else:
+            new_ts, update_metrics = update_fn(
+                ts, batch, last_values, update_key, policy_config
+            )
+            ppo_metrics = {f"ppo/{key_}": val for key_, val in update_metrics.items()}
+        out = {
+            "rollout_mean_reward": mean_reward,
+            "model_rollout_mean_reward": mean_reward,
+        }
+        out.update(ppo_metrics)
+        return (new_ts, key), out
+
+    (final_ts, final_rng), stacked_metrics = jax.lax.scan(
+        outer_body, (train_state, rng), None, length=num_updates
+    )
+    return final_ts, final_rng, stacked_metrics
 
 
 def _apply_vector_policy(

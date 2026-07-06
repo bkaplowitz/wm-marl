@@ -21,14 +21,19 @@ from world_marl.config import TrainConfig
 from world_marl.scripts import train_e2e
 
 
-def _tiny_coins_args(out_dir: Path, monkeypatch) -> argparse.Namespace:
+def _tiny_coins_args(
+    out_dir: Path,
+    monkeypatch,
+    *,
+    algorithm: str = "ippo",
+    prefit: bool = True,
+) -> argparse.Namespace:
     argv = [
         "train_e2e",
         "--substrate",
         "coins",
-        "--prefit-world-model",
         "--algorithm",
-        "ippo",
+        algorithm,
         "--num-envs",
         "1",
         "--rollout-steps",
@@ -49,21 +54,25 @@ def _tiny_coins_args(out_dir: Path, monkeypatch) -> argparse.Namespace:
         "1",
         "--update-epochs",
         "1",
-        "--wm-random-rollouts",
-        "1",
-        "--wm-initial-rollouts",
-        "1",
-        "--wm-fit-steps",
-        "2",
-        "--wm-integration-steps",
-        "1",
-        "--wm-hidden-dim",
-        "8",
-        "--wm-policy-warmup-updates",
-        "1",
         "--out-dir",
         str(out_dir),
     ]
+    if prefit:
+        argv += [
+            "--prefit-world-model",
+            "--wm-random-rollouts",
+            "1",
+            "--wm-initial-rollouts",
+            "1",
+            "--wm-fit-steps",
+            "2",
+            "--wm-integration-steps",
+            "1",
+            "--wm-hidden-dim",
+            "8",
+            "--wm-policy-warmup-updates",
+            "1",
+        ]
     monkeypatch.setattr(sys, "argv", argv)
     return train_e2e.parse_args()
 
@@ -112,3 +121,86 @@ def test_coins_prefit_run_training_completes_and_writes_artifacts(
     assert prefit["random_completed_episodes"] == 0
     assert prefit["initial_policy_completed_episodes"] == 0
     assert prefit["prefit_completed_episodes"] == 0
+
+
+def test_coins_model_free_ippo_run_training_scan_path(tmp_path, monkeypatch):
+    """Model-free coins now trains through one ``train_real_scan`` call; the
+    per-update row schema written to ``metrics.jsonl`` must survive the switch.
+    """
+    cfg = TrainConfig.from_namespace(
+        _tiny_coins_args(tmp_path, monkeypatch, algorithm="ippo", prefit=False)
+    )
+    run_dir = tmp_path / "run_000"
+
+    outcome = train_e2e.run_training(
+        cfg,
+        run_dir=run_dir,
+        name="run_000",
+        run_index=0,
+        control=None,
+    )
+
+    assert (run_dir / "checkpoint" / "checkpoint.msgpack").exists()
+    assert (run_dir / "outcome.json").exists()
+    assert outcome.imagined_env_steps == 0
+
+    metrics_rows = [
+        json.loads(line)
+        for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    # total_env_steps=8 / (num_envs=1 * rollout_steps=4) -> 2 updates, one row each.
+    assert [row["update"] for row in metrics_rows] == [1, 2]
+    final_row = metrics_rows[-1]
+    assert final_row["real_env_steps"] == 8
+    assert final_row["imagined_env_steps"] == 0
+    # max_cycles=4 -> each 4-step update completes exactly one episode.
+    assert final_row["cumulative_real_episodes"] == 2
+    for key in (
+        "rollout_mean_reward",
+        "episode_return_mean",
+        "completed_episodes",
+        "control",
+        "ppo/total_loss",
+    ):
+        assert key in final_row, key
+
+
+def test_coins_prefit_mappo_run_training_scan_path(tmp_path, monkeypatch):
+    """The MAPPO prefit pipeline (scan warmup + scan collection + imagined scan
+    loop + checkpoint/reload-eval) must complete end-to-end on coins.
+    """
+    cfg = TrainConfig.from_namespace(
+        _tiny_coins_args(tmp_path, monkeypatch, algorithm="mappo", prefit=True)
+    )
+    run_dir = tmp_path / "run_000"
+
+    outcome = train_e2e.run_training(
+        cfg,
+        run_dir=run_dir,
+        name="run_000",
+        run_index=0,
+        control=None,
+    )
+
+    assert (run_dir / "checkpoint" / "checkpoint.msgpack").exists()
+    assert (run_dir / "reload_evaluation.json").exists()
+    assert (run_dir / "world_model_policy_warmup.json").exists()
+    assert outcome.imagined_env_steps == 8
+
+    metrics_rows = [
+        json.loads(line)
+        for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row["update"] for row in metrics_rows] == [1, 2]
+    final_row = metrics_rows[-1]
+    # warmup (1 update * 4 steps) + random (1) + policy (1) real steps, then
+    # the main loop is fully imagined.
+    assert final_row["real_env_steps"] == 6
+    assert final_row["imagined_env_steps"] == 8
+    assert final_row["cumulative_real_episodes"] == 1
+    for key in (
+        "model_rollout_mean_reward",
+        "world_model/prefit_loss",
+        "ppo/total_loss",
+    ):
+        assert key in final_row, key

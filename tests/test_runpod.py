@@ -68,9 +68,7 @@ def _benchmark_args(tmp_path, **overrides) -> argparse.Namespace:
 
 
 def test_benchmark_policy_job_is_accepted(monkeypatch):
-    monkeypatch.setattr(
-        sys, "argv", ["world-marl-runpod", "--job", "benchmark-policy"]
-    )
+    monkeypatch.setattr(sys, "argv", ["world-marl-runpod", "--job", "benchmark-policy"])
 
     args = runpod.parse_args()
 
