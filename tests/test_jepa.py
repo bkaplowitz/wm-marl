@@ -27,6 +27,16 @@ from world_marl.jepa.training import (
     train_model_step,
     transition_start_validity,
 )
+from world_marl.jepa.validation import (
+    action_contrast_metrics,
+    best_passing_candidate_report,
+    candidate_refit_gate_report,
+    merge_online_policy_baseline,
+    online_history_metrics,
+    run_passed as dmc_run_passed,
+    sample_online_candidate_batch,
+    summarize as summarize_dmc_jepa,
+)
 
 
 def _config() -> JepaConfig:
@@ -890,3 +900,647 @@ def _tree_changed(left, right) -> bool:
             strict=True,
         )
     )
+
+
+def test_online_candidate_batch_mixes_anchor_and_recent_replay():
+    anchor = SequenceReplayBuffer(
+        capacity=8,
+        num_envs=1,
+        observation_shape=(1,),
+        action_shape=(1,),
+        action_dtype=np.float32,
+    )
+    recent = SequenceReplayBuffer(
+        capacity=8,
+        num_envs=1,
+        observation_shape=(1,),
+        action_shape=(1,),
+        action_dtype=np.float32,
+    )
+    full = SequenceReplayBuffer(
+        capacity=16,
+        num_envs=1,
+        observation_shape=(1,),
+        action_shape=(1,),
+        action_dtype=np.float32,
+    )
+    for step in range(6):
+        anchor_obs = np.asarray([[step]], dtype=np.float32)
+        recent_obs = np.asarray([[step + 100]], dtype=np.float32)
+        action = np.asarray([[step]], dtype=np.float32)
+        reward = np.asarray([step], dtype=np.float32)
+        done = np.zeros((1,), dtype=np.float32)
+        anchor.add_step(
+            observations=anchor_obs,
+            actions=action,
+            rewards=reward,
+            dones=done,
+        )
+        recent.add_step(
+            observations=recent_obs,
+            actions=action,
+            rewards=reward,
+            dones=done,
+        )
+        full.add_step(
+            observations=anchor_obs,
+            actions=action,
+            rewards=reward,
+            dones=done,
+        )
+
+    batch = sample_online_candidate_batch(
+        np.random.default_rng(0),
+        replay=full,
+        anchor_replay=anchor,
+        recent_replay=recent,
+        batch_size=4,
+        chunk_length=2,
+        max_horizon=1,
+        anchor_batch_fraction=0.5,
+    )
+
+    assert batch.observations.shape == (4, 3, 1)
+    assert np.all(np.asarray(batch.observations[:2]) < 100.0)
+    assert np.all(np.asarray(batch.observations[2:]) >= 100.0)
+
+
+def test_candidate_refit_gate_requires_recent_improvement_and_anchor_preservation():
+    accepted = candidate_refit_gate_report(
+        {"model/open_loop_loss": 0.40, "model/jepa_loss": 0.10},
+        {"model/open_loop_loss": 0.43, "model/jepa_loss": 0.11},
+        {"model/open_loop_loss": 0.80, "model/jepa_loss": 0.20},
+        {"model/open_loop_loss": 0.65, "model/jepa_loss": 0.18},
+        metric="model/open_loop_loss",
+        min_recent_improvement=0.05,
+        max_anchor_degradation=0.05,
+    )
+    recent_failed = candidate_refit_gate_report(
+        {"model/open_loop_loss": 0.40},
+        {"model/open_loop_loss": 0.43},
+        {"model/open_loop_loss": 0.80},
+        {"model/open_loop_loss": 0.78},
+        metric="model/open_loop_loss",
+        min_recent_improvement=0.05,
+        max_anchor_degradation=0.05,
+    )
+    anchor_failed = candidate_refit_gate_report(
+        {"model/open_loop_loss": 0.40},
+        {"model/open_loop_loss": 0.50},
+        {"model/open_loop_loss": 0.80},
+        {"model/open_loop_loss": 0.65},
+        metric="model/open_loop_loss",
+        min_recent_improvement=0.05,
+        max_anchor_degradation=0.05,
+    )
+
+    assert accepted["model_update_accepted"]
+    assert accepted["recent_validation_improvement"] == pytest.approx(0.15)
+    assert accepted["anchor_validation_degradation"] == pytest.approx(0.03)
+    assert accepted["candidate_gate_score"] == pytest.approx(0.12)
+    assert not recent_failed["model_update_accepted"]
+    assert not recent_failed["recent_validation_improved"]
+    assert not anchor_failed["model_update_accepted"]
+    assert not anchor_failed["anchor_validation_preserved"]
+
+
+def test_best_passing_candidate_report_uses_gate_score():
+    reports = [
+        {
+            "candidate_update": 100,
+            "model_update_accepted": True,
+            "gate": {"candidate_gate_score": 0.1},
+        },
+        {
+            "candidate_update": 200,
+            "model_update_accepted": False,
+            "gate": {"candidate_gate_score": 10.0},
+        },
+        {
+            "candidate_update": 300,
+            "model_update_accepted": True,
+            "gate": {"candidate_gate_score": 0.2},
+        },
+    ]
+
+    best = best_passing_candidate_report(reports)
+
+    assert best is reports[2]
+
+
+def test_action_contrast_no_action_control_has_zero_margin():
+    config = JepaConfig(
+        observation_dim=4,
+        action_dim=3,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=1,
+        context_window=1,
+        sigreg_num_proj=32,
+    )
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    batch = ReplayBatch(
+        observations=jnp.arange(4 * 3 * 4, dtype=jnp.float32).reshape((4, 3, 4)),
+        actions=jnp.ones((4, 2, 3), dtype=jnp.float32),
+        rewards=jnp.ones((4, 2), dtype=jnp.float32),
+        dones=jnp.zeros((4, 2), dtype=jnp.float32),
+    )
+
+    metrics = action_contrast_metrics(
+        state,
+        jax.random.PRNGKey(1),
+        batch,
+        config,
+        chunk_length=2,
+        control="no-action-world-model",
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(metrics["model/action_contrast_margin"]),
+        0.0,
+        atol=1e-7,
+    )
+    np.testing.assert_allclose(
+        np.asarray(metrics["model/action_contrast_accuracy"]),
+        0.0,
+        atol=1e-7,
+    )
+    np.testing.assert_allclose(
+        np.asarray(metrics["model/action_contrast_valid_fraction"]),
+        1.0,
+        atol=1e-7,
+    )
+    assert np.asarray(metrics["model/action_contrast_finite_fraction"]) == 1.0
+
+
+def test_dmc_jepa_summary_requires_main_to_beat_controls():
+    def outcome(control: str, jepa_loss: float, open_loop_loss: float):
+        return {
+            "run_index": 0,
+            "control": control,
+            "passed": True,
+            "initial_jepa_loss": 1.0,
+            "final_jepa_loss": jepa_loss,
+            "initial_open_loop_loss": 1.0,
+            "final_open_loop_loss": open_loop_loss,
+            "final_model_metrics": {"model/jepa_loss": jepa_loss},
+        }
+
+    good = summarize_dmc_jepa(
+        [
+            outcome("none", 0.01, 0.02),
+            outcome("no-action-world-model", 0.03, 0.08),
+        ]
+    )
+    bad = summarize_dmc_jepa(
+        [
+            outcome("none", 0.05, 0.09),
+            outcome("no-action-world-model", 0.03, 0.08),
+        ]
+    )
+
+    assert good["passed"]
+    assert good["main_beats_controls_open_loop"]
+    assert good["main_beats_controls_jepa"]
+    assert not bad["passed"]
+
+
+def test_dmc_run_passes_when_continue_targets_have_no_terminals():
+    initial = {
+        "model/jepa_loss": 1.0,
+        "model/open_loop_loss": 1.0,
+    }
+    final = {
+        "model/jepa_loss": 0.1,
+        "model/open_loop_loss": 0.1,
+        "model/open_loop_finite_fraction": 1.0,
+        "model/reward_loss": 0.01,
+        "model/reward_constant_mse": 0.1,
+        "model/continue_loss": 0.001,
+        "model/continue_constant_bce": 0.000001,
+        "model/terminal_positive_fraction": 0.0,
+        "model/nonterminal_recall": 1.0,
+    }
+
+    assert dmc_run_passed(initial, final, reload_diff=0.0)
+
+
+def test_dmc_run_passes_when_continue_targets_have_too_few_terminals():
+    initial = {
+        "model/jepa_loss": 1.0,
+        "model/open_loop_loss": 1.0,
+    }
+    final = {
+        "model/jepa_loss": 0.1,
+        "model/open_loop_loss": 0.1,
+        "model/open_loop_finite_fraction": 1.0,
+        "model/reward_loss": 0.01,
+        "model/reward_constant_mse": 0.1,
+        "model/continue_loss": 0.01,
+        "model/continue_constant_bce": 0.005,
+        "model/terminal_positive_fraction": 0.00061,
+        "model/nonterminal_recall": 1.0,
+    }
+
+    assert dmc_run_passed(initial, final, reload_diff=0.0)
+
+
+def test_dmc_run_requires_continue_baseline_when_terminals_are_common_enough():
+    initial = {
+        "model/jepa_loss": 1.0,
+        "model/open_loop_loss": 1.0,
+    }
+    final = {
+        "model/jepa_loss": 0.1,
+        "model/open_loop_loss": 0.1,
+        "model/open_loop_finite_fraction": 1.0,
+        "model/reward_loss": 0.01,
+        "model/reward_constant_mse": 0.1,
+        "model/continue_loss": 0.02,
+        "model/continue_constant_bce": 0.01,
+        "model/terminal_positive_fraction": 0.02,
+        "model/nonterminal_recall": 1.0,
+    }
+
+    assert not dmc_run_passed(initial, final, reload_diff=0.0)
+
+
+def test_dmc_jepa_summary_tracks_policy_rung():
+    def outcome(control: str, policy_improvement: float):
+        return {
+            "run_index": 0,
+            "control": control,
+            "passed": True,
+            "initial_jepa_loss": 1.0,
+            "final_jepa_loss": 0.1 if control == "none" else 0.2,
+            "initial_open_loop_loss": 1.0,
+            "final_open_loop_loss": 0.1 if control == "none" else 0.2,
+            "policy_training_enabled": True,
+            "policy_objective": "direct",
+            "policy_passed": control == "none",
+            "policy_random_mean": 0.0,
+            "policy_initial_mean": 1.0,
+            "policy_trained_mean": 1.0 + policy_improvement,
+            "policy_improvement": policy_improvement,
+            "policy_trained_minus_random": 1.0 + policy_improvement,
+            "final_model_metrics": {"model/jepa_loss": 0.1},
+        }
+
+    good = summarize_dmc_jepa(
+        [
+            outcome("none", 2.0),
+            outcome("no-action-world-model", 0.0),
+        ]
+    )
+    bad = summarize_dmc_jepa(
+        [
+            outcome("none", 0.1),
+            outcome("no-action-world-model", 0.2),
+        ]
+    )
+
+    assert good["passed"]
+    assert good["world_model_passed"]
+    assert good["policy_training_enabled"]
+    assert good["policy_main_beats_controls"]
+    assert not bad["passed"]
+    assert bad["world_model_passed"]
+
+
+def test_dmc_jepa_policy_summary_allows_majority_success_with_positive_aggregate():
+    def outcome(run_index: int, policy_improvement: float, policy_passed: bool):
+        return {
+            "run_index": run_index,
+            "control": "none",
+            "passed": True,
+            "initial_jepa_loss": 1.0,
+            "final_jepa_loss": 0.1,
+            "initial_open_loop_loss": 1.0,
+            "final_open_loop_loss": 0.1,
+            "policy_training_enabled": True,
+            "policy_objective": "direct",
+            "policy_passed": policy_passed,
+            "policy_random_mean": 0.0,
+            "policy_initial_mean": 10.0,
+            "policy_trained_mean": 10.0 + policy_improvement,
+            "policy_improvement": policy_improvement,
+            "policy_trained_minus_random": 10.0 + policy_improvement,
+            "final_model_metrics": {"model/jepa_loss": 0.1},
+        }
+
+    summary = summarize_dmc_jepa(
+        [
+            outcome(0, 90.0, True),
+            outcome(1, 300.0, True),
+            outcome(2, 0.0, False),
+        ]
+    )
+
+    assert summary["passed"]
+    assert summary["policy_main_passed"]
+    assert summary["policy_main_successes"] == 2
+    assert summary["policy_required_successes"] == 2
+    assert summary["policy_aggregate_improved"]
+
+
+def test_dmc_jepa_summary_marks_candidate_distill_as_diagnostic():
+    outcome = {
+        "run_index": 0,
+        "control": "none",
+        "passed": True,
+        "initial_jepa_loss": 1.0,
+        "final_jepa_loss": 0.1,
+        "initial_open_loop_loss": 1.0,
+        "final_open_loop_loss": 0.1,
+        "policy_training_enabled": True,
+        "policy_objective": "candidate-distill",
+        "policy_passed": True,
+        "policy_random_mean": 0.0,
+        "policy_initial_mean": 1.0,
+        "policy_trained_mean": 3.0,
+        "policy_improvement": 2.0,
+        "policy_trained_minus_random": 3.0,
+        "final_model_metrics": {"model/jepa_loss": 0.1},
+    }
+
+    summary = summarize_dmc_jepa([outcome])
+
+    assert summary["policy_main_passed"]
+    assert summary["primary_policy_objective"] == "candidate-distill"
+    assert not summary["direct_policy_mainline"]
+    assert not summary["passed"]
+
+
+def test_online_policy_outcome_keeps_original_baseline_for_summary():
+    initial = {
+        "policy_initial_mean": 10.0,
+        "policy_random_mean": 1.0,
+        "policy_trained_mean": 40.0,
+    }
+    final = {
+        "policy_initial_mean": 50.0,
+        "policy_random_mean": 2.0,
+        "policy_trained_mean": 60.0,
+        "policy_improvement": 10.0,
+        "policy_trained_minus_random": 58.0,
+        "policy_final_metrics": {
+            "policy/action_saturation_fraction": 0.1,
+        },
+        "critic_final_metrics": {
+            "critic/finite_fraction": 1.0,
+        },
+    }
+
+    merged = merge_online_policy_baseline(final, initial)
+
+    assert merged["policy_initial_mean"] == 10.0
+    assert merged["policy_random_mean"] == 1.0
+    assert merged["policy_online_phase_initial_mean"] == 50.0
+    assert merged["policy_online_phase_improvement"] == 10.0
+    assert merged["policy_pre_online_trained_mean"] == 40.0
+    assert merged["policy_online_total_improvement_vs_pre_online"] == 20.0
+    assert merged["policy_improvement"] == 50.0
+    assert merged["policy_primary_improvement"] == 10.0
+    assert merged["policy_primary_improvement_key"] == "policy_online_phase_improvement"
+    assert merged["policy_trained_minus_random"] == 59.0
+    assert merged["policy_passed"]
+
+
+def test_online_policy_regression_fails_even_when_total_return_improves():
+    initial = {
+        "policy_initial_mean": 10.0,
+        "policy_random_mean": 1.0,
+        "policy_trained_mean": 45.0,
+    }
+    final = {
+        "policy_initial_mean": 50.0,
+        "policy_random_mean": 2.0,
+        "policy_trained_mean": 40.0,
+        "policy_improvement": -10.0,
+        "policy_trained_minus_random": 38.0,
+        "policy_final_metrics": {
+            "policy/action_saturation_fraction": 0.1,
+        },
+        "critic_final_metrics": {
+            "critic/finite_fraction": 1.0,
+        },
+    }
+
+    merged = merge_online_policy_baseline(final, initial)
+
+    assert merged["policy_improvement"] == 30.0
+    assert merged["policy_primary_improvement"] == -10.0
+    assert merged["policy_online_total_improvement_vs_pre_online"] == -5.0
+    assert not merged["policy_passed"]
+
+
+def test_online_policy_fails_when_phase_improves_but_loses_pre_online_actor():
+    initial = {
+        "policy_initial_mean": 10.0,
+        "policy_random_mean": 1.0,
+        "policy_trained_mean": 100.0,
+    }
+    final = {
+        "policy_initial_mean": 50.0,
+        "policy_random_mean": 2.0,
+        "policy_trained_mean": 70.0,
+        "policy_improvement": 20.0,
+        "policy_trained_minus_random": 68.0,
+        "policy_final_metrics": {
+            "policy/action_saturation_fraction": 0.1,
+        },
+        "critic_final_metrics": {
+            "critic/finite_fraction": 1.0,
+        },
+    }
+
+    merged = merge_online_policy_baseline(final, initial)
+
+    assert merged["policy_primary_improvement"] == 20.0
+    assert merged["policy_online_total_improvement_vs_pre_online"] == -30.0
+    assert not merged["policy_passed"]
+
+
+def test_dmc_jepa_summary_uses_online_phase_as_primary_policy_signal():
+    def outcome(control: str, total: float, online: float):
+        return {
+            "run_index": 0,
+            "control": control,
+            "passed": True,
+            "initial_jepa_loss": 1.0,
+            "final_jepa_loss": 0.1 if control == "none" else 0.2,
+            "initial_open_loop_loss": 1.0,
+            "final_open_loop_loss": 0.1 if control == "none" else 0.2,
+            "policy_training_enabled": True,
+            "policy_objective": "direct",
+            "policy_passed": control == "none" and online > 0.0,
+            "policy_random_mean": 0.0,
+            "policy_initial_mean": 10.0,
+            "policy_trained_mean": 10.0 + total,
+            "policy_improvement": total,
+            "policy_online_phase_improvement": online,
+            "policy_primary_improvement": online,
+            "policy_primary_improvement_key": "policy_online_phase_improvement",
+            "policy_trained_minus_random": 10.0 + total,
+            "final_model_metrics": {"model/jepa_loss": 0.1},
+        }
+
+    good = summarize_dmc_jepa(
+        [
+            outcome("none", 50.0, 5.0),
+            outcome("shuffled-action-replay", 40.0, 1.0),
+        ]
+    )
+    bad = summarize_dmc_jepa(
+        [
+            outcome("none", 50.0, 1.0),
+            outcome("shuffled-action-replay", 10.0, 5.0),
+        ]
+    )
+
+    assert good["passed"]
+    assert good["policy_comparison_key"] == "policy_primary_improvement"
+    assert good["aggregate_policy_primary_improvement"] == 5.0
+    assert good["aggregate_control_policy_primary_improvement"] == 1.0
+    assert (
+        good["paired_control_differences"]["shuffled-action-replay"][
+            "mean_policy_primary_improvement_advantage"
+        ]
+        == 4.0
+    )
+    assert not bad["passed"]
+    assert not bad["policy_main_beats_controls"]
+    assert not bad["paired_policy_ok"]
+
+
+def test_dmc_jepa_summary_requires_paired_policy_majority():
+    def outcome(control: str, run_index: int, primary: float):
+        return {
+            "run_index": run_index,
+            "control": control,
+            "passed": True,
+            "initial_jepa_loss": 1.0,
+            "final_jepa_loss": 0.1 if control == "none" else 0.2,
+            "initial_open_loop_loss": 1.0,
+            "final_open_loop_loss": 0.1 if control == "none" else 0.2,
+            "policy_training_enabled": True,
+            "policy_objective": "direct",
+            "policy_passed": control == "none",
+            "policy_random_mean": 0.0,
+            "policy_initial_mean": 10.0,
+            "policy_trained_mean": 10.0 + primary,
+            "policy_improvement": primary,
+            "policy_primary_improvement": primary,
+            "policy_trained_minus_random": 10.0 + primary,
+            "final_model_metrics": {"model/jepa_loss": 0.1},
+        }
+
+    summary = summarize_dmc_jepa(
+        [
+            outcome("none", 0, 100.0),
+            outcome("none", 1, 0.0),
+            outcome("none", 2, 0.0),
+            outcome("shuffled-action-replay", 0, 0.0),
+            outcome("shuffled-action-replay", 1, 1.0),
+            outcome("shuffled-action-replay", 2, 1.0),
+        ]
+    )
+
+    paired = summary["paired_control_differences"]["shuffled-action-replay"]
+    assert paired["mean_policy_primary_improvement_advantage"] > 0.0
+    assert paired["runs_main_better_policy_primary"] == 1
+    assert paired["required_majority_pairs"] == 2
+    assert not summary["paired_policy_ok"]
+    assert not summary["passed"]
+
+
+def test_online_history_metrics_tracks_actor_replay_trend():
+    metrics = online_history_metrics(
+        [
+            {
+                "actor_replay": {"mean_return": 10.0},
+                "policy": {
+                    "policy_training_enabled": True,
+                    "policy_improvement": 3.0,
+                    "policy_passed": True,
+                },
+                "model_metrics": {
+                    "model/jepa_loss": 0.2,
+                    "model/open_loop_loss": 0.4,
+                },
+                "candidate_refit": {
+                    "model_update_accepted": True,
+                    "checkpoint_selection": {
+                        "candidate_selected_update": 500,
+                        "candidate_final_update_accepted": False,
+                    },
+                    "gate": {
+                        "recent_validation_improvement": 0.2,
+                        "anchor_validation_degradation": 0.01,
+                    },
+                },
+            },
+            {
+                "actor_replay": {"mean_return": 25.0},
+                "policy": {
+                    "policy_training_enabled": True,
+                    "policy_improvement": 5.0,
+                    "policy_passed": True,
+                },
+                "model_metrics": {
+                    "model/jepa_loss": 0.1,
+                    "model/open_loop_loss": 0.3,
+                },
+                "candidate_refit": {
+                    "model_update_accepted": False,
+                    "checkpoint_selection": {
+                        "candidate_selected_update": None,
+                        "candidate_final_update_accepted": False,
+                    },
+                    "gate": {
+                        "recent_validation_improvement": -0.1,
+                        "anchor_validation_degradation": 0.08,
+                    },
+                },
+            },
+        ],
+        {"policy_trained_mean": 8.0},
+    )
+
+    assert metrics["online_actor_replay_iterations"] == 2
+    assert metrics["online_actor_replay_returns"] == [10.0, 25.0]
+    assert metrics["online_actor_replay_delta"] == 15.0
+    assert metrics["online_actor_replay_vs_initial_policy"] == 17.0
+    assert metrics["online_actor_replay_trend_passed"]
+    assert metrics["online_policy_phase_improvements"] == [3.0, 5.0]
+    assert metrics["online_policy_phase_final_improvement"] == 5.0
+    assert metrics["online_policy_phase_passes"] == [True, True]
+    assert metrics["online_policy_phase_passed"]
+    assert metrics["online_model_jepa_losses"] == [0.2, 0.1]
+    assert metrics["online_model_open_loop_losses"] == [0.4, 0.3]
+    assert metrics["online_candidate_refit_iterations"] == 2
+    assert metrics["online_model_update_acceptances"] == [True, False]
+    assert metrics["online_model_update_acceptance_rate"] == 0.5
+    assert metrics["online_candidate_recent_validation_improvements"] == [0.2, -0.1]
+    assert metrics["online_candidate_anchor_validation_degradations"] == [0.01, 0.08]
+    assert metrics["online_candidate_recent_validation_improvement_final"] == -0.1
+    assert metrics["online_candidate_anchor_validation_degradation_final"] == 0.08
+    assert metrics["online_candidate_selected_updates"] == [500]
+    assert metrics["online_candidate_final_update_acceptances"] == [False, False]
+    assert metrics["online_pipeline_completed"]
+
+
+def test_online_history_metrics_rejects_actor_replay_regression():
+    metrics = online_history_metrics(
+        [
+            {"actor_replay": {"mean_return": 5.0}},
+        ],
+        {"policy_trained_mean": 8.0},
+    )
+
+    assert metrics["online_actor_replay_iterations"] == 1
+    assert metrics["online_actor_replay_vs_initial_policy"] == -3.0
+    assert not metrics["online_actor_replay_trend_passed"]
