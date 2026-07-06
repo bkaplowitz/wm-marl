@@ -338,7 +338,7 @@ def _imagined_rollout(
     return stacked, final_states, last_values
 
 
-def train_imagined_scan(
+def train_in_imagination(
     model_state: TrainState,
     train_state: TrainState,
     model_start_states: jnp.ndarray,
@@ -375,15 +375,15 @@ def train_imagined_scan(
 
     from world_marl.world_model_training import sample_initial_states
 
-    def outer_body(carry, _):
-        ts, key = carry
+    def update_step(carry, _):
+        policy_train_state, key = carry
         key, rollout_key, start_key, update_key = jax.random.split(key, 4)
         initial_states = sample_initial_states(
             model_start_states, start_key, num_envs=num_envs
         )
         stacked, _final_states, last_values = _imagined_rollout(
             model_state,
-            ts,
+            policy_train_state,
             initial_states,
             rollout_key,
             rollout_steps=rollout_steps,
@@ -408,24 +408,26 @@ def train_imagined_scan(
             batch = RolloutBatch(**common)
         mean_reward = jnp.mean(batch.rewards)
         if freeze_policy:
-            new_ts = ts
+            next_train_state = policy_train_state
             ppo_metrics: dict[str, Any] = {}
         else:
-            new_ts, update_metrics = update_fn(
-                ts, batch, last_values, update_key, policy_config
+            next_train_state, update_metrics = update_fn(
+                policy_train_state, batch, last_values, update_key, policy_config
             )
-            ppo_metrics = {f"ppo/{key_}": val for key_, val in update_metrics.items()}
+            ppo_metrics = {
+                f"ppo/{metric_name}": val for metric_name, val in update_metrics.items()
+            }
         out = {
             "rollout_mean_reward": mean_reward,
             "model_rollout_mean_reward": mean_reward,
         }
         out.update(ppo_metrics)
-        return (new_ts, key), out
+        return (next_train_state, key), out
 
-    (final_ts, final_rng), stacked_metrics = jax.lax.scan(
-        outer_body, (train_state, rng), None, length=num_updates
+    (final_train_state, final_rng), stacked_metrics = jax.lax.scan(
+        update_step, (train_state, rng), None, length=num_updates
     )
-    return final_ts, final_rng, stacked_metrics
+    return final_train_state, final_rng, stacked_metrics
 
 
 def _apply_vector_policy(

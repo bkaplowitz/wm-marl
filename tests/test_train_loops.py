@@ -16,14 +16,14 @@ from world_marl.training import (
     central_observation_shape,
     collect_mappo_rollout,
     collect_rollout,
-    train_real_scan,
+    train_on_real_env,
 )
 from world_marl.world_model import (
     VectorWorldModelConfig,
     create_world_model_state,
     simulate_ippo_model_rollout,
     simulate_mappo_model_rollout,
-    train_imagined_scan,
+    train_in_imagination,
 )
 from world_marl.world_model_training import sample_initial_states
 
@@ -140,16 +140,16 @@ def _host_oracle(
     return train_state, observations, rng, per_update
 
 
-def _assert_params_close(host_state, scan_state, *, atol):
+def _assert_params_close(host_state, device_state, *, atol):
     host_leaves = jax.tree_util.tree_leaves(host_state.params)
-    scan_leaves = jax.tree_util.tree_leaves(scan_state.params)
-    assert len(host_leaves) == len(scan_leaves)
-    for h, s in zip(host_leaves, scan_leaves):
+    device_leaves = jax.tree_util.tree_leaves(device_state.params)
+    assert len(host_leaves) == len(device_leaves)
+    for h, s in zip(host_leaves, device_leaves):
         np.testing.assert_allclose(np.asarray(s), np.asarray(h), rtol=0, atol=atol)
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
-def test_train_real_scan_matches_host_single_update(algorithm):
+def test_train_on_real_env_matches_host_single_update(algorithm):
     """N=1 is the tight logic oracle: same start params -> the folded scan runs
     the *identical* rollout (bit-for-bit), gradient, and update as the host loop.
     The only admissible drift is XLA fusing the update inlined-in-scan vs the
@@ -179,12 +179,12 @@ def test_train_real_scan_matches_host_single_update(algorithm):
         freeze_policy=False,
     )
 
-    scan_adapter = _make_adapter(num_envs, max_cycles, seed)
-    obs0_scan = scan_adapter.reset()
-    scan_state, scan_obs, scan_rng, scan_metrics = train_real_scan(
-        scan_adapter,
+    device_adapter = _make_adapter(num_envs, max_cycles, seed)
+    obs0_device = device_adapter.reset()
+    device_state, device_obs, device_rng, device_metrics = train_on_real_env(
+        device_adapter,
         train_state,
-        obs0_scan,
+        obs0_device,
         key,
         num_updates=1,
         config=config,
@@ -194,14 +194,15 @@ def test_train_real_scan_matches_host_single_update(algorithm):
     )
 
     # Structural PRNG canary: the carried key must be bit-identical.
-    np.testing.assert_array_equal(np.asarray(scan_rng), np.asarray(host_rng))
+    np.testing.assert_array_equal(np.asarray(device_rng), np.asarray(host_rng))
 
     # Fixed-horizon coins -> episode counts/lengths are timer-driven (exact).
     assert (
-        int(scan_metrics["completed_episodes"][0]) == host_rows[0]["completed_episodes"]
+        int(device_metrics["completed_episodes"][0])
+        == host_rows[0]["completed_episodes"]
     )
     np.testing.assert_allclose(
-        np.asarray(scan_metrics["episode_length_mean"][0]),
+        np.asarray(device_metrics["episode_length_mean"][0]),
         host_rows[0]["episode_length_mean"],
         rtol=0,
         atol=1e-5,
@@ -210,21 +211,21 @@ def test_train_real_scan_matches_host_single_update(algorithm):
     # Reward-derived metrics: identical rollout at N=1 -> tight.
     for field in ("rollout_mean_reward", "episode_return_mean"):
         np.testing.assert_allclose(
-            np.asarray(scan_metrics[field][0]), host_rows[0][field], rtol=0, atol=1e-5
+            np.asarray(device_metrics[field][0]), host_rows[0][field], rtol=0, atol=1e-5
         )
     for field in ("ppo/actor_loss", "ppo/value_loss", "ppo/total_loss", "ppo/entropy"):
         np.testing.assert_allclose(
-            np.asarray(scan_metrics[field][0]), host_rows[0][field], rtol=0, atol=1e-5
+            np.asarray(device_metrics[field][0]), host_rows[0][field], rtol=0, atol=1e-5
         )
 
-    _assert_params_close(host_state, scan_state, atol=1e-5)
+    _assert_params_close(host_state, device_state, atol=1e-5)
     np.testing.assert_allclose(
-        np.asarray(scan_obs), np.asarray(host_obs), rtol=0, atol=1e-5
+        np.asarray(device_obs), np.asarray(host_obs), rtol=0, atol=1e-5
     )
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
-def test_train_real_scan_matches_host_multi_update(algorithm):
+def test_train_on_real_env_matches_host_multi_update(algorithm):
     """N>1 pins the carry threading across a boundary. The carried ``rng`` and
     the timer-driven episode counts/lengths must match exactly every update
     (proving the reset-on-done accumulators thread across the max_cycles reset),
@@ -252,12 +253,12 @@ def test_train_real_scan_matches_host_multi_update(algorithm):
         freeze_policy=False,
     )
 
-    scan_adapter = _make_adapter(num_envs, max_cycles, seed)
-    obs0_scan = scan_adapter.reset()
-    scan_state, _scan_obs, scan_rng, scan_metrics = train_real_scan(
-        scan_adapter,
+    device_adapter = _make_adapter(num_envs, max_cycles, seed)
+    obs0_device = device_adapter.reset()
+    device_state, _device_obs, device_rng, device_metrics = train_on_real_env(
+        device_adapter,
         train_state,
-        obs0_scan,
+        obs0_device,
         key,
         num_updates=num_updates,
         config=config,
@@ -266,26 +267,26 @@ def test_train_real_scan_matches_host_multi_update(algorithm):
         freeze_policy=False,
     )
 
-    np.testing.assert_array_equal(np.asarray(scan_rng), np.asarray(host_rng))
+    np.testing.assert_array_equal(np.asarray(device_rng), np.asarray(host_rng))
 
     for i in range(num_updates):
         assert (
-            int(scan_metrics["completed_episodes"][i])
+            int(device_metrics["completed_episodes"][i])
             == host_rows[i]["completed_episodes"]
         )
         np.testing.assert_allclose(
-            np.asarray(scan_metrics["episode_length_mean"][i]),
+            np.asarray(device_metrics["episode_length_mean"][i]),
             host_rows[i]["episode_length_mean"],
             rtol=0,
             atol=1e-5,
         )
 
     # Compounded inlined-vs-standalone update fusion drift -> loose stability check.
-    _assert_params_close(host_state, scan_state, atol=1e-3)
+    _assert_params_close(host_state, device_state, atol=1e-3)
     for i in range(num_updates):
         for field in ("ppo/total_loss", "rollout_mean_reward", "episode_return_mean"):
             np.testing.assert_allclose(
-                np.asarray(scan_metrics[field][i]),
+                np.asarray(device_metrics[field][i]),
                 host_rows[i][field],
                 rtol=0,
                 atol=1e-3,
@@ -293,7 +294,7 @@ def test_train_real_scan_matches_host_multi_update(algorithm):
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
-def test_train_real_scan_freeze_policy_leaves_params_unchanged(algorithm):
+def test_train_on_real_env_freeze_policy_leaves_params_unchanged(algorithm):
     """With ``freeze_policy`` the scan must skip the update and return the
     start params unchanged, while still advancing the env carry and rollout
     metrics (the warmup path uses this before the world model is fit).
@@ -305,10 +306,10 @@ def test_train_real_scan_freeze_policy_leaves_params_unchanged(algorithm):
     )
     key = jax.random.PRNGKey(seed)
 
-    scan_adapter = _make_adapter(num_envs, max_cycles, seed)
-    obs0 = scan_adapter.reset()
-    scan_state, _obs, _rng, scan_metrics = train_real_scan(
-        scan_adapter,
+    device_adapter = _make_adapter(num_envs, max_cycles, seed)
+    obs0 = device_adapter.reset()
+    device_state, _obs, _rng, device_metrics = train_on_real_env(
+        device_adapter,
         train_state,
         obs0,
         key,
@@ -319,15 +320,15 @@ def test_train_real_scan_freeze_policy_leaves_params_unchanged(algorithm):
         freeze_policy=True,
     )
 
-    _assert_params_close(train_state, scan_state, atol=0.0)
-    assert scan_metrics["rollout_mean_reward"].shape == (2,)
+    _assert_params_close(train_state, device_state, atol=0.0)
+    assert device_metrics["rollout_mean_reward"].shape == (2,)
 
 
-def test_train_real_scan_rejects_unknown_algorithm():
+def test_train_on_real_env_rejects_unknown_algorithm():
     adapter = _make_adapter()
     train_state, config = _make_policy_state(adapter, "ippo")
     with pytest.raises(ValueError, match="algorithm"):
-        train_real_scan(
+        train_on_real_env(
             adapter,
             train_state,
             adapter.reset(),
@@ -444,7 +445,7 @@ def _host_imagined_oracle(
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
-def test_train_imagined_scan_matches_host_single_update(algorithm):
+def test_train_in_imagination_matches_host_single_update(algorithm):
     """N=1 tight logic oracle for the imagined (prefit) branch: same start
     params + start_key + rollout_key -> identical imagined rollout and gradient,
     so params/ppo/reward metrics match tight and the carried ``rng`` (4-way split
@@ -468,7 +469,7 @@ def test_train_imagined_scan_matches_host_single_update(algorithm):
         algorithm=algorithm,
         freeze_policy=False,
     )
-    scan_state, scan_rng, scan_metrics = train_imagined_scan(
+    device_state, device_rng, device_metrics = train_in_imagination(
         model_state,
         train_state,
         pool,
@@ -483,20 +484,20 @@ def test_train_imagined_scan_matches_host_single_update(algorithm):
         freeze_policy=False,
     )
 
-    np.testing.assert_array_equal(np.asarray(scan_rng), np.asarray(host_rng))
+    np.testing.assert_array_equal(np.asarray(device_rng), np.asarray(host_rng))
     for field in ("rollout_mean_reward", "model_rollout_mean_reward"):
         np.testing.assert_allclose(
-            np.asarray(scan_metrics[field][0]), host_rows[0][field], rtol=0, atol=1e-5
+            np.asarray(device_metrics[field][0]), host_rows[0][field], rtol=0, atol=1e-5
         )
     for field in ("ppo/actor_loss", "ppo/value_loss", "ppo/total_loss", "ppo/entropy"):
         np.testing.assert_allclose(
-            np.asarray(scan_metrics[field][0]), host_rows[0][field], rtol=0, atol=1e-5
+            np.asarray(device_metrics[field][0]), host_rows[0][field], rtol=0, atol=1e-5
         )
-    _assert_params_close(host_state, scan_state, atol=1e-5)
+    _assert_params_close(host_state, device_state, atol=1e-5)
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
-def test_train_imagined_scan_matches_host_multi_update(algorithm):
+def test_train_in_imagination_matches_host_multi_update(algorithm):
     """N>1 pins carry threading (train_state + 4-way rng across updates). The
     carried ``rng`` matches exactly; compounded fusion drift is tolerated on
     params and reward metrics.
@@ -520,7 +521,7 @@ def test_train_imagined_scan_matches_host_multi_update(algorithm):
         algorithm=algorithm,
         freeze_policy=False,
     )
-    scan_state, scan_rng, scan_metrics = train_imagined_scan(
+    device_state, device_rng, device_metrics = train_in_imagination(
         model_state,
         train_state,
         pool,
@@ -535,12 +536,12 @@ def test_train_imagined_scan_matches_host_multi_update(algorithm):
         freeze_policy=False,
     )
 
-    np.testing.assert_array_equal(np.asarray(scan_rng), np.asarray(host_rng))
-    _assert_params_close(host_state, scan_state, atol=1e-3)
+    np.testing.assert_array_equal(np.asarray(device_rng), np.asarray(host_rng))
+    _assert_params_close(host_state, device_state, atol=1e-3)
     for i in range(num_updates):
         for field in ("ppo/total_loss", "model_rollout_mean_reward"):
             np.testing.assert_allclose(
-                np.asarray(scan_metrics[field][i]),
+                np.asarray(device_metrics[field][i]),
                 host_rows[i][field],
                 rtol=0,
                 atol=1e-3,
@@ -548,13 +549,13 @@ def test_train_imagined_scan_matches_host_multi_update(algorithm):
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
-def test_train_imagined_scan_freeze_policy_leaves_params_unchanged(algorithm):
+def test_train_in_imagination_freeze_policy_leaves_params_unchanged(algorithm):
     model_state, train_state, pool, wm_config, policy_config, num_envs = (
         _make_imagined_setup(algorithm)
     )
     key = jax.random.PRNGKey(4)
 
-    scan_state, _rng, scan_metrics = train_imagined_scan(
+    device_state, _rng, device_metrics = train_in_imagination(
         model_state,
         train_state,
         pool,
@@ -568,5 +569,5 @@ def test_train_imagined_scan_freeze_policy_leaves_params_unchanged(algorithm):
         algorithm=algorithm,
         freeze_policy=True,
     )
-    _assert_params_close(train_state, scan_state, atol=0.0)
-    assert scan_metrics["model_rollout_mean_reward"].shape == (2,)
+    _assert_params_close(train_state, device_state, atol=0.0)
+    assert device_metrics["model_rollout_mean_reward"].shape == (2,)

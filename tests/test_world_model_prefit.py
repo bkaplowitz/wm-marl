@@ -22,7 +22,7 @@ from world_marl.world_model import (
     world_model_loss,
 )
 from world_marl.world_model_training import (
-    collect_random_transition_batch,
+    collect_random_transition_batch_host,
     flatten_state_observations,
 )
 
@@ -33,11 +33,13 @@ def test_random_prefit_collection_uses_flat_vector_states(
     adapter = MeltingPotVectorAdapter(num_envs=1, env_factory=dummy_env_factory)
     try:
         observations = adapter.reset()
-        batch, next_observations, start_states, stats = collect_random_transition_batch(
-            adapter,
-            observations,
-            np.random.default_rng(0),
-            rollout_steps=2,
+        batch, next_observations, start_states, stats = (
+            collect_random_transition_batch_host(
+                adapter,
+                observations,
+                np.random.default_rng(0),
+                rollout_steps=2,
+            )
         )
 
         state_dim = int(np.prod(adapter.observation_shape))
@@ -70,7 +72,7 @@ def test_prefit_collection_counts_completed_real_episodes():
     )
     try:
         observations = adapter.reset()
-        _, _, _, stats = collect_random_transition_batch(
+        _, _, _, stats = collect_random_transition_batch_host(
             adapter,
             observations,
             np.random.default_rng(0),

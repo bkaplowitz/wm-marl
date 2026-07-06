@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -144,7 +144,19 @@ def collect_rollout(
     )
 
 
-def train_real_scan(
+class TrainOnEnvCarry(NamedTuple):
+    """State threaded through ``train_on_real_env``'s update-loop ``lax.scan``."""
+
+    train_state: TrainState
+    rng: jax.Array
+    env_state: Any
+    env_keys: jax.Array
+    obs_flat: jax.Array
+    episode_return: jax.Array
+    episode_length: jax.Array
+
+
+def train_on_real_env(
     adapter: Any,
     train_state: TrainState,
     observations: np.ndarray,
@@ -187,11 +199,11 @@ def train_real_scan(
     num_agents = adapter.num_agents
 
     get_action_and_value = (
-        _mappo_get_action_and_value(num_envs, num_agents)
+        make_mappo_get_action_and_value(num_envs, num_agents)
         if is_mappo
         else _ippo_get_action_and_value
     )
-    run = adapter._build_rollout_scan(get_action_and_value, rollout_steps)
+    rollout_fn = adapter._build_rollout_fn(get_action_and_value, rollout_steps)
     update_fn = mappo_update if is_mappo else ppo_update
 
     def central_flat(obs_flat):
@@ -205,130 +217,158 @@ def train_real_scan(
             )[1]
         return state.apply_fn({"params": state.params}, flat_obs)[1]
 
-    def bookkeep(ep_return, ep_length, rewards_ea, dones_ea):
-        def step(carry, xs):
-            ep_ret, ep_len, ret_sum, len_sum, n_comp = carry
-            reward, done = xs
-            ep_ret = ep_ret + reward
-            ep_len = ep_len + 1
+    def accumulate_episode_stats(episode_return, episode_length, rewards_ea, dones_ea):
+        def accumulate_step(carry, step_data):
+            episode_return, episode_length, return_sum, length_sum, num_completed = (
+                carry
+            )
+            reward, done = step_data
+            episode_return = episode_return + reward
+            episode_length = episode_length + 1
             done_env = done.all(axis=1)
-            ret_sum = ret_sum + jnp.sum(jnp.where(done_env[:, None], ep_ret, 0.0))
-            len_sum = len_sum + jnp.sum(jnp.where(done_env, ep_len, 0))
-            n_comp = n_comp + jnp.sum(done_env.astype(jnp.int32))
-            ep_ret = jnp.where(done_env[:, None], 0.0, ep_ret)
-            ep_len = jnp.where(done_env, 0, ep_len)
-            return (ep_ret, ep_len, ret_sum, len_sum, n_comp), None
+            return_sum = return_sum + jnp.sum(
+                jnp.where(done_env[:, None], episode_return, 0.0)
+            )
+            length_sum = length_sum + jnp.sum(jnp.where(done_env, episode_length, 0))
+            num_completed = num_completed + jnp.sum(done_env.astype(jnp.int32))
+            episode_return = jnp.where(done_env[:, None], 0.0, episode_return)
+            episode_length = jnp.where(done_env, 0, episode_length)
+            return (
+                episode_return,
+                episode_length,
+                return_sum,
+                length_sum,
+                num_completed,
+            ), None
 
-        init = (ep_return, ep_length, jnp.float32(0.0), jnp.int32(0), jnp.int32(0))
-        (ep_ret_f, ep_len_f, ret_sum, len_sum, n_comp), _ = jax.lax.scan(
-            step, init, (rewards_ea, dones_ea)
+        init = (
+            episode_return,
+            episode_length,
+            jnp.float32(0.0),
+            jnp.int32(0),
+            jnp.int32(0),
         )
-        return ep_ret_f, ep_len_f, ret_sum, len_sum, n_comp
+        (
+            (
+                final_episode_return,
+                final_episode_length,
+                return_sum,
+                length_sum,
+                num_completed,
+            ),
+            _,
+        ) = jax.lax.scan(accumulate_step, init, (rewards_ea, dones_ea))
+        return (
+            final_episode_return,
+            final_episode_length,
+            return_sum,
+            length_sum,
+            num_completed,
+        )
 
-    def outer_body(carry, _):
-        ts, key, state, keys, obs_flat, ep_return, ep_length = carry
-        key, rollout_key, update_key = jax.random.split(key, 3)
-        ys, last_obs_flat, final_state, final_keys = run(
-            ts, state, keys, rollout_key, obs_flat
-        )
-        obs_seq, action_seq, logp_seq, value_seq, _entropy_seq, reward_seq, done_seq = (
-            ys
+    def update_step(carry, _):
+        key, rollout_key, update_key = jax.random.split(carry.rng, 3)
+        trajectory, last_obs_flat, final_env_state, final_env_keys = rollout_fn(
+            carry.train_state,
+            carry.env_state,
+            carry.env_keys,
+            rollout_key,
+            carry.obs_flat,
         )
         common = {
-            "observations": jnp.asarray(obs_seq, dtype=jnp.float32),
-            "actions": jnp.asarray(action_seq, dtype=jnp.int32),
-            "log_probs": jnp.asarray(logp_seq, dtype=jnp.float32),
-            "rewards": jnp.asarray(reward_seq, dtype=jnp.float32),
-            "dones": jnp.asarray(done_seq, dtype=jnp.float32),
-            "values": jnp.asarray(value_seq, dtype=jnp.float32),
+            "observations": jnp.asarray(trajectory.observations, dtype=jnp.float32),
+            "actions": jnp.asarray(trajectory.actions, dtype=jnp.int32),
+            "log_probs": jnp.asarray(trajectory.log_probs, dtype=jnp.float32),
+            "rewards": jnp.asarray(trajectory.rewards, dtype=jnp.float32),
+            "dones": jnp.asarray(trajectory.dones, dtype=jnp.float32),
+            "values": jnp.asarray(trajectory.values, dtype=jnp.float32),
         }
         if is_mappo:
-            obs_2d = common["observations"].reshape((-1, obs_seq.shape[-1]))
+            obs_2d = common["observations"].reshape(
+                (-1, trajectory.observations.shape[-1])
+            )
             central_seq = central_flat(obs_2d).reshape(
                 (rollout_steps, num_envs * num_agents, -1)
             )
             batch = MAPPORolloutBatch(central_observations=central_seq, **common)
         else:
             batch = RolloutBatch(**common)
-        last_values = value_fn(ts, last_obs_flat)
+        last_values = value_fn(carry.train_state, last_obs_flat)
 
         if freeze_policy:
-            new_ts = ts
+            next_train_state = carry.train_state
             ppo_metrics: dict[str, Any] = {}
         else:
-            new_ts, update_metrics = update_fn(
-                ts, batch, last_values, update_key, config
+            next_train_state, update_metrics = update_fn(
+                carry.train_state, batch, last_values, update_key, config
             )
-            ppo_metrics = {f"ppo/{key_}": val for key_, val in update_metrics.items()}
+            ppo_metrics = {
+                f"ppo/{metric_name}": val for metric_name, val in update_metrics.items()
+            }
 
-        rewards_ea = reward_seq.reshape((rollout_steps, num_envs, num_agents))
-        dones_ea = done_seq.reshape((rollout_steps, num_envs, num_agents))
-        ep_return_n, ep_length_n, ret_sum, len_sum, n_comp = bookkeep(
-            ep_return, ep_length, rewards_ea, dones_ea
+        rewards_ea = trajectory.rewards.reshape((rollout_steps, num_envs, num_agents))
+        dones_ea = trajectory.dones.reshape((rollout_steps, num_envs, num_agents))
+        (
+            next_episode_return,
+            next_episode_length,
+            return_sum,
+            length_sum,
+            num_completed,
+        ) = accumulate_episode_stats(
+            carry.episode_return, carry.episode_length, rewards_ea, dones_ea
         )
-        n_comp_f = n_comp.astype(jnp.float32)
+        num_completed_f = num_completed.astype(jnp.float32)
         episode_return_mean = jnp.where(
-            n_comp > 0, ret_sum / (n_comp_f * num_agents), jnp.nan
+            num_completed > 0, return_sum / (num_completed_f * num_agents), jnp.nan
         )
         episode_length_mean = jnp.where(
-            n_comp > 0, len_sum.astype(jnp.float32) / n_comp_f, jnp.nan
+            num_completed > 0, length_sum.astype(jnp.float32) / num_completed_f, jnp.nan
         )
         out = {
             "rollout_mean_reward": jnp.mean(batch.rewards),
-            "completed_episodes": n_comp,
+            "completed_episodes": num_completed,
             "episode_return_mean": episode_return_mean,
             "episode_length_mean": episode_length_mean,
         }
         out.update(ppo_metrics)
-        new_carry = (
-            new_ts,
-            key,
-            final_state,
-            final_keys,
-            last_obs_flat,
-            ep_return_n,
-            ep_length_n,
+        next_carry = TrainOnEnvCarry(
+            train_state=next_train_state,
+            rng=key,
+            env_state=final_env_state,
+            env_keys=final_env_keys,
+            obs_flat=last_obs_flat,
+            episode_return=next_episode_return,
+            episode_length=next_episode_length,
         )
-        return new_carry, out
+        return next_carry, out
 
     obs_flat0 = jnp.asarray(observations, dtype=jnp.float32).reshape(
         (num_envs * num_agents, -1)
     )
-    ep_return0 = jnp.asarray(adapter._episode_returns, dtype=jnp.float32)
-    ep_length0 = jnp.asarray(adapter._episode_lengths, dtype=jnp.int32)
-    init_carry = (
-        train_state,
-        rng,
-        adapter._state,
-        adapter._keys,
-        obs_flat0,
-        ep_return0,
-        ep_length0,
+    init_carry = TrainOnEnvCarry(
+        train_state=train_state,
+        rng=rng,
+        env_state=adapter._state,
+        env_keys=adapter._keys,
+        obs_flat=obs_flat0,
+        episode_return=jnp.asarray(adapter._episode_returns, dtype=jnp.float32),
+        episode_length=jnp.asarray(adapter._episode_lengths, dtype=jnp.int32),
     )
-    (
-        (
-            final_ts,
-            final_rng,
-            final_state,
-            final_keys,
-            last_obs_flat,
-            ep_return_f,
-            ep_length_f,
-        ),
-        stacked,
-    ) = jax.lax.scan(outer_body, init_carry, None, length=num_updates)
+    final_carry, stacked = jax.lax.scan(
+        update_step, init_carry, None, length=num_updates
+    )
 
-    adapter._state = final_state
-    adapter._keys = final_keys
-    adapter._episode_returns = np.asarray(ep_return_f, dtype=np.float32)
+    adapter._state = final_carry.env_state
+    adapter._keys = final_carry.env_keys
+    adapter._episode_returns = np.asarray(final_carry.episode_return, dtype=np.float32)
     adapter._episode_lengths = np.asarray(
-        ep_length_f, dtype=adapter._episode_lengths.dtype
+        final_carry.episode_length, dtype=adapter._episode_lengths.dtype
     )
 
-    final_observations = np.asarray(last_obs_flat, dtype=np.float32).reshape(
+    final_observations = np.asarray(final_carry.obs_flat, dtype=np.float32).reshape(
         (num_envs, num_agents, -1)
     )
-    return final_ts, final_observations, final_rng, stacked
+    return final_carry.train_state, final_observations, final_carry.rng, stacked
 
 
 def collect_mappo_rollout(
@@ -563,11 +603,11 @@ def _mappo_get_action_and_value(state, key, flat_obs, flat_central_obs):
 
 
 @functools.lru_cache(maxsize=None)
-def _mappo_get_action_and_value(num_envs: int, num_agents: int):
-    """MAPPO ``get_action_and_value`` in ``scan_rollout``'s 3-arg shape.
+def make_mappo_get_action_and_value(num_envs: int, num_agents: int):
+    """MAPPO ``get_action_and_value`` in ``adapter.rollout``'s 3-arg shape.
 
     Rebuilds centralized-critic obs from the joint obs. Cached per env geometry so the returned closure keeps a stable identity —
-    ``scan_rollout`` caches compiled programs by ``id(get_action_and_value)``.
+    ``adapter.rollout`` caches compiled programs by ``id(get_action_and_value)``.
     """
 
     def get_action_and_value(state, key, flat_obs):

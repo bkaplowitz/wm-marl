@@ -36,7 +36,7 @@ from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
 from world_marl.evaluation import (
     EvaluationResult,
     evaluate_policy,
-    evaluate_policy_scan,
+    evaluate_policy_host,
     mappo_train_state_policy,
     random_policy,
     train_state_policy,
@@ -47,17 +47,17 @@ from world_marl.training import (
     central_observation_shape,
     collect_mappo_rollout,
     collect_rollout,
-    train_real_scan,
+    train_on_real_env,
     training_window_means,
 )
 from world_marl.world_model import (
     VectorWorldModelConfig,
     create_world_model_state,
-    train_imagined_scan,
+    train_in_imagination,
 )
 from world_marl.world_model_training import (
-    collect_policy_transition_batch_scan,
-    collect_random_transition_batch_scan,
+    collect_policy_transition_batch,
+    collect_random_transition_batch,
     concatenate_transition_batches,
     fit_world_model_steps,
 )
@@ -348,9 +348,9 @@ def _evaluate_train_state(
     if (
         algorithm == "ippo"
         and observation_mode == "vector"
-        and hasattr(adapter, "scan_rewards_dones")
+        and hasattr(adapter, "rollout_rewards_dones")
     ):
-        return evaluate_policy_scan(
+        return evaluate_policy(
             adapter,
             train_state,
             episodes=episodes,
@@ -358,7 +358,7 @@ def _evaluate_train_state(
             observation_mode=observation_mode,
             seed=seed,
         )
-    return evaluate_policy(
+    return evaluate_policy_host(
         adapter,
         policy_from_train_state(
             algorithm,
@@ -424,7 +424,7 @@ def evaluate_checkpoint_mode(args: argparse.Namespace) -> None:
 def evaluate_random_baseline(args: argparse.Namespace, seed: int) -> dict[str, Any]:
     adapter = _make_training_adapter(args, seed=seed)
     try:
-        result = evaluate_policy(
+        result = evaluate_policy_host(
             adapter,
             random_policy(adapter, np.random.default_rng(seed)),
             episodes=args.eval_episodes,
@@ -502,7 +502,7 @@ def _collect_real_env_rollout(
     )
 
 
-def _rows_from_stacked(
+def _rows_from_stacked_metrics(
     stacked: dict[str, Any],
     *,
     steps_per_update: int,
@@ -587,7 +587,7 @@ def run_training(
     logger.write_json("random_baseline.json", random_result)
 
     adapter = _make_training_adapter(args, seed=seed)
-    scan_path = hasattr(adapter, "scan_rollout")
+    has_on_device_rollout = hasattr(adapter, "rollout")
     rows: list[dict[str, Any]] = []
     try:
         observations = adapter.reset()
@@ -623,7 +623,7 @@ def run_training(
         if args.prefit_world_model:
             reward_done_fn = _make_reward_done_fn(args)
             if args.wm_policy_warmup_updates:
-                train_state, observations, rng, warmup_stacked = train_real_scan(
+                train_state, observations, rng, warmup_stacked = train_on_real_env(
                     adapter,
                     train_state,
                     observations,
@@ -639,7 +639,7 @@ def run_training(
                     real_env_steps,
                     _,
                     cumulative_real_episodes,
-                ) = _rows_from_stacked(
+                ) = _rows_from_stacked_metrics(
                     warmup_stacked,
                     steps_per_update=args.num_envs * args.rollout_steps,
                     real=True,
@@ -662,7 +662,7 @@ def run_training(
 
             rng, random_collect_key = jax.random.split(rng)
             random_batch, observations, random_start_states, random_stats = (
-                collect_random_transition_batch_scan(
+                collect_random_transition_batch(
                     adapter,
                     observations,
                     random_collect_key,
@@ -678,7 +678,7 @@ def run_training(
                 rng,
                 policy_start_states,
                 policy_stats,
-            ) = collect_policy_transition_batch_scan(
+            ) = collect_policy_transition_batch(
                 adapter,
                 train_state,
                 observations,
@@ -787,7 +787,7 @@ def run_training(
                 or world_model_prefit_loss is None
             ):
                 raise RuntimeError("world model prefit did not initialize")
-            train_state, rng, main_stacked = train_imagined_scan(
+            train_state, rng, main_stacked = train_in_imagination(
                 world_model_state,
                 train_state,
                 model_start_states,
@@ -806,7 +806,7 @@ def run_training(
                 real_env_steps,
                 imagined_env_steps,
                 cumulative_real_episodes,
-            ) = _rows_from_stacked(
+            ) = _rows_from_stacked_metrics(
                 main_stacked,
                 steps_per_update=args.num_envs * args.rollout_steps,
                 real=False,
@@ -818,8 +818,8 @@ def run_training(
                     "world_model/prefit_loss": float(world_model_prefit_loss),
                 },
             )
-        elif scan_path:
-            train_state, observations, rng, main_stacked = train_real_scan(
+        elif has_on_device_rollout:
+            train_state, observations, rng, main_stacked = train_on_real_env(
                 adapter,
                 train_state,
                 observations,
@@ -835,7 +835,7 @@ def run_training(
                 real_env_steps,
                 imagined_env_steps,
                 cumulative_real_episodes,
-            ) = _rows_from_stacked(
+            ) = _rows_from_stacked_metrics(
                 main_stacked,
                 steps_per_update=args.num_envs * args.rollout_steps,
                 real=True,

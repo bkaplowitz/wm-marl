@@ -122,8 +122,8 @@ def test_coins_prefit_run_training_completes_and_writes_artifacts(
     assert prefit["prefit_completed_episodes"] == 0
 
 
-def test_coins_model_free_ippo_run_training_scan_path(tmp_path, monkeypatch):
-    """Model-free coins now trains through one ``train_real_scan`` call; the
+def test_coins_model_free_ippo_run_training_on_device_path(tmp_path, monkeypatch):
+    """Model-free coins now trains through one ``train_on_real_env`` call; the
     per-update row schema written to ``metrics.jsonl`` must survive the switch.
     """
     args = _tiny_coins_args(tmp_path, monkeypatch, algorithm="ippo", prefit=False)

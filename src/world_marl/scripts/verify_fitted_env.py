@@ -28,8 +28,8 @@ from world_marl.world_model import (
     train_world_model_step,
 )
 from world_marl.world_model_training import (
-    collect_policy_transition_batch,
-    collect_random_transition_batch,
+    collect_policy_transition_batch_host,
+    collect_random_transition_batch_host,
     concatenate_transition_batches,
 )
 
@@ -237,14 +237,14 @@ def _collect_combined_batch(
     random_rollouts: int,
     initial_rollouts: int,
 ) -> tuple[VectorTransitionBatch, np.ndarray, jax.Array]:
-    random_batch, observations, _, _ = collect_random_transition_batch(
+    random_batch, observations, _, _ = collect_random_transition_batch_host(
         adapter,
         observations,
         np.random.default_rng(random_seed),
         rollout_steps=random_rollouts,
     )
     rng, policy_key = jax.random.split(rng)
-    policy_batch, observations, rng, _, _ = collect_policy_transition_batch(
+    policy_batch, observations, rng, _, _ = collect_policy_transition_batch_host(
         adapter,
         policy_state,
         observations,

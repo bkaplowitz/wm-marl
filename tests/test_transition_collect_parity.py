@@ -9,8 +9,8 @@ from world_marl.envs.jaxmarl_coin_adapter import JaxMARLCoinGameVectorAdapter
 from world_marl.training import central_observation_shape
 from world_marl.world_model_training import (
     collect_policy_transition_batch,
-    collect_policy_transition_batch_scan,
-    collect_random_transition_batch_scan,
+    collect_policy_transition_batch_host,
+    collect_random_transition_batch,
     concatenate_transition_batches,
 )
 
@@ -46,15 +46,15 @@ def _make_coins_mappo_state(adapter, seed: int = 5):
     )
 
 
-def test_policy_scan_matches_host_collect_policy_coins():
-    """The IPPO policy collector's scan twin must reproduce the host loop.
+def test_policy_collect_matches_host_coins():
+    """The fused IPPO policy collector must reproduce its host-loop twin.
 
     Both draw actions from ``jax.random`` splitting policy-key-then-env-key, so
     integer actions are the exact PRNG canary and continuous tensors match to
     float tolerance. ``rollout_steps`` spans a ``max_cycles`` boundary so the
-    scan's auto-reset path is exercised. Stats and the episode-accumulator
-    writeback must also match, since a chained collector and the training loop
-    resume from those accumulators.
+    fused rollout's auto-reset path is exercised. Stats and the
+    episode-accumulator writeback must also match, since a chained collector and
+    the training loop resume from those accumulators.
     """
     num_envs, max_cycles, seed = 4, 8, 3
     rollout_steps = 12  # crosses one max_cycles boundary
@@ -65,7 +65,7 @@ def test_policy_scan_matches_host_collect_policy_coins():
     host_adapter = _make_adapter(num_envs, max_cycles, seed)
     obs0_host = host_adapter.reset()
     host_batch, host_obs, _host_rng, host_starts, host_stats = (
-        collect_policy_transition_batch(
+        collect_policy_transition_batch_host(
             host_adapter,
             state,
             obs0_host,
@@ -75,13 +75,13 @@ def test_policy_scan_matches_host_collect_policy_coins():
         )
     )
 
-    scan_adapter = _make_adapter(num_envs, max_cycles, seed)
-    obs0_scan = scan_adapter.reset()
-    scan_batch, scan_obs, _scan_rng, scan_starts, scan_stats = (
-        collect_policy_transition_batch_scan(
-            scan_adapter,
+    device_adapter = _make_adapter(num_envs, max_cycles, seed)
+    obs0_device = device_adapter.reset()
+    device_batch, device_obs, _device_rng, device_starts, device_stats = (
+        collect_policy_transition_batch(
+            device_adapter,
             state,
-            obs0_scan,
+            obs0_device,
             key,
             rollout_steps=rollout_steps,
             algorithm="ippo",
@@ -89,51 +89,51 @@ def test_policy_scan_matches_host_collect_policy_coins():
     )
 
     flat_rows = rollout_steps * num_envs
-    assert scan_batch.actions.shape == (flat_rows, scan_adapter.num_agents)
+    assert device_batch.actions.shape == (flat_rows, device_adapter.num_agents)
 
     # Integer actions: exact PRNG canary (env-key and policy-key streams).
     np.testing.assert_array_equal(
-        np.asarray(scan_batch.actions), np.asarray(host_batch.actions)
+        np.asarray(device_batch.actions), np.asarray(host_batch.actions)
     )
     for field in ("states", "next_states", "rewards", "dones"):
         np.testing.assert_allclose(
-            np.asarray(getattr(scan_batch, field)),
+            np.asarray(getattr(device_batch, field)),
             np.asarray(getattr(host_batch, field)),
             rtol=0,
             atol=1e-5,
             err_msg=field,
         )
     np.testing.assert_allclose(
-        np.asarray(scan_starts), np.asarray(host_starts), rtol=0, atol=1e-5
+        np.asarray(device_starts), np.asarray(host_starts), rtol=0, atol=1e-5
     )
     np.testing.assert_allclose(
-        np.asarray(scan_obs), np.asarray(host_obs), rtol=0, atol=1e-5
+        np.asarray(device_obs), np.asarray(host_obs), rtol=0, atol=1e-5
     )
 
     # Stats + the episode bookkeeping writeback must match the host adapter.
-    assert scan_stats.real_env_steps == host_stats.real_env_steps
-    assert scan_stats.completed_episodes == host_stats.completed_episodes
+    assert device_stats.real_env_steps == host_stats.real_env_steps
+    assert device_stats.completed_episodes == host_stats.completed_episodes
     for attr in ("episode_return_mean", "episode_length_mean"):
         host_value = getattr(host_stats, attr)
-        scan_value = getattr(scan_stats, attr)
+        device_value = getattr(device_stats, attr)
         if host_value is None:
-            assert scan_value is None
+            assert device_value is None
         else:
-            np.testing.assert_allclose(scan_value, host_value, rtol=0, atol=1e-5)
+            np.testing.assert_allclose(device_value, host_value, rtol=0, atol=1e-5)
     np.testing.assert_array_equal(
-        scan_adapter._episode_lengths, host_adapter._episode_lengths
+        device_adapter._episode_lengths, host_adapter._episode_lengths
     )
     np.testing.assert_allclose(
-        scan_adapter._episode_returns,
+        device_adapter._episode_returns,
         host_adapter._episode_returns,
         rtol=0,
         atol=1e-5,
     )
 
 
-def test_random_scan_is_structurally_valid_and_deterministic():
-    """The random collector's scan twin has no host oracle (numpy vs jax PRNG),
-    so verify structure: shapes/dtypes, in-range uniform actions, next-state
+def test_random_collect_is_structurally_valid_and_deterministic():
+    """The fused random collector has no host oracle (numpy vs jax PRNG), so
+    verify structure: shapes/dtypes, in-range uniform actions, next-state
     consistency (``next_states[t] == states[t+1]``, last row closed by the
     post-rollout obs), determinism given a key, and the real-env-step count.
     """
@@ -143,7 +143,7 @@ def test_random_scan_is_structurally_valid_and_deterministic():
     adapter = _make_adapter(num_envs, max_cycles, seed)
     obs0 = adapter.reset()
     key = jax.random.PRNGKey(seed)
-    batch, last_obs, starts, stats = collect_random_transition_batch_scan(
+    batch, last_obs, starts, stats = collect_random_transition_batch(
         adapter, obs0, key, rollout_steps=rollout_steps
     )
 
@@ -174,14 +174,14 @@ def test_random_scan_is_structurally_valid_and_deterministic():
     # Determinism: same key + same fresh reset reproduce the batch exactly.
     adapter2 = _make_adapter(num_envs, max_cycles, seed)
     obs0b = adapter2.reset()
-    batch2, _last2, _starts2, _stats2 = collect_random_transition_batch_scan(
+    batch2, _last2, _starts2, _stats2 = collect_random_transition_batch(
         adapter2, obs0b, key, rollout_steps=rollout_steps
     )
     np.testing.assert_array_equal(np.asarray(batch2.actions), actions)
     np.testing.assert_array_equal(np.asarray(batch2.states), states)
 
 
-def test_random_then_policy_scan_handoff_is_continuous():
+def test_random_then_policy_handoff_is_continuous():
     """Chaining random -> policy on one adapter (as the prefit block does) must
     thread the carry: the policy collector's first-step states equal the random
     collector's post-rollout observations, and the two batches concatenate.
@@ -194,25 +194,22 @@ def test_random_then_policy_scan_handoff_is_continuous():
     key = jax.random.PRNGKey(seed)
 
     key, random_key = jax.random.split(key)
-    random_batch, observations, _r_starts, _r_stats = (
-        collect_random_transition_batch_scan(
-            adapter, observations, random_key, rollout_steps=10
-        )
+    random_batch, observations, _r_starts, _r_stats = collect_random_transition_batch(
+        adapter, observations, random_key, rollout_steps=10
     )
     _key, policy_key = jax.random.split(key)
-    policy_batch, _p_obs, _p_rng, _p_starts, _p_stats = (
-        collect_policy_transition_batch_scan(
-            adapter,
-            state,
-            observations,
-            policy_key,
-            rollout_steps=10,
-            algorithm="ippo",
-        )
+    policy_batch, _p_obs, _p_rng, _p_starts, _p_stats = collect_policy_transition_batch(
+        adapter,
+        state,
+        observations,
+        policy_key,
+        rollout_steps=10,
+        algorithm="ippo",
     )
 
-    # The policy scan must start from the random scan's post-rollout carry: its
-    # first-step states (rows [0, num_envs)) equal the handed-off observations.
+    # The policy collector must start from the random collector's post-rollout
+    # carry: its first-step states (rows [0, num_envs)) equal the handed-off
+    # observations.
     np.testing.assert_allclose(
         np.asarray(policy_batch.states[:num_envs]),
         np.asarray(observations),
@@ -223,13 +220,13 @@ def test_random_then_policy_scan_handoff_is_continuous():
     assert combined.states.shape[0] == (10 + 10) * num_envs
 
 
-def test_policy_scan_matches_host_collect_policy_coins_mappo():
-    """The MAPPO policy collector's scan twin must reproduce the host loop.
+def test_policy_collect_matches_host_coins_mappo():
+    """The fused MAPPO policy collector must reproduce its host-loop twin.
 
     Same contract as the IPPO case, with the centralized-critic observations
-    rebuilt on-device inside ``_make_mappo_get_action_and_value`` (host builds
-    them in numpy): integer actions are the exact PRNG canary, tensors match
-    to float tolerance.
+    rebuilt on-device inside ``make_mappo_get_action_and_value``'s closure (host
+    builds them in numpy): integer actions are the exact PRNG canary, tensors
+    match to float tolerance.
     """
     num_envs, max_cycles, seed = 4, 8, 3
     rollout_steps = 12  # crosses one max_cycles boundary
@@ -240,7 +237,7 @@ def test_policy_scan_matches_host_collect_policy_coins_mappo():
     host_adapter = _make_adapter(num_envs, max_cycles, seed)
     obs0_host = host_adapter.reset()
     host_batch, host_obs, _host_rng, host_starts, host_stats = (
-        collect_policy_transition_batch(
+        collect_policy_transition_batch_host(
             host_adapter,
             state,
             obs0_host,
@@ -250,13 +247,13 @@ def test_policy_scan_matches_host_collect_policy_coins_mappo():
         )
     )
 
-    scan_adapter = _make_adapter(num_envs, max_cycles, seed)
-    obs0_scan = scan_adapter.reset()
-    scan_batch, scan_obs, _scan_rng, scan_starts, scan_stats = (
-        collect_policy_transition_batch_scan(
-            scan_adapter,
+    device_adapter = _make_adapter(num_envs, max_cycles, seed)
+    obs0_device = device_adapter.reset()
+    device_batch, device_obs, _device_rng, device_starts, device_stats = (
+        collect_policy_transition_batch(
+            device_adapter,
             state,
-            obs0_scan,
+            obs0_device,
             key,
             rollout_steps=rollout_steps,
             algorithm="mappo",
@@ -264,32 +261,32 @@ def test_policy_scan_matches_host_collect_policy_coins_mappo():
     )
 
     np.testing.assert_array_equal(
-        np.asarray(scan_batch.actions), np.asarray(host_batch.actions)
+        np.asarray(device_batch.actions), np.asarray(host_batch.actions)
     )
     for field in ("states", "next_states", "rewards", "dones"):
         np.testing.assert_allclose(
-            np.asarray(getattr(scan_batch, field)),
+            np.asarray(getattr(device_batch, field)),
             np.asarray(getattr(host_batch, field)),
             rtol=0,
             atol=1e-5,
             err_msg=field,
         )
     np.testing.assert_allclose(
-        np.asarray(scan_starts), np.asarray(host_starts), rtol=0, atol=1e-5
+        np.asarray(device_starts), np.asarray(host_starts), rtol=0, atol=1e-5
     )
     np.testing.assert_allclose(
-        np.asarray(scan_obs), np.asarray(host_obs), rtol=0, atol=1e-5
+        np.asarray(device_obs), np.asarray(host_obs), rtol=0, atol=1e-5
     )
-    assert scan_stats.real_env_steps == host_stats.real_env_steps
-    assert scan_stats.completed_episodes == host_stats.completed_episodes
+    assert device_stats.real_env_steps == host_stats.real_env_steps
+    assert device_stats.completed_episodes == host_stats.completed_episodes
 
 
-def test_policy_scan_rejects_unknown_algorithm():
+def test_policy_collect_rejects_unknown_algorithm():
     adapter = _make_adapter()
     state = _make_coins_state(adapter)
     obs0 = adapter.reset()
     try:
-        collect_policy_transition_batch_scan(
+        collect_policy_transition_batch(
             adapter,
             state,
             obs0,
@@ -301,5 +298,5 @@ def test_policy_scan_rejects_unknown_algorithm():
         assert "algorithm" in str(exc)
     else:  # pragma: no cover - guard must raise
         raise AssertionError(
-            "expected ValueError for unknown-algorithm scan collection"
+            "expected ValueError for unknown-algorithm policy collection"
         )

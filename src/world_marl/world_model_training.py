@@ -15,8 +15,8 @@ from world_marl.envs.jaxmarl_coin_adapter import JaxMARLCoinGameVectorAdapter
 from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
 from world_marl.training import (
     _ippo_get_action_and_value,
-    _mappo_get_action_and_value,
     build_central_observations,
+    make_mappo_get_action_and_value,
 )
 from world_marl.world_model import (
     VectorTransitionBatch,
@@ -43,7 +43,7 @@ def flatten_state_observations(observations: np.ndarray) -> np.ndarray:
     return observations.reshape((observations.shape[0], observations.shape[1], -1))
 
 
-def collect_random_transition_batch(
+def collect_random_transition_batch_host(
     adapter: TrainingAdapter,
     observations: np.ndarray,
     rng: np.random.Generator,
@@ -55,7 +55,12 @@ def collect_random_transition_batch(
     jnp.ndarray,
     EpisodeCounts,
 ]:
-    """Collect vector-state transitions using adapter-sampled random actions."""
+    """Collect vector-state transitions using adapter-sampled random actions.
+
+    Host-loop twin of ``collect_random_transition_batch``; steps the adapter one
+    ``env.step`` at a time from Python, so it works for any adapter (MeltingPot
+    included), at the cost of per-step host round-trips.
+    """
     if rollout_steps < 1:
         raise ValueError("rollout_steps must be >= 1")
 
@@ -91,7 +96,7 @@ def collect_random_transition_batch(
     )
 
 
-def collect_policy_transition_batch(
+def collect_policy_transition_batch_host(
     adapter: TrainingAdapter,
     train_state: TrainState,
     observations: np.ndarray,
@@ -106,7 +111,12 @@ def collect_policy_transition_batch(
     jnp.ndarray,
     EpisodeCounts,
 ]:
-    """Collect vector-state transitions using the current IPPO/MAPPO policy."""
+    """Collect vector-state transitions using the current IPPO/MAPPO policy.
+
+    Host-loop twin of ``collect_policy_transition_batch``; steps the adapter one
+    ``env.step`` at a time from Python, so it works for any adapter (MeltingPot
+    included), at the cost of per-step host round-trips.
+    """
     if rollout_steps < 1:
         raise ValueError("rollout_steps must be >= 1")
     if algorithm not in {"ippo", "mappo"}:
@@ -200,24 +210,23 @@ def concatenate_transition_batches(
     )
 
 
-def _transition_batch_from_scan(
-    ys,
+def _transition_batch_from_trajectory(
+    trajectory,
     last_obs_flat: jax.Array,
     *,
     num_envs: int,
     num_agents: int,
     rollout_steps: int,
 ) -> VectorTransitionBatch:
-    """Repackage ``adapter.scan_rollout`` outputs into a ``VectorTransitionBatch``.
+    """Repackage ``adapter.rollout`` outputs into a ``VectorTransitionBatch``.
 
-    ``scan_rollout`` stacks per-step arrays as ``[T, E*A, ...]`` and returns the
-    post-rollout ``last_obs_flat[E*A, d]``. The host collectors store one
-    ``[E, A, d]`` row per step and concatenate over ``T`` (env-major within each
-    step), so the folded layout is ``[T*E, A, ...]``; ``next_states[t]`` is
+    ``rollout`` stacks per-step ``Trajectory`` fields as ``[T, E*A, ...]`` and
+    returns the post-rollout ``last_obs_flat[E*A, d]``. The host collectors store
+    one ``[E, A, d]`` row per step and concatenate over ``T`` (env-major within
+    each step), so the folded layout is ``[T*E, A, ...]``; ``next_states[t]`` is
     ``obs[t+1]`` with ``last_obs_flat`` closing the final step.
     """
-    obs_seq, action_seq, _log_probs, _values, _entropies, reward_seq, done_seq = ys
-    state_dim = obs_seq.shape[-1]
+    state_dim = trajectory.observations.shape[-1]
 
     def fold(array: jax.Array) -> jax.Array:
         reshaped = array.reshape(
@@ -227,7 +236,7 @@ def _transition_batch_from_scan(
             (rollout_steps * num_envs, num_agents) + array.shape[2:]
         )
 
-    states = jnp.asarray(obs_seq, dtype=jnp.float32).reshape(
+    states = jnp.asarray(trajectory.observations, dtype=jnp.float32).reshape(
         (rollout_steps, num_envs, num_agents, state_dim)
     )
     last = jnp.asarray(last_obs_flat, dtype=jnp.float32).reshape(
@@ -236,35 +245,36 @@ def _transition_batch_from_scan(
     next_states = jnp.concatenate([states[1:], last], axis=0)
     return VectorTransitionBatch(
         states=states.reshape((rollout_steps * num_envs, num_agents, state_dim)),
-        actions=fold(jnp.asarray(action_seq, dtype=jnp.int32)),
+        actions=fold(jnp.asarray(trajectory.actions, dtype=jnp.int32)),
         next_states=next_states.reshape(
             (rollout_steps * num_envs, num_agents, state_dim)
         ),
-        rewards=fold(jnp.asarray(reward_seq, dtype=jnp.float32)),
-        dones=fold(jnp.asarray(done_seq, dtype=jnp.float32)),
+        rewards=fold(jnp.asarray(trajectory.rewards, dtype=jnp.float32)),
+        dones=fold(jnp.asarray(trajectory.dones, dtype=jnp.float32)),
     )
 
 
-def _replay_scan_episode_bookkeeping(
+def _replay_episode_bookkeeping(
     adapter,
-    ys,
+    trajectory,
     rollout_steps: int,
 ) -> tuple[list[tuple[float, ...]], list[int]]:
-    """Advance the adapter's episode accumulators over a scan batch (host-side).
+    """Advance the adapter's episode accumulators over a rollout (host-side).
 
-    ``scan_rollout`` advances ``adapter._state``/``_keys`` but not the episode
-    return/length accumulators, so -- exactly as ``train_real_scan`` does --
+    ``adapter.rollout`` advances ``adapter._state``/``_keys`` but not the episode
+    return/length accumulators, so -- exactly as ``train_on_real_env`` does --
     replay them over the collected ``(reward, done)`` sequences and write the
     partial-episode state back, so a chained collector (random -> policy) and the
     following training loop resume from the right boundary.
     """
-    _obs, _actions, _log_probs, _values, _entropies, reward_seq, done_seq = ys
     num_envs = adapter.num_envs
     num_agents = adapter.num_agents
-    rewards_ea = np.asarray(reward_seq, dtype=np.float32).reshape(
+    rewards_ea = np.asarray(trajectory.rewards, dtype=np.float32).reshape(
         (rollout_steps, num_envs, num_agents)
     )
-    dones_ea = np.asarray(done_seq).reshape((rollout_steps, num_envs, num_agents))
+    dones_ea = np.asarray(trajectory.dones).reshape(
+        (rollout_steps, num_envs, num_agents)
+    )
     ep_returns = adapter._episode_returns.copy()
     ep_lengths = adapter._episode_lengths.copy()
     completed_returns: list[tuple[float, ...]] = []
@@ -282,16 +292,16 @@ def _replay_scan_episode_bookkeeping(
     return completed_returns, completed_lengths
 
 
-def collect_random_transition_batch_scan(
+def collect_random_transition_batch(
     adapter,
     observations: np.ndarray,
     key: jax.Array,
     *,
     rollout_steps: int,
 ) -> tuple[VectorTransitionBatch, np.ndarray, jnp.ndarray, EpisodeCounts]:
-    """On-device twin of ``collect_random_transition_batch`` via ``lax.scan``.
+    """On-device twin of ``collect_random_transition_batch_host`` via ``lax.scan``.
 
-    Reuses the adapter's proven ``scan_rollout`` with a uniform on-device action
+    Reuses the adapter's proven ``rollout`` with a uniform on-device action
     sampler, so the whole random-action rollout runs on the accelerator instead of
     a host Python loop. Uniform sampling matches ``sample_actions`` (uniform over
     the action set), but the PRNG source differs (jax vs numpy ``Generator``), so
@@ -307,22 +317,22 @@ def collect_random_transition_batch_scan(
         zeros = jnp.zeros((num_rows,), dtype=jnp.float32)
         return actions.astype(jnp.int32), zeros, zeros, zeros
 
-    ys, last_obs_flat = adapter.scan_rollout(
+    trajectory, last_obs_flat = adapter.rollout(
         random_action,
         None,
         rollout_steps,
         policy_key=key,
         observations=observations,
     )
-    batch = _transition_batch_from_scan(
-        ys,
+    batch = _transition_batch_from_trajectory(
+        trajectory,
         last_obs_flat,
         num_envs=adapter.num_envs,
         num_agents=adapter.num_agents,
         rollout_steps=rollout_steps,
     )
-    completed_returns, completed_lengths = _replay_scan_episode_bookkeeping(
-        adapter, ys, rollout_steps
+    completed_returns, completed_lengths = _replay_episode_bookkeeping(
+        adapter, trajectory, rollout_steps
     )
     last_observations = np.asarray(last_obs_flat, dtype=np.float32).reshape(
         (adapter.num_envs, adapter.num_agents, -1)
@@ -339,7 +349,7 @@ def collect_random_transition_batch_scan(
     )
 
 
-def collect_policy_transition_batch_scan(
+def collect_policy_transition_batch(
     adapter,
     train_state: TrainState,
     observations: np.ndarray,
@@ -354,9 +364,9 @@ def collect_policy_transition_batch_scan(
     jnp.ndarray,
     EpisodeCounts,
 ]:
-    """On-device twin of ``collect_policy_transition_batch`` via ``lax.scan``.
+    """On-device twin of ``collect_policy_transition_batch_host`` via ``lax.scan``.
 
-    Reuses ``scan_rollout`` with the same inference the host loop applies --
+    Reuses ``adapter.rollout`` with the same inference the host loop applies --
     ``_ippo_get_action_and_value``, or its MAPPO wrapper that rebuilds central
     observations from the joint obs -- and mirrors its
     ``policy-key-then-env-key`` split order, so the collected batch matches the
@@ -368,27 +378,27 @@ def collect_policy_transition_batch_scan(
     if algorithm not in {"ippo", "mappo"}:
         raise ValueError(f"unsupported algorithm {algorithm!r}")
     get_action_and_value = (
-        _mappo_get_action_and_value(adapter.num_envs, adapter.num_agents)
+        make_mappo_get_action_and_value(adapter.num_envs, adapter.num_agents)
         if algorithm == "mappo"
         else _ippo_get_action_and_value
     )
 
-    ys, last_obs_flat = adapter.scan_rollout(
+    trajectory, last_obs_flat = adapter.rollout(
         get_action_and_value,
         train_state,
         rollout_steps,
         policy_key=key,
         observations=observations,
     )
-    batch = _transition_batch_from_scan(
-        ys,
+    batch = _transition_batch_from_trajectory(
+        trajectory,
         last_obs_flat,
         num_envs=adapter.num_envs,
         num_agents=adapter.num_agents,
         rollout_steps=rollout_steps,
     )
-    completed_returns, completed_lengths = _replay_scan_episode_bookkeeping(
-        adapter, ys, rollout_steps
+    completed_returns, completed_lengths = _replay_episode_bookkeeping(
+        adapter, trajectory, rollout_steps
     )
     last_observations = np.asarray(last_obs_flat, dtype=np.float32).reshape(
         (adapter.num_envs, adapter.num_agents, -1)

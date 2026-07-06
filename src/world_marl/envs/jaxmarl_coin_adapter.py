@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
+from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -12,6 +13,28 @@ import numpy as np
 from jaxmarl.environments.coin_game.coin_game import MOVES, CoinGame
 
 from world_marl.envs.meltingpot_adapter import VectorStep
+
+
+class Trajectory(NamedTuple):
+    """Per-step rollout arrays stacked over time, ``[T, E*A, ...]``."""
+
+    observations: jax.Array
+    actions: jax.Array
+    log_probs: jax.Array
+    values: jax.Array
+    entropies: jax.Array
+    rewards: jax.Array
+    dones: jax.Array
+
+
+class RolloutCarry(NamedTuple):
+    """In-flight rollout state threaded through ``lax.scan``."""
+
+    env_state: Any
+    env_keys: jax.Array
+    obs: jax.Array  # flat [E*A, d] in rollout(); [E, A, d] in rollout_rewards_dones()
+    policy_key: jax.Array
+
 
 # Reuse CoinGame's own default payoff matrix as the single source of truth so the
 # analytic reward stays in lock-step with the environment if its defaults change.
@@ -81,10 +104,10 @@ class JaxMARLCoinGameVectorAdapter:
         self._state = None
         self._episode_returns = np.zeros((num_envs, self.num_agents), dtype=np.float32)
         self._episode_lengths = np.zeros((num_envs,), dtype=np.int32)
-        # Jitted rollout scans, keyed by (id(get_action_and_value), num_steps), so the
-        # compile is paid once and reused across PPO updates (train_state flows
-        # as a traced arg, so changing params does not retrigger a recompile).
-        self._rollout_scan_jit: dict[tuple[int, int], Callable] = {}
+        # Jitted rollout closures, keyed by (id(get_action_and_value), num_steps),
+        # so the compile is paid once and reused across PPO updates (train_state
+        # flows as a traced arg, so changing params does not retrigger a recompile).
+        self._rollout_fn_cache: dict[tuple[int, int], Callable] = {}
 
     def reset(self) -> np.ndarray:
         split_keys = self._split(self._keys)
@@ -141,7 +164,7 @@ class JaxMARLCoinGameVectorAdapter:
             infos=tuple({} for _ in range(self.num_envs)),
         )
 
-    def scan_rewards_dones(self, action_fn, num_steps, *, policy_key):
+    def rollout_rewards_dones(self, action_fn, num_steps, *, policy_key):
         """Fully-jitted on-device rollout for CoinGame via ``lax.scan``.
 
         ``action_fn(obs[E,A,d], key) -> actions[E,A]`` is applied each step. The
@@ -161,29 +184,38 @@ class JaxMARLCoinGameVectorAdapter:
             return jnp.stack([reward[a] for a in agents], axis=1)
 
         @jax.jit
-        def run(init_keys, pkey):
+        def rollout_fn(init_keys, policy_key):
             split0 = self._split(init_keys)
             obs0, state0 = self._reset(split0[:, 1])
 
-            def body(carry, _):
-                keys, state, obs, pkey = carry
-                split = self._split(keys)
-                pkey, action_key = jax.random.split(pkey)
-                actions = action_fn(obs, action_key).astype(jnp.int32)
+            def env_step(carry, _):
+                split = self._split(carry.env_keys)
+                policy_key, action_key = jax.random.split(carry.policy_key)
+                actions = action_fn(carry.obs, action_key).astype(jnp.int32)
                 action_dict = {a: actions[:, i] for i, a in enumerate(agents)}
-                obs_n, state_n, reward, done, _ = self._step(
-                    split[:, 1], state, action_dict
+                next_obs, next_env_state, reward, done, _ = self._step(
+                    split[:, 1], carry.env_state, action_dict
                 )
-                carry_n = (split[:, 0], state_n, stack_obs(obs_n), pkey)
-                return carry_n, (stack_reward(reward), done["__all__"])
+                next_carry = RolloutCarry(
+                    env_state=next_env_state,
+                    env_keys=split[:, 0],
+                    obs=stack_obs(next_obs),
+                    policy_key=policy_key,
+                )
+                return next_carry, (stack_reward(reward), done["__all__"])
 
-            init = (split0[:, 0], state0, stack_obs(obs0), pkey)
-            _, outputs = jax.lax.scan(body, init, None, length=num_steps)
+            init = RolloutCarry(
+                env_state=state0,
+                env_keys=split0[:, 0],
+                obs=stack_obs(obs0),
+                policy_key=policy_key,
+            )
+            _, outputs = jax.lax.scan(env_step, init, None, length=num_steps)
             return outputs
 
-        return run(self._keys, policy_key)
+        return rollout_fn(self._keys, policy_key)
 
-    def scan_rollout(
+    def rollout(
         self, get_action_and_value, train_state, num_steps, *, policy_key, observations
     ):
         """On-device PPO rollout from the adapter's CURRENT carry (mid-stream).
@@ -196,26 +228,26 @@ class JaxMARLCoinGameVectorAdapter:
         step; ``actions`` and the aux arrays are
         recorded verbatim. Starts from ``(self._state, self._keys, observations)``
         and advances ``self._state`` / ``self._keys`` to the post-rollout carry,
-        matching how ``step`` threads them. Returns ``(ys, last_obs_flat[E*A, d])``
-        where ``ys`` stacks ``(obs, actions, log_probs, values, entropies,
-        rewards, dones)`` over ``num_steps``.
+        matching how ``step`` threads them. Returns
+        ``(trajectory, last_obs_flat[E*A, d])`` where ``trajectory`` is a
+        ``Trajectory`` whose fields are stacked over ``num_steps``.
         """
-        run = self._rollout_scan_jit.get((id(get_action_and_value), num_steps))
-        if run is None:
-            run = self._build_rollout_scan(get_action_and_value, num_steps)
-            self._rollout_scan_jit[(id(get_action_and_value), num_steps)] = run
+        rollout_fn = self._rollout_fn_cache.get((id(get_action_and_value), num_steps))
+        if rollout_fn is None:
+            rollout_fn = self._build_rollout_fn(get_action_and_value, num_steps)
+            self._rollout_fn_cache[(id(get_action_and_value), num_steps)] = rollout_fn
 
         obs_flat0 = jnp.asarray(observations, dtype=jnp.float32).reshape(
             (self.num_envs * self.num_agents, -1)
         )
-        ys, last_obs_flat, final_state, final_keys = run(
+        trajectory, last_obs_flat, final_state, final_keys = rollout_fn(
             train_state, self._state, self._keys, policy_key, obs_flat0
         )
         self._state = final_state
         self._keys = final_keys
-        return ys, last_obs_flat
+        return trajectory, last_obs_flat
 
-    def _build_rollout_scan(self, get_action_and_value, num_steps):
+    def _build_rollout_fn(self, get_action_and_value, num_steps):
         agents = self.agents
         num_envs = self.num_envs
         num_agents = self.num_agents
@@ -234,39 +266,53 @@ class JaxMARLCoinGameVectorAdapter:
             )
 
         @jax.jit
-        def run(train_state, init_state, init_keys, policy_key, init_obs_flat):
-            def step(carry, _):
-                state, keys, obs_flat, pkey = carry
-                pkey, action_key = jax.random.split(pkey)
+        def rollout_fn(train_state, init_state, init_keys, policy_key, init_obs_flat):
+            def env_step(carry, _):
+                policy_key, action_key = jax.random.split(carry.policy_key)
                 actions, log_probs, values, entropies = get_action_and_value(
-                    train_state, action_key, obs_flat
+                    train_state, action_key, carry.obs
                 )
                 actions = actions.astype(jnp.int32)
                 action_2d = actions.reshape((num_envs, num_agents))
                 action_dict = {a: action_2d[:, i] for i, a in enumerate(agents)}
-                split = self._split(keys)
-                obs_n, state_n, reward, done, _ = self._step(
-                    split[:, 1], state, action_dict
+                split = self._split(carry.env_keys)
+                next_obs, next_env_state, reward, done, _ = self._step(
+                    split[:, 1], carry.env_state, action_dict
                 )
-                ys = (
-                    obs_flat,
-                    actions,
-                    log_probs,
-                    values,
-                    entropies,
-                    stack_all_agents_vals(reward),
-                    stack_all_agents_vals(done),
+                step_record = Trajectory(
+                    observations=carry.obs,
+                    actions=actions,
+                    log_probs=log_probs,
+                    values=values,
+                    entropies=entropies,
+                    rewards=stack_all_agents_vals(reward),
+                    dones=stack_all_agents_vals(done),
                 )
-                carry_n = (state_n, split[:, 0], stack_obs_flat(obs_n), pkey)
-                return carry_n, ys
+                next_carry = RolloutCarry(
+                    env_state=next_env_state,
+                    env_keys=split[:, 0],
+                    obs=stack_obs_flat(next_obs),
+                    policy_key=policy_key,
+                )
+                return next_carry, step_record
 
-            init = (init_state, init_keys, init_obs_flat, policy_key)
-            (final_state, final_keys, last_obs_flat, _), ys = jax.lax.scan(
-                step, init, None, length=num_steps
+            init = RolloutCarry(
+                env_state=init_state,
+                env_keys=init_keys,
+                obs=init_obs_flat,
+                policy_key=policy_key,
             )
-            return ys, last_obs_flat, final_state, final_keys
+            final_carry, trajectory = jax.lax.scan(
+                env_step, init, None, length=num_steps
+            )
+            return (
+                trajectory,
+                final_carry.obs,
+                final_carry.env_state,
+                final_carry.env_keys,
+            )
 
-        return run
+        return rollout_fn
 
     def sample_actions(self, rng: np.random.Generator) -> np.ndarray:
         return rng.integers(

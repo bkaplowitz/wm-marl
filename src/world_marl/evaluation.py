@@ -48,14 +48,18 @@ class EvaluationResult:
         }
 
 
-def evaluate_policy(
+def evaluate_policy_host(
     adapter: TrainingAdapter,
     policy_fn: PolicyFn,
     *,
     episodes: int,
     max_steps: int | None = None,
 ) -> EvaluationResult:
-    """Evaluate a policy until ``episodes`` complete episodes are collected."""
+    """Evaluate a policy until ``episodes`` complete episodes are collected.
+
+    Host-loop twin of ``evaluate_policy``; steps the adapter one ``env.step`` at
+    a time from Python, so it works for any adapter and policy callable.
+    """
     if episodes < 1:
         raise ValueError("episodes must be >= 1")
     max_steps = max_steps or (
@@ -94,7 +98,7 @@ def evaluate_policy(
     )
 
 
-def evaluate_policy_scan(
+def evaluate_policy(
     adapter: TrainingAdapter,
     train_state: TrainState,
     *,
@@ -103,9 +107,9 @@ def evaluate_policy_scan(
     observation_mode: ObservationMode = "vector",
     seed: int = 0,
 ) -> EvaluationResult:
-    """On-device equivalent of ``evaluate_policy`` for lockstep coins episodes.
+    """On-device equivalent of ``evaluate_policy_host`` for lockstep coins episodes.
 
-    Drives the policy through ``adapter.scan_rewards_dones`` (a single jitted
+    Drives the policy through ``adapter.rollout_rewards_dones`` (a single jitted
     ``lax.scan``) so the whole eval rollout stays on the accelerator -- no
     per-step host round-trips. Coins is lockstep (all envs reset together every
     ``max_cycles`` steps), so ``ceil(episodes/num_envs)`` waves of ``max_cycles``
@@ -115,7 +119,7 @@ def evaluate_policy_scan(
     if episodes < 1:
         raise ValueError("episodes must be >= 1")
     if observation_mode != "vector":
-        raise ValueError("scan eval is only wired for vector observations (coins)")
+        raise ValueError("on-device eval is only wired for vector observations (coins)")
 
     num_envs = adapter.num_envs
     num_agents = adapter.num_agents
@@ -130,7 +134,7 @@ def evaluate_policy_scan(
         )[0]
         return actions.reshape((num_envs, num_agents))
 
-    rewards, dones_all = adapter.scan_rewards_dones(
+    rewards, dones_all = adapter.rollout_rewards_dones(
         action_fn, num_steps, policy_key=jax.random.PRNGKey(seed)
     )
     rewards = np.asarray(rewards)  # [T, E, A]
@@ -142,8 +146,8 @@ def evaluate_policy_scan(
         dones_all, np.broadcast_to(boundary[:, None], dones_all.shape)
     ):
         raise RuntimeError(
-            "scan eval requires lockstep episodes aligned to max_cycles (coins); "
-            "dones did not fire on the expected block boundaries"
+            "on-device eval requires lockstep episodes aligned to max_cycles "
+            "(coins); dones did not fire on the expected block boundaries"
         )
 
     block_returns = rewards.reshape((waves, max_cycles, num_envs, num_agents)).sum(
@@ -198,7 +202,7 @@ def train_state_policy(
 ) -> PolicyFn:
     """Create a numpy policy function backed by a Flax TrainState."""
     key = jax.random.PRNGKey(seed)
-    infer_fn = jax.jit(
+    select_actions_fn = jax.jit(
         lambda state, action_key, flat_obs: select_actions(
             state,
             action_key,
@@ -213,7 +217,7 @@ def train_state_policy(
             _policy_observations(observations, observation_mode)
         )
         key, action_key = jax.random.split(key)
-        actions = infer_fn(
+        actions = select_actions_fn(
             train_state,
             action_key,
             flat_observations,
@@ -238,7 +242,7 @@ def mappo_train_state_policy(
 ) -> PolicyFn:
     """Create a MAPPO policy function backed by a Flax TrainState."""
     key = jax.random.PRNGKey(seed)
-    infer_fn = jax.jit(
+    select_actions_fn = jax.jit(
         lambda state, action_key, flat_obs, flat_central_obs: select_mappo_actions(
             state,
             action_key,
@@ -261,7 +265,7 @@ def mappo_train_state_policy(
             flatten_agent_batch(central_observations)
         )
         key, action_key = jax.random.split(key)
-        actions = infer_fn(
+        actions = select_actions_fn(
             train_state,
             action_key,
             flat_observations,
