@@ -21,8 +21,10 @@ def test_adapter_shapes_and_auto_reset(dummy_env_factory):
         assert adapter.action_dim == 3
 
         actions = np.ones((2, 2), dtype=np.int32)
+        step = None
         for _ in range(3):
             step = adapter.step(actions)
+        assert step is not None
         assert step.observations.shape == (2, 2, 4, 4, 3)
         assert step.rewards.shape == (2, 2)
         assert step.dones.shape == (2, 2)

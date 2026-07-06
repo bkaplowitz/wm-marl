@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import inspect
 from collections.abc import Callable
+from typing import Protocol, runtime_checkable
 
 import jax
 import jax.numpy as jnp
@@ -17,6 +19,11 @@ from world_marl.envs.meltingpot_adapter import VectorStep
 # analytic reward stays in lock-step with the environment if its defaults change.
 # Layout mirrors CoinGame._step: [[rr, rb, r_penalty], [br, bb, b_penalty]].
 _COIN_PAYOFF = inspect.signature(CoinGame.__init__).parameters["payoff_matrix"].default
+
+
+@runtime_checkable
+class _DiscreteActionSpace(Protocol):
+    n: int
 
 
 # NB: This uses a compatible interface with MeltingPot. As a result it comes at the cost of complete vectorization/avoiding transferring from gppu to cu
@@ -56,11 +63,23 @@ class JaxMARLCoinGameVectorAdapter:
         self.max_cycles = max_cycles
         self.auto_reset = auto_reset
         self.env = jaxmarl.make("coin_game", num_inner_steps=max_cycles)
-        self.agents = list(self.env.agents)
+        agents: list[str] = []
+        for agent in self.env.agents:
+            if not isinstance(agent, str):
+                raise TypeError("CoinGame agents must be string IDs")
+            agents.append(agent)
+        self.agents = tuple(agents)
         self.num_agents = len(self.agents)
-        self.action_dim = int(self.env.action_space(self.agents[0]).n)
+        if self.num_agents < 1:
+            raise ValueError("expected at least one CoinGame agent")
+        action_space = self.env.action_space(self.agents[0])
+        if not isinstance(action_space, _DiscreteActionSpace):
+            raise TypeError("CoinGame action space must expose a discrete size")
+        self.action_dim = int(action_space.n)
 
         probe_obs, _ = self.env.reset(jax.random.PRNGKey(seed))
+        if not isinstance(probe_obs, Mapping):
+            raise TypeError("CoinGame reset must return observations by agent ID")
         self.observation_shape = (
             int(np.asarray(probe_obs[self.agents[0]]).reshape(-1).shape[0]),
         )
@@ -183,7 +202,9 @@ class JaxMARLCoinGameVectorAdapter:
 
         return run(self._keys, policy_key)
 
-    def scan_rollout(self, infer_fn, train_state, num_steps, *, policy_key, observations):
+    def scan_rollout(
+        self, infer_fn, train_state, num_steps, *, policy_key, observations
+    ):
         """On-device PPO rollout from the adapter's CURRENT carry (mid-stream).
 
         Mirrors ``collect_rollout``'s per-step PRNG order -- split the policy key
@@ -219,9 +240,11 @@ class JaxMARLCoinGameVectorAdapter:
         flat = num_envs * num_agents
 
         def stack_obs_flat(obs):
-            return jnp.stack(
-                [obs[a].reshape((num_envs, -1)) for a in agents], axis=1
-            ).reshape((flat, -1)).astype(jnp.float32)
+            return (
+                jnp.stack([obs[a].reshape((num_envs, -1)) for a in agents], axis=1)
+                .reshape((flat, -1))
+                .astype(jnp.float32)
+            )
 
         def stack_scalar(values):
             return jnp.stack([values[a] for a in agents], axis=1).reshape((flat,))

@@ -274,6 +274,8 @@ def create_algorithm_train_state(
 ):
     observation_shape = _policy_observation_shape(adapter, observation_mode)
     if algorithm == "mappo":
+        if not isinstance(config, MAPPOConfig):
+            raise TypeError("MAPPO training requires a MAPPOConfig")
         return create_mappo_train_state(
             rng,
             observation_shape,
@@ -285,6 +287,8 @@ def create_algorithm_train_state(
             adapter.action_dim,
             config,
         )
+    if not isinstance(config, IPPOConfig):
+        raise TypeError("IPPO training requires an IPPOConfig")
     return create_ippo_train_state(
         rng,
         observation_shape,
@@ -666,24 +670,30 @@ def run_training(
         cumulative_real_episodes = 0
 
         if cfg.algorithm == "mappo":
+            if not isinstance(config, MAPPOConfig):
+                raise TypeError("MAPPO updates require a MAPPOConfig")
+            mappo_config = config
             update_fn = jax.jit(
                 lambda state, batch, last_values, update_rng: mappo_update(
                     state,
                     batch,
                     last_values,
                     update_rng,
-                    config,
+                    mappo_config,
                 )
             )
             collect_fn = collect_mappo_rollout
         else:
+            if not isinstance(config, IPPOConfig):
+                raise TypeError("IPPO updates require an IPPOConfig")
+            ippo_config = config
             update_fn = jax.jit(
                 lambda state, batch, last_values, update_rng: ppo_update(
                     state,
                     batch,
                     last_values,
                     update_rng,
-                    config,
+                    ippo_config,
                 )
             )
             collect_fn = (
@@ -850,6 +860,7 @@ def run_training(
                     world_model_state is None
                     or world_model_config is None
                     or model_start_states is None
+                    or reward_done_fn is None
                 ):
                     raise RuntimeError("world model prefit did not initialize")
                 rng, rollout_key, start_key, update_key = jax.random.split(rng, 4)

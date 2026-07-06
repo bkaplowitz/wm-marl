@@ -27,7 +27,7 @@ version = "0.1.0"
 
 [project.optional-dependencies]
 cuda12 = ["jax[cuda12]==0.4.36"]
-dev = ["pre-commit>=4.3", "pytest>=8", "ruff==0.15.18"]
+dev = ["pre-commit>=4.6", "pytest>=8", "ruff==0.15.18"]
 
 [project.scripts]
 world-marl-benchmark-policy = "world_marl.scripts.benchmark_policy:main"
@@ -43,9 +43,6 @@ markers = [
   "integration: tests requiring installed Melting Pot/dmlab2d runtime",
 ]
 testpaths = ["tests"]
-
-[tool.pyright]
-exclude = [".venv"]
 
 [tool.basedpyright]
 exclude = [".venv"]

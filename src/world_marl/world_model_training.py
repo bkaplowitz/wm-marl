@@ -5,19 +5,25 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
+from typing import TYPE_CHECKING, Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+import numpy.typing as npt
 from flax.training.train_state import TrainState
 
-from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
+from flow_matching.llada2 import topk_checkpoint_merge, wsd_block_size_schedule
 from world_marl.training import build_central_observations
 from world_marl.world_model import (
     VectorTransitionBatch,
     _apply_vector_policy,
+    _num_factors,
     train_world_model_step,
 )
+
+if TYPE_CHECKING:
+    from world_marl.scripts.train_e2e import TrainingAdapter
 
 
 @dataclass(frozen=True)
@@ -28,7 +34,9 @@ class TransitionCollectionStats:
     episode_length_mean: float | None
 
 
-def flatten_state_observations(observations: np.ndarray) -> np.ndarray:
+def flatten_state_observations(
+    observations: npt.NDArray[Any],
+) -> npt.NDArray[np.float32]:
     """Flatten local observations while preserving env and agent axes."""
     observations = np.asarray(observations, dtype=np.float32)
     if observations.ndim < 3:
@@ -37,14 +45,14 @@ def flatten_state_observations(observations: np.ndarray) -> np.ndarray:
 
 
 def collect_random_transition_batch(
-    adapter: MeltingPotVectorAdapter,
-    observations: np.ndarray,
+    adapter: TrainingAdapter,
+    observations: npt.NDArray[Any],
     rng: np.random.Generator,
     *,
     rollout_steps: int,
 ) -> tuple[
     VectorTransitionBatch,
-    np.ndarray,
+    npt.NDArray[Any],
     jnp.ndarray,
     TransitionCollectionStats,
 ]:
@@ -85,16 +93,16 @@ def collect_random_transition_batch(
 
 
 def collect_policy_transition_batch(
-    adapter: MeltingPotVectorAdapter,
+    adapter: TrainingAdapter,
     train_state: TrainState,
-    observations: np.ndarray,
+    observations: npt.NDArray[Any],
     rng: jax.Array,
     *,
     rollout_steps: int,
     algorithm: str,
 ) -> tuple[
     VectorTransitionBatch,
-    np.ndarray,
+    npt.NDArray[Any],
     jax.Array,
     jnp.ndarray,
     TransitionCollectionStats,
@@ -205,16 +213,50 @@ def fit_world_model_steps(
 
     Returns the updated state, the advanced rng, the final step loss, and the
     per-step loss history (length ``steps``) for plotting fit convergence.
+
+    For ``flow_type == "llada2"`` with ``config.wsd_merge_k > 1`` the run is split
+    into ``wsd_merge_k`` contiguous segments sharing one global WSD curriculum; the
+    params after each segment are kept and the lowest-loss half are averaged via
+    Weight-Space Merge (§4.3, ``topk_checkpoint_merge``) into the returned state.
     """
     if steps < 1:
         raise ValueError("steps must be >= 1")
-    model_state, rng, loss_history = _fit_world_model_updates(
-        model_state, rng, batch, config, steps=steps
-    )
+
+    merge_k = config.wsd_merge_k if config.flow_type == "llada2" else 1
+    if merge_k <= 1:
+        model_state, rng, loss_history = _fit_world_model_updates(
+            model_state, rng, batch, config, steps=steps
+        )
+        return model_state, rng, loss_history[-1], loss_history
+
+    seg = max(1, steps // merge_k)
+    snapshots: list[tuple[float, object]] = []
+    histories: list[jnp.ndarray] = []
+    offset = 0
+    for c in range(merge_k):
+        n = steps - offset if c == merge_k - 1 else seg
+        model_state, rng, hist = _fit_world_model_updates(
+            model_state,
+            rng,
+            batch,
+            config,
+            steps=n,
+            step_offset=offset,
+            total_steps=steps,
+        )
+        snapshots.append((float(hist[-1]), model_state.params))
+        histories.append(hist)
+        offset += n
+
+    snapshots.sort(key=lambda item: item[0])
+    top = max(1, merge_k // 2)
+    merged = topk_checkpoint_merge([params for _, params in snapshots[:top]])
+    model_state = model_state.replace(params=merged)
+    loss_history = jnp.concatenate(histories)
     return model_state, rng, loss_history[-1], loss_history
 
 
-@partial(jax.jit, static_argnames=("config", "steps"))
+@partial(jax.jit, static_argnames=("config", "steps", "step_offset", "total_steps"))
 def _fit_world_model_updates(
     model_state: TrainState,
     rng: jax.Array,
@@ -222,12 +264,65 @@ def _fit_world_model_updates(
     config,
     *,
     steps: int,
+    step_offset: int = 0,
+    total_steps: int | None = None,
 ) -> tuple[TrainState, jax.Array, jnp.ndarray]:
     """Fused full-batch fitting: one ``lax.scan`` step per gradient update.
 
     The carry is ``(model_state, rng)`` and ``scan`` stacks each step's loss into
-    the returned history.
+    the returned history. For ``flow_type == "llada2"`` each step is also handed
+    its WSD block size (§4.1) and an annealed §7.1 masked-embedding noise std,
+    indexed by a *global* step (``step_offset`` + local) so the warmup/stable/decay
+    curriculum stays continuous across a segmented (checkpoint-merged) run.
     """
+    if config.flow_type == "llada2":
+        total = steps if total_steps is None else total_steps
+        d = _num_factors(config)
+        divisors = tuple(s for s in range(1, d + 1) if d % s == 0)
+        if config.wsd_enabled:
+            block_sizes = jnp.asarray(
+                [
+                    wsd_block_size_schedule(
+                        step_offset + s,
+                        total,
+                        divisors=divisors,
+                        warmup_frac=config.wsd_warmup_frac,
+                        stable_frac=config.wsd_stable_frac,
+                    )
+                    for s in range(steps)
+                ],
+                dtype=jnp.int32,
+            )
+        else:
+            block_sizes = jnp.full((steps,), config.block_size, dtype=jnp.int32)
+        global_steps = jnp.arange(step_offset, step_offset + steps, dtype=jnp.float32)
+        noise_iters = config.masked_embed_noise_iters
+
+        def llada2_update(carry, xs):
+            state, rng = carry
+            block_size, gstep = xs
+            rng, fit_key, noise_key = jax.random.split(rng, 3)
+            if noise_iters > 0:
+                std = config.mask_noise_std * jnp.maximum(
+                    0.0, 1.0 - gstep / noise_iters
+                )
+            else:
+                std = 0.0
+            state, loss = train_world_model_step(
+                state,
+                fit_key,
+                batch,
+                config,
+                block_size=block_size,
+                mask_noise_std=std,
+                noise_rng=noise_key,
+            )
+            return (state, rng), loss
+
+        (model_state, rng), loss_history = jax.lax.scan(
+            llada2_update, (model_state, rng), (block_sizes, global_steps)
+        )
+        return model_state, rng, loss_history
 
     def update(carry, _):
         state, rng = carry
@@ -256,20 +351,20 @@ def sample_initial_states(
 
 class _TransitionRows:
     def __init__(self) -> None:
-        self.states: list[np.ndarray] = []
-        self.actions: list[np.ndarray] = []
-        self.next_states: list[np.ndarray] = []
-        self.rewards: list[np.ndarray] = []
-        self.dones: list[np.ndarray] = []
+        self.states: list[npt.NDArray[np.float32]] = []
+        self.actions: list[npt.NDArray[np.int32]] = []
+        self.next_states: list[npt.NDArray[np.float32]] = []
+        self.rewards: list[npt.NDArray[np.float32]] = []
+        self.dones: list[npt.NDArray[np.float32]] = []
 
     def append(
         self,
         *,
-        states: np.ndarray,
-        actions: np.ndarray,
-        next_states: np.ndarray,
-        rewards: np.ndarray,
-        dones: np.ndarray,
+        states: npt.NDArray[np.float32],
+        actions: npt.NDArray[Any],
+        next_states: npt.NDArray[np.float32],
+        rewards: npt.NDArray[Any],
+        dones: npt.NDArray[Any],
     ) -> None:
         self.states.append(states)
         self.actions.append(np.asarray(actions, dtype=np.int32))

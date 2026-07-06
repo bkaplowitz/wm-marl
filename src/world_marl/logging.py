@@ -43,7 +43,7 @@ def dependency_versions() -> dict[str, str]:
     return versions
 
 
-def to_jsonable(value: Any) -> Any:
+def to_jsonable(value) -> Any:
     if dataclasses.is_dataclass(value):
         return to_jsonable(dataclasses.asdict(value))
     if isinstance(value, Path):
