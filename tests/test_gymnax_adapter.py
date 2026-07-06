@@ -3,6 +3,7 @@ from __future__ import annotations
 from argparse import Namespace
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -84,6 +85,75 @@ def test_gymnax_adapter_evaluates_through_common_loop():
         assert result.steps == 4
     finally:
         adapter.close()
+
+
+def test_gymnax_scan_rollout_matches_host_step_loop():
+    """The public ``scan_rollout`` wrapper must reproduce the host ``step``
+    loop bit-for-bit given the same actions: both consume the same per-env key
+    stream in the same order. A key-independent constant policy removes the
+    action-sampling variable, and ``num_steps > max_cycles`` crosses gymnax's
+    internal auto-reset inside the scan. The final ``_keys`` must match the
+    host adapter's exactly, while the episode accumulators stay untouched
+    (callers replay them from the recorded dones).
+    """
+    num_envs, max_cycles, num_steps = 2, 3, 5
+
+    def make_adapter():
+        return GymnaxVectorAdapter(
+            "CartPole-v1", num_envs=num_envs, max_cycles=max_cycles, seed=7
+        )
+
+    scan_adapter = make_adapter()
+    host_adapter = make_adapter()
+    try:
+        obs0_scan = scan_adapter.reset()
+        obs0_host = host_adapter.reset()
+        np.testing.assert_array_equal(obs0_scan, obs0_host)
+
+        def zero_action(train_state, action_key, obs_flat):
+            del train_state, action_key
+            num_rows = obs_flat.shape[0]
+            zeros = jnp.zeros((num_rows,), dtype=jnp.float32)
+            return jnp.zeros((num_rows,), dtype=jnp.int32), zeros, zeros, zeros
+
+        ys, last_obs_flat = scan_adapter.scan_rollout(
+            zero_action,
+            None,
+            num_steps,
+            policy_key=jax.random.PRNGKey(0),
+            observations=obs0_scan,
+        )
+        obs_seq, action_seq, _log_probs, _values, _entropies, reward_seq, done_seq = ys
+
+        host_obs = [obs0_host.reshape((num_envs, -1))]
+        host_rewards = []
+        host_dones = []
+        for _ in range(num_steps):
+            step = host_adapter.step(np.zeros((num_envs, 1), dtype=np.int32))
+            host_rewards.append(step.rewards.reshape((num_envs,)))
+            host_dones.append(step.dones.reshape((num_envs,)))
+            host_obs.append(step.observations.reshape((num_envs, -1)))
+
+        assert np.asarray(action_seq).shape == (num_steps, num_envs)
+        np.testing.assert_allclose(
+            np.asarray(obs_seq), np.stack(host_obs[:-1]), rtol=0, atol=1e-6
+        )
+        np.testing.assert_array_equal(np.asarray(reward_seq), np.stack(host_rewards))
+        np.testing.assert_array_equal(
+            np.asarray(done_seq, dtype=np.float32), np.stack(host_dones)
+        )
+        assert np.asarray(done_seq).any()  # max_cycles=3 < num_steps -> a reset ran
+        np.testing.assert_allclose(
+            np.asarray(last_obs_flat), host_obs[-1], rtol=0, atol=1e-6
+        )
+        np.testing.assert_array_equal(
+            np.asarray(scan_adapter._keys), np.asarray(host_adapter._keys)
+        )
+        assert scan_adapter._episode_lengths.tolist() == [0, 0]
+        assert scan_adapter._episode_returns.tolist() == [[0.0], [0.0]]
+    finally:
+        scan_adapter.close()
+        host_adapter.close()
 
 
 @pytest.mark.parametrize("algorithm", ["ippo", "mappo"])

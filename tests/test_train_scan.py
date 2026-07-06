@@ -11,6 +11,7 @@ from world_marl.algs.mappo import (
     create_train_state as create_mappo_state,
     mappo_update,
 )
+from world_marl.envs.gymnax_adapter import GymnaxVectorAdapter
 from world_marl.envs.jaxmarl_coin_adapter import JaxMARLCoinGameVectorAdapter
 from world_marl.training import (
     central_observation_shape,
@@ -290,6 +291,82 @@ def test_train_real_scan_matches_host_multi_update(algorithm):
                 rtol=0,
                 atol=1e-3,
             )
+
+
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+def test_train_real_scan_matches_host_gymnax_early_termination(algorithm):
+    """Same N=1 oracle as the coins test, but on CartPole, whose episodes end
+    early (pole falls) or by truncation rather than in lockstep -- so unlike
+    coins the completions are trajectory-driven. This pins the gymnax
+    ``_build_rollout_scan`` PRNG threading (policy key then env keys, matching
+    the host loop bit-for-bit on integer actions) and the done-driven episode
+    bookkeeping. ``rollout_steps > max_cycles`` guarantees every env completes
+    at least one episode inside the rollout.
+    """
+    num_envs, max_cycles, seed = 2, 16, 3
+    rollout_steps = 20
+
+    def make_adapter():
+        return GymnaxVectorAdapter(
+            "CartPole-v1", num_envs=num_envs, max_cycles=max_cycles, seed=seed
+        )
+
+    train_state, config = _make_policy_state(make_adapter(), algorithm)
+    key = jax.random.PRNGKey(seed)
+
+    host_adapter = make_adapter()
+    obs0_host = host_adapter.reset()
+    host_state, host_obs, host_rng, host_rows = _host_oracle(
+        host_adapter,
+        train_state,
+        obs0_host,
+        key,
+        num_updates=1,
+        config=config,
+        rollout_steps=rollout_steps,
+        algorithm=algorithm,
+        freeze_policy=False,
+    )
+
+    scan_adapter = make_adapter()
+    obs0_scan = scan_adapter.reset()
+    scan_state, scan_obs, scan_rng, scan_metrics = train_real_scan(
+        scan_adapter,
+        train_state,
+        obs0_scan,
+        key,
+        num_updates=1,
+        config=config,
+        rollout_steps=rollout_steps,
+        algorithm=algorithm,
+        freeze_policy=False,
+    )
+
+    np.testing.assert_array_equal(np.asarray(scan_rng), np.asarray(host_rng))
+
+    completed = int(scan_metrics["completed_episodes"][0])
+    assert completed == host_rows[0]["completed_episodes"]
+    assert completed >= num_envs  # truncation guarantees one completion per env
+    np.testing.assert_allclose(
+        np.asarray(scan_metrics["episode_length_mean"][0]),
+        host_rows[0]["episode_length_mean"],
+        rtol=0,
+        atol=1e-5,
+    )
+
+    for field in ("rollout_mean_reward", "episode_return_mean"):
+        np.testing.assert_allclose(
+            np.asarray(scan_metrics[field][0]), host_rows[0][field], rtol=0, atol=1e-5
+        )
+    for field in ("ppo/actor_loss", "ppo/value_loss", "ppo/total_loss", "ppo/entropy"):
+        np.testing.assert_allclose(
+            np.asarray(scan_metrics[field][0]), host_rows[0][field], rtol=0, atol=1e-5
+        )
+
+    _assert_params_close(host_state, scan_state, atol=1e-5)
+    np.testing.assert_allclose(
+        np.asarray(scan_obs), np.asarray(host_obs), rtol=0, atol=1e-5
+    )
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
