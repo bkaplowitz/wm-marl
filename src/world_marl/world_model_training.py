@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from functools import partial
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+import numpy.typing as npt
 from flax.training.train_state import TrainState
 
 from flow_matching.llada2 import topk_checkpoint_merge, wsd_block_size_schedule
@@ -24,7 +25,9 @@ if TYPE_CHECKING:
     from world_marl.scripts.train_e2e import TrainingAdapter
 
 
-def flatten_state_observations(observations: np.ndarray) -> np.ndarray:
+def flatten_state_observations(
+    observations: npt.NDArray[Any],
+) -> npt.NDArray[np.float32]:
     """Flatten local observations while preserving env and agent axes."""
     observations = np.asarray(observations, dtype=np.float32)
     if observations.ndim < 3:
@@ -34,11 +37,11 @@ def flatten_state_observations(observations: np.ndarray) -> np.ndarray:
 
 def collect_random_transition_batch(
     adapter: TrainingAdapter,
-    observations: np.ndarray,
+    observations: npt.NDArray[Any],
     rng: np.random.Generator,
     *,
     rollout_steps: int,
-) -> tuple[VectorTransitionBatch, np.ndarray, jnp.ndarray]:
+) -> tuple[VectorTransitionBatch, npt.NDArray[Any], jnp.ndarray]:
     """Collect vector-state transitions using adapter-sampled random actions."""
     if rollout_steps < 1:
         raise ValueError("rollout_steps must be >= 1")
@@ -65,12 +68,12 @@ def collect_random_transition_batch(
 def collect_policy_transition_batch(
     adapter: TrainingAdapter,
     train_state: TrainState,
-    observations: np.ndarray,
+    observations: npt.NDArray[Any],
     rng: jax.Array,
     *,
     rollout_steps: int,
     algorithm: str,
-) -> tuple[VectorTransitionBatch, np.ndarray, jax.Array, jnp.ndarray]:
+) -> tuple[VectorTransitionBatch, npt.NDArray[Any], jax.Array, jnp.ndarray]:
     """Collect vector-state transitions using the current IPPO/MAPPO policy."""
     if rollout_steps < 1:
         raise ValueError("rollout_steps must be >= 1")
@@ -278,20 +281,20 @@ def sample_initial_states(
 
 class _TransitionRows:
     def __init__(self) -> None:
-        self.states: list[np.ndarray] = []
-        self.actions: list[np.ndarray] = []
-        self.next_states: list[np.ndarray] = []
-        self.rewards: list[np.ndarray] = []
-        self.dones: list[np.ndarray] = []
+        self.states: list[npt.NDArray[np.float32]] = []
+        self.actions: list[npt.NDArray[np.int32]] = []
+        self.next_states: list[npt.NDArray[np.float32]] = []
+        self.rewards: list[npt.NDArray[np.float32]] = []
+        self.dones: list[npt.NDArray[np.float32]] = []
 
     def append(
         self,
         *,
-        states: np.ndarray,
-        actions: np.ndarray,
-        next_states: np.ndarray,
-        rewards: np.ndarray,
-        dones: np.ndarray,
+        states: npt.NDArray[np.float32],
+        actions: npt.NDArray[Any],
+        next_states: npt.NDArray[np.float32],
+        rewards: npt.NDArray[Any],
+        dones: npt.NDArray[Any],
     ) -> None:
         self.states.append(states)
         self.actions.append(np.asarray(actions, dtype=np.int32))

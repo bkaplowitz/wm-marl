@@ -129,7 +129,7 @@ def factorized_jump_rates(
     alpha=alpha,
     alpha_dt=alpha_dt,
 ) -> jax.Array:
-    """Off-diagonal CTMC jump rates q_j(v) using the model.
+    r"""Off-diagonal CTMC jump rates q_j(v) using the model.
 
     With linear schedule, ``α_t = t``, this is ``(p_{1|t}(z_j=v_i | z, t)  - δ_{z_j=v_i})/ (1 - t) the probability of drawing the data token v_i at position j. The
     ``eps`` floor mirrors the schedule guards in this module and is inert on the

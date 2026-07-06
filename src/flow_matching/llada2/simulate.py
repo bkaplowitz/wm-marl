@@ -53,7 +53,9 @@ def sample_llada2_block_diffusion(
         pred = jax.random.categorical(draw_key, logits, axis=-1).astype(tokens.dtype)
         return pred, conf
 
-    def refine_step(carry, _):
+    def refine_step(
+        carry: tuple[jax.Array, jax.Array, jax.Array, jax.Array], _: None
+    ) -> tuple[tuple[jax.Array, jax.Array, jax.Array, jax.Array], None]:
         tokens, committed, in_block, rng = carry
         rng, draw_key = jax.random.split(rng)
         pred, conf = forward(tokens, draw_key)
@@ -64,7 +66,9 @@ def sample_llada2_block_diffusion(
         tokens = jnp.where(accept, pred, tokens)
         return (tokens, committed | accept, in_block, rng), None
 
-    def block_step(carry, b):
+    def block_step(
+        carry: tuple[jax.Array, jax.Array, jax.Array], b: jax.Array
+    ) -> tuple[tuple[jax.Array, jax.Array, jax.Array], None]:
         tokens, committed, rng = carry
         in_block = jnp.broadcast_to((block_of == b)[None, :], tokens.shape)
         rng, inner_rng, force_key = jax.random.split(rng, 3)
