@@ -19,6 +19,7 @@ from world_marl.jepa.training import (
     evaluate_open_loop,
     lambda_returns,
     latent_collapse_metrics,
+    masked_mean,
     prediction_validity,
     reset_policy_heads,
     reward_only_returns,
@@ -245,6 +246,22 @@ def test_dynamics_ensemble_model_step_and_policy_metrics_are_finite():
     assert jnp.isfinite(policy_metrics["policy/total_loss"])
     assert jnp.isfinite(policy_metrics["policy/uncertainty"])
     assert jnp.isfinite(policy_metrics["policy/trusted_fraction"])
+
+
+def test_masked_mean_broadcasts_validity_mask_across_ensemble_axis():
+    """A singleton-mask axis must not shrink the denominator: with 2 ensemble
+    members at values 1 and 3 over 3 valid positions, the mean is 2, not 4.
+    """
+    values = jnp.stack(
+        [jnp.ones((2, 3)), 3.0 * jnp.ones((2, 3))],
+        axis=-1,
+    )
+    mask = jnp.asarray([[1.0, 1.0, 0.0], [1.0, 0.0, 0.0]])[..., None]
+
+    np.testing.assert_allclose(np.asarray(masked_mean(values, mask)), 2.0, rtol=1e-5)
+    np.testing.assert_allclose(
+        np.asarray(masked_mean(values[..., 0], mask[..., 0])), 1.0, rtol=1e-5
+    )
 
 
 def test_frozen_encoder_model_step_preserves_encoder_and_updates_world_model():

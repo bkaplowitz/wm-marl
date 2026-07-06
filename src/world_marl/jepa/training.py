@@ -1714,6 +1714,7 @@ def terminal_prediction_metrics(
 
 
 def masked_mean(values: jax.Array, mask: jax.Array) -> jax.Array:
+    mask = jnp.broadcast_to(mask, values.shape)
     return jnp.sum(values * mask) / (jnp.sum(mask) + 1e-6)
 
 
