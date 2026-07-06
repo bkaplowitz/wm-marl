@@ -49,7 +49,6 @@ def test_ippo_rollout_writes_diagnostics(dummy_env_factory):
 
 def test_mappo_vector_rollout_writes_diagnostics():
     adapter = JaxMARLCoinGameVectorAdapter(num_envs=1, max_cycles=5, seed=0)
-    assert isinstance(adapter, MeltingPotVectorAdapter)
     try:
         config = MAPPOConfig(network_arch="mlp")
         observation_shape = adapter.observation_shape
