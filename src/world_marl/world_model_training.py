@@ -16,7 +16,7 @@ from flax.training.train_state import TrainState
 from flow_matching.llada2 import topk_checkpoint_merge, wsd_block_size_schedule
 from world_marl.training import (
     _ippo_get_action_and_value,
-    _mappo_get_action_and_value,
+    _make_mappo_get_action_and_value,
     build_central_observations,
 )
 from world_marl.world_model import (
@@ -373,7 +373,7 @@ def collect_policy_transition_batch_scan(
     if algorithm not in {"ippo", "mappo"}:
         raise ValueError(f"unsupported algorithm {algorithm!r}")
     get_action_and_value = (
-        _mappo_get_action_and_value(adapter.num_envs, adapter.num_agents)
+        _make_mappo_get_action_and_value(adapter.num_envs, adapter.num_agents)
         if algorithm == "mappo"
         else _ippo_get_action_and_value
     )

@@ -187,7 +187,7 @@ def train_real_scan(
     num_agents = adapter.num_agents
 
     get_action_and_value = (
-        _mappo_get_action_and_value(num_envs, num_agents)
+        _make_mappo_get_action_and_value(num_envs, num_agents)
         if is_mappo
         else _ippo_get_action_and_value
     )
@@ -563,7 +563,7 @@ def _mappo_get_action_and_value(state, key, flat_obs, flat_central_obs):
 
 
 @functools.lru_cache(maxsize=None)
-def _mappo_get_action_and_value(num_envs: int, num_agents: int):
+def _make_mappo_get_action_and_value(num_envs: int, num_agents: int):
     """MAPPO ``get_action_and_value`` in ``scan_rollout``'s 3-arg shape.
 
     Rebuilds centralized-critic obs from the joint obs. Cached per env geometry so the returned closure keeps a stable identity —

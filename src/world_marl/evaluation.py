@@ -195,7 +195,7 @@ def train_state_policy(
 ) -> PolicyFn:
     """Create a numpy policy function backed by a Flax TrainState."""
     key = jax.random.PRNGKey(seed)
-    infer_fn = jax.jit(
+    get_action = jax.jit(
         lambda state, action_key, flat_obs: select_actions(
             state,
             action_key,
@@ -210,7 +210,7 @@ def train_state_policy(
             _policy_observations(observations, observation_mode)
         )
         key, action_key = jax.random.split(key)
-        actions = infer_fn(
+        actions = get_action(
             train_state,
             action_key,
             flat_observations,
@@ -235,7 +235,7 @@ def mappo_train_state_policy(
 ) -> PolicyFn:
     """Create a MAPPO policy function backed by a Flax TrainState."""
     key = jax.random.PRNGKey(seed)
-    infer_fn = jax.jit(
+    get_action = jax.jit(
         lambda state, action_key, flat_obs, flat_central_obs: select_mappo_actions(
             state,
             action_key,
@@ -258,7 +258,7 @@ def mappo_train_state_policy(
             flatten_agent_batch(central_observations)
         )
         key, action_key = jax.random.split(key)
-        actions = infer_fn(
+        actions = get_action(
             train_state,
             action_key,
             flat_observations,
