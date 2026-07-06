@@ -109,7 +109,7 @@ def evaluate_policy_scan(
     per-step host round-trips. Coins is lockstep (all envs reset together every
     ``max_cycles`` steps), so ``ceil(episodes/num_envs)`` waves of ``max_cycles``
     steps yield exactly ``episodes`` fixed-length episodes and the per-wave block
-    sum of rewards reproduces the host accumulator bit-for-bit.
+    sum of rewards reproduces the loop accumulator bit-for-bit.
     """
     if episodes < 1:
         raise ValueError("episodes must be >= 1")

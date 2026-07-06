@@ -179,11 +179,11 @@ class BraxVectorAdapter:
         starts from ``_episode_lengths`` and runs the identical recurrence, so
         the replayed lengths land on the same boundary.
 
-        Deviations from the host loop, both intentional: recorded ``actions``
+        Deviations from the Python loop, both intentional: recorded ``actions``
         are the raw policy outputs (a clipped copy is what steps the env,
         matching ``step``), and in-scan resets draw fresh keys from a single
         ``fold_in`` per call rather than one per reset event, so reset streams
-        are distribution-equivalent — not bit-for-bit — with the host loop.
+        are distribution-equivalent — not bit-for-bit — with the Python loop.
         Rewards are recorded pre-reset and ``dones`` fold in the ``max_cycles``
         truncation, exactly like ``step``. No ``scan_rewards_dones`` is
         provided: that eval path assumes lockstep fixed-horizon episodes and

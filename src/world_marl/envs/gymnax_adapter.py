@@ -157,7 +157,7 @@ class GymnaxVectorAdapter:
 
         Mirrors ``JaxMARLCoinGameVectorAdapter.scan_rollout``: starts from the
         adapter's current carry, splits the policy key then the env keys in the
-        same order as the host loop (so it reproduces ``collect_rollout``
+        same order as the Python loop (so it reproduces ``collect_rollout``
         bit-for-bit on integer actions), returns the stacked
         ``(obs, actions, log_probs, values, entropies, rewards, dones)`` plus
         the last flat observations, and advances ``_state``/``_keys`` — but not
@@ -166,7 +166,7 @@ class GymnaxVectorAdapter:
         The adapter deliberately has no ``scan_rewards_dones``: that eval path
         (``evaluate_policy_scan``) assumes lockstep fixed-horizon episodes and
         raises for early-terminating envs like CartPole, so evaluation stays on
-        the host loop.
+        the Python loop.
         """
         cache_key = (id(get_action_and_value), num_steps)
         run = self._rollout_scan_jit.get(cache_key)

@@ -67,7 +67,7 @@ def _make_policy_state(adapter, algorithm: str, seed: int = 5):
     return state, config
 
 
-def _host_oracle(
+def _loop_oracle(
     adapter,
     train_state,
     observations,
@@ -79,9 +79,9 @@ def _host_oracle(
     algorithm,
     freeze_policy,
 ):
-    """The trusted host loop: exactly ``run_training``'s model-free branch.
+    """The trusted Python loop: exactly ``run_training``'s model-free branch.
 
-    Calls the host collector (``collect_rollout`` / ``collect_mappo_rollout``,
+    Calls the loop collector (``collect_rollout`` / ``collect_mappo_rollout``,
     whose PRNG threading the adapter scan reproduces bit-for-bit on integer
     actions) + a standalone jitted update in a Python loop, threading state
     through the (stateful) adapter and the local ``rng``/``observations`` just
@@ -141,18 +141,18 @@ def _host_oracle(
     return train_state, observations, rng, per_update
 
 
-def _assert_params_close(host_state, scan_state, *, atol):
-    host_leaves = jax.tree_util.tree_leaves(host_state.params)
+def _assert_params_close(loop_state, scan_state, *, atol):
+    loop_leaves = jax.tree_util.tree_leaves(loop_state.params)
     scan_leaves = jax.tree_util.tree_leaves(scan_state.params)
-    assert len(host_leaves) == len(scan_leaves)
-    for h, s in zip(host_leaves, scan_leaves):
+    assert len(loop_leaves) == len(scan_leaves)
+    for h, s in zip(loop_leaves, scan_leaves):
         np.testing.assert_allclose(np.asarray(s), np.asarray(h), rtol=0, atol=atol)
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
-def test_train_real_scan_matches_host_single_update(algorithm):
+def test_train_real_scan_matches_loop_single_update(algorithm):
     """N=1 is the tight logic oracle: same start params -> the folded scan runs
-    the *identical* rollout (bit-for-bit), gradient, and update as the host loop.
+    the *identical* rollout (bit-for-bit), gradient, and update as the Python loop.
     The only admissible drift is XLA fusing the update inlined-in-scan vs the
     standalone jit, so params/ppo metrics match to a tight float tolerance while
     the carried ``rng`` (structural), ``completed_episodes`` and
@@ -166,12 +166,12 @@ def test_train_real_scan_matches_host_single_update(algorithm):
     )
     key = jax.random.PRNGKey(seed)
 
-    host_adapter = _make_adapter(num_envs, max_cycles, seed)
-    obs0_host = host_adapter.reset()
-    host_state, host_obs, host_rng, host_rows = _host_oracle(
-        host_adapter,
+    loop_adapter = _make_adapter(num_envs, max_cycles, seed)
+    obs0_loop = loop_adapter.reset()
+    loop_state, loop_obs, loop_rng, loop_rows = _loop_oracle(
+        loop_adapter,
         train_state,
-        obs0_host,
+        obs0_loop,
         key,
         num_updates=1,
         config=config,
@@ -195,15 +195,15 @@ def test_train_real_scan_matches_host_single_update(algorithm):
     )
 
     # Structural PRNG canary: the carried key must be bit-identical.
-    np.testing.assert_array_equal(np.asarray(scan_rng), np.asarray(host_rng))
+    np.testing.assert_array_equal(np.asarray(scan_rng), np.asarray(loop_rng))
 
     # Fixed-horizon coins -> episode counts/lengths are timer-driven (exact).
     assert (
-        int(scan_metrics["completed_episodes"][0]) == host_rows[0]["completed_episodes"]
+        int(scan_metrics["completed_episodes"][0]) == loop_rows[0]["completed_episodes"]
     )
     np.testing.assert_allclose(
         np.asarray(scan_metrics["episode_length_mean"][0]),
-        host_rows[0]["episode_length_mean"],
+        loop_rows[0]["episode_length_mean"],
         rtol=0,
         atol=1e-5,
     )
@@ -211,21 +211,21 @@ def test_train_real_scan_matches_host_single_update(algorithm):
     # Reward-derived metrics: identical rollout at N=1 -> tight.
     for field in ("rollout_mean_reward", "episode_return_mean"):
         np.testing.assert_allclose(
-            np.asarray(scan_metrics[field][0]), host_rows[0][field], rtol=0, atol=1e-5
+            np.asarray(scan_metrics[field][0]), loop_rows[0][field], rtol=0, atol=1e-5
         )
     for field in ("ppo/actor_loss", "ppo/value_loss", "ppo/total_loss", "ppo/entropy"):
         np.testing.assert_allclose(
-            np.asarray(scan_metrics[field][0]), host_rows[0][field], rtol=0, atol=1e-5
+            np.asarray(scan_metrics[field][0]), loop_rows[0][field], rtol=0, atol=1e-5
         )
 
-    _assert_params_close(host_state, scan_state, atol=1e-5)
+    _assert_params_close(loop_state, scan_state, atol=1e-5)
     np.testing.assert_allclose(
-        np.asarray(scan_obs), np.asarray(host_obs), rtol=0, atol=1e-5
+        np.asarray(scan_obs), np.asarray(loop_obs), rtol=0, atol=1e-5
     )
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
-def test_train_real_scan_matches_host_multi_update(algorithm):
+def test_train_real_scan_matches_loop_multi_update(algorithm):
     """N>1 pins the carry threading across a boundary. The carried ``rng`` and
     the timer-driven episode counts/lengths must match exactly every update
     (proving the reset-on-done accumulators thread across the max_cycles reset),
@@ -239,12 +239,12 @@ def test_train_real_scan_matches_host_multi_update(algorithm):
     )
     key = jax.random.PRNGKey(seed)
 
-    host_adapter = _make_adapter(num_envs, max_cycles, seed)
-    obs0_host = host_adapter.reset()
-    host_state, _host_obs, host_rng, host_rows = _host_oracle(
-        host_adapter,
+    loop_adapter = _make_adapter(num_envs, max_cycles, seed)
+    obs0_loop = loop_adapter.reset()
+    loop_state, _loop_obs, loop_rng, loop_rows = _loop_oracle(
+        loop_adapter,
         train_state,
-        obs0_host,
+        obs0_loop,
         key,
         num_updates=num_updates,
         config=config,
@@ -267,39 +267,39 @@ def test_train_real_scan_matches_host_multi_update(algorithm):
         freeze_policy=False,
     )
 
-    np.testing.assert_array_equal(np.asarray(scan_rng), np.asarray(host_rng))
+    np.testing.assert_array_equal(np.asarray(scan_rng), np.asarray(loop_rng))
 
     for i in range(num_updates):
         assert (
             int(scan_metrics["completed_episodes"][i])
-            == host_rows[i]["completed_episodes"]
+            == loop_rows[i]["completed_episodes"]
         )
         np.testing.assert_allclose(
             np.asarray(scan_metrics["episode_length_mean"][i]),
-            host_rows[i]["episode_length_mean"],
+            loop_rows[i]["episode_length_mean"],
             rtol=0,
             atol=1e-5,
         )
 
     # Compounded inlined-vs-standalone update fusion drift -> loose stability check.
-    _assert_params_close(host_state, scan_state, atol=1e-3)
+    _assert_params_close(loop_state, scan_state, atol=1e-3)
     for i in range(num_updates):
         for field in ("ppo/total_loss", "rollout_mean_reward", "episode_return_mean"):
             np.testing.assert_allclose(
                 np.asarray(scan_metrics[field][i]),
-                host_rows[i][field],
+                loop_rows[i][field],
                 rtol=0,
                 atol=1e-3,
             )
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
-def test_train_real_scan_matches_host_gymnax_early_termination(algorithm):
+def test_train_real_scan_matches_loop_gymnax_early_termination(algorithm):
     """Same N=1 oracle as the coins test, but on CartPole, whose episodes end
     early (pole falls) or by truncation rather than in lockstep -- so unlike
     coins the completions are trajectory-driven. This pins the gymnax
     ``_build_rollout_scan`` PRNG threading (policy key then env keys, matching
-    the host loop bit-for-bit on integer actions) and the done-driven episode
+    the Python loop bit-for-bit on integer actions) and the done-driven episode
     bookkeeping. ``rollout_steps > max_cycles`` guarantees every env completes
     at least one episode inside the rollout.
     """
@@ -314,12 +314,12 @@ def test_train_real_scan_matches_host_gymnax_early_termination(algorithm):
     train_state, config = _make_policy_state(make_adapter(), algorithm)
     key = jax.random.PRNGKey(seed)
 
-    host_adapter = make_adapter()
-    obs0_host = host_adapter.reset()
-    host_state, host_obs, host_rng, host_rows = _host_oracle(
-        host_adapter,
+    loop_adapter = make_adapter()
+    obs0_loop = loop_adapter.reset()
+    loop_state, loop_obs, loop_rng, loop_rows = _loop_oracle(
+        loop_adapter,
         train_state,
-        obs0_host,
+        obs0_loop,
         key,
         num_updates=1,
         config=config,
@@ -342,30 +342,30 @@ def test_train_real_scan_matches_host_gymnax_early_termination(algorithm):
         freeze_policy=False,
     )
 
-    np.testing.assert_array_equal(np.asarray(scan_rng), np.asarray(host_rng))
+    np.testing.assert_array_equal(np.asarray(scan_rng), np.asarray(loop_rng))
 
     completed = int(scan_metrics["completed_episodes"][0])
-    assert completed == host_rows[0]["completed_episodes"]
+    assert completed == loop_rows[0]["completed_episodes"]
     assert completed >= num_envs  # truncation guarantees one completion per env
     np.testing.assert_allclose(
         np.asarray(scan_metrics["episode_length_mean"][0]),
-        host_rows[0]["episode_length_mean"],
+        loop_rows[0]["episode_length_mean"],
         rtol=0,
         atol=1e-5,
     )
 
     for field in ("rollout_mean_reward", "episode_return_mean"):
         np.testing.assert_allclose(
-            np.asarray(scan_metrics[field][0]), host_rows[0][field], rtol=0, atol=1e-5
+            np.asarray(scan_metrics[field][0]), loop_rows[0][field], rtol=0, atol=1e-5
         )
     for field in ("ppo/actor_loss", "ppo/value_loss", "ppo/total_loss", "ppo/entropy"):
         np.testing.assert_allclose(
-            np.asarray(scan_metrics[field][0]), host_rows[0][field], rtol=0, atol=1e-5
+            np.asarray(scan_metrics[field][0]), loop_rows[0][field], rtol=0, atol=1e-5
         )
 
-    _assert_params_close(host_state, scan_state, atol=1e-5)
+    _assert_params_close(loop_state, scan_state, atol=1e-5)
     np.testing.assert_allclose(
-        np.asarray(scan_obs), np.asarray(host_obs), rtol=0, atol=1e-5
+        np.asarray(scan_obs), np.asarray(loop_obs), rtol=0, atol=1e-5
     )
 
 
@@ -459,7 +459,7 @@ def _make_imagined_setup(algorithm: str, pool_size=5, num_envs=3):
     )
 
 
-def _host_imagined_oracle(
+def _loop_imagined_oracle(
     model_state,
     train_state,
     model_start_states,
@@ -473,7 +473,7 @@ def _host_imagined_oracle(
     algorithm,
     freeze_policy,
 ):
-    """The trusted host loop: exactly ``run_training``'s imagined (prefit) branch.
+    """The trusted Python loop: exactly ``run_training``'s imagined (prefit) branch.
 
     Per update splits the key four ways (``rng, rollout_key, start_key,
     update_key``), resamples ``initial_states`` from the fixed pool, runs the
@@ -521,7 +521,7 @@ def _host_imagined_oracle(
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
-def test_train_imagined_scan_matches_host_single_update(algorithm):
+def test_train_imagined_scan_matches_loop_single_update(algorithm):
     """N=1 tight logic oracle for the imagined (prefit) branch: same start
     params + start_key + rollout_key -> identical imagined rollout and gradient,
     so params/ppo/reward metrics match tight and the carried ``rng`` (4-way split
@@ -532,7 +532,7 @@ def test_train_imagined_scan_matches_host_single_update(algorithm):
     )
     key = jax.random.PRNGKey(4)
 
-    host_state, host_rng, host_rows = _host_imagined_oracle(
+    loop_state, loop_rng, loop_rows = _loop_imagined_oracle(
         model_state,
         train_state,
         pool,
@@ -560,20 +560,20 @@ def test_train_imagined_scan_matches_host_single_update(algorithm):
         freeze_policy=False,
     )
 
-    np.testing.assert_array_equal(np.asarray(scan_rng), np.asarray(host_rng))
+    np.testing.assert_array_equal(np.asarray(scan_rng), np.asarray(loop_rng))
     for field in ("rollout_mean_reward", "model_rollout_mean_reward"):
         np.testing.assert_allclose(
-            np.asarray(scan_metrics[field][0]), host_rows[0][field], rtol=0, atol=1e-5
+            np.asarray(scan_metrics[field][0]), loop_rows[0][field], rtol=0, atol=1e-5
         )
     for field in ("ppo/actor_loss", "ppo/value_loss", "ppo/total_loss", "ppo/entropy"):
         np.testing.assert_allclose(
-            np.asarray(scan_metrics[field][0]), host_rows[0][field], rtol=0, atol=1e-5
+            np.asarray(scan_metrics[field][0]), loop_rows[0][field], rtol=0, atol=1e-5
         )
-    _assert_params_close(host_state, scan_state, atol=1e-5)
+    _assert_params_close(loop_state, scan_state, atol=1e-5)
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
-def test_train_imagined_scan_matches_host_multi_update(algorithm):
+def test_train_imagined_scan_matches_loop_multi_update(algorithm):
     """N>1 pins carry threading (train_state + 4-way rng across updates). The
     carried ``rng`` matches exactly; compounded fusion drift is tolerated on
     params and reward metrics.
@@ -584,7 +584,7 @@ def test_train_imagined_scan_matches_host_multi_update(algorithm):
     key = jax.random.PRNGKey(4)
     num_updates = 3
 
-    host_state, host_rng, host_rows = _host_imagined_oracle(
+    loop_state, loop_rng, loop_rows = _loop_imagined_oracle(
         model_state,
         train_state,
         pool,
@@ -612,13 +612,13 @@ def test_train_imagined_scan_matches_host_multi_update(algorithm):
         freeze_policy=False,
     )
 
-    np.testing.assert_array_equal(np.asarray(scan_rng), np.asarray(host_rng))
-    _assert_params_close(host_state, scan_state, atol=1e-3)
+    np.testing.assert_array_equal(np.asarray(scan_rng), np.asarray(loop_rng))
+    _assert_params_close(loop_state, scan_state, atol=1e-3)
     for i in range(num_updates):
         for field in ("ppo/total_loss", "model_rollout_mean_reward"):
             np.testing.assert_allclose(
                 np.asarray(scan_metrics[field][i]),
-                host_rows[i][field],
+                loop_rows[i][field],
                 rtol=0,
                 atol=1e-3,
             )

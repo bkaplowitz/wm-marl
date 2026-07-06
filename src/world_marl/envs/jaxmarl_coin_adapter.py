@@ -209,7 +209,7 @@ class JaxMARLCoinGameVectorAdapter:
 
         Mirrors ``collect_rollout``'s per-step PRNG order -- split the policy key
         first (action sampling), then the env keys (``env.step``) -- so a jitted
-        ``lax.scan`` reproduces the host loop bit-for-bit.
+        ``lax.scan`` reproduces the Python loop bit-for-bit.
         ``get_action_and_value(train_state, action_key, obs_flat[E*A, d]) ->
         (actions[E*A] int, log_probs, values, entropies)`` is applied each
         step; ``actions`` and the aux arrays are

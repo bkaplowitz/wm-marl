@@ -385,7 +385,7 @@ def _evaluate_train_state(
     max_steps: int | None,
 ) -> EvaluationResult:
     """Evaluate a train state on the accelerator for vector IPPO (coins), else
-    via the host loop. The scan reproduces the host loop's deterministic episodes
+    via the Python loop. The scan reproduces the Python loop's deterministic episodes
     exactly, so the logged value is unchanged -- only the rollout leaves the CPU.
     The scan does not advance the adapter PRNG state; callers reusing the adapter
     for training reset it afterwards.

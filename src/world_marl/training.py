@@ -158,14 +158,14 @@ def train_real_scan(
 ):
     """Fold the whole model-free PPO update loop into a single ``lax.scan``.
 
-    Reproduces the host loop (``collect_rollout``/``collect_mappo_rollout`` + a
+    Reproduces the Python loop (``collect_rollout``/``collect_mappo_rollout`` + a
     standalone jitted update, called ``num_updates`` times) but keeps every
     intermediate on device: the env ``state``/``keys``/flat-obs and the per-env
     episode return/length accumulators ride in the scan carry, so nothing syncs
     to the host until the stacked metrics are read afterwards. Coins is lockstep
     and fixed-horizon, so per-agent dones equal ``done["__all__"]`` and
     completions are timer-driven. Per update the carried key is split three ways
-    (``rng, rollout_key, update_key``) exactly like the host loop. MAPPO's
+    (``rng, rollout_key, update_key``) exactly like the Python loop. MAPPO's
     centralized-critic observations are a pure function of the joint obs
     (``build_vector_central``), so they are rebuilt inside the scan rather than
     threaded through the adapter. The adapter's mutable carry is written back at
@@ -173,7 +173,7 @@ def train_real_scan(
     Returns ``(final_train_state, final_observations, final_rng,
     stacked_metrics)`` where ``stacked_metrics`` maps each metric name to a
     ``[num_updates]`` device array (``nan`` marks an update with no completed
-    episode; the host maps that to ``None``).
+    episode; the loop maps that to ``None``).
     """
     if rollout_steps < 1:
         raise ValueError("rollout_steps must be >= 1")

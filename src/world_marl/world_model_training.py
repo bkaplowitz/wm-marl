@@ -216,7 +216,7 @@ def _transition_batch_from_scan(
     """Repackage ``adapter.scan_rollout`` outputs into a ``VectorTransitionBatch``.
 
     ``scan_rollout`` stacks per-step arrays as ``[T, E*A, ...]`` and returns the
-    post-rollout ``last_obs_flat[E*A, d]``. The host collectors store one
+    post-rollout ``last_obs_flat[E*A, d]``. The loop collectors store one
     ``[E, A, d]`` row per step and concatenate over ``T`` (env-major within each
     step), so the folded layout is ``[T*E, A, ...]``; ``next_states[t]`` is
     ``obs[t+1]`` with ``last_obs_flat`` closing the final step.
@@ -298,9 +298,9 @@ def collect_random_transition_batch_scan(
 
     Reuses the adapter's proven ``scan_rollout`` with a uniform on-device action
     sampler, so the whole random-action rollout runs on the accelerator instead of
-    a host Python loop. Uniform sampling matches ``sample_actions`` (uniform over
+    a Python loop. Uniform sampling matches ``sample_actions`` (uniform over
     the action set), but the PRNG source differs (jax vs numpy ``Generator``), so
-    this is distribution-equivalent, not bit-for-bit, with the host version.
+    this is distribution-equivalent, not bit-for-bit, with the loop version.
     """
     if rollout_steps < 1:
         raise ValueError("rollout_steps must be >= 1")
@@ -361,11 +361,11 @@ def collect_policy_transition_batch_scan(
 ]:
     """On-device twin of ``collect_policy_transition_batch`` via ``lax.scan``.
 
-    Reuses ``scan_rollout`` with the same inference the host loop applies --
+    Reuses ``scan_rollout`` with the same inference the Python loop applies --
     ``_ippo_get_action_and_value``, or its MAPPO wrapper that rebuilds central
     observations from the joint obs -- and mirrors its
     ``policy-key-then-env-key`` split order, so the collected batch matches the
-    host loop bit-for-bit (integer actions exact, continuous tensors to float
+    Python loop bit-for-bit (integer actions exact, continuous tensors to float
     tolerance).
     """
     if rollout_steps < 1:

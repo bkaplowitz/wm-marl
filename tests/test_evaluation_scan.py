@@ -22,8 +22,8 @@ def _make_coins_state(adapter, seed: int = 5):
     )
 
 
-def test_scan_eval_matches_host_eval_coins():
-    """A fully-jitted lax.scan eval must reproduce the host loop bit-for-bit.
+def test_scan_eval_matches_loop_eval_coins():
+    """A fully-jitted lax.scan eval must reproduce the Python loop bit-for-bit.
 
     Coins episodes are lockstep (all envs complete every max_cycles steps), and a
     deterministic policy makes the action PRNG inert, so the only randomness is the
@@ -38,17 +38,17 @@ def test_scan_eval_matches_host_eval_coins():
         )
     )
 
-    host_adapter = JaxMARLCoinGameVectorAdapter(
+    loop_adapter = JaxMARLCoinGameVectorAdapter(
         num_envs=num_envs, max_cycles=max_cycles, seed=seed
     )
     policy_fn = train_state_policy(
         state,
         num_envs=num_envs,
-        num_agents=host_adapter.num_agents,
+        num_agents=loop_adapter.num_agents,
         deterministic=True,
         observation_mode="vector",
     )
-    host = evaluate_policy(host_adapter, policy_fn, episodes=episodes)
+    loop = evaluate_policy(loop_adapter, policy_fn, episodes=episodes)
 
     scan_adapter = JaxMARLCoinGameVectorAdapter(
         num_envs=num_envs, max_cycles=max_cycles, seed=seed
@@ -61,7 +61,7 @@ def test_scan_eval_matches_host_eval_coins():
         observation_mode="vector",
     )
 
-    assert scan.episodes == host.episodes == episodes
-    np.testing.assert_array_equal(scan.lengths, host.lengths)
-    np.testing.assert_allclose(scan.returns, host.returns, rtol=0, atol=1e-5)
+    assert scan.episodes == loop.episodes == episodes
+    np.testing.assert_array_equal(scan.lengths, loop.lengths)
+    np.testing.assert_allclose(scan.returns, loop.returns, rtol=0, atol=1e-5)
     assert scan.lengths.tolist() == [max_cycles] * episodes

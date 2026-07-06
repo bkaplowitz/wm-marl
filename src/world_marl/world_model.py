@@ -506,7 +506,7 @@ def train_imagined_scan(
     ``rng`` ride in the carry (the world model is frozen; initial states are
     resampled per update from the fixed ``model_start_states`` pool). Per update
     the key is split four ways (``rng, rollout_key, start_key, update_key``)
-    exactly like the host branch. Returns ``(final_train_state, final_rng,
+    exactly like the loop branch. Returns ``(final_train_state, final_rng,
     stacked_metrics)`` with each metric stacked to ``[num_updates]``.
     """
     if rollout_steps < 1:
