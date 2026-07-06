@@ -688,9 +688,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out-dir", default="runs/compare_world_models")
     args = p.parse_args()
     positive = (
-        "num_envs", "horizon", "fit_steps", "chunk_steps", "hidden_dim",
-        "transformer_dim", "transformer_layers", "num_heads", "block_size",
-        "num_experts", "expert_top_k", "steps_per_block",
+        "num_envs",
+        "horizon",
+        "fit_steps",
+        "chunk_steps",
+        "hidden_dim",
+        "transformer_dim",
+        "transformer_layers",
+        "num_heads",
+        "block_size",
+        "num_experts",
+        "expert_top_k",
+        "steps_per_block",
     )
     for name in positive:
         if getattr(args, name) < 1:
