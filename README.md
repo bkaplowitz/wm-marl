@@ -187,9 +187,18 @@ a shared-encoder self-predictive transformer that fits
 `p(z_next, reward, continue | z, continuous_action)` with a sketched
 isotropic-Gaussian (LeJEPA-style) collapse regularizer, plus replay,
 open-loop evaluation, and latent-policy training utilities
-(`src/world_marl/jepa/ARCHITECTURE.md` has the full design). The end-to-end
-DMC/Brax validation harness that drives it lives on the `singlerl_jepa`
-branch and is not part of the main pipeline yet.
+(`src/world_marl/jepa/ARCHITECTURE.md` has the full design). Its pass/fail
+gates and accounting live in `world_marl.jepa.validation`.
+
+The end-to-end DMC/Brax validation harness that drives it:
+
+```bash
+uv run world-marl-train-dmc-jepa --env dmc:cartpole-balance   # fit + gate a JEPA world model (+ optional latent policy)
+uv run world-marl-train-brax-ppo --env brax:reacher           # model-free Brax PPO baseline (brax.training)
+uv run world-marl-plot-brax-diagnostics                       # compare JEPA vs PPO runs from their run dirs
+uv run world-marl-optuna-dmc-jepa --task dmc:cartpole-balance # Optuna HPO over train-dmc-jepa trials (needs --extra hpo)
+uv run world-marl-write-dmc-vector-launcher                   # emit tmux/pod launcher scripts for sweeps
+```
 
 
 ## Tests
