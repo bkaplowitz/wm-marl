@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import csv
 import json
 import sys
 from pathlib import Path
@@ -207,6 +208,43 @@ def _checkpoint_loss_mean(arm: dict[str, Any], checkpoint: int) -> float | None:
     return _mean(losses)
 
 
+def _report_arms(report: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    return [("raw PPO", report["model_free"])] + [
+        (name, summary) for name, summary in report["model_based"].items()
+    ]
+
+
+AGGREGATE_CSV_KEYS = (
+    "runtime_seconds_mean",
+    "trained_mean_mean",
+    "real_env_steps_mean",
+    "cumulative_real_episodes_mean",
+    "total_updates_mean",
+)
+
+
+def write_comparison_csv(report: dict[str, Any], out_dir: Path) -> Path:
+    checkpoints = [int(value) for value in report["episode_checkpoints"]]
+    loss_columns = {
+        checkpoint: f"ppo_total_loss_at_{checkpoint}_real_episodes"
+        for checkpoint in checkpoints
+    }
+    path = out_dir / "policy_training_comparison.csv"
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["arm", *AGGREGATE_CSV_KEYS, *loss_columns.values()],
+        )
+        writer.writeheader()
+        for name, arm in _report_arms(report):
+            row: dict[str, Any] = {"arm": name}
+            row.update({key: arm["aggregate"][key] for key in AGGREGATE_CSV_KEYS})
+            for checkpoint, column in loss_columns.items():
+                row[column] = _checkpoint_loss_mean(arm, checkpoint)
+            writer.writerow(row)
+    return path
+
+
 def write_comparison_plot(report: dict[str, Any], out_dir: Path) -> Path:
     import matplotlib
 
@@ -214,9 +252,7 @@ def write_comparison_plot(report: dict[str, Any], out_dir: Path) -> Path:
     import matplotlib.pyplot as plt
 
     checkpoint = int(report["episode_checkpoints"][0])
-    arms = [("raw PPO", report["model_free"])] + [
-        (name, summary) for name, summary in report["model_based"].items()
-    ]
+    arms = _report_arms(report)
     labels = [name for name, _ in arms]
     panels = [
         (
@@ -378,6 +414,7 @@ def main() -> None:
         },
     }
     report["comparison_plot"] = str(write_comparison_plot(report, out_dir))
+    report["comparison_csv"] = str(write_comparison_csv(report, out_dir))
     RunLogger(out_dir).write_json("policy_training_benchmark.json", report)
     print(json.dumps(to_jsonable(report), indent=2, sort_keys=True))
 

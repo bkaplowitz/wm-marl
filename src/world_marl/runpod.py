@@ -210,11 +210,24 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
+def utc_stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def write_manifest(local_out_dir: Path, manifest: dict[str, Any]) -> Path:
+    local_out_dir.mkdir(parents=True, exist_ok=True)
+    path = local_out_dir / "manifest.json"
+    path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return path
+
+
 def main() -> int:
     args = parse_args()
     repo_root = Path(args.repo_root).expanduser().resolve()
     ssh_key = Path(args.ssh_key).expanduser().resolve()
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_id = utc_stamp()
     pod_name = f"{args.name_prefix}-{args.job}-{run_id}"
     job = build_job_spec(args, run_id)
 
@@ -238,11 +251,28 @@ def main() -> int:
         raise SystemExit(f"SSH key not found: {ssh_key}")
 
     pod_id: str | None = None
+    manifest: dict[str, Any] = {
+        "pod_name": pod_name,
+        "pod_id": None,
+        "status": "creating",
+        "job": args.job,
+        "gpu_id": args.gpu_id,
+        "gpu_count": args.gpu_count,
+        "cloud_type": args.cloud_type,
+        "command": job.command,
+        "remote_repo_dir": args.remote_repo_dir,
+        "remote_out_dir": job.remote_out_dir,
+        "local_out_dir": str(job.local_out_dir),
+        "created_at": run_id,
+        "finished_at": None,
+    }
     try:
         print(f"creating Runpod pod: {pod_name}", flush=True)
         created = run_json(create_cmd)
         pod_id = extract_pod_id(created)
-        print(f"created pod: {pod_id}", flush=True)
+        manifest.update(pod_id=pod_id, status="running")
+        manifest_path = write_manifest(job.local_out_dir, manifest)
+        print(f"created pod: {pod_id} (manifest: {manifest_path})", flush=True)
 
         ssh_info = wait_for_ssh(pod_id, ssh_key, args)
         ensure_remote_rsync(ssh_info)
@@ -254,14 +284,24 @@ def main() -> int:
         print("\ninterrupted", file=sys.stderr, flush=True)
         if pod_id:
             stop_for_inspection(pod_id, job.remote_out_dir)
+            manifest.update(status="stopped-for-inspection", finished_at=utc_stamp())
+            write_manifest(job.local_out_dir, manifest)
         return 130
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr, flush=True)
         if pod_id:
             stop_for_inspection(pod_id, job.remote_out_dir)
+            manifest.update(status="stopped-for-inspection", finished_at=utc_stamp())
+            write_manifest(job.local_out_dir, manifest)
         return 1
 
-    if pod_id and not delete_pod(pod_id):
+    deleted = bool(pod_id) and delete_pod(pod_id)
+    manifest.update(
+        status="completed-pod-deleted" if deleted else "completed-delete-failed",
+        finished_at=utc_stamp(),
+    )
+    write_manifest(job.local_out_dir, manifest)
+    if not deleted:
         print(
             f"warning: runpodctl could not delete pod {pod_id}; delete it manually",
             file=sys.stderr,
@@ -682,6 +722,7 @@ def print_dry_run(
     print(f"remote repo: {remote_repo_dir}")
     print(f"remote outputs: {job.remote_out_dir}")
     print(f"local outputs: {job.local_out_dir}")
+    print(f"manifest: {job.local_out_dir / 'manifest.json'}")
     print("\ncommands:")
     print(shlex.join(create_cmd))
     print("GET https://rest.runpod.io/v1/pods/<pod-id>  (publicIp + portMappings[22])")

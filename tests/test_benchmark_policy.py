@@ -1,8 +1,10 @@
+import csv
 import json
 
 from world_marl.scripts.benchmark_policy import (
     loss_at_episode_checkpoints,
     summarize_run_artifacts,
+    write_comparison_csv,
 )
 
 
@@ -120,3 +122,41 @@ def test_summarize_run_artifacts_includes_runtime_updates_and_losses(tmp_path):
         },
     ]
     assert summary["loss_at_real_episode_checkpoints"]["1"]["update"] == 2
+
+
+def _csv_arm(base: float, losses: dict[str, dict | None]) -> dict:
+    return {
+        "aggregate": {
+            "runtime_seconds_mean": base,
+            "trained_mean_mean": base + 1,
+            "real_env_steps_mean": base + 2,
+            "cumulative_real_episodes_mean": base + 3,
+            "total_updates_mean": base + 4,
+        },
+        "runs": [{"loss_at_real_episode_checkpoints": losses}],
+    }
+
+
+def test_write_comparison_csv_writes_one_row_per_arm(tmp_path):
+    report = {
+        "episode_checkpoints": [10, 25],
+        "model_free": _csv_arm(1.0, {"10": {"ppo/total_loss": 5.0}, "25": None}),
+        "model_based": {
+            "discrete": _csv_arm(
+                2.0,
+                {"10": {"ppo/total_loss": 3.0}, "25": {"ppo/total_loss": 2.5}},
+            ),
+        },
+    }
+
+    path = write_comparison_csv(report, tmp_path)
+
+    assert path == tmp_path / "policy_training_comparison.csv"
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [row["arm"] for row in rows] == ["raw PPO", "discrete"]
+    assert rows[0]["runtime_seconds_mean"] == "1.0"
+    assert rows[0]["ppo_total_loss_at_10_real_episodes"] == "5.0"
+    assert rows[0]["ppo_total_loss_at_25_real_episodes"] == ""
+    assert rows[1]["ppo_total_loss_at_25_real_episodes"] == "2.5"
+    assert rows[1]["total_updates_mean"] == "6.0"

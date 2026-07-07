@@ -13,6 +13,7 @@ Completion is the contract under test here.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
 from pathlib import Path
@@ -204,3 +205,42 @@ def test_coins_prefit_mappo_run_training_scan_path(tmp_path, monkeypatch):
         "ppo/total_loss",
     ):
         assert key in final_row, key
+
+
+def test_append_progress_streams_one_row_per_outcome(tmp_path):
+    outcome = train_e2e.RunOutcome(
+        name="run_000",
+        run_dir=str(tmp_path / "run_000"),
+        control=None,
+        random_mean=0.0,
+        initial_mean=0.1,
+        trained_mean=0.5,
+        improvement=0.5,
+        random_improvement=0.5,
+        initial_improvement=0.4,
+        first_window_mean=0.0,
+        final_window_mean=0.5,
+        checkpoint_dir=str(tmp_path / "run_000" / "checkpoint"),
+        runtime_seconds=1.0,
+        real_env_steps=10,
+        imagined_env_steps=0,
+        cumulative_real_episodes=2,
+    )
+    control = dataclasses.replace(
+        outcome, name="control_freeze-policy", control="freeze-policy"
+    )
+
+    train_e2e.append_progress(tmp_path, outcome)
+    train_e2e.append_progress(tmp_path, control)
+
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "progress.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [row["name"] for row in rows] == ["run_000", "control_freeze-policy"]
+    assert rows[0]["control"] is None
+    assert rows[1]["control"] == "freeze-policy"
+    assert all(row["completed_at"] for row in rows)
+    assert rows[0]["trained_mean"] == 0.5

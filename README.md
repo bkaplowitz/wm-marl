@@ -44,7 +44,10 @@ uv run world-marl-runpod \
 
 The wrapper creates a fresh pod, syncs this checkout to `/root/wm-marl`, installs
 the CUDA dev environment, runs the selected wm-marl command, downloads artifacts
-to `runs/runpod/<job>/<timestamp>/`, and then deletes the pod. If the remote
+to `runs/runpod/<job>/<timestamp>/`, and then deletes the pod. As soon as the pod
+exists, that directory holds a `manifest.json` recording the pod id, job command,
+and lifecycle status (updated on completion or failure), so a killed local
+process still leaves the pod id on disk for manual cleanup. If the remote
 command fails or the local process is interrupted, it stops the pod instead and
 prints the pod id plus remote output path for inspection. New pods also get a
 12-hour auto-stop backstop by default; adjust it with `--auto-stop-hours` or
@@ -129,7 +132,9 @@ Each run writes:
 - `reload_evaluation.json`
 - `outcome.json`
 
-The top-level experiment directory also writes `summary.json`.
+The top-level experiment directory streams one `progress.jsonl` row per
+completed run (including the negative control) as it finishes, and writes
+`summary.json` at the end.
 
 Each `metrics.jsonl` row includes rollout diagnostics for debugging learning
 failures:

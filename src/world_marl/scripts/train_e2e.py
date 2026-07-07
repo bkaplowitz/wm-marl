@@ -1134,6 +1134,12 @@ def summarize(
     }
 
 
+def append_progress(experiment_dir: Path, outcome: RunOutcome) -> None:
+    row = {"completed_at": timestamp(), **outcome.to_dict()}
+    with (experiment_dir / "progress.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(to_jsonable(row), sort_keys=True) + "\n")
+
+
 def main() -> None:
     cfg = TrainConfig.from_namespace(parse_args())
     if cfg.eval_checkpoint:
@@ -1142,16 +1148,17 @@ def main() -> None:
 
     experiment_dir = Path(cfg.out_dir) / f"e2e_{timestamp()}"
     experiment_dir.mkdir(parents=True, exist_ok=True)
-    outcomes = [
-        run_training(
+    outcomes = []
+    for run_index in range(cfg.num_runs):
+        outcome = run_training(
             cfg,
             run_dir=experiment_dir / f"run_{run_index:03d}",
             name=f"run_{run_index:03d}",
             run_index=run_index,
             control=None,
         )
-        for run_index in range(cfg.num_runs)
-    ]
+        append_progress(experiment_dir, outcome)
+        outcomes.append(outcome)
 
     control_outcome = None
     if cfg.negative_control != "none":
@@ -1162,6 +1169,7 @@ def main() -> None:
             run_index=cfg.num_runs,
             control=cfg.negative_control,
         )
+        append_progress(experiment_dir, control_outcome)
 
     summary = summarize(
         outcomes,

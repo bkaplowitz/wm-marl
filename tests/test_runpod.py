@@ -271,3 +271,78 @@ def test_sync_repo_excludes_dotenv(tmp_path, monkeypatch):
     argv = rsync_calls[0]
     excludes = [argv[i + 1] for i, a in enumerate(argv) if a == "--exclude"]
     assert ".env" in excludes
+
+
+def test_write_manifest_round_trips_and_creates_dir(tmp_path):
+    out_dir = tmp_path / "compare-world-models" / "20260706T000000Z"
+    manifest = {"pod_id": "abc123", "status": "running"}
+
+    path = runpod.write_manifest(out_dir, manifest)
+
+    assert path == out_dir / "manifest.json"
+    assert json.loads(path.read_text(encoding="utf-8")) == manifest
+
+
+def _manifest_main_argv(tmp_path) -> list[str]:
+    key = tmp_path / "runpod_key"
+    key.write_text("private", encoding="utf-8")
+    (tmp_path / "runpod_key.pub").write_text("ssh-ed25519 AAAA test", encoding="utf-8")
+    return [
+        "world-marl-runpod",
+        "--local-out-root",
+        str(tmp_path / "runs"),
+        "--ssh-key",
+        str(key),
+    ]
+
+
+def _patch_main_collaborators(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "argv", _manifest_main_argv(tmp_path))
+    monkeypatch.setenv("RUNPOD_API_KEY", "test-key")
+    monkeypatch.setattr(runpod, "require_local_tools", lambda names: None)
+    monkeypatch.setattr(runpod, "require_repo", lambda root: None)
+    monkeypatch.setattr(runpod, "run_json", lambda cmd: {"id": "pod123"})
+    info = runpod.SshInfo(
+        user="root", host="1.2.3.4", port=22, key_path=tmp_path / "runpod_key"
+    )
+    monkeypatch.setattr(runpod, "wait_for_ssh", lambda pod_id, key, args: info)
+    monkeypatch.setattr(runpod, "ensure_remote_rsync", lambda info: None)
+    monkeypatch.setattr(runpod, "sync_repo", lambda root, remote, info: None)
+    monkeypatch.setattr(runpod, "run_remote_job", lambda remote, cmd, info, skip: None)
+    monkeypatch.setattr(runpod, "download_outputs", lambda remote, local, info: None)
+    monkeypatch.setattr(runpod, "delete_pod", lambda pod_id: True)
+    monkeypatch.setattr(runpod, "stop_for_inspection", lambda pod_id, remote: None)
+
+
+def _read_manifest(tmp_path) -> dict:
+    manifests = list((tmp_path / "runs").rglob("manifest.json"))
+    assert len(manifests) == 1
+    return json.loads(manifests[0].read_text(encoding="utf-8"))
+
+
+def test_main_writes_manifest_with_pod_id_and_deletes_on_success(tmp_path, monkeypatch):
+    _patch_main_collaborators(monkeypatch, tmp_path)
+
+    assert runpod.main() == 0
+
+    manifest = _read_manifest(tmp_path)
+    assert manifest["pod_id"] == "pod123"
+    assert manifest["status"] == "completed-pod-deleted"
+    assert manifest["finished_at"]
+    assert manifest["job"] == "compare-world-models"
+
+
+def test_main_marks_manifest_stopped_when_remote_job_fails(tmp_path, monkeypatch):
+    _patch_main_collaborators(monkeypatch, tmp_path)
+
+    def boom(remote, cmd, info, skip):
+        raise RuntimeError("remote job failed")
+
+    monkeypatch.setattr(runpod, "run_remote_job", boom)
+
+    assert runpod.main() == 1
+
+    manifest = _read_manifest(tmp_path)
+    assert manifest["pod_id"] == "pod123"
+    assert manifest["status"] == "stopped-for-inspection"
+    assert manifest["finished_at"]
