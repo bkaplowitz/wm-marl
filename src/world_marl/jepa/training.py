@@ -838,7 +838,24 @@ def continuous_policy_train_step(
         ),
     }
     state = state.apply_actor_gradients(actor_grads)
+    return _apply_policy_critic_update(
+        state,
+        config,
+        metrics,
+        critic_latents,
+        critic_targets,
+        critic_weights,
+    )
 
+
+def _apply_policy_critic_update(
+    state: JepaTrainState,
+    config: JepaConfig,
+    metrics: dict[str, jax.Array],
+    critic_latents: jax.Array,
+    critic_targets: jax.Array,
+    critic_weights: jax.Array,
+) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     def critic_loss_fn(params):
         _, value_logits = actor_value_logits_from_latent(
             state.apply_fn,
@@ -881,6 +898,251 @@ def continuous_policy_train_step(
         ),
     }
     return state, metrics
+
+
+@partial(
+    jax.jit,
+    static_argnames=(
+        "config",
+        "imag_horizon",
+        "control",
+        "policy_return_mode",
+        "policy_actor_baseline",
+        "policy_return_normalization",
+    ),
+)
+def discrete_policy_train_step(
+    state: JepaTrainState,
+    key: jax.Array,
+    start_observations: jax.Array,
+    config: JepaConfig,
+    *,
+    imag_horizon: int,
+    control: ControlMode = "none",
+    policy_return_mode: PolicyReturnMode = "reward-only",
+    policy_actor_baseline: PolicyActorBaseline = "none",
+    policy_return_normalization: PolicyReturnNormalization = "none",
+    value_clip: float = 100.0,
+    start_actions: jax.Array | None = None,
+    uncertainty_penalty: float = 0.0,
+    uncertainty_latent_weight: float = 1.0,
+    uncertainty_reward_weight: float = 1.0,
+    uncertainty_continue_weight: float = 1.0,
+    uncertainty_threshold: float = float("inf"),
+    uncertainty_budget: float = float("inf"),
+    reference_actor_params: FrozenDict | None = None,
+    policy_trust_coef: float = 0.0,
+    actor_entropy_coef: float = 0.0,
+) -> tuple[JepaTrainState, dict[str, jax.Array]]:
+    """REINFORCE-on-imagination actor update for discrete action spaces.
+
+    Integer actions cannot carry pathwise gradients through the action
+    embedding, so the actor is trained with the score function on imagined
+    returns (optionally value-baselined and batch-normalized) plus an entropy
+    bonus; the trust term is a KL to the reference actor instead of the
+    continuous action-mean L2.
+    """
+    if config.action_mode != "discrete":
+        raise ValueError("discrete_policy_train_step requires discrete actions")
+
+    def actor_loss_fn(params):
+        rollout = discrete_imagine_rollout(
+            key,
+            params,
+            state.apply_fn,
+            start_observations,
+            config,
+            imag_horizon=imag_horizon,
+            control=control,
+            start_actions=start_actions,
+            uncertainty_penalty=uncertainty_penalty,
+            uncertainty_latent_weight=uncertainty_latent_weight,
+            uncertainty_reward_weight=uncertainty_reward_weight,
+            uncertainty_continue_weight=uncertainty_continue_weight,
+            uncertainty_threshold=uncertainty_threshold,
+            uncertainty_budget=uncertainty_budget,
+        )
+        if policy_return_mode == "reward-only":
+            actor_returns = reward_only_returns(
+                rollout["rewards"],
+                rollout["continues"],
+                gamma=config.gamma,
+            )
+        else:
+            actor_returns = lambda_returns(
+                rollout["rewards"],
+                rollout["continues"],
+                rollout["fixed_values"],
+                rollout["fixed_last_value"],
+                gamma=config.gamma,
+                lambda_return=config.lambda_return,
+            )
+        clipped_returns = jnp.clip(actor_returns, -value_clip, value_clip)
+        weights = survival_weights(rollout["continues"], gamma=config.gamma)
+        if policy_actor_baseline == "none":
+            actor_scores = clipped_returns
+        elif policy_actor_baseline == "value":
+            actor_scores = clipped_returns - jax.lax.stop_gradient(
+                rollout["fixed_values"]
+            )
+        else:
+            raise ValueError(f"unknown policy_actor_baseline: {policy_actor_baseline}")
+        actor_objective_scores = normalize_weighted_values(
+            actor_scores,
+            weights,
+            mode=policy_return_normalization,
+        )
+        return_loss = -weighted_mean(
+            jax.lax.stop_gradient(actor_objective_scores) * rollout["action_log_probs"],
+            weights,
+        )
+        if reference_actor_params is None:
+            trust_action_kl = jnp.asarray(0.0, dtype=return_loss.dtype)
+        else:
+            reference_params = jax.tree_util.tree_map(
+                jax.lax.stop_gradient,
+                reference_actor_params,
+            )
+            reference_logits, _ = actor_value_from_latent(
+                state.apply_fn,
+                reference_params,
+                rollout["latents"],
+            )
+            reference_log_probs = jax.lax.stop_gradient(
+                jax.nn.log_softmax(reference_logits, axis=-1)
+            )
+            current_log_probs = rollout["action_log_probs_all"]
+            kl = jnp.sum(
+                jnp.exp(current_log_probs) * (current_log_probs - reference_log_probs),
+                axis=-1,
+            )
+            trust_action_kl = weighted_mean(kl, weights)
+        entropy_bonus = weighted_mean(rollout["action_entropy"], weights)
+        actor_loss = (
+            return_loss
+            + policy_trust_coef * trust_action_kl
+            - actor_entropy_coef * entropy_bonus
+        )
+        finite_fraction = _all_finite_fraction(
+            rollout["latents"],
+            rollout["action_log_probs"],
+            rollout["action_log_probs_all"],
+            rollout["action_entropy"],
+            rollout["rewards"],
+            rollout["continues"],
+            rollout["raw_rewards"],
+            rollout["values"],
+            rollout["fixed_values"],
+            rollout["uncertainty"],
+            rollout["trusted"],
+            actor_returns,
+            clipped_returns,
+            actor_scores,
+            actor_objective_scores,
+            actor_loss,
+        )
+        metrics = {
+            "policy/actor_loss": actor_loss,
+            "policy/return_loss": return_loss,
+            "policy/trust_action_kl": trust_action_kl,
+            "policy/trust_coef": jnp.asarray(policy_trust_coef, dtype=actor_loss.dtype),
+            "policy/entropy_bonus": entropy_bonus,
+            "policy/actor_entropy_coef": jnp.asarray(
+                actor_entropy_coef,
+                dtype=actor_loss.dtype,
+            ),
+            "policy/action_log_prob_mean": weighted_mean(
+                rollout["action_log_probs"],
+                weights,
+            ),
+            "policy/actor_max_prob_mean": weighted_mean(
+                rollout["actor_max_probs"],
+                weights,
+            ),
+            "policy/imagined_return": weighted_mean(actor_returns, weights),
+            "policy/clipped_imagined_return": weighted_mean(clipped_returns, weights),
+            "policy/actor_score": weighted_mean(actor_scores, weights),
+            "policy/actor_objective_score": weighted_mean(
+                actor_objective_scores,
+                weights,
+            ),
+            "policy/actor_score_std": weighted_std(actor_scores, weights),
+            "policy/actor_uses_value_baseline": jnp.asarray(
+                float(policy_actor_baseline == "value"),
+                dtype=actor_loss.dtype,
+            ),
+            "policy/return_normalization_batch": jnp.asarray(
+                float(policy_return_normalization == "batch"),
+                dtype=actor_loss.dtype,
+            ),
+            "policy/imagined_reward": weighted_mean(rollout["rewards"], weights),
+            "policy/raw_imagined_reward": weighted_mean(
+                rollout["raw_rewards"],
+                weights,
+            ),
+            "policy/raw_reward_below_min_frac": jnp.mean(
+                (rollout["raw_rewards"] < config.imagined_reward_min).astype(
+                    jnp.float32
+                )
+            ),
+            "policy/raw_reward_above_max_frac": jnp.mean(
+                (rollout["raw_rewards"] > config.imagined_reward_max).astype(
+                    jnp.float32
+                )
+            ),
+            "policy/clip_imagined_rewards": jnp.asarray(
+                float(config.clip_imagined_rewards),
+                dtype=return_loss.dtype,
+            ),
+            "policy/imagined_continue": weighted_mean(rollout["continues"], weights),
+            "policy/survival_weight_mean": jnp.mean(weights),
+            "policy/uncertainty": weighted_mean(rollout["uncertainty"], weights),
+            "policy/uncertainty_abs_max": jnp.max(jnp.abs(rollout["uncertainty"])),
+            "policy/trusted_fraction": jnp.mean(rollout["trusted"]),
+            "policy/uncertainty_penalty": jnp.asarray(
+                uncertainty_penalty,
+                dtype=actor_loss.dtype,
+            ),
+            "policy/return_abs_mean": jnp.mean(jnp.abs(actor_returns)),
+            "policy/return_abs_max": jnp.max(jnp.abs(actor_returns)),
+            "policy/value_target_abs_mean": jnp.mean(jnp.abs(clipped_returns)),
+            "policy/value_target_abs_max": jnp.max(jnp.abs(clipped_returns)),
+            # tanh saturation cannot occur for a categorical actor; emit the
+            # gate key so pass criteria stay uniform across action modes.
+            "policy/action_saturation_fraction": jnp.asarray(
+                0.0,
+                dtype=actor_loss.dtype,
+            ),
+            "policy/finite_fraction": finite_fraction,
+        }
+        critic_latents = jax.lax.stop_gradient(rollout["latents"])
+        critic_targets = jax.lax.stop_gradient(clipped_returns)
+        critic_weights = jax.lax.stop_gradient(weights)
+        return actor_loss, (metrics, critic_latents, critic_targets, critic_weights)
+
+    (actor_loss, actor_aux), actor_grads = jax.value_and_grad(
+        actor_loss_fn,
+        has_aux=True,
+    )(state.params)
+    del actor_loss
+    metrics, critic_latents, critic_targets, critic_weights = actor_aux
+    metrics = {
+        **metrics,
+        "policy/actor_grad_norm": optax.global_norm(actor_grads),
+        "policy/actor_grad_clip_norm": jnp.asarray(
+            config.actor_grad_clip_norm,
+            dtype=metrics["policy/actor_loss"].dtype,
+        ),
+    }
+    state = state.apply_actor_gradients(actor_grads)
+    return _apply_policy_critic_update(
+        state,
+        config,
+        metrics,
+        critic_latents,
+        critic_targets,
+        critic_weights,
+    )
 
 
 @partial(
@@ -1089,7 +1351,7 @@ def score_continuous_action_candidates(
 
 
 @partial(jax.jit, static_argnames=("config", "horizon"))
-def continuous_critic_warmup_step(
+def critic_warmup_step(
     state: JepaTrainState,
     batch: ReplayBatch,
     config: JepaConfig,
@@ -1097,9 +1359,6 @@ def continuous_critic_warmup_step(
     horizon: int,
     value_clip: float = 100.0,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
-    if config.action_mode != "continuous":
-        raise ValueError("continuous_critic_warmup_step requires continuous actions")
-
     def loss_fn(params):
         rewards = jnp.swapaxes(batch.rewards[:, :horizon], 0, 1)
         dones = jnp.swapaxes(batch.dones[:, :horizon], 0, 1)
@@ -1291,6 +1550,147 @@ def continuous_imagine_rollout(
     return rollout
 
 
+def discrete_imagine_rollout(
+    key: jax.Array,
+    params: FrozenDict,
+    apply_fn,
+    start_observations: jax.Array,
+    config: JepaConfig,
+    *,
+    imag_horizon: int,
+    control: ControlMode,
+    start_actions: jax.Array | None = None,
+    uncertainty_penalty: float = 0.0,
+    uncertainty_latent_weight: float = 1.0,
+    uncertainty_reward_weight: float = 1.0,
+    uncertainty_continue_weight: float = 1.0,
+    uncertainty_threshold: float = float("inf"),
+    uncertainty_budget: float = float("inf"),
+) -> dict[str, jax.Array]:
+    """Imagined rollout with categorical action sampling.
+
+    Sampled integer actions enter the frozen dynamics through the same
+    ``action_tokens`` embedding path as replay actions, so no gradient flows
+    from returns to the actor; ``discrete_policy_train_step`` uses the recorded
+    ``action_log_probs`` (REINFORCE) instead of the pathwise gradients the
+    continuous rollout relies on.
+    """
+    model_params = jax.tree_util.tree_map(jax.lax.stop_gradient, params)
+    context, action_context = initial_imagination_context(
+        apply_fn,
+        model_params,
+        start_observations,
+        start_actions,
+        config,
+    )
+    batch_size = context.shape[0]
+    initial_uncertainty = jnp.zeros((batch_size,), dtype=context.dtype)
+    initial_trusted = jnp.ones((batch_size,), dtype=context.dtype)
+
+    def step(carry, _):
+        context, action_context, cumulative_uncertainty, active, rng = carry
+        rng, action_key = jax.random.split(rng)
+        current_z = context[:, -1]
+        logits, values = actor_value_from_latent(apply_fn, params, current_z)
+        log_probs_all = jax.nn.log_softmax(logits, axis=-1)
+        probs = jnp.exp(log_probs_all)
+        actions = jax.random.categorical(action_key, logits, axis=-1).astype(jnp.int32)
+        action_log_probs = jnp.take_along_axis(
+            log_probs_all,
+            actions[:, None],
+            axis=-1,
+        )[:, 0]
+        action_entropy = -jnp.sum(probs * log_probs_all, axis=-1)
+        actor_max_probs = jnp.max(probs, axis=-1)
+        model_actions = (
+            jnp.zeros_like(actions) if control == "no-action-world-model" else actions
+        )
+        model_action_context = replace_last_action_context(
+            action_context,
+            model_actions,
+            config,
+        )
+        z_ensemble, reward_ensemble, continue_logit_ensemble = apply_fn(
+            {"params": model_params},
+            context,
+            model_action_context,
+            method=JepaWorldModel.predict_next_ensemble_from_history,
+        )
+        next_z = jnp.mean(z_ensemble, axis=0)
+        raw_rewards = jnp.mean(reward_ensemble, axis=0)
+        continues = jnp.mean(jax.nn.sigmoid(continue_logit_ensemble), axis=0)
+        uncertainty = ensemble_transition_uncertainty(
+            z_ensemble,
+            reward_ensemble,
+            continue_logit_ensemble,
+            latent_weight=uncertainty_latent_weight,
+            reward_weight=uncertainty_reward_weight,
+            continue_weight=uncertainty_continue_weight,
+        )
+        next_cumulative_uncertainty = cumulative_uncertainty + uncertainty
+        trusted = active * (
+            (uncertainty <= uncertainty_threshold)
+            & (next_cumulative_uncertainty <= uncertainty_budget)
+        ).astype(context.dtype)
+        actor_raw_rewards = (
+            jnp.clip(
+                raw_rewards,
+                config.imagined_reward_min,
+                config.imagined_reward_max,
+            )
+            if config.clip_imagined_rewards
+            else raw_rewards
+        )
+        rewards = (actor_raw_rewards - uncertainty_penalty * uncertainty) * trusted
+        continues = continues * trusted
+        _, fixed_values = actor_value_from_latent(
+            apply_fn,
+            model_params,
+            current_z,
+        )
+        next_context = jnp.concatenate([context[:, 1:], next_z[:, None, :]], axis=1)
+        next_action_context = append_action_context(
+            model_action_context,
+            jnp.zeros_like(model_actions),
+            config,
+        )
+        return (
+            next_context,
+            next_action_context,
+            next_cumulative_uncertainty,
+            trusted,
+            rng,
+        ), {
+            "latents": current_z,
+            "actions": actions,
+            "action_log_probs": action_log_probs,
+            "action_log_probs_all": log_probs_all,
+            "action_entropy": action_entropy,
+            "actor_max_probs": actor_max_probs,
+            "values": values,
+            "fixed_values": fixed_values,
+            "raw_rewards": raw_rewards,
+            "rewards": rewards,
+            "continues": continues,
+            "uncertainty": uncertainty,
+            "trusted": trusted,
+        }
+
+    (final_context, _, _, _, _), rollout = jax.lax.scan(
+        step,
+        (context, action_context, initial_uncertainty, initial_trusted, key),
+        xs=None,
+        length=imag_horizon,
+    )
+    _, fixed_last_value = actor_value_from_latent(
+        apply_fn,
+        model_params,
+        final_context[:, -1],
+    )
+    rollout["fixed_last_value"] = fixed_last_value
+    return rollout
+
+
 def ensemble_transition_uncertainty(
     z_ensemble: jax.Array,
     reward_ensemble: jax.Array,
@@ -1383,6 +1783,33 @@ def select_continuous_actions(
         action_low,
         action_high,
     ).reshape((*observations.shape[:-1], config.action_dim))
+
+
+@partial(jax.jit, static_argnames=("config", "stochastic"))
+def select_discrete_actions(
+    state: JepaTrainState,
+    observations: jax.Array,
+    config: JepaConfig,
+    *,
+    key: jax.Array | None = None,
+    stochastic: bool = False,
+) -> jax.Array:
+    if config.action_mode != "discrete":
+        raise ValueError("select_discrete_actions requires discrete actions")
+    flat_obs = observations.reshape((-1, config.observation_dim))
+    z = state.apply_fn(
+        {"params": state.params},
+        flat_obs,
+        method=JepaWorldModel.encode,
+    )
+    logits, _ = actor_value_from_latent(state.apply_fn, state.params, z)
+    if stochastic:
+        if key is None:
+            raise ValueError("key is required for stochastic discrete actions")
+        actions = jax.random.categorical(key, logits, axis=-1)
+    else:
+        actions = jnp.argmax(logits, axis=-1)
+    return actions.reshape(observations.shape[:-1]).astype(jnp.int32)
 
 
 def scale_normalized_actions(

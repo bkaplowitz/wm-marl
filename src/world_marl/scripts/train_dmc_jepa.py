@@ -1,10 +1,12 @@
 """Validate a representation-space SIGReg-JEPA world model on single-agent rollouts.
 
-By default this is the first single-agent rung: random continuous-control replay
-plus held-out latent prediction, reward prediction, and continue prediction. Passing
+By default this is the first single-agent rung: random replay collection plus
+held-out latent prediction, reward prediction, and continue prediction. Passing
 ``--policy-train-steps`` enables the next rung: reset actor/value heads, freeze
-the JEPA world model, train a deterministic continuous actor inside the latent
-model, then evaluate that actor in the real environment.
+the JEPA world model, train an actor inside the latent model, then evaluate that
+actor in the real environment. Continuous backends (``dmc:``/``brax:``) train a
+deterministic tanh actor with pathwise gradients; the discrete backend
+(``gymnax:``) trains a categorical actor with REINFORCE on imagined returns.
 """
 
 from __future__ import annotations
@@ -25,19 +27,22 @@ from tqdm.auto import tqdm
 from world_marl.checkpointing import load_params, save_checkpoint
 from world_marl.envs.brax_adapter import BraxVectorAdapter, brax_env_name
 from world_marl.envs.dmc_adapter import DMCVectorAdapter, dmc_env_name
+from world_marl.envs.gymnax_adapter import GymnaxVectorAdapter, gymnax_env_name
 from world_marl.jepa.models import JepaConfig, JepaWorldModel
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
     ControlMode,
     continuous_candidate_distill_step,
-    continuous_critic_warmup_step,
     continuous_policy_train_step,
     copy_policy_heads,
     create_jepa_train_state,
+    critic_warmup_step,
+    discrete_policy_train_step,
     evaluate_open_loop,
     evaluate_world_model_loss,
     reset_policy_heads,
     select_continuous_actions,
+    select_discrete_actions,
     train_model_step,
 )
 from world_marl.jepa.validation import (
@@ -583,8 +588,15 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--actor-entropy-coef must be >= 0")
     if args.actor_log_std_min >= args.actor_log_std_max:
         parser.error("--actor-log-std-min must be < --actor-log-std-max")
-    if args.stochastic_collection and not args.stochastic_actor:
-        parser.error("--stochastic-collection requires --stochastic-actor")
+    if (
+        args.stochastic_collection
+        and not args.stochastic_actor
+        and _action_mode(args.env) == "continuous"
+    ):
+        parser.error(
+            "--stochastic-collection requires --stochastic-actor "
+            "(discrete actors always define a sampling distribution)"
+        )
     if args.twohot_bins < 3:
         parser.error("--twohot-bins must be >= 3")
     if args.twohot_min >= args.twohot_max:
@@ -630,8 +642,15 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         and args.final_policy_eval_num_envs < 1
     ):
         parser.error("--final-policy-eval-num-envs must be >= 1")
-    if not (args.env.startswith("dmc:") or args.env.startswith("brax:")):
-        parser.error("--env must be formatted as dmc:<domain>/<task> or brax:<env>")
+    if not (
+        args.env.startswith("dmc:")
+        or args.env.startswith("brax:")
+        or args.env.startswith("gymnax:")
+    ):
+        parser.error(
+            "--env must be formatted as dmc:<domain>/<task>, brax:<env>, "
+            "or gymnax:<env_id>"
+        )
     min_steps = min_sequence_steps
     if args.collect_steps < min_steps:
         parser.error(
@@ -686,7 +705,13 @@ def _env_backend(env: str) -> str:
         return "dmc"
     if env.startswith("brax:"):
         return "brax"
+    if env.startswith("gymnax:"):
+        return "gymnax"
     raise ValueError(f"unsupported env: {env!r}")
+
+
+def _action_mode(env: str) -> str:
+    return "discrete" if _env_backend(env) == "gymnax" else "continuous"
 
 
 def _experiment_prefix(env: str) -> str:
@@ -716,6 +741,13 @@ def _make_vector_adapter(
             seed=seed,
             backend=args.brax_backend,
         )
+    if args.env.startswith("gymnax:"):
+        return GymnaxVectorAdapter(
+            gymnax_env_name(args.env),
+            num_envs=adapter_num_envs,
+            max_cycles=args.max_cycles,
+            seed=seed,
+        )
     raise ValueError(f"unsupported env: {args.env!r}")
 
 
@@ -729,11 +761,12 @@ def run_one(
     logger = RunLogger(run_dir)
     seed = args.seed + 10_000 * run_index
     adapter = _make_vector_adapter(args, seed=seed)
+    action_mode = _action_mode(args.env)
     try:
         config = JepaConfig(
             observation_dim=int(np.prod(adapter.observation_shape)),
             action_dim=adapter.action_dim,
-            action_mode="continuous",
+            action_mode=action_mode,
             latent_dim=args.latent_dim,
             model_dim=args.model_dim,
             num_layers=args.num_layers,
@@ -777,6 +810,7 @@ def run_one(
                 "seed": seed,
                 "control": control,
                 "observation_shape": adapter.observation_shape,
+                "action_mode": action_mode,
                 "action_shape": adapter.action_shape,
                 "action_low": adapter.action_low,
                 "action_high": adapter.action_high,
@@ -794,19 +828,23 @@ def run_one(
         rng, init_key = jax.random.split(rng)
         state = create_jepa_train_state(init_key, config)
         np_rng = np.random.default_rng(seed)
+        replay_action_shape, replay_action_dtype = _replay_action_spec(
+            adapter,
+            action_mode,
+        )
         replay = SequenceReplayBuffer(
             capacity=max(2, math.ceil(args.replay_capacity / args.num_envs)),
             num_envs=args.num_envs,
             observation_shape=(config.observation_dim,),
-            action_shape=(adapter.action_dim,),
-            action_dtype=np.float32,
+            action_shape=replay_action_shape,
+            action_dtype=replay_action_dtype,
         )
         anchor_replay = SequenceReplayBuffer(
             capacity=max(2, args.collect_steps),
             num_envs=args.num_envs,
             observation_shape=(config.observation_dim,),
-            action_shape=(adapter.action_dim,),
-            action_dtype=np.float32,
+            action_shape=replay_action_shape,
+            action_dtype=replay_action_dtype,
         )
 
         observations = adapter.reset()
@@ -943,7 +981,8 @@ def run_one(
                 capacity=online_collect_steps,
                 num_envs=args.num_envs,
                 observation_dim=config.observation_dim,
-                action_dim=adapter.action_dim,
+                action_shape=replay_action_shape,
+                action_dtype=replay_action_dtype,
             )
             observations, added_env_steps, collect_metrics = _collect_policy_steps(
                 adapter,
@@ -997,7 +1036,8 @@ def run_one(
                     capacity=online_validation_steps,
                     num_envs=args.num_envs,
                     observation_dim=config.observation_dim,
-                    action_dim=adapter.action_dim,
+                    action_shape=replay_action_shape,
+                    action_dtype=replay_action_dtype,
                 )
                 observations, validation_env_steps, recent_validation_payload = (
                     _collect_policy_steps(
@@ -1279,15 +1319,15 @@ def run_one(
                 args.num_envs,
                 args.final_policy_eval_episodes,
             )
-            final_policy_eval = _evaluate_continuous_policy(
+            final_policy_eval = _evaluate_policy(
                 args,
                 state,
                 config,
                 seed=seed + 9_000_000,
                 num_envs=final_policy_eval_num_envs,
                 episodes=args.final_policy_eval_episodes,
-                action_low=jnp.asarray(adapter.action_low, dtype=jnp.float32),
-                action_high=jnp.asarray(adapter.action_high, dtype=jnp.float32),
+                action_low=_as_action_bound(adapter.action_low),
+                action_high=_as_action_bound(adapter.action_high),
                 desc=f"{control} final eval champion policy",
             )
             logger.write_json(
@@ -1312,7 +1352,7 @@ def run_one(
             "checkpoint_dir": str(checkpoint_dir),
             "target": (
                 f"{_env_backend(args.env)}:"
-                "p(z_next, reward, continue | z, continuous_action)"
+                f"p(z_next, reward, continue | z, {action_mode}_action)"
             ),
             "initial_jepa_loss": initial_metrics["model/jepa_loss"],
             "final_jepa_loss": final_metrics["model/jepa_loss"],
@@ -1399,33 +1439,46 @@ def _collect_policy_steps(
     replay: SequenceReplayBuffer | tuple[SequenceReplayBuffer, ...],
     *,
     steps: int,
-    action_low: np.ndarray,
-    action_high: np.ndarray,
+    action_low: np.ndarray | None,
+    action_high: np.ndarray | None,
     desc: str,
     quiet: bool,
     np_rng: np.random.Generator,
     stochastic_actions: bool = False,
 ) -> tuple[np.ndarray, int, dict[str, Any]]:
-    action_low_jax = jnp.asarray(action_low, dtype=jnp.float32)
-    action_high_jax = jnp.asarray(action_high, dtype=jnp.float32)
+    discrete = config.action_mode == "discrete"
+    action_low_jax = None if discrete else jnp.asarray(action_low, dtype=jnp.float32)
+    action_high_jax = None if discrete else jnp.asarray(action_high, dtype=jnp.float32)
     action_key = jax.random.PRNGKey(int(np_rng.integers(0, 2**31 - 1)))
     completed_returns: list[float] = []
     completed_lengths: list[int] = []
     progress = tqdm(range(steps), desc=desc, unit="step", disable=quiet)
     for _ in progress:
         action_key, step_action_key = jax.random.split(action_key)
-        actions = np.asarray(
-            select_continuous_actions(
-                state,
-                jnp.asarray(observations[:, 0], dtype=jnp.float32),
-                config,
-                action_low_jax,
-                action_high_jax,
-                key=step_action_key,
-                stochastic=stochastic_actions,
+        if discrete:
+            actions = np.asarray(
+                select_discrete_actions(
+                    state,
+                    jnp.asarray(observations[:, 0], dtype=jnp.float32),
+                    config,
+                    key=step_action_key,
+                    stochastic=stochastic_actions,
+                )
             )
-        )
-        step = adapter.step(actions[:, None, :])
+            step = adapter.step(actions[:, None])
+        else:
+            actions = np.asarray(
+                select_continuous_actions(
+                    state,
+                    jnp.asarray(observations[:, 0], dtype=jnp.float32),
+                    config,
+                    action_low_jax,
+                    action_high_jax,
+                    key=step_action_key,
+                    stochastic=stochastic_actions,
+                )
+            )
+            step = adapter.step(actions[:, None, :])
         _add_replay_step(
             replay,
             observations=observations[:, 0],
@@ -1486,12 +1539,16 @@ def _collect_validation_replay(
 ) -> SequenceReplayBuffer:
     adapter = _make_vector_adapter(args, seed=seed)
     try:
+        action_shape, action_dtype = _replay_action_spec(
+            adapter,
+            _action_mode(args.env),
+        )
         replay = SequenceReplayBuffer(
             capacity=max(2, args.validation_steps),
             num_envs=args.num_envs,
             observation_shape=(config.observation_dim,),
-            action_shape=(config.action_dim,),
-            action_dtype=np.float32,
+            action_shape=action_shape,
+            action_dtype=action_dtype,
         )
         observations = adapter.reset()
         _collect_random_steps(
@@ -1522,15 +1579,29 @@ def _new_replay_buffer(
     capacity: int,
     num_envs: int,
     observation_dim: int,
-    action_dim: int,
+    action_shape: tuple[int, ...],
+    action_dtype: np.dtype | type,
 ) -> SequenceReplayBuffer:
     return SequenceReplayBuffer(
         capacity=max(2, capacity),
         num_envs=num_envs,
         observation_shape=(observation_dim,),
-        action_shape=(action_dim,),
-        action_dtype=np.float32,
+        action_shape=action_shape,
+        action_dtype=action_dtype,
     )
+
+
+def _replay_action_spec(
+    adapter,
+    action_mode: str,
+) -> tuple[tuple[int, ...], type]:
+    if action_mode == "discrete":
+        return (), np.int32
+    return (adapter.action_dim,), np.float32
+
+
+def _as_action_bound(bound: np.ndarray | None) -> jax.Array | None:
+    return None if bound is None else jnp.asarray(bound, dtype=jnp.float32)
 
 
 def _evaluate_candidate_model_update(
@@ -1544,8 +1615,8 @@ def _evaluate_candidate_model_update(
     recent_validation_batch: ReplayBatch,
     config: JepaConfig,
     control: ControlMode,
-    action_low: np.ndarray,
-    action_high: np.ndarray,
+    action_low: np.ndarray | None,
+    action_high: np.ndarray | None,
     baseline_anchor_metrics: dict[str, Any] | None = None,
     baseline_recent_policy_metrics: dict[str, Any] | None = None,
     update: int | None = None,
@@ -1641,8 +1712,8 @@ def _fit_candidate_world_model(
     recent_replay: SequenceReplayBuffer,
     anchor_validation_batch: ReplayBatch,
     recent_validation_batch: ReplayBatch,
-    action_low: np.ndarray,
-    action_high: np.ndarray,
+    action_low: np.ndarray | None,
+    action_high: np.ndarray | None,
     control_value_weight: float = 0.0,
 ) -> tuple[Any, jax.Array, dict[str, Any], list[float]]:
     rng, anchor_key, recent_key = jax.random.split(rng, 3)
@@ -1903,8 +1974,8 @@ def _maybe_train_policy(
     seed: int,
     np_rng: np.random.Generator,
     rng: jax.Array,
-    action_low: np.ndarray,
-    action_high: np.ndarray,
+    action_low: np.ndarray | None,
+    action_high: np.ndarray | None,
     phase: str = "policy",
     train_steps: int | None = None,
     reset_actor: bool = True,
@@ -1919,6 +1990,14 @@ def _maybe_train_policy(
             "rng": rng,
             "outcome": {"policy_training_enabled": False},
         }
+    if (
+        args.policy_objective == "candidate-distill"
+        and config.action_mode == "discrete"
+    ):
+        raise ValueError(
+            "--policy-objective candidate-distill only supports continuous actions; "
+            "use --policy-objective direct for discrete (gymnax) environments"
+        )
 
     if reset_actor:
         rng, reset_key = jax.random.split(rng)
@@ -1928,8 +2007,8 @@ def _maybe_train_policy(
         args.policy_eval_episodes,
     )
     policy_batch_size = args.policy_batch_size or args.batch_size
-    action_low_jax = jnp.asarray(action_low, dtype=jnp.float32)
-    action_high_jax = jnp.asarray(action_high, dtype=jnp.float32)
+    action_low_jax = _as_action_bound(action_low)
+    action_high_jax = _as_action_bound(action_high)
     policy_eval_seed = seed + eval_seed_offset
     policy_selection_seed = seed + selection_seed_offset
     policy_confirmation_seed = seed + confirmation_seed_offset
@@ -1952,7 +2031,7 @@ def _maybe_train_policy(
         num_envs=eval_num_envs,
         desc=f"{control} {phase} eval random policy",
     )
-    initial_eval = _evaluate_continuous_policy(
+    initial_eval = _evaluate_policy(
         args,
         state,
         config,
@@ -1975,7 +2054,7 @@ def _maybe_train_policy(
             episodes=args.policy_confirmation_episodes,
             desc=f"{control} {phase} confirm random policy",
         )
-        confirmation_initial_eval = _evaluate_continuous_policy(
+        confirmation_initial_eval = _evaluate_policy(
             args,
             state,
             config,
@@ -2004,7 +2083,7 @@ def _maybe_train_policy(
     best_selection_eval: dict[str, Any] | None = None
     best_selection_mean = -math.inf
     if selection_enabled:
-        selection_eval = _evaluate_continuous_policy(
+        selection_eval = _evaluate_policy(
             args,
             state,
             config,
@@ -2051,7 +2130,7 @@ def _maybe_train_policy(
                 chunk_length=args.critic_horizon,
                 max_horizon=1,
             )
-            state, critic_metrics = continuous_critic_warmup_step(
+            state, critic_metrics = critic_warmup_step(
                 state,
                 batch,
                 config,
@@ -2115,6 +2194,29 @@ def _maybe_train_policy(
                 action_saturation_threshold=args.action_saturation_threshold,
                 start_actions=start_actions,
             )
+        elif config.action_mode == "discrete":
+            state, metrics = discrete_policy_train_step(
+                state,
+                policy_key,
+                start_observations,
+                config,
+                imag_horizon=args.imag_horizon,
+                control=control,
+                policy_return_mode=args.policy_return_mode,
+                policy_actor_baseline=args.policy_actor_baseline,
+                policy_return_normalization=args.policy_return_normalization,
+                value_clip=args.value_clip,
+                start_actions=start_actions,
+                uncertainty_penalty=args.uncertainty_penalty,
+                uncertainty_latent_weight=args.uncertainty_latent_weight,
+                uncertainty_reward_weight=args.uncertainty_reward_weight,
+                uncertainty_continue_weight=args.uncertainty_continue_weight,
+                uncertainty_threshold=args.uncertainty_threshold,
+                uncertainty_budget=args.uncertainty_budget,
+                reference_actor_params=reference_actor_params,
+                policy_trust_coef=policy_trust_coef,
+                actor_entropy_coef=args.actor_entropy_coef,
+            )
         else:
             state, metrics = continuous_policy_train_step(
                 state,
@@ -2171,7 +2273,7 @@ def _maybe_train_policy(
             step_index == policy_train_steps
             or step_index % args.policy_selection_interval == 0
         ):
-            selection_eval = _evaluate_continuous_policy(
+            selection_eval = _evaluate_policy(
                 args,
                 state,
                 config,
@@ -2223,7 +2325,7 @@ def _maybe_train_policy(
                 "evaluation": best_selection_eval,
             },
         )
-    trained_eval = _evaluate_continuous_policy(
+    trained_eval = _evaluate_policy(
         args,
         state,
         config,
@@ -2236,7 +2338,7 @@ def _maybe_train_policy(
     logger.write_json(f"{artifact_prefix}trained_policy_evaluation.json", trained_eval)
     confirmation_trained_eval = None
     if confirmation_enabled:
-        confirmation_trained_eval = _evaluate_continuous_policy(
+        confirmation_trained_eval = _evaluate_policy(
             args,
             state,
             config,
@@ -2454,18 +2556,19 @@ def _evaluate_random_policy(
         adapter.close()
 
 
-def _evaluate_continuous_policy(
+def _evaluate_policy(
     args: argparse.Namespace,
     state,
     config: JepaConfig,
     *,
     seed: int,
     num_envs: int,
-    action_low: jax.Array,
-    action_high: jax.Array,
+    action_low: jax.Array | None,
+    action_high: jax.Array | None,
     desc: str,
     episodes: int | None = None,
 ) -> dict[str, Any]:
+    discrete = config.action_mode == "discrete"
     target_episodes = args.policy_eval_episodes if episodes is None else episodes
     adapter = _make_vector_adapter(args, seed=seed, num_envs=num_envs)
     try:
@@ -2481,16 +2584,26 @@ def _evaluate_continuous_policy(
         ) as progress:
             while len(returns) < target_episodes:
                 before = len(returns)
-                actions = np.asarray(
-                    select_continuous_actions(
-                        state,
-                        jnp.asarray(observations[:, 0], dtype=jnp.float32),
-                        config,
-                        action_low,
-                        action_high,
+                if discrete:
+                    actions = np.asarray(
+                        select_discrete_actions(
+                            state,
+                            jnp.asarray(observations[:, 0], dtype=jnp.float32),
+                            config,
+                        )
                     )
-                )
-                step = adapter.step(actions[:, None, :])
+                    step = adapter.step(actions[:, None])
+                else:
+                    actions = np.asarray(
+                        select_continuous_actions(
+                            state,
+                            jnp.asarray(observations[:, 0], dtype=jnp.float32),
+                            config,
+                            action_low,
+                            action_high,
+                        )
+                    )
+                    step = adapter.step(actions[:, None, :])
                 step_calls += 1
                 returns.extend(float(item[0]) for item in step.completed_returns)
                 lengths.extend(int(item) for item in step.completed_lengths)
@@ -2556,8 +2669,8 @@ def _evaluate_model(
     chunk_length: int,
     open_loop_horizon: int,
     control: ControlMode,
-    action_low: np.ndarray,
-    action_high: np.ndarray,
+    action_low: np.ndarray | None,
+    action_high: np.ndarray | None,
 ) -> dict[str, Any]:
     metrics = dict(
         evaluate_world_model_loss(
@@ -2578,16 +2691,17 @@ def _evaluate_model(
             control=control,
         )
     )
-    metrics["model/continuous_action_low_high_sensitivity"] = (
-        _continuous_action_sensitivity(
-            state,
-            batch,
-            config,
-            action_low=action_low,
-            action_high=action_high,
-            control=control,
+    if config.action_mode == "continuous":
+        metrics["model/continuous_action_low_high_sensitivity"] = (
+            _continuous_action_sensitivity(
+                state,
+                batch,
+                config,
+                action_low=action_low,
+                action_high=action_high,
+                control=control,
+            )
         )
-    )
     metrics.update(
         action_contrast_metrics(
             state,

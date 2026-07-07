@@ -66,6 +66,11 @@ class GymnaxVectorAdapter:
         if not hasattr(action_space, "n"):
             raise TypeError("only discrete Gymnax action spaces are supported")
         self.action_dim = int(action_space.n)
+        # Discrete contract: actions are int32 scalars, so there is no action
+        # vector shape and no box bounds (unlike Brax/DMC).
+        self.action_shape: tuple[int, ...] = ()
+        self.action_low = None
+        self.action_high = None
 
         observation_shape = tuple(
             int(dim) for dim in self.env.observation_space(self.env_params).shape

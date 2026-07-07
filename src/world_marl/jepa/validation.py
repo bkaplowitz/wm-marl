@@ -496,9 +496,6 @@ def action_contrast_metrics(
     control: ControlMode,
 ) -> dict[str, jax.Array]:
     """Compare heldout next-latent prediction under true versus wrong actions."""
-    if config.action_mode != "continuous":
-        return {}
-
     observations = batch.observations[:, : chunk_length + 1]
     actions = batch.actions[:, :chunk_length]
     validity = 1.0 - batch.dones[:, :chunk_length]
@@ -507,12 +504,21 @@ def action_contrast_metrics(
     next_obs = observations[:, 1 : chunk_length + 1].reshape(
         (-1, config.observation_dim)
     )
-    true_actions = actions.reshape((-1, config.action_dim))
+    if config.action_mode == "continuous":
+        true_actions = actions.reshape((-1, config.action_dim))
+    else:
+        true_actions = actions.reshape((-1,)).astype(jnp.int32)
     if control == "no-action-world-model":
         wrong_actions = jnp.zeros_like(true_actions)
         true_actions = jnp.zeros_like(true_actions)
-    else:
+    elif config.action_mode == "continuous":
         wrong_actions = jax.random.permutation(key, true_actions, axis=0)
+    else:
+        # A permuted wrong action collides with the true one ~1/n of the time
+        # (half the batch for CartPole's n=2), so shift by a nonzero random
+        # offset to guarantee a genuinely different action.
+        offsets = jax.random.randint(key, true_actions.shape, 1, config.action_dim)
+        wrong_actions = (true_actions + offsets) % config.action_dim
 
     current_z = state.apply_fn(
         {"params": state.params},
@@ -530,13 +536,13 @@ def action_contrast_metrics(
     true_pred, _, _ = state.apply_fn(
         {"params": state.params},
         context,
-        true_actions[:, None, :],
+        true_actions[:, None],
         method=JepaWorldModel.predict_next_from_history,
     )
     wrong_pred, _, _ = state.apply_fn(
         {"params": state.params},
         context,
-        wrong_actions[:, None, :],
+        wrong_actions[:, None],
         method=JepaWorldModel.predict_next_from_history,
     )
 

@@ -13,9 +13,10 @@ from world_marl.jepa.models import (
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
     continuous_candidate_distill_step,
-    continuous_critic_warmup_step,
     continuous_policy_train_step,
     create_jepa_train_state,
+    critic_warmup_step,
+    discrete_policy_train_step,
     evaluate_open_loop,
     lambda_returns,
     latent_collapse_metrics,
@@ -24,6 +25,7 @@ from world_marl.jepa.training import (
     reset_policy_heads,
     reward_only_returns,
     select_continuous_actions,
+    select_discrete_actions,
     train_model_step,
     transition_start_validity,
 )
@@ -528,6 +530,115 @@ def test_stochastic_continuous_policy_update_reports_entropy_and_samples_actions
     )
 
 
+def _discrete_config() -> JepaConfig:
+    return JepaConfig(
+        observation_dim=4,
+        action_dim=3,
+        action_mode="discrete",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=1,
+        context_window=1,
+        sigreg_num_proj=32,
+    )
+
+
+def test_discrete_policy_update_freezes_world_model_and_emits_gate_key():
+    config = _discrete_config()
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    before = state.params
+    observations = jnp.ones((8, config.observation_dim), dtype=jnp.float32)
+
+    state, metrics = discrete_policy_train_step(
+        state,
+        jax.random.PRNGKey(1),
+        observations,
+        config,
+        imag_horizon=2,
+        reference_actor_params=before,
+        policy_trust_coef=0.1,
+        actor_entropy_coef=0.01,
+    )
+
+    assert jnp.isfinite(metrics["policy/total_loss"])
+    assert jnp.isfinite(metrics["policy/entropy_bonus"])
+    assert jnp.isfinite(metrics["policy/trust_action_kl"])
+    assert np.asarray(metrics["policy/trust_action_kl"]) >= -1e-6
+    assert metrics["policy/actor_entropy_coef"] == pytest.approx(0.01)
+    assert np.asarray(metrics["policy/action_saturation_fraction"]) == 0.0
+    for group in (
+        "encoder",
+        "latent_proj",
+        "action_embed",
+        "dynamics_norm",
+        "predictor",
+        "predictor_norm",
+        "reward_head",
+        "continue_head",
+    ):
+        before_leaves = jax.tree_util.tree_leaves(before[group])
+        after_leaves = jax.tree_util.tree_leaves(state.params[group])
+        for left, right in zip(before_leaves, after_leaves, strict=True):
+            np.testing.assert_allclose(np.asarray(left), np.asarray(right))
+
+
+def test_select_discrete_actions_returns_valid_int32_actions():
+    config = _discrete_config()
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    observations = jnp.linspace(
+        -1.0, 1.0, 8 * config.observation_dim, dtype=jnp.float32
+    ).reshape((8, config.observation_dim))
+
+    greedy = select_discrete_actions(state, observations, config)
+    sampled = select_discrete_actions(
+        state,
+        observations,
+        config,
+        key=jax.random.PRNGKey(1),
+        stochastic=True,
+    )
+
+    for actions in (greedy, sampled):
+        assert actions.shape == (8,)
+        assert actions.dtype == jnp.int32
+        assert jnp.all(actions >= 0)
+        assert jnp.all(actions < config.action_dim)
+    with pytest.raises(ValueError):
+        select_discrete_actions(state, observations, config, stochastic=True)
+
+
+def test_discrete_action_contrast_metrics_are_reported():
+    config = _discrete_config()
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    batch = ReplayBatch(
+        observations=jnp.arange(4 * 3 * 4, dtype=jnp.float32).reshape((4, 3, 4)),
+        actions=jnp.asarray([[0, 1], [2, 0], [1, 2], [0, 0]], dtype=jnp.int32),
+        rewards=jnp.ones((4, 2), dtype=jnp.float32),
+        dones=jnp.zeros((4, 2), dtype=jnp.float32),
+    )
+
+    metrics = action_contrast_metrics(
+        state,
+        jax.random.PRNGKey(1),
+        batch,
+        config,
+        chunk_length=2,
+        control="none",
+    )
+
+    assert metrics
+    assert jnp.isfinite(metrics["model/action_contrast_margin"])
+    assert 0.0 <= float(metrics["model/action_contrast_accuracy"]) <= 1.0
+    np.testing.assert_allclose(
+        np.asarray(metrics["model/action_contrast_valid_fraction"]),
+        1.0,
+        atol=1e-7,
+    )
+    assert np.asarray(metrics["model/action_contrast_finite_fraction"]) == 1.0
+
+
 def test_continuous_critic_warmup_updates_value_only():
     config = JepaConfig(
         observation_dim=4,
@@ -550,7 +661,7 @@ def test_continuous_critic_warmup_updates_value_only():
         dones=jnp.zeros((8, 3), dtype=jnp.float32),
     )
 
-    updated, metrics = continuous_critic_warmup_step(
+    updated, metrics = critic_warmup_step(
         state,
         batch,
         config,
