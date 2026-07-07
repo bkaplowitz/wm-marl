@@ -102,20 +102,24 @@ class SequenceReplayBuffer:
                 f"need at least {sequence_length} steps to sample, have {self._size}"
             )
 
-        observations, actions, rewards, dones = self._ordered_arrays()
         max_start = self._size - sequence_length
         starts = rng.integers(0, max_start + 1, size=(batch_size,))
         envs = rng.integers(0, self.num_envs, size=(batch_size,))
         offsets = np.arange(sequence_length)
+        # Map logical (oldest-first) indices to physical ring positions so the
+        # gather touches only the sampled windows instead of reordering the
+        # whole buffer.
         indices = starts[:, None] + offsets[None, :]
+        if self._size == self.capacity:
+            indices = (self._position + indices) % self.capacity
 
-        obs_batch = observations[indices, envs[:, None]]
+        obs_batch = self.observations[indices, envs[:, None]]
         # actions/rewards/dones align with transitions out of obs[t], so one fewer
         # item than the observation sequence is needed.
         trans_indices = indices[:, :-1]
-        action_batch = actions[trans_indices, envs[:, None]]
-        reward_batch = rewards[trans_indices, envs[:, None]]
-        done_batch = dones[trans_indices, envs[:, None]]
+        action_batch = self.actions[trans_indices, envs[:, None]]
+        reward_batch = self.rewards[trans_indices, envs[:, None]]
+        done_batch = self.dones[trans_indices, envs[:, None]]
         return ReplayBatch(
             observations=jnp.asarray(obs_batch, dtype=jnp.float32),
             actions=jnp.asarray(
@@ -128,25 +132,4 @@ class SequenceReplayBuffer:
             ),
             rewards=jnp.asarray(reward_batch, dtype=jnp.float32),
             dones=jnp.asarray(done_batch, dtype=jnp.float32),
-        )
-
-    def _ordered_arrays(self):
-        if self._size < self.capacity:
-            return (
-                self.observations[: self._size],
-                self.actions[: self._size],
-                self.rewards[: self._size],
-                self.dones[: self._size],
-            )
-        order = np.concatenate(
-            [
-                np.arange(self._position, self.capacity),
-                np.arange(0, self._position),
-            ]
-        )
-        return (
-            self.observations[order],
-            self.actions[order],
-            self.rewards[order],
-            self.dones[order],
         )

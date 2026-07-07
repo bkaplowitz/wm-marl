@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable
 from typing import Any
 
@@ -28,6 +29,19 @@ def make_brax_env(
     if backend is not None:
         kwargs["backend"] = backend
     return envs.create(env_name=env_id, episode_length=episode_length, **kwargs)
+
+
+@functools.lru_cache(maxsize=None)
+def _shared_env_and_fns(
+    env_id: str, backend: str | None, episode_length: int
+) -> tuple[Any, Callable, Callable]:
+    """Share the (stateless) Brax env and its jitted reset/step across adapters.
+
+    Per-instance jit closures each carry their own compile cache, so building a
+    fresh adapter per evaluation used to recompile reset/step every time.
+    """
+    env = make_brax_env(env_id, backend=backend, episode_length=episode_length)
+    return env, jax.jit(jax.vmap(env.reset)), jax.jit(jax.vmap(env.step))
 
 
 class BraxVectorAdapter:
@@ -65,16 +79,14 @@ class BraxVectorAdapter:
         self.agents = ("agent_0",)
         self.num_agents = 1
 
-        self._env = (
-            env_factory
-            or (
-                lambda: make_brax_env(
-                    env_id, backend=backend, episode_length=max_cycles
-                )
+        if env_factory is None:
+            self._env, self._reset, self._step = _shared_env_and_fns(
+                env_id, backend, self.max_cycles
             )
-        )()
-        self._reset = jax.jit(jax.vmap(self._env.reset))
-        self._step = jax.jit(jax.vmap(self._env.step))
+        else:
+            self._env = env_factory()
+            self._reset = jax.jit(jax.vmap(self._env.reset))
+            self._step = jax.jit(jax.vmap(self._env.step))
         self._base_key = jax.random.PRNGKey(seed)
         self._reset_counter = 0
         self._state = self._reset(self._next_reset_keys())

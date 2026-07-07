@@ -396,6 +396,29 @@ def world_model_loss(
     return loss, metrics
 
 
+@partial(jax.jit, static_argnames=("config", "chunk_length", "control"))
+def evaluate_world_model_loss(
+    state: JepaTrainState,
+    key: jax.Array,
+    batch: ReplayBatch,
+    config: JepaConfig,
+    *,
+    chunk_length: int,
+    control: ControlMode,
+) -> dict[str, jax.Array]:
+    """Jitted evaluation-only wrapper around ``world_model_loss``."""
+    _, metrics = world_model_loss(
+        state.params,
+        state.apply_fn,
+        key,
+        batch,
+        config,
+        chunk_length=chunk_length,
+        control=control,
+    )
+    return metrics
+
+
 def world_model_loss_with_outputs(
     params: FrozenDict,
     apply_fn,
@@ -1323,6 +1346,7 @@ def initial_imagination_context(
     return latents, action_context
 
 
+@partial(jax.jit, static_argnames=("config", "stochastic"))
 def select_continuous_actions(
     state: JepaTrainState,
     observations: jax.Array,

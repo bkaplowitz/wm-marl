@@ -13,6 +13,7 @@ import argparse
 import dataclasses
 import json
 import math
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -34,10 +35,10 @@ from world_marl.jepa.training import (
     copy_policy_heads,
     create_jepa_train_state,
     evaluate_open_loop,
+    evaluate_world_model_loss,
     reset_policy_heads,
     select_continuous_actions,
     train_model_step,
-    world_model_loss,
 )
 from world_marl.jepa.validation import (
     action_contrast_metrics,
@@ -1673,7 +1674,7 @@ def _fit_candidate_world_model(
     best_report = None
     final_report = None
     reports: list[dict[str, Any]] = []
-    loss_history: list[float] = []
+    loss_history: list[jax.Array] = []
     metrics: dict[str, Any] = {}
     eval_interval = args.online_candidate_eval_interval
     fit_steps = tqdm(
@@ -1704,15 +1705,16 @@ def _fit_candidate_world_model(
             freeze_encoder=True,
             control_value_weight=control_value_weight,
         )
-        total_loss = float(metrics["model/total_loss"])
-        jepa_loss = float(metrics["model/jepa_loss"])
-        loss_history.append(total_loss)
-        fit_steps.set_postfix(loss=f"{total_loss:.4g}", jepa=f"{jepa_loss:.4g}")
+        loss_history.append(metrics["model/total_loss"])
         if (
             step_index == 1
             or step_index == steps
             or step_index % args.eval_interval == 0
         ):
+            fit_steps.set_postfix(
+                loss=f"{float(metrics['model/total_loss']):.4g}",
+                jepa=f"{float(metrics['model/jepa_loss']):.4g}",
+            )
             logger.append_metrics(
                 {
                     "phase": phase,
@@ -1818,7 +1820,7 @@ def _fit_candidate_world_model(
         "candidate_checkpoints": checkpoint_summaries,
         "final_candidate_gate": final_report["gate"],
     }
-    return selected_state, rng, selected_report, loss_history
+    return selected_state, rng, selected_report, [float(loss) for loss in loss_history]
 
 
 def _fit_world_model(
@@ -1838,7 +1840,7 @@ def _fit_world_model(
     freeze_encoder: bool = False,
     control_value_weight: float = 0.0,
 ) -> tuple[Any, jax.Array, dict[str, Any], list[float]]:
-    loss_history: list[float] = []
+    loss_history: list[jax.Array] = []
     metrics: dict[str, Any] = {}
     fit_steps = tqdm(
         range(1, steps + 1),
@@ -1864,15 +1866,18 @@ def _fit_world_model(
             freeze_encoder=freeze_encoder,
             control_value_weight=control_value_weight,
         )
-        total_loss = float(metrics["model/total_loss"])
-        jepa_loss = float(metrics["model/jepa_loss"])
-        loss_history.append(total_loss)
-        fit_steps.set_postfix(loss=f"{total_loss:.4g}", jepa=f"{jepa_loss:.4g}")
+        # Keep device scalars unconverted so async dispatch overlaps host-side
+        # replay sampling with device compute; sync only at logging intervals.
+        loss_history.append(metrics["model/total_loss"])
         if (
             step_index == 1
             or step_index == steps
             or step_index % args.eval_interval == 0
         ):
+            fit_steps.set_postfix(
+                loss=f"{float(metrics['model/total_loss']):.4g}",
+                jepa=f"{float(metrics['model/jepa_loss']):.4g}",
+            )
             logger.append_metrics(
                 {
                     "phase": phase,
@@ -1884,7 +1889,7 @@ def _fit_world_model(
                     **metrics,
                 }
             )
-    return state, rng, to_jsonable(metrics), loss_history
+    return state, rng, to_jsonable(metrics), [float(loss) for loss in loss_history]
 
 
 def _maybe_train_policy(
@@ -2053,17 +2058,15 @@ def _maybe_train_policy(
                 horizon=args.critic_horizon,
                 value_clip=args.value_clip,
             )
-            critic_loss = float(critic_metrics["critic/total_loss"])
-            target_mean = float(critic_metrics["critic/target_mean"])
-            critic_steps.set_postfix(
-                loss=f"{critic_loss:.4g}",
-                target=f"{target_mean:.4g}",
-            )
             if (
                 step_index == 1
                 or step_index == args.critic_warmup_steps
                 or step_index % args.eval_interval == 0
             ):
+                critic_steps.set_postfix(
+                    loss=f"{float(critic_metrics['critic/total_loss']):.4g}",
+                    target=f"{float(critic_metrics['critic/target_mean']):.4g}",
+                )
                 logger.append_metrics(
                     {
                         "phase": f"{metric_phase_prefix}real_return_critic_warmup",
@@ -2078,7 +2081,7 @@ def _maybe_train_policy(
     if phase != "policy" and args.online_policy_trust_coef is not None:
         policy_trust_coef = args.online_policy_trust_coef
     reference_actor_params = jax.tree_util.tree_map(jax.lax.stop_gradient, state.params)
-    policy_loss_history: list[float] = []
+    policy_loss_history: list[jax.Array] = []
     metrics: dict[str, Any] = {}
     policy_steps = tqdm(
         range(1, policy_train_steps + 1),
@@ -2138,23 +2141,23 @@ def _maybe_train_policy(
                 policy_trust_coef=policy_trust_coef,
                 actor_entropy_coef=args.actor_entropy_coef,
             )
-        policy_loss = float(metrics["policy/total_loss"])
-        progress_score = float(
-            metrics.get(
-                "policy/imagined_return",
-                metrics.get("policy/candidate_best_score", policy_loss),
-            )
-        )
-        policy_loss_history.append(policy_loss)
-        policy_steps.set_postfix(
-            loss=f"{policy_loss:.4g}",
-            score=f"{progress_score:.4g}",
-        )
+        policy_loss_history.append(metrics["policy/total_loss"])
         if (
             step_index == 1
             or step_index == policy_train_steps
             or step_index % args.eval_interval == 0
         ):
+            policy_loss = float(metrics["policy/total_loss"])
+            progress_score = float(
+                metrics.get(
+                    "policy/imagined_return",
+                    metrics.get("policy/candidate_best_score", policy_loss),
+                )
+            )
+            policy_steps.set_postfix(
+                loss=f"{policy_loss:.4g}",
+                score=f"{progress_score:.4g}",
+            )
             logger.append_metrics(
                 {
                     "phase": f"{metric_phase_prefix}frozen_model_policy",
@@ -2249,7 +2252,7 @@ def _maybe_train_policy(
             confirmation_trained_eval,
         )
     logger.plot_world_model_loss(
-        policy_loss_history,
+        [float(loss) for loss in policy_loss_history],
         filename=f"{artifact_prefix}frozen_model_policy_loss.png",
     )
     selection_env_steps = sum(
@@ -2556,14 +2559,15 @@ def _evaluate_model(
     action_low: np.ndarray,
     action_high: np.ndarray,
 ) -> dict[str, Any]:
-    _, metrics = world_model_loss(
-        state.params,
-        state.apply_fn,
-        key,
-        batch,
-        config,
-        chunk_length=chunk_length,
-        control=control,
+    metrics = dict(
+        evaluate_world_model_loss(
+            state,
+            key,
+            batch,
+            config,
+            chunk_length=chunk_length,
+            control=control,
+        )
     )
     metrics.update(
         evaluate_open_loop(
@@ -2597,6 +2601,7 @@ def _evaluate_model(
     return to_jsonable(metrics)
 
 
+@partial(jax.jit, static_argnames=("config", "control"))
 def _continuous_action_sensitivity(
     state,
     batch: ReplayBatch,

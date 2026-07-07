@@ -10,6 +10,7 @@ suite exercises them directly.
 from __future__ import annotations
 
 import math
+from functools import partial
 from typing import Any
 
 import jax
@@ -484,6 +485,7 @@ def real_step_accounting(
     }
 
 
+@partial(jax.jit, static_argnames=("config", "chunk_length", "control"))
 def action_contrast_metrics(
     state,
     key: jax.Array,
