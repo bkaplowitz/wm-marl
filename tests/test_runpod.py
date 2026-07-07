@@ -146,6 +146,7 @@ def _create_args(**overrides) -> argparse.Namespace:
         "ports": "22/tcp",
         "stop_after": None,
         "terminate_after": None,
+        "terminate_after_hours": 0.0,
         "auto_stop_hours": 0.0,
         "ssh_key": "~/.ssh/runpod_key",
     }
@@ -235,23 +236,27 @@ def test_ensure_remote_rsync_installs_via_ssh(tmp_path, monkeypatch):
     assert "apt-get install" in remote_script
 
 
-def test_run_remote_job_asserts_gpu_before_job(tmp_path, monkeypatch):
+def test_start_remote_job_detached_nohups_and_asserts_gpu(tmp_path, monkeypatch):
     calls: list[list[str]] = []
     monkeypatch.setattr(runpod, "run", lambda cmd, **kwargs: calls.append(cmd))
     info = runpod.SshInfo(
         user="root", host="1.2.3.4", port=22, key_path=tmp_path / "key"
     )
 
-    runpod.run_remote_job(
+    runpod.start_remote_job_detached(
         "/root/wm-marl",
         ["uv", "run", "world-marl-benchmark-policy"],
         info,
         skip_uv_sync=True,
+        sync_extras=[],
+        remote_out_dir="/workspace/outputs/wm_marl/benchmark-policy/20260706T000000Z",
     )
 
     assert calls, "expected an ssh call"
     script = calls[0][-1]
-    assert "jax.devices()" in script
+    assert "nohup" in script, "job must not depend on the launcher's ssh session"
+    assert "job.log" in script
+    assert "JOB_DONE" in script and "JOB_FAILED" in script
     gpu_idx = script.index("jax.devices()")
     job_idx = script.index("world-marl-benchmark-policy")
     assert gpu_idx < job_idx, "GPU assertion must run before the benchmark job"
@@ -296,22 +301,49 @@ def _manifest_main_argv(tmp_path) -> list[str]:
     ]
 
 
-def _patch_main_collaborators(monkeypatch, tmp_path):
+def _forbid_subprocess(cmd, **kwargs):
+    raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+
+def _patch_main_collaborators(monkeypatch, tmp_path) -> list[str]:
+    calls: list[str] = []
     monkeypatch.setattr(sys, "argv", _manifest_main_argv(tmp_path))
     monkeypatch.setenv("RUNPOD_API_KEY", "test-key")
     monkeypatch.setattr(runpod, "require_local_tools", lambda names: None)
     monkeypatch.setattr(runpod, "require_repo", lambda root: None)
     monkeypatch.setattr(runpod, "run_json", lambda cmd: {"id": "pod123"})
+    monkeypatch.setattr(runpod, "run", _forbid_subprocess)
     info = runpod.SshInfo(
         user="root", host="1.2.3.4", port=22, key_path=tmp_path / "runpod_key"
     )
     monkeypatch.setattr(runpod, "wait_for_ssh", lambda pod_id, key, args: info)
+    monkeypatch.setattr(runpod, "get_ssh_info", lambda pod_id, key: info)
     monkeypatch.setattr(runpod, "ensure_remote_rsync", lambda info: None)
     monkeypatch.setattr(runpod, "sync_repo", lambda root, remote, info: None)
-    monkeypatch.setattr(runpod, "run_remote_job", lambda remote, cmd, info, skip: None)
-    monkeypatch.setattr(runpod, "download_outputs", lambda remote, local, info: None)
-    monkeypatch.setattr(runpod, "delete_pod", lambda pod_id: True)
-    monkeypatch.setattr(runpod, "stop_for_inspection", lambda pod_id, remote: None)
+    monkeypatch.setattr(
+        runpod,
+        "start_remote_job_detached",
+        lambda *a, **k: calls.append("start_remote_job_detached"),
+    )
+    monkeypatch.setattr(
+        runpod,
+        "wait_for_detached_job",
+        lambda *a, **k: (calls.append("wait_for_detached_job"), "done")[1],
+    )
+    monkeypatch.setattr(
+        runpod,
+        "download_outputs",
+        lambda remote, local, info: calls.append("download_outputs"),
+    )
+    monkeypatch.setattr(
+        runpod, "delete_pod", lambda pod_id: (calls.append("delete_pod"), True)[1]
+    )
+    monkeypatch.setattr(
+        runpod,
+        "stop_for_inspection",
+        lambda pod_id, remote: calls.append("stop_for_inspection"),
+    )
+    return calls
 
 
 def _read_manifest(tmp_path) -> dict:
@@ -320,8 +352,8 @@ def _read_manifest(tmp_path) -> dict:
     return json.loads(manifests[0].read_text(encoding="utf-8"))
 
 
-def test_main_writes_manifest_with_pod_id_and_deletes_on_success(tmp_path, monkeypatch):
-    _patch_main_collaborators(monkeypatch, tmp_path)
+def test_main_runs_job_detached_and_deletes_pod_on_success(tmp_path, monkeypatch):
+    calls = _patch_main_collaborators(monkeypatch, tmp_path)
 
     assert runpod.main() == 0
 
@@ -330,15 +362,71 @@ def test_main_writes_manifest_with_pod_id_and_deletes_on_success(tmp_path, monke
     assert manifest["status"] == "completed-pod-deleted"
     assert manifest["finished_at"]
     assert manifest["job"] == "compare-world-models"
+    started = calls.index("start_remote_job_detached")
+    waited = calls.index("wait_for_detached_job")
+    downloaded = calls.index("download_outputs")
+    assert started < waited < downloaded
+    assert "stop_for_inspection" not in calls
 
 
-def test_main_marks_manifest_stopped_when_remote_job_fails(tmp_path, monkeypatch):
-    _patch_main_collaborators(monkeypatch, tmp_path)
+def test_main_leaves_pod_running_when_monitoring_lost(tmp_path, monkeypatch):
+    calls = _patch_main_collaborators(monkeypatch, tmp_path)
 
-    def boom(remote, cmd, info, skip):
-        raise RuntimeError("remote job failed")
+    def lose_monitoring(*a, **k):
+        raise RuntimeError("Connection reset by peer")
 
-    monkeypatch.setattr(runpod, "run_remote_job", boom)
+    monkeypatch.setattr(runpod, "wait_for_detached_job", lose_monitoring)
+
+    assert runpod.main() == 1
+
+    manifest = _read_manifest(tmp_path)
+    assert manifest["status"] == "detached-monitoring-lost"
+    assert "stop_for_inspection" not in calls, "job may still be running"
+    assert "delete_pod" not in calls
+
+
+def test_main_abandons_monitoring_on_interrupt_without_stopping_job(
+    tmp_path, monkeypatch
+):
+    calls = _patch_main_collaborators(monkeypatch, tmp_path)
+
+    def interrupt(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(runpod, "wait_for_detached_job", interrupt)
+
+    assert runpod.main() == 130
+
+    manifest = _read_manifest(tmp_path)
+    assert manifest["status"] == "detached-monitoring-abandoned"
+    assert "stop_for_inspection" not in calls, "^C must never kill the remote job"
+    assert "delete_pod" not in calls
+
+
+def test_main_downloads_outputs_then_stops_pod_when_job_fails(tmp_path, monkeypatch):
+    calls = _patch_main_collaborators(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        runpod,
+        "wait_for_detached_job",
+        lambda *a, **k: (calls.append("wait_for_detached_job"), "failed")[1],
+    )
+
+    assert runpod.main() == 1
+
+    manifest = _read_manifest(tmp_path)
+    assert manifest["status"] == "job-failed-pod-stopped"
+    assert manifest["finished_at"]
+    assert calls.index("download_outputs") < calls.index("stop_for_inspection")
+    assert "delete_pod" not in calls
+
+
+def test_main_stops_pod_when_launch_fails_before_job_starts(tmp_path, monkeypatch):
+    calls = _patch_main_collaborators(monkeypatch, tmp_path)
+
+    def boom(root, remote, info):
+        raise RuntimeError("rsync failed")
+
+    monkeypatch.setattr(runpod, "sync_repo", boom)
 
     assert runpod.main() == 1
 
@@ -346,3 +434,4 @@ def test_main_marks_manifest_stopped_when_remote_job_fails(tmp_path, monkeypatch
     assert manifest["pod_id"] == "pod123"
     assert manifest["status"] == "stopped-for-inspection"
     assert manifest["finished_at"]
+    assert "stop_for_inspection" in calls

@@ -169,16 +169,16 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.0,
         help="Set Runpod auto-terminate this many hours from launch; "
-        "use 0 to disable. Billing backstop for --detach runs.",
+        "use 0 to disable. Billing backstop for abandoned detached jobs.",
     )
     parser.add_argument(
-        "--detach",
-        action="store_true",
-        help="Run the remote job under nohup and poll for a completion marker "
-        "instead of holding one SSH session open. A dropped local connection "
-        "does not kill the remote job; polling just resumes.",
+        "--detach-poll-seconds",
+        type=int,
+        default=300,
+        help="Seconds between completion-marker polls. The remote job always "
+        "runs under nohup with output to job.log, so a dropped local "
+        "connection never kills it; polling just resumes.",
     )
-    parser.add_argument("--detach-poll-seconds", type=int, default=300)
     parser.add_argument("--detach-timeout-hours", type=float, default=96.0)
     parser.add_argument(
         "--sync-extra",
@@ -270,7 +270,6 @@ def main() -> int:
             remote_repo_dir=args.remote_repo_dir,
             skip_uv_sync=args.skip_uv_sync,
             sync_extras=args.sync_extra,
-            detach=args.detach,
         )
         return 0
 
@@ -308,41 +307,27 @@ def main() -> int:
         ssh_info = wait_for_ssh(pod_id, ssh_key, args)
         ensure_remote_rsync(ssh_info)
         sync_repo(repo_root, args.remote_repo_dir, ssh_info)
-        if args.detach:
-            start_remote_job_detached(
-                args.remote_repo_dir,
-                job.command,
-                ssh_info,
-                args.skip_uv_sync,
-                args.sync_extra,
-                job.remote_out_dir,
-            )
-            detached_running = True
-            manifest.update(status="detached-running")
+        start_remote_job_detached(
+            args.remote_repo_dir,
+            job.command,
+            ssh_info,
+            args.skip_uv_sync,
+            args.sync_extra,
+            job.remote_out_dir,
+        )
+        detached_running = True
+        manifest.update(status="detached-running")
+        write_manifest(job.local_out_dir, manifest)
+        job_status = wait_for_detached_job(pod_id, ssh_key, args, job.remote_out_dir)
+        detached_running = False
+        ssh_info = get_ssh_info(pod_id, ssh_key)
+        download_outputs(job.remote_out_dir, job.local_out_dir, ssh_info)
+        if job_status == "failed":
+            print("remote job failed; see job.log in outputs", file=sys.stderr)
+            stop_for_inspection(pod_id, job.remote_out_dir)
+            manifest.update(status="job-failed-pod-stopped", finished_at=utc_stamp())
             write_manifest(job.local_out_dir, manifest)
-            job_status = wait_for_detached_job(
-                pod_id, ssh_key, args, job.remote_out_dir
-            )
-            detached_running = False
-            ssh_info = get_ssh_info(pod_id, ssh_key)
-            download_outputs(job.remote_out_dir, job.local_out_dir, ssh_info)
-            if job_status == "failed":
-                print("remote job failed; see job.log in outputs", file=sys.stderr)
-                stop_for_inspection(pod_id, job.remote_out_dir)
-                manifest.update(
-                    status="job-failed-pod-stopped", finished_at=utc_stamp()
-                )
-                write_manifest(job.local_out_dir, manifest)
-                return 1
-        else:
-            run_remote_job(
-                args.remote_repo_dir,
-                job.command,
-                ssh_info,
-                args.skip_uv_sync,
-                args.sync_extra,
-            )
-            download_outputs(job.remote_out_dir, job.local_out_dir, ssh_info)
+            return 1
 
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr, flush=True)
@@ -780,18 +765,6 @@ def remote_job_script(
     return "\n".join(commands)
 
 
-def run_remote_job(
-    remote_repo_dir: str,
-    job_command: list[str],
-    info: SshInfo,
-    skip_uv_sync: bool,
-    sync_extras: list[str],
-) -> None:
-    """Run a job on a Runpod pod, holding the SSH session open until it exits."""
-    script = remote_job_script(remote_repo_dir, job_command, skip_uv_sync, sync_extras)
-    run(ssh_script_command(info, script))
-
-
 def start_remote_job_detached(
     remote_repo_dir: str,
     job_command: list[str],
@@ -918,7 +891,6 @@ def print_dry_run(
     remote_repo_dir: str,
     skip_uv_sync: bool,
     sync_extras: list[str],
-    detach: bool,
 ) -> None:
     """Print a dry run of the pod creation and job execution."""
     print(f"pod name: {pod_name}")
@@ -943,10 +915,7 @@ def print_dry_run(
         print(f"uv sync --python 3.11{extras}")
     print("uv run world-marl-verify-install")
     print("assert jax.devices() shows a GPU (fail fast on silent CPU fallback)")
-    if detach:
-        print(
-            f"nohup the job on the pod; poll {job.remote_out_dir}/JOB_DONE|JOB_FAILED"
-        )
+    print(f"nohup the job on the pod; poll {job.remote_out_dir}/JOB_DONE|JOB_FAILED")
     print(shlex.join(job.command))
     print(f"rsync <pod-ssh-target>:{job.remote_out_dir}/ {job.local_out_dir}/")
     print("success cleanup: runpodctl pod delete <pod-id>")
