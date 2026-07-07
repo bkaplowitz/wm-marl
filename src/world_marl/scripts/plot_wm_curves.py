@@ -102,6 +102,10 @@ def genwm_curve(
 def jepa_curve(
     outcome: dict[str, Any], config: dict[str, Any]
 ) -> list[tuple[float, float]]:
+    # train_dmc_jepa nests the argparse namespace under "args" in config.json.
+    nested_args = config.get("args")
+    if isinstance(nested_args, dict):
+        config = {**nested_args, **{k: v for k, v in config.items() if k != "args"}}
     num_envs = float(config.get("num_envs", 16))
     collect = float(config.get("collect_steps", 8192))
     online = float(config.get("online_collect_steps", 4096))
