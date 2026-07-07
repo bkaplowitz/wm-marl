@@ -40,6 +40,7 @@ world-marl-plot-brax-diagnostics = "world_marl.scripts.plot_brax_diagnostics:mai
 world-marl-train-brax-ppo = "world_marl.scripts.train_brax_ppo:main"
 world-marl-train-dmc-jepa = "world_marl.scripts.train_dmc_jepa:main"
 world-marl-train-e2e = "world_marl.scripts.train_e2e:main"
+world-marl-train-single-genwm = "world_marl.scripts.train_single_genwm:main"
 world-marl-verify-install = "world_marl.scripts.verify_install:main"
 world-marl-write-dmc-vector-launcher = "world_marl.scripts.write_dmc_vector_launcher:main"
 world-marl-runpod = "world_marl.runpod:main"
