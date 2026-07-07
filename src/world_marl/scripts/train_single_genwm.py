@@ -9,6 +9,15 @@ replay and stay frozen (refitting would silently re-map every token id the
 model has already learned); later out-of-range observations clip into the edge
 bins.
 
+``--collect-steps``/``--online-collect-steps`` are per-env steps (total
+transitions = steps x ``--num-envs``), the same units as ``train_dmc_jepa``.
+On gymnax/brax, collection and evaluation run on-device through the adapters'
+``scan_rollout``; DMC falls back to the host step loop.
+
+The extra ``model-free`` arm skips the world model entirely and spends the
+identical real-step budget on PPO over real rollouts — the baseline the
+model-based arms must beat on sample efficiency.
+
 Runs ``--num-runs`` seeded runs and applies an improvement gate in
 ``summarize()``. Exit code 1 means the gate failed, not that the program
 crashed. Artifacts mirror ``train_dmc_jepa``: ``config.json`` at the experiment
@@ -43,6 +52,10 @@ from world_marl.genwm import (
     imagined_rollout,
     ppo_update,
 )
+from world_marl.world_model_training import _replay_scan_episode_bookkeeping
+
+MODEL_FREE_ARM = "model-free"
+ARM_CHOICES = (*GENWM_ARMS, MODEL_FREE_ARM)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -52,7 +65,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         required=True,
         help="dmc:<domain>/<task>, brax:<env>, or gymnax:<env_id>",
     )
-    parser.add_argument("--arm", required=True, choices=GENWM_ARMS)
+    parser.add_argument("--arm", required=True, choices=ARM_CHOICES)
     parser.add_argument("--num-runs", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out-dir", type=Path, default=Path("runs/genwm"))
@@ -64,11 +77,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Optional Brax physics backend to pass through to brax.envs.create.",
     )
     # Real-env and update budgets (defaults match the JEPA mainline preset).
-    parser.add_argument("--collect-steps", type=int, default=8192)
+    parser.add_argument(
+        "--collect-steps",
+        type=int,
+        default=8192,
+        help="Per-env real steps for the initial random collection "
+        "(total transitions = steps x --num-envs, matching train_dmc_jepa).",
+    )
     parser.add_argument("--train-steps", type=int, default=12000)
     parser.add_argument("--policy-train-steps", type=int, default=3000)
     parser.add_argument("--online-iterations", type=int, default=6)
-    parser.add_argument("--online-collect-steps", type=int, default=4096)
+    parser.add_argument(
+        "--online-collect-steps",
+        type=int,
+        default=4096,
+        help="Per-env real steps collected per online iteration.",
+    )
     parser.add_argument("--online-train-steps", type=int, default=3000)
     parser.add_argument("--online-policy-train-steps", type=int, default=750)
     parser.add_argument("--batch-size", type=int, default=256)
@@ -87,6 +111,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--block-size", type=int, default=4)
     parser.add_argument("--steps-per-block", type=int, default=4)
     # PPO.
+    parser.add_argument(
+        "--mf-rollout-steps",
+        type=int,
+        default=128,
+        help="model-free arm: on-policy segment length per PPO update "
+        "(segment x num-envs must divide evenly into --ppo-num-minibatches).",
+    )
     parser.add_argument("--ppo-learning-rate", type=float, default=3e-4)
     parser.add_argument("--ppo-update-epochs", type=int, default=4)
     parser.add_argument("--ppo-num-minibatches", type=int, default=4)
@@ -101,12 +132,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Exit 0 even when the improvement gate fails.",
     )
     parser.add_argument("--quiet", action="store_true")
+    # Weights & Biases (disabled unless --wandb-project is set).
+    parser.add_argument("--wandb-project", default=None)
+    parser.add_argument("--wandb-entity", default=None)
+    parser.add_argument("--wandb-group", default=None)
     args = parser.parse_args(argv)
     if not args.env.startswith(("dmc:", "brax:", "gymnax:")):
         parser.error(
             "--env must be formatted as dmc:<domain>/<task>, brax:<env>, "
             "or gymnax:<env_id>"
         )
+    if args.arm == MODEL_FREE_ARM and args.env.startswith("dmc:"):
+        parser.error("the model-free arm needs a scan_rollout adapter (gymnax/brax)")
     return args
 
 
@@ -182,6 +219,167 @@ def _policy_actions(
     return np.clip(actions.astype(np.float32), action_low, action_high)
 
 
+def _make_scan_action_fns(adapter, action_mode: str) -> dict[str, Any]:
+    """Action callbacks in ``scan_rollout``'s 3-arg shape.
+
+    ``scan_rollout`` caches compiled programs by ``id(fn)``, so one set is
+    created per run and reused across every collection/eval call.
+    """
+    action_dim = adapter.action_dim
+    if action_mode == "discrete":
+
+        def random_fn(_state, key, obs_flat):
+            rows = obs_flat.shape[0]
+            actions = jax.random.randint(key, (rows,), 0, action_dim)
+            zeros = jnp.zeros((rows,), dtype=jnp.float32)
+            return actions.astype(jnp.int32), zeros, zeros, zeros
+
+    else:
+        action_low = jnp.asarray(adapter.action_low, dtype=jnp.float32)
+        action_high = jnp.asarray(adapter.action_high, dtype=jnp.float32)
+
+        def random_fn(_state, key, obs_flat):
+            rows = obs_flat.shape[0]
+            actions = jax.random.uniform(
+                key, (rows, action_dim), minval=action_low, maxval=action_high
+            )
+            zeros = jnp.zeros((rows,), dtype=jnp.float32)
+            return actions, zeros, zeros, zeros
+
+    def sample_fn(train_state, key, obs_flat):
+        policy, values = train_state.apply_fn({"params": train_state.params}, obs_flat)
+        actions = policy.sample(seed=key)
+        return actions, policy.log_prob(actions), values, policy.entropy()
+
+    def mode_fn(train_state, _key, obs_flat):
+        policy, values = train_state.apply_fn({"params": train_state.params}, obs_flat)
+        actions = policy.mode()
+        return actions, policy.log_prob(actions), values, policy.entropy()
+
+    return {"random": random_fn, "sample": sample_fn, "mode": mode_fn}
+
+
+def _scan_collect_transitions(
+    adapter,
+    action_fn,
+    policy_state,
+    *,
+    steps_per_env: int,
+    key: jax.Array,
+) -> dict[str, np.ndarray]:
+    """On-device twin of ``_collect_transitions`` via ``scan_rollout``.
+
+    Next observations are the observation sequence shifted by one plus the
+    final carry, which reproduces the host loop's post-reset next-obs at
+    terminal steps.
+    """
+    observations = adapter.reset()
+    ys, last_obs_flat = adapter.scan_rollout(
+        action_fn,
+        policy_state,
+        steps_per_env,
+        policy_key=key,
+        observations=observations,
+    )
+    obs_seq, action_seq, _lp, _values, _ent, reward_seq, done_seq = ys
+    _replay_scan_episode_bookkeeping(adapter, ys, steps_per_env)
+    obs = np.asarray(obs_seq, dtype=np.float32)
+    next_obs = np.concatenate(
+        [obs[1:], np.asarray(last_obs_flat, dtype=np.float32)[None]], axis=0
+    )
+    total = obs.shape[0] * obs.shape[1]
+    actions = np.asarray(action_seq)
+    return {
+        "observations": obs.reshape((total, -1)),
+        "actions": actions.reshape((total, *actions.shape[2:])),
+        "rewards": np.asarray(reward_seq, dtype=np.float32).reshape((total,)),
+        "dones": np.asarray(done_seq, dtype=np.float32).reshape((total,)),
+        "next_observations": next_obs.reshape((total, -1)),
+    }
+
+
+def _scan_eval_return(
+    adapter,
+    action_fn,
+    policy_state,
+    *,
+    episodes: int,
+    key: jax.Array,
+) -> float:
+    """Scan-based twin of ``_evaluate_policy`` with the same total step bound."""
+    returns: list[float] = []
+    observations = adapter.reset()
+    block = max(1, adapter.max_cycles)
+    total_step_budget = max(1, episodes * adapter.max_cycles * 4 // adapter.num_envs)
+    max_blocks = max(1, -(-total_step_budget // block))
+    for _ in range(max_blocks):
+        key, block_key = jax.random.split(key)
+        ys, last_obs_flat = adapter.scan_rollout(
+            action_fn,
+            policy_state,
+            block,
+            policy_key=block_key,
+            observations=observations,
+        )
+        completed_returns, _ = _replay_scan_episode_bookkeeping(adapter, ys, block)
+        returns.extend(float(item[0]) for item in completed_returns)
+        observations = np.asarray(last_obs_flat, dtype=np.float32)
+        if len(returns) >= episodes:
+            break
+    if not returns:
+        return float("nan")
+    return float(np.mean(returns[:episodes]))
+
+
+def _collect_replay(
+    adapter,
+    *,
+    steps_per_env: int,
+    rng: np.random.Generator,
+    collect_key: jax.Array,
+    action_fns: dict[str, Any] | None,
+    policy_state,
+    action_mode: str,
+) -> dict[str, np.ndarray]:
+    if action_fns is not None:
+        fn = action_fns["random"] if policy_state is None else action_fns["sample"]
+        return _scan_collect_transitions(
+            adapter, fn, policy_state, steps_per_env=steps_per_env, key=collect_key
+        )
+    return _collect_transitions(
+        adapter,
+        num_steps=steps_per_env,
+        rng=rng,
+        policy_state=policy_state,
+        policy_key=collect_key if policy_state is not None else None,
+        action_mode=action_mode,
+    )
+
+
+def _eval_return(
+    adapter,
+    *,
+    episodes: int,
+    rng: np.random.Generator,
+    eval_key: jax.Array,
+    action_fns: dict[str, Any] | None,
+    policy_state,
+    action_mode: str,
+) -> float:
+    if action_fns is not None:
+        fn = action_fns["random"] if policy_state is None else action_fns["mode"]
+        return _scan_eval_return(
+            adapter, fn, policy_state, episodes=episodes, key=eval_key
+        )
+    return _evaluate_policy(
+        adapter,
+        policy_state,
+        episodes=episodes,
+        action_mode=action_mode,
+        rng=rng,
+    )
+
+
 def _collect_transitions(
     adapter,
     *,
@@ -191,9 +389,9 @@ def _collect_transitions(
     policy_key: jax.Array | None = None,
     action_mode: str,
 ) -> dict[str, np.ndarray]:
-    """Collect ``num_steps`` total transitions (random policy when state is None)."""
+    """Collect ``num_steps`` per-env steps on the host (random when state is None)."""
     num_envs = adapter.num_envs
-    iterations = max(1, -(-num_steps // num_envs))
+    iterations = max(1, num_steps)
     observations = adapter.reset()
     records: dict[str, list[np.ndarray]] = {
         "observations": [],
