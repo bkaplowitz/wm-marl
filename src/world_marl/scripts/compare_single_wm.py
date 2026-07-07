@@ -30,11 +30,14 @@ from world_marl.scripts.write_dmc_vector_launcher import COMMON_PARAMS, PRESETS
 
 JEPA_ARM = "jepa"
 GENWM_ARMS = ("discrete-transformer", "continuous-transformer", "llada2")
-DEFAULT_ARMS = (JEPA_ARM, *GENWM_ARMS)
+MODEL_FREE_ARM = "model-free"
+DEFAULT_ARMS = (JEPA_ARM, *GENWM_ARMS, MODEL_FREE_ARM)
 DEFAULT_ENVS = ("gymnax:CartPole-v1", "brax:reacher")
 MAX_CYCLES = 1000
 
-# Budget/capacity preset keys forwarded to train_single_genwm. Deliberately
+# Budget/capacity preset keys forwarded to train_single_genwm (the model-free
+# arm goes through the same entry point, so it sees the identical real-step
+# budget). Both scripts read collect budgets in per-env steps. Deliberately
 # excludes the JEPA sequence batch_size (64 sequences x 32-step chunks); the
 # genwm arms match on update counts with their own flat-transition batch.
 GENWM_PRESET_KEYS = (
@@ -84,6 +87,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Rebuild comparison artifacts from this existing directory "
         "instead of running jobs.",
+    )
+    parser.add_argument(
+        "--wandb-project",
+        default=None,
+        help="Forward W&B logging to train_single_genwm jobs (jepa jobs have "
+        "no W&B support and are left unchanged).",
+    )
+    parser.add_argument("--wandb-entity", default=None)
+    parser.add_argument(
+        "--wandb-group",
+        default=None,
+        help="W&B group for this comparison's jobs (default: comparison dir name).",
     )
     parser.add_argument(
         "--dry-run",
@@ -137,6 +152,12 @@ def build_command(
     params["eval_episodes"] = preset.get("policy_eval_episodes", 64)
     params["max_cycles"] = MAX_CYCLES
     params["allow_fail"] = True
+    if args.wandb_project:
+        params["wandb_project"] = args.wandb_project
+        if args.wandb_entity:
+            params["wandb_entity"] = args.wandb_entity
+        if args.wandb_group:
+            params["wandb_group"] = args.wandb_group
     return [
         "uv",
         "run",
@@ -335,6 +356,8 @@ def main(argv: list[str] | None = None) -> int:
 
     stamp = time.strftime("%Y%m%d_%H%M%S")
     out_dir = args.out_dir / f"wm_comparison_{stamp}"
+    if args.wandb_project and not args.wandb_group:
+        args.wandb_group = out_dir.name
     if not args.dry_run:
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "config.json").write_text(json.dumps(_config(args), indent=2))

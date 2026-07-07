@@ -52,6 +52,7 @@ from world_marl.genwm import (
     imagined_rollout,
     ppo_update,
 )
+from world_marl.genwm.imagination import ImaginedBatch
 from world_marl.world_model_training import _replay_scan_episode_bookkeeping
 
 MODEL_FREE_ARM = "model-free"
@@ -587,16 +588,125 @@ def _train_policy(
     return policy_state, metrics
 
 
+@jax.jit
+def _policy_last_values(policy_state, observations):
+    _, values = policy_state.apply_fn({"params": policy_state.params}, observations)
+    return values
+
+
+def _train_policy_real(
+    policy_state,
+    adapter,
+    sample_fn,
+    key: jax.Array,
+    ppo_config: PPOConfig,
+    *,
+    steps_per_env: int,
+    rollout_steps: int,
+    log_every: int,
+    quiet: bool,
+    label: str,
+    wandb_run=None,
+):
+    """PPO on real on-policy rollouts (the model-free arm's phase trainer).
+
+    Spends the same per-env step budget a world-model arm would use for replay
+    collection in this phase, updating on each ``rollout_steps`` segment.
+    """
+    num_updates = max(1, steps_per_env // rollout_steps)
+    observations = adapter.reset()
+    metrics: dict[str, Any] = {}
+    for update_index in range(num_updates):
+        key, rollout_key, update_key = jax.random.split(key, 3)
+        ys, last_obs_flat = adapter.scan_rollout(
+            sample_fn,
+            policy_state,
+            rollout_steps,
+            policy_key=rollout_key,
+            observations=observations,
+        )
+        obs_seq, action_seq, log_prob_seq, value_seq, _ent, reward_seq, done_seq = ys
+        _replay_scan_episode_bookkeeping(adapter, ys, rollout_steps)
+        batch = ImaginedBatch(
+            observations=obs_seq,
+            actions=action_seq,
+            log_probs=log_prob_seq,
+            rewards=reward_seq,
+            dones=done_seq.astype(jnp.float32),
+            values=value_seq,
+        )
+        last_values = _policy_last_values(policy_state, jnp.asarray(last_obs_flat))
+        policy_state, step_metrics = ppo_update(
+            policy_state, batch, last_values, update_key, ppo_config
+        )
+        observations = np.asarray(last_obs_flat, dtype=np.float32)
+        if update_index % log_every == 0 or update_index == num_updates - 1:
+            metrics = {name: float(value) for name, value in step_metrics.items()}
+            if wandb_run is not None:
+                wandb_run.log({f"ppo/{name}": value for name, value in metrics.items()})
+            if not quiet:
+                print(
+                    f"[{label}] update {update_index + 1}/{num_updates} "
+                    f"ppo_loss={metrics['total_loss']:.4f} "
+                    f"entropy={metrics['entropy']:.4f}",
+                    flush=True,
+                )
+    return policy_state, metrics
+
+
+def _init_wandb(args: argparse.Namespace, *, run_index: int):
+    """Create a W&B run when --wandb-project is set (returns None otherwise)."""
+    if not args.wandb_project:
+        return None
+    import wandb
+
+    env_slug = args.env.replace(":", "_").replace("/", "_")
+    config = {
+        name: (str(value) if isinstance(value, Path) else value)
+        for name, value in vars(args).items()
+    }
+    config["run_index"] = run_index
+    run = wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        group=args.wandb_group or f"{env_slug}-{args.arm}",
+        name=f"{env_slug}-{args.arm}-run{run_index:02d}",
+        config=config,
+        reinit=True,
+    )
+    run.define_metric("eval/real_env_steps")
+    run.define_metric("eval/return", step_metric="eval/real_env_steps")
+    return run
+
+
 def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
     started = time.time()
     seed = args.seed + 10_000 * run_index
     rng = np.random.default_rng(seed)
     adapter = _make_adapter(args, seed=seed)
+    num_envs = int(adapter.num_envs)
+    wandb_run = _init_wandb(args, run_index=run_index)
+    eval_points: list[dict[str, Any]] = []
+
+    def record_eval(tag: str, steps_per_env: int, value: float) -> None:
+        real_steps = steps_per_env * num_envs
+        eval_points.append({"tag": tag, "real_env_steps": real_steps, "return": value})
+        if wandb_run is not None:
+            wandb_run.log({"eval/return": value, "eval/real_env_steps": real_steps})
+
     try:
         action_mode = "discrete" if args.env.startswith("gymnax:") else "continuous"
         obs_dim = int(np.prod(adapter.observation_shape))
+        model_based = args.arm != MODEL_FREE_ARM
+        action_fns = (
+            _make_scan_action_fns(adapter, action_mode)
+            if hasattr(adapter, "scan_rollout")
+            else None
+        )
         config = GenWMConfig(
-            arm=args.arm,
+            # model-free uses the config only for policy creation, and the arm
+            # field is validated against GENWM_ARMS, so give it a placeholder.
+            arm=args.arm if model_based else GENWM_ARMS[0],
             obs_dim=obs_dim,
             action_dim=adapter.action_dim,
             action_mode=action_mode,
@@ -620,98 +730,70 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
         )
         key = jax.random.PRNGKey(seed)
         key, wm_key, head_key, policy_key = jax.random.split(key, 4)
-        wm_state = create_genwm_state(wm_key, config)
-        head_state = create_head_state(
-            head_key, config, learning_rate=args.head_learning_rate
-        )
+        wm_state = head_state = None
+        if model_based:
+            wm_state = create_genwm_state(wm_key, config)
+            head_state = create_head_state(
+                head_key, config, learning_rate=args.head_learning_rate
+            )
         policy_state = create_policy_state(policy_key, config, ppo_config)
 
-        if not args.quiet:
-            print(f"[run {run_index}] collecting {args.collect_steps} random steps")
-        data = _collect_transitions(
+        key, random_eval_key, initial_eval_key = jax.random.split(key, 3)
+        random_return = _eval_return(
             adapter,
-            num_steps=args.collect_steps,
-            rng=rng,
-            action_mode=action_mode,
-        )
-        obs_tokenizer = fit_quantile_tokenizer(
-            np.concatenate([data["observations"], data["next_observations"]]),
-            args.obs_bins,
-        )
-        action_tokenizer = None
-        if action_mode == "continuous":
-            action_tokenizer = fit_quantile_tokenizer(data["actions"], args.action_bins)
-
-        random_return = _evaluate_policy(
-            adapter,
-            None,
             episodes=args.eval_episodes,
-            action_mode=action_mode,
             rng=rng,
+            eval_key=random_eval_key,
+            action_fns=action_fns,
+            policy_state=None,
+            action_mode=action_mode,
         )
-        initial_return = _evaluate_policy(
+        initial_return = _eval_return(
             adapter,
-            policy_state,
             episodes=args.eval_episodes,
-            action_mode=action_mode,
             rng=rng,
+            eval_key=initial_eval_key,
+            action_fns=action_fns,
+            policy_state=policy_state,
+            action_mode=action_mode,
         )
+        record_eval("initial", 0, initial_return)
         if not args.quiet:
             print(
                 f"[run {run_index}] random={random_return:.2f} "
                 f"initial={initial_return:.2f}"
             )
 
-        log_every = max(1, args.train_steps // 10)
-        key, fit_key = jax.random.split(key)
-        wm_state, head_state, wm_loss, head_metrics = _fit_models(
-            wm_state,
-            head_state,
-            fit_key,
-            data,
-            obs_tokenizer,
-            action_tokenizer,
-            config,
-            steps=args.train_steps,
-            batch_size=args.batch_size,
-            rng=rng,
-            log_every=log_every,
-            quiet=args.quiet,
-            label=f"run {run_index} fit",
-        )
-        key, policy_fit_key = jax.random.split(key)
-        policy_state, ppo_metrics = _train_policy(
-            policy_state,
-            wm_state,
-            head_state,
-            obs_tokenizer,
-            action_tokenizer,
-            data["observations"],
-            policy_fit_key,
-            config,
-            ppo_config,
-            steps=args.policy_train_steps,
-            batch_size=args.policy_batch_size,
-            horizon=args.imag_horizon,
-            rng=rng,
-            log_every=max(1, args.policy_train_steps // 10),
-            quiet=args.quiet,
-            label=f"run {run_index} policy",
-        )
-
-        iteration_returns: list[float] = []
-        for iteration in range(args.online_iterations):
+        wm_loss: float | None = None
+        head_metrics: dict[str, Any] = {}
+        data = None
+        obs_tokenizer = action_tokenizer = None
+        if model_based:
+            if not args.quiet:
+                print(
+                    f"[run {run_index}] collecting {args.collect_steps} "
+                    "random steps per env"
+                )
             key, collect_key = jax.random.split(key)
-            fresh = _collect_transitions(
+            data = _collect_replay(
                 adapter,
-                num_steps=args.online_collect_steps,
+                steps_per_env=args.collect_steps,
                 rng=rng,
-                policy_state=policy_state,
-                policy_key=collect_key,
+                collect_key=collect_key,
+                action_fns=action_fns,
+                policy_state=None,
                 action_mode=action_mode,
             )
-            data = {name: np.concatenate([data[name], fresh[name]]) for name in data}
-            key, fit_key, policy_fit_key = jax.random.split(key, 3)
+            obs_tokenizer = fit_quantile_tokenizer(
+                np.concatenate([data["observations"], data["next_observations"]]),
+                args.obs_bins,
+            )
+            if action_mode == "continuous":
+                action_tokenizer = fit_quantile_tokenizer(
+                    data["actions"], args.action_bins
+                )
+
+            key, fit_key = jax.random.split(key)
             wm_state, head_state, wm_loss, head_metrics = _fit_models(
                 wm_state,
                 head_state,
@@ -720,13 +802,14 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                 obs_tokenizer,
                 action_tokenizer,
                 config,
-                steps=args.online_train_steps,
+                steps=args.train_steps,
                 batch_size=args.batch_size,
                 rng=rng,
-                log_every=max(1, args.online_train_steps // 5),
+                log_every=max(1, args.train_steps // 10),
                 quiet=args.quiet,
-                label=f"run {run_index} online {iteration} fit",
+                label=f"run {run_index} fit",
             )
+            key, policy_fit_key = jax.random.split(key)
             policy_state, ppo_metrics = _train_policy(
                 policy_state,
                 wm_state,
@@ -737,41 +820,161 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                 policy_fit_key,
                 config,
                 ppo_config,
-                steps=args.online_policy_train_steps,
+                steps=args.policy_train_steps,
                 batch_size=args.policy_batch_size,
                 horizon=args.imag_horizon,
                 rng=rng,
-                log_every=max(1, args.online_policy_train_steps // 5),
+                log_every=max(1, args.policy_train_steps // 10),
                 quiet=args.quiet,
-                label=f"run {run_index} online {iteration} policy",
+                label=f"run {run_index} policy",
             )
-            iteration_return = _evaluate_policy(
-                adapter,
+        else:
+            assert action_fns is not None
+            key, offline_key = jax.random.split(key)
+            policy_state, ppo_metrics = _train_policy_real(
                 policy_state,
+                adapter,
+                action_fns["sample"],
+                offline_key,
+                ppo_config,
+                steps_per_env=args.collect_steps,
+                rollout_steps=args.mf_rollout_steps,
+                log_every=max(1, args.collect_steps // args.mf_rollout_steps // 10),
+                quiet=args.quiet,
+                label=f"run {run_index} model-free",
+                wandb_run=wandb_run,
+            )
+
+        key, offline_eval_key = jax.random.split(key)
+        offline_return = _eval_return(
+            adapter,
+            episodes=args.eval_episodes,
+            rng=rng,
+            eval_key=offline_eval_key,
+            action_fns=action_fns,
+            policy_state=policy_state,
+            action_mode=action_mode,
+        )
+        record_eval("offline", args.collect_steps, offline_return)
+        if not args.quiet:
+            print(f"[run {run_index}] offline return={offline_return:.2f}")
+
+        iteration_returns: list[float] = []
+        for iteration in range(args.online_iterations):
+            key, collect_key = jax.random.split(key)
+            if model_based:
+                fresh = _collect_replay(
+                    adapter,
+                    steps_per_env=args.online_collect_steps,
+                    rng=rng,
+                    collect_key=collect_key,
+                    action_fns=action_fns,
+                    policy_state=policy_state,
+                    action_mode=action_mode,
+                )
+                data = {
+                    name: np.concatenate([data[name], fresh[name]]) for name in data
+                }
+                key, fit_key, policy_fit_key = jax.random.split(key, 3)
+                wm_state, head_state, wm_loss, head_metrics = _fit_models(
+                    wm_state,
+                    head_state,
+                    fit_key,
+                    data,
+                    obs_tokenizer,
+                    action_tokenizer,
+                    config,
+                    steps=args.online_train_steps,
+                    batch_size=args.batch_size,
+                    rng=rng,
+                    log_every=max(1, args.online_train_steps // 5),
+                    quiet=args.quiet,
+                    label=f"run {run_index} online {iteration} fit",
+                )
+                policy_state, ppo_metrics = _train_policy(
+                    policy_state,
+                    wm_state,
+                    head_state,
+                    obs_tokenizer,
+                    action_tokenizer,
+                    data["observations"],
+                    policy_fit_key,
+                    config,
+                    ppo_config,
+                    steps=args.online_policy_train_steps,
+                    batch_size=args.policy_batch_size,
+                    horizon=args.imag_horizon,
+                    rng=rng,
+                    log_every=max(1, args.online_policy_train_steps // 5),
+                    quiet=args.quiet,
+                    label=f"run {run_index} online {iteration} policy",
+                )
+            else:
+                policy_state, ppo_metrics = _train_policy_real(
+                    policy_state,
+                    adapter,
+                    action_fns["sample"],
+                    collect_key,
+                    ppo_config,
+                    steps_per_env=args.online_collect_steps,
+                    rollout_steps=args.mf_rollout_steps,
+                    log_every=max(
+                        1, args.online_collect_steps // args.mf_rollout_steps // 5
+                    ),
+                    quiet=args.quiet,
+                    label=f"run {run_index} model-free online {iteration}",
+                    wandb_run=wandb_run,
+                )
+            key, iter_eval_key = jax.random.split(key)
+            iteration_return = _eval_return(
+                adapter,
                 episodes=args.eval_episodes,
-                action_mode=action_mode,
                 rng=rng,
+                eval_key=iter_eval_key,
+                action_fns=action_fns,
+                policy_state=policy_state,
+                action_mode=action_mode,
             )
             iteration_returns.append(iteration_return)
+            record_eval(
+                f"online_{iteration}",
+                args.collect_steps + (iteration + 1) * args.online_collect_steps,
+                iteration_return,
+            )
             if not args.quiet:
                 print(
                     f"[run {run_index}] online iteration {iteration}: "
                     f"return={iteration_return:.2f}"
                 )
 
-        trained_return = _evaluate_policy(
-            adapter,
-            policy_state,
-            episodes=args.eval_episodes,
-            action_mode=action_mode,
-            rng=rng,
+        total_steps_per_env = args.collect_steps + (
+            args.online_iterations * args.online_collect_steps
         )
+        key, final_eval_key = jax.random.split(key)
+        trained_return = _eval_return(
+            adapter,
+            episodes=args.eval_episodes,
+            rng=rng,
+            eval_key=final_eval_key,
+            action_fns=action_fns,
+            policy_state=policy_state,
+            action_mode=action_mode,
+        )
+        record_eval("final", total_steps_per_env, trained_return)
+        if wandb_run is not None:
+            wandb_run.summary.update(
+                {
+                    "policy_random_mean": random_return,
+                    "policy_initial_mean": initial_return,
+                    "policy_trained_mean": trained_return,
+                }
+            )
     finally:
         adapter.close()
+        if wandb_run is not None:
+            wandb_run.finish()
 
-    real_env_steps = args.collect_steps + args.online_iterations * (
-        args.online_collect_steps
-    )
+    real_env_steps = total_steps_per_env * num_envs
     outcome = {
         "run_index": run_index,
         "seed": seed,
@@ -782,13 +985,18 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
         "action_dim": int(adapter.action_dim),
         "policy_random_mean": random_return,
         "policy_initial_mean": initial_return,
+        "policy_offline_mean": offline_return,
         "policy_trained_mean": trained_return,
         "policy_iteration_returns": iteration_returns,
+        "eval_points": eval_points,
         "world_model_final_loss": wm_loss,
         "head_final_metrics": head_metrics,
         "ppo_final_metrics": ppo_metrics,
         "real_env_steps": real_env_steps,
-        "replay_transitions": int(data["observations"].shape[0]),
+        "real_env_steps_per_env": total_steps_per_env,
+        "replay_transitions": (
+            int(data["observations"].shape[0]) if data is not None else real_env_steps
+        ),
         "runtime_seconds": time.time() - started,
     }
     run_dir.mkdir(parents=True, exist_ok=True)
