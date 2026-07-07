@@ -691,6 +691,17 @@ def probe_ssh(info: SshInfo) -> None:
     run([*ssh_base(info), "true"], capture_output=True)
 
 
+def ssh_script_command(info: SshInfo, script: str) -> list[str]:
+    """SSH command running a multi-line script through a quoted ``bash -lc``.
+
+    ssh space-joins the remote command args into one string for the remote
+    login shell, so the script must be quoted client-side — otherwise the
+    remote shell re-parses it word by word (``bash -lc mkdir -p ...`` runs a
+    bare ``mkdir`` and executes the remaining lines outside ``bash -lc``).
+    """
+    return [*ssh_base(info), f"bash -lc {shlex.quote(script)}"]
+
+
 def ensure_remote_rsync(info: SshInfo) -> None:
     """Ensure the remote rsync is installed on a Runpod pod."""
     script = (
@@ -778,7 +789,7 @@ def run_remote_job(
 ) -> None:
     """Run a job on a Runpod pod, holding the SSH session open until it exits."""
     script = remote_job_script(remote_repo_dir, job_command, skip_uv_sync, sync_extras)
-    run([*ssh_base(info), "bash", "-lc", script])
+    run(ssh_script_command(info, script))
 
 
 def start_remote_job_detached(
@@ -810,7 +821,7 @@ def start_remote_job_detached(
         f"> {shlex.quote(out + '/job.log')} 2>&1 &\n"
         "echo detached job started"
     )
-    run([*ssh_base(info), "bash", "-lc", wrapper])
+    run(ssh_script_command(info, wrapper))
 
 
 def wait_for_detached_job(
@@ -836,7 +847,7 @@ def wait_for_detached_job(
         time.sleep(args.detach_poll_seconds)
         try:
             info = get_ssh_info(pod_id, ssh_key)
-            result = run([*ssh_base(info), "bash", "-lc", probe], capture_output=True)
+            result = run(ssh_script_command(info, probe), capture_output=True)
         except Exception as exc:
             print(f"poll failed (will retry): {exc}", flush=True)
             continue
