@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import netrc
 import os
 import shlex
 import subprocess
@@ -135,6 +136,7 @@ def parse_args() -> argparse.Namespace:
             "compare-world-models",
             "benchmark-policy",
             "compare-single-wm",
+            "optuna-single-genwm",
         ),
         default="compare-world-models",
         help="Remote wm-marl job to run.",
@@ -195,6 +197,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--remote-out-root", default="/workspace/outputs/wm_marl")
     parser.add_argument("--local-out-root", default="runs/runpod")
     parser.add_argument("--skip-uv-sync", action="store_true")
+    parser.add_argument(
+        "--push-wandb-netrc",
+        action="store_true",
+        help="Copy the local ~/.netrc api.wandb.ai entry to the pod's ~/.netrc "
+        "over ssh stdin (the key never appears in argv or the manifest).",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--prefit-train-steps",
@@ -221,8 +229,11 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.job_args and args.job_args[0] == "--":
         args.job_args = args.job_args[1:]
-    if "--out-dir" in args.job_args:
-        parser.error("do not pass --out-dir; this wrapper manages remote/local outputs")
+    if "--out-dir" in args.job_args or "--out-root" in args.job_args:
+        parser.error(
+            "do not pass --out-dir/--out-root; this wrapper manages "
+            "remote/local outputs"
+        )
     if args.gpu_count < 1:
         parser.error("--gpu-count must be >= 1")
     if args.volume_gb < 0:
@@ -307,6 +318,8 @@ def main() -> int:
         ssh_info = wait_for_ssh(pod_id, ssh_key, args)
         ensure_remote_rsync(ssh_info)
         sync_repo(repo_root, args.remote_repo_dir, ssh_info)
+        if args.push_wandb_netrc:
+            push_wandb_netrc(ssh_info)
         start_remote_job_detached(
             args.remote_repo_dir,
             job.command,
@@ -460,6 +473,20 @@ def build_job_spec(args: argparse.Namespace, run_id: str) -> JobSpec:
                 "uv",
                 "run",
                 "world-marl-compare-single-wm",
+                *job_args,
+            ],
+        )
+    if args.job == "optuna-single-genwm":
+        job_args = [*args.job_args, "--out-root", remote_out_dir]
+        return JobSpec(
+            remote_out_dir=remote_out_dir,
+            local_out_dir=local_out_dir,
+            command=[
+                "env",
+                f"XLA_FLAGS={DEFAULT_XLA_FLAGS}",
+                "uv",
+                "run",
+                "world-marl-optuna-single-genwm",
                 *job_args,
             ],
         )
@@ -685,6 +712,25 @@ def ssh_script_command(info: SshInfo, script: str) -> list[str]:
     bare ``mkdir`` and executes the remaining lines outside ``bash -lc``).
     """
     return [*ssh_base(info), f"bash -lc {shlex.quote(script)}"]
+
+
+def push_wandb_netrc(info: SshInfo) -> None:
+    """Append the local api.wandb.ai netrc entry to the pod's ~/.netrc.
+
+    The entry travels over ssh stdin only — ``run()`` prints argv, so the key
+    must never be part of the command line (or the manifest).
+    """
+    netrc_path = Path.home() / ".netrc"
+    if not netrc_path.exists():
+        raise SystemExit("--push-wandb-netrc: no local ~/.netrc found")
+    auth = netrc.netrc(netrc_path).authenticators("api.wandb.ai")
+    if auth is None:
+        raise SystemExit("--push-wandb-netrc: no api.wandb.ai entry in ~/.netrc")
+    login, _, password = auth
+    entry = f"machine api.wandb.ai\n  login {login}\n  password {password}\n"
+    cmd = ssh_script_command(info, "umask 077; cat >> ~/.netrc")
+    print("+ (writing api.wandb.ai netrc entry to pod over ssh stdin)", flush=True)
+    subprocess.run(cmd, check=True, text=True, input=entry)
 
 
 def ensure_remote_rsync(info: SshInfo) -> None:
