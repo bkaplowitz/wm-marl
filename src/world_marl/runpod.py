@@ -130,7 +130,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--job",
-        choices=("train-e2e", "compare-world-models", "benchmark-policy"),
+        choices=(
+            "train-e2e",
+            "compare-world-models",
+            "benchmark-policy",
+            "compare-single-wm",
+        ),
         default="compare-world-models",
         help="Remote wm-marl job to run.",
     )
@@ -158,6 +163,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--terminate-after",
         help="Runpod auto-terminate datetime, e.g. 2026-06-25T03:00:00Z",
+    )
+    parser.add_argument(
+        "--terminate-after-hours",
+        type=float,
+        default=0.0,
+        help="Set Runpod auto-terminate this many hours from launch; "
+        "use 0 to disable. Billing backstop for --detach runs.",
+    )
+    parser.add_argument(
+        "--detach",
+        action="store_true",
+        help="Run the remote job under nohup and poll for a completion marker "
+        "instead of holding one SSH session open. A dropped local connection "
+        "does not kill the remote job; polling just resumes.",
+    )
+    parser.add_argument("--detach-poll-seconds", type=int, default=300)
+    parser.add_argument("--detach-timeout-hours", type=float, default=96.0)
+    parser.add_argument(
+        "--sync-extra",
+        action="append",
+        default=[],
+        help="Additional uv extras to install on the pod beyond dev+cuda12 "
+        "(repeatable), e.g. --sync-extra brax.",
     )
     parser.add_argument("--ssh-key", default="~/.ssh/runpod_key")
     parser.add_argument("--ssh-timeout-seconds", type=int, default=900)
@@ -241,6 +269,8 @@ def main() -> int:
             ssh_key=ssh_key,
             remote_repo_dir=args.remote_repo_dir,
             skip_uv_sync=args.skip_uv_sync,
+            sync_extras=args.sync_extra,
+            detach=args.detach,
         )
         return 0
 
@@ -266,6 +296,7 @@ def main() -> int:
         "created_at": run_id,
         "finished_at": None,
     }
+    detached_running = False
     try:
         print(f"creating Runpod pod: {pod_name}", flush=True)
         created = run_json(create_cmd)
@@ -277,11 +308,54 @@ def main() -> int:
         ssh_info = wait_for_ssh(pod_id, ssh_key, args)
         ensure_remote_rsync(ssh_info)
         sync_repo(repo_root, args.remote_repo_dir, ssh_info)
-        run_remote_job(args.remote_repo_dir, job.command, ssh_info, args.skip_uv_sync)
-        download_outputs(job.remote_out_dir, job.local_out_dir, ssh_info)
+        if args.detach:
+            start_remote_job_detached(
+                args.remote_repo_dir,
+                job.command,
+                ssh_info,
+                args.skip_uv_sync,
+                args.sync_extra,
+                job.remote_out_dir,
+            )
+            detached_running = True
+            manifest.update(status="detached-running")
+            write_manifest(job.local_out_dir, manifest)
+            job_status = wait_for_detached_job(
+                pod_id, ssh_key, args, job.remote_out_dir
+            )
+            detached_running = False
+            ssh_info = get_ssh_info(pod_id, ssh_key)
+            download_outputs(job.remote_out_dir, job.local_out_dir, ssh_info)
+            if job_status == "failed":
+                print("remote job failed; see job.log in outputs", file=sys.stderr)
+                stop_for_inspection(pod_id, job.remote_out_dir)
+                manifest.update(
+                    status="job-failed-pod-stopped", finished_at=utc_stamp()
+                )
+                write_manifest(job.local_out_dir, manifest)
+                return 1
+        else:
+            run_remote_job(
+                args.remote_repo_dir,
+                job.command,
+                ssh_info,
+                args.skip_uv_sync,
+                args.sync_extra,
+            )
+            download_outputs(job.remote_out_dir, job.local_out_dir, ssh_info)
 
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr, flush=True)
+        if pod_id and detached_running:
+            print(
+                f"detached job is still running on pod {pod_id}; NOT stopping it. "
+                f"Watch {job.remote_out_dir}/job.log and delete the pod when done.",
+                file=sys.stderr,
+                flush=True,
+            )
+            manifest.update(status="detached-monitoring-abandoned")
+            write_manifest(job.local_out_dir, manifest)
+            return 130
         if pod_id:
             stop_for_inspection(pod_id, job.remote_out_dir)
             manifest.update(status="stopped-for-inspection", finished_at=utc_stamp())
@@ -289,6 +363,17 @@ def main() -> int:
         return 130
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr, flush=True)
+        if pod_id and detached_running:
+            print(
+                f"monitoring lost but the detached job may still be running on "
+                f"pod {pod_id}; NOT stopping it. The --terminate-after backstop "
+                "bounds billing. Re-check the pod manually.",
+                file=sys.stderr,
+                flush=True,
+            )
+            manifest.update(status="detached-monitoring-lost")
+            write_manifest(job.local_out_dir, manifest)
+            return 1
         if pod_id:
             stop_for_inspection(pod_id, job.remote_out_dir)
             manifest.update(status="stopped-for-inspection", finished_at=utc_stamp())
@@ -379,6 +464,20 @@ def build_job_spec(args: argparse.Namespace, run_id: str) -> JobSpec:
             local_out_dir=local_out_dir,
             command=["uv", "run", "world-marl-benchmark-policy", *job_args],
         )
+    if args.job == "compare-single-wm":
+        job_args = [*args.job_args, "--out-dir", remote_out_dir]
+        return JobSpec(
+            remote_out_dir=remote_out_dir,
+            local_out_dir=local_out_dir,
+            command=[
+                "env",
+                f"XLA_FLAGS={DEFAULT_XLA_FLAGS}",
+                "uv",
+                "run",
+                "world-marl-compare-single-wm",
+                *job_args,
+            ],
+        )
     job_args = [*(args.job_args or DEFAULT_COMPARE_ARGS), "--out-dir", remote_out_dir]
     return JobSpec(
         remote_out_dir=remote_out_dir,
@@ -435,14 +534,20 @@ def build_create_pod_cmd(args: argparse.Namespace, pod_name: str) -> list[str]:
         "--env",
         json.dumps({"PUBLIC_KEY": read_public_key(args.ssh_key)}),
     ]
+    terminate_after = args.terminate_after
+    if not terminate_after and args.terminate_after_hours > 0:
+        terminate_at = datetime.now(timezone.utc) + timedelta(
+            hours=args.terminate_after_hours
+        )
+        terminate_after = terminate_at.strftime("%Y-%m-%dT%H:%M:%SZ")
     stop_after = args.stop_after
-    if not stop_after and not args.terminate_after and args.auto_stop_hours > 0:
+    if not stop_after and not terminate_after and args.auto_stop_hours > 0:
         stop_at = datetime.now(timezone.utc) + timedelta(hours=args.auto_stop_hours)
         stop_after = stop_at.strftime("%Y-%m-%dT%H:%M:%SZ")
     if stop_after:
         cmd.extend(["--stop-after", stop_after])
-    if args.terminate_after:
-        cmd.extend(["--terminate-after", args.terminate_after])
+    if terminate_after:
+        cmd.extend(["--terminate-after", terminate_after])
     return cmd
 
 
@@ -634,20 +739,23 @@ def sync_repo(repo_root: Path, remote_repo_dir: str, info: SshInfo) -> None:
     )
 
 
-def run_remote_job(
+def remote_job_script(
     remote_repo_dir: str,
     job_command: list[str],
-    info: SshInfo,
     skip_uv_sync: bool,
-) -> None:
-    """Run a job on a Runpod pod."""
+    sync_extras: list[str],
+) -> str:
+    """Build the setup + job script executed on the pod."""
     commands = [
         "set -euo pipefail",
         f"cd {shlex.quote(remote_repo_dir)}",
         "python -m pip install -U uv",
     ]
     if not skip_uv_sync:
-        commands.append("uv sync --python 3.11 --extra dev --extra cuda12")
+        extras = "".join(
+            f" --extra {extra}" for extra in ("dev", "cuda12", *sync_extras)
+        )
+        commands.append(f"uv sync --python 3.11{extras}")
     commands.extend(
         [
             "uv run world-marl-verify-install",
@@ -658,7 +766,91 @@ def run_remote_job(
             shlex.join(job_command),
         ]
     )
-    run([*ssh_base(info), "bash", "-lc", "\n".join(commands)])
+    return "\n".join(commands)
+
+
+def run_remote_job(
+    remote_repo_dir: str,
+    job_command: list[str],
+    info: SshInfo,
+    skip_uv_sync: bool,
+    sync_extras: list[str],
+) -> None:
+    """Run a job on a Runpod pod, holding the SSH session open until it exits."""
+    script = remote_job_script(remote_repo_dir, job_command, skip_uv_sync, sync_extras)
+    run([*ssh_base(info), "bash", "-lc", script])
+
+
+def start_remote_job_detached(
+    remote_repo_dir: str,
+    job_command: list[str],
+    info: SshInfo,
+    skip_uv_sync: bool,
+    sync_extras: list[str],
+    remote_out_dir: str,
+) -> None:
+    """Start the job under nohup on the pod and return immediately.
+
+    The job writes ``JOB_DONE`` or ``JOB_FAILED`` into ``remote_out_dir`` when
+    it exits; ``wait_for_detached_job`` polls for those markers. Console output
+    goes to ``job.log`` in the same directory.
+    """
+    script = remote_job_script(remote_repo_dir, job_command, skip_uv_sync, sync_extras)
+    out = remote_out_dir.rstrip("/")
+    runner = f"{out}/runner.sh"
+    wrapper = (
+        f"mkdir -p {shlex.quote(out)}\n"
+        f"cat > {shlex.quote(runner)} <<'WM_MARL_RUNNER'\n"
+        f"{script}\n"
+        "WM_MARL_RUNNER\n"
+        f"rm -f {shlex.quote(out + '/JOB_DONE')} {shlex.quote(out + '/JOB_FAILED')}\n"
+        f"nohup bash -c 'bash {shlex.quote(runner)} "
+        f"&& touch {shlex.quote(out + '/JOB_DONE')} "
+        f"|| touch {shlex.quote(out + '/JOB_FAILED')}' "
+        f"> {shlex.quote(out + '/job.log')} 2>&1 &\n"
+        "echo detached job started"
+    )
+    run([*ssh_base(info), "bash", "-lc", wrapper])
+
+
+def wait_for_detached_job(
+    pod_id: str,
+    ssh_key: Path,
+    args: argparse.Namespace,
+    remote_out_dir: str,
+) -> str:
+    """Poll the pod until the detached job writes its completion marker.
+
+    Returns ``"done"`` or ``"failed"``. Transient SSH/network errors are
+    logged and retried — they must not be treated as job failure.
+    """
+    out = remote_out_dir.rstrip("/")
+    probe = (
+        f"if [ -f {shlex.quote(out + '/JOB_DONE')} ]; then echo STATUS:done; "
+        f"elif [ -f {shlex.quote(out + '/JOB_FAILED')} ]; then echo STATUS:failed; "
+        "else echo STATUS:running; fi; "
+        f"tail -n 3 {shlex.quote(out + '/job.log')} 2>/dev/null || true"
+    )
+    deadline = time.monotonic() + args.detach_timeout_hours * 3600.0
+    while time.monotonic() < deadline:
+        time.sleep(args.detach_poll_seconds)
+        try:
+            info = get_ssh_info(pod_id, ssh_key)
+            result = run([*ssh_base(info), "bash", "-lc", probe], capture_output=True)
+        except Exception as exc:
+            print(f"poll failed (will retry): {exc}", flush=True)
+            continue
+        stamp = datetime.now(timezone.utc).strftime("%H:%M:%SZ")
+        print(f"[{stamp}] {result.stdout.strip()}", flush=True)
+        for line in result.stdout.splitlines():
+            if line.strip() == "STATUS:done":
+                return "done"
+            if line.strip() == "STATUS:failed":
+                return "failed"
+    raise RuntimeError(
+        f"detached job did not finish within {args.detach_timeout_hours}h; "
+        f"pod {pod_id} is still running"
+    )
 
 
 def download_outputs(remote_out_dir: str, local_out_dir: Path, info: SshInfo) -> None:
@@ -714,6 +906,8 @@ def print_dry_run(
     ssh_key: Path,
     remote_repo_dir: str,
     skip_uv_sync: bool,
+    sync_extras: list[str],
+    detach: bool,
 ) -> None:
     """Print a dry run of the pod creation and job execution."""
     print(f"pod name: {pod_name}")
@@ -732,9 +926,16 @@ def print_dry_run(
     if skip_uv_sync:
         print("skip uv sync")
     else:
-        print("uv sync --python 3.11 --extra dev --extra cuda12")
+        extras = "".join(
+            f" --extra {extra}" for extra in ("dev", "cuda12", *sync_extras)
+        )
+        print(f"uv sync --python 3.11{extras}")
     print("uv run world-marl-verify-install")
     print("assert jax.devices() shows a GPU (fail fast on silent CPU fallback)")
+    if detach:
+        print(
+            f"nohup the job on the pod; poll {job.remote_out_dir}/JOB_DONE|JOB_FAILED"
+        )
     print(shlex.join(job.command))
     print(f"rsync <pod-ssh-target>:{job.remote_out_dir}/ {job.local_out_dir}/")
     print("success cleanup: runpodctl pod delete <pod-id>")
