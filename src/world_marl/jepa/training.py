@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from functools import partial
+from pathlib import Path
 from typing import Literal
 
 import jax
@@ -12,6 +13,7 @@ import optax
 from flax import struct
 from flax.core import FrozenDict, freeze, unfreeze
 
+from world_marl.checkpointing import load_metadata, load_params
 from world_marl.jepa.models import (
     JepaConfig,
     JepaWorldModel,
@@ -181,6 +183,24 @@ def create_jepa_train_state(
         critic_tx=critic_tx,
         critic_opt_state=critic_tx.init(params),
     )
+
+
+def load_frozen_encoder(
+    checkpoint_dir: str | Path,
+) -> tuple[Callable[[jax.Array], jax.Array], int]:
+    """Load a saved jepa checkpoint's encoder as a jitted observation->latent map."""
+    config = JepaConfig(**load_metadata(checkpoint_dir)["jepa_config"])
+    template = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    params = load_params(Path(checkpoint_dir) / "checkpoint.msgpack", template.params)
+    model = JepaWorldModel(config)
+
+    @jax.jit
+    def encode(observations: jax.Array) -> jax.Array:
+        return model.apply(
+            {"params": params}, observations, method=JepaWorldModel.encode
+        )
+
+    return encode, config.latent_dim
 
 
 @partial(

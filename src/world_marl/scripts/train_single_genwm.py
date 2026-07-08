@@ -53,6 +53,7 @@ from world_marl.genwm import (
     ppo_update,
 )
 from world_marl.genwm.imagination import ImaginedBatch
+from world_marl.jepa.training import load_frozen_encoder
 from world_marl.world_model_training import _replay_scan_episode_bookkeeping
 
 MODEL_FREE_ARM = "model-free"
@@ -109,6 +110,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--integration-steps", type=int, default=8)
     parser.add_argument("--obs-bins", type=int, default=32)
     parser.add_argument("--action-bins", type=int, default=8)
+    parser.add_argument(
+        "--latent-encoder",
+        default=None,
+        help="Path to a jepa checkpoint dir; tokenize and model its frozen "
+        "latents instead of raw observations.",
+    )
     parser.add_argument("--block-size", type=int, default=4)
     parser.add_argument("--steps-per-block", type=int, default=4)
     # PPO.
@@ -220,11 +227,14 @@ def _policy_actions(
     return np.clip(actions.astype(np.float32), action_low, action_high)
 
 
-def _make_scan_action_fns(adapter, action_mode: str) -> dict[str, Any]:
+def _make_scan_action_fns(
+    adapter, action_mode: str, *, encode_fn: Any | None = None
+) -> dict[str, Any]:
     """Action callbacks in ``scan_rollout``'s 3-arg shape.
 
     ``scan_rollout`` caches compiled programs by ``id(fn)``, so one set is
-    created per run and reused across every collection/eval call.
+    created per run and reused across every collection/eval call. When
+    ``encode_fn`` is given the policy consumes latents, not raw observations.
     """
     action_dim = adapter.action_dim
     if action_mode == "discrete":
@@ -247,13 +257,20 @@ def _make_scan_action_fns(adapter, action_mode: str) -> dict[str, Any]:
             zeros = jnp.zeros((rows,), dtype=jnp.float32)
             return actions, zeros, zeros, zeros
 
+    def policy_inputs(obs_flat):
+        return obs_flat if encode_fn is None else encode_fn(obs_flat)
+
     def sample_fn(train_state, key, obs_flat):
-        policy, values = train_state.apply_fn({"params": train_state.params}, obs_flat)
+        policy, values = train_state.apply_fn(
+            {"params": train_state.params}, policy_inputs(obs_flat)
+        )
         actions = policy.sample(seed=key)
         return actions, policy.log_prob(actions), values, policy.entropy()
 
     def mode_fn(train_state, _key, obs_flat):
-        policy, values = train_state.apply_fn({"params": train_state.params}, obs_flat)
+        policy, values = train_state.apply_fn(
+            {"params": train_state.params}, policy_inputs(obs_flat)
+        )
         actions = policy.mode()
         return actions, policy.log_prob(actions), values, policy.entropy()
 
@@ -330,6 +347,35 @@ def _scan_eval_return(
     if not returns:
         return float("nan")
     return float(np.mean(returns[:episodes]))
+
+
+def _resolve_latent_encoder(
+    latent_encoder: str | None, adapter, obs_dim: int, *, arm: str
+) -> tuple[Any | None, int]:
+    """Load the frozen jepa encoder and swap the model's observation space to latents."""
+    if latent_encoder is None:
+        return None, obs_dim
+    if arm == MODEL_FREE_ARM:
+        raise ValueError(
+            "--latent-encoder requires a world-model arm, not model-free; "
+            "_train_policy_real feeds raw scan observations to PPO"
+        )
+    if not hasattr(adapter, "scan_rollout"):
+        raise ValueError(
+            "--latent-encoder requires an adapter with scan_rollout; the loop "
+            "collection path feeds raw observations to the policy"
+        )
+    return load_frozen_encoder(latent_encoder)
+
+
+def _encode_replay(encode_fn, replay: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """Map replay observations through the frozen encoder; other keys pass through."""
+    encoded = dict(replay)
+    for key in ("observations", "next_observations"):
+        encoded[key] = np.asarray(
+            encode_fn(jnp.asarray(replay[key], dtype=jnp.float32)), dtype=np.float32
+        )
+    return encoded
 
 
 def _collect_replay(
@@ -698,8 +744,11 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
         action_mode = "discrete" if args.env.startswith("gymnax:") else "continuous"
         obs_dim = int(np.prod(adapter.observation_shape))
         model_based = args.arm != MODEL_FREE_ARM
+        encode_fn, obs_dim = _resolve_latent_encoder(
+            args.latent_encoder, adapter, obs_dim, arm=args.arm
+        )
         action_fns = (
-            _make_scan_action_fns(adapter, action_mode)
+            _make_scan_action_fns(adapter, action_mode, encode_fn=encode_fn)
             if hasattr(adapter, "scan_rollout")
             else None
         )
@@ -784,6 +833,8 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                 policy_state=None,
                 action_mode=action_mode,
             )
+            if encode_fn is not None:
+                data = _encode_replay(encode_fn, data)
             obs_tokenizer = fit_quantile_tokenizer(
                 np.concatenate([data["observations"], data["next_observations"]]),
                 args.obs_bins,
@@ -872,6 +923,8 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                     policy_state=policy_state,
                     action_mode=action_mode,
                 )
+                if encode_fn is not None:
+                    fresh = _encode_replay(encode_fn, fresh)
                 data = {
                     name: np.concatenate([data[name], fresh[name]]) for name in data
                 }
