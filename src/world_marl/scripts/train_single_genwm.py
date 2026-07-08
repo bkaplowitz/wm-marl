@@ -59,6 +59,35 @@ from world_marl.world_model_training import _replay_scan_episode_bookkeeping
 MODEL_FREE_ARM = "model-free"
 ARM_CHOICES = (*GENWM_ARMS, MODEL_FREE_ARM)
 
+# Defaults for the swept hyperparameters; flags parse as None and resolve to
+# the arm's tuned entry, falling back to the base value. llada2 values are the
+# best 3-seed-mean Optuna trial on gymnax CartPole (740.6 vs 354.7 for the
+# base defaults; runs/runpod/optuna-single-genwm/20260708T013406Z/).
+BASE_DEFAULTS: dict[str, int | float] = {
+    "imag_horizon": 15,
+    "model_dim": 128,
+    "num_layers": 2,
+    "wm_learning_rate": 1e-3,
+    "obs_bins": 32,
+    "block_size": 4,
+    "steps_per_block": 4,
+    "ppo_learning_rate": 3e-4,
+    "ent_coef": 0.01,
+}
+ARM_TUNED_DEFAULTS: dict[str, dict[str, int | float]] = {
+    "llada2": {
+        "imag_horizon": 15,
+        "model_dim": 256,
+        "num_layers": 4,
+        "wm_learning_rate": 0.00017171860465888458,
+        "obs_bins": 64,
+        "block_size": 1,
+        "steps_per_block": 4,
+        "ppo_learning_rate": 0.0009478968677765566,
+        "ent_coef": 0.007824023983213257,
+    },
+}
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -99,16 +128,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--online-policy-train-steps", type=int, default=750)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--policy-batch-size", type=int, default=512)
-    parser.add_argument("--imag-horizon", type=int, default=15)
-    # World-model capacity (defaults match the JEPA mainline preset).
-    parser.add_argument("--model-dim", type=int, default=128)
+    parser.add_argument("--imag-horizon", type=int, default=None)
+    # World-model capacity (base defaults match the JEPA mainline preset;
+    # None-defaulted flags resolve per arm via ARM_TUNED_DEFAULTS).
+    parser.add_argument("--model-dim", type=int, default=None)
     parser.add_argument("--num-heads", type=int, default=4)
-    parser.add_argument("--num-layers", type=int, default=2)
+    parser.add_argument("--num-layers", type=int, default=None)
     parser.add_argument("--mlp-ratio", type=int, default=4)
-    parser.add_argument("--wm-learning-rate", type=float, default=1e-3)
+    parser.add_argument("--wm-learning-rate", type=float, default=None)
     parser.add_argument("--head-learning-rate", type=float, default=1e-3)
     parser.add_argument("--integration-steps", type=int, default=8)
-    parser.add_argument("--obs-bins", type=int, default=32)
+    parser.add_argument("--obs-bins", type=int, default=None)
     parser.add_argument("--action-bins", type=int, default=8)
     parser.add_argument(
         "--latent-encoder",
@@ -116,8 +146,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Path to a jepa checkpoint dir; tokenize and model its frozen "
         "latents instead of raw observations.",
     )
-    parser.add_argument("--block-size", type=int, default=4)
-    parser.add_argument("--steps-per-block", type=int, default=4)
+    parser.add_argument("--block-size", type=int, default=None)
+    parser.add_argument("--steps-per-block", type=int, default=None)
     # PPO.
     parser.add_argument(
         "--mf-rollout-steps",
@@ -126,10 +156,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="model-free arm: on-policy segment length per PPO update "
         "(segment x num-envs must divide evenly into --ppo-num-minibatches).",
     )
-    parser.add_argument("--ppo-learning-rate", type=float, default=3e-4)
+    parser.add_argument("--ppo-learning-rate", type=float, default=None)
     parser.add_argument("--ppo-update-epochs", type=int, default=4)
     parser.add_argument("--ppo-num-minibatches", type=int, default=4)
-    parser.add_argument("--ent-coef", type=float, default=0.01)
+    parser.add_argument("--ent-coef", type=float, default=None)
     parser.add_argument("--gamma", type=float, default=0.99)
     # Evaluation and gate.
     parser.add_argument("--eval-episodes", type=int, default=32)
@@ -145,6 +175,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--wandb-entity", default=None)
     parser.add_argument("--wandb-group", default=None)
     args = parser.parse_args(argv)
+    tuned = ARM_TUNED_DEFAULTS.get(args.arm, {})
+    for key, base in BASE_DEFAULTS.items():
+        if getattr(args, key) is None:
+            setattr(args, key, tuned.get(key, base))
     if not args.env.startswith(("dmc:", "brax:", "gymnax:")):
         parser.error(
             "--env must be formatted as dmc:<domain>/<task>, brax:<env>, "
