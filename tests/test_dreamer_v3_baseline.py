@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import jax
 import jax.numpy as jnp
 
@@ -22,6 +24,12 @@ from world_marl.dreamer_v3_baseline.rssm import (
     flatten_rssm_state,
     initial_rssm_state,
 )
+from world_marl.dreamer_v3_baseline.training import (
+    create_dreamer_train_state,
+    dreamer_train_step,
+)
+from world_marl.scripts.train_dreamer_v3_baseline import main as train_dreamer_main
+from world_marl.world_model_foundation.collect import synthetic_sequence_collector
 
 
 def test_config_defaults_lock_categorical_rssm_contract() -> None:
@@ -107,3 +115,65 @@ def test_symlog_symexp_and_two_hot_reward_targets() -> None:
     assert bool(jnp.allclose(decoded, values, atol=1e-5))
     assert targets.shape == (3, 9)
     assert bool(jnp.allclose(jnp.sum(targets, axis=-1), 1.0))
+
+
+def test_world_model_train_step_updates_params_and_returns_finite_metrics() -> None:
+    config = DreamerV3Config(action_dim=3, observation_shape=(6, 6, 3))
+    batch = synthetic_sequence_collector(
+        env_name="synthetic:image-grid",
+        time_steps=4,
+        batch_size=2,
+        observation_shape=config.observation_shape,
+        action_dim=config.action_dim,
+    )
+    state = create_dreamer_train_state(
+        jax.random.PRNGKey(5), config, learning_rate=1e-3
+    )
+
+    updated, metrics = dreamer_train_step(state, batch, config)
+
+    assert updated.step == state.step + 1
+    for key in (
+        "loss",
+        "reconstruction_loss",
+        "reward_loss",
+        "continue_loss",
+        "kl_loss",
+    ):
+        assert key in metrics
+        assert bool(jnp.isfinite(metrics[key]))
+
+
+def test_dreamer_cli_smoke_writes_expected_artifacts(tmp_path) -> None:
+    exit_code = train_dreamer_main(
+        [
+            "--env",
+            "synthetic:image-grid",
+            "--out-dir",
+            str(tmp_path),
+            "--train-steps",
+            "2",
+            "--policy-train-steps",
+            "2",
+            "--time-steps",
+            "4",
+            "--batch-size",
+            "2",
+            "--image-size",
+            "6",
+            "--allow-fail",
+        ]
+    )
+
+    assert exit_code == 0
+    for name in (
+        "config.json",
+        "sources.json",
+        "world_model_metrics.jsonl",
+        "actor_critic_metrics.jsonl",
+        "outcome.json",
+        "summary.json",
+    ):
+        assert (tmp_path / name).exists()
+    outcome = json.loads((tmp_path / "outcome.json").read_text())
+    assert outcome["status"] in {"ok", "learning_gate_failed"}
