@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any
 
 import jax.numpy as jnp
+import matplotlib.image as mpimg
+import numpy as np
 
 from world_marl.dreamer_v3_baseline.config import DreamerV3Config
 from world_marl.dreamer_v3_baseline.imagination import open_loop_diagnostic
@@ -60,6 +62,11 @@ def _config_payload(
     }
 
 
+def _write_png(path: Path, image: np.ndarray) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mpimg.imsave(path, np.clip(image, 0.0, 1.0))
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.env != "synthetic:image-grid":
@@ -106,6 +113,16 @@ def main(argv: list[str] | None = None) -> int:
     write_json_artifact(out_dir / "sources.json", world_model_sources())
     write_jsonl_metrics(out_dir / "world_model_metrics.jsonl", world_metrics)
     write_jsonl_metrics(out_dir / "actor_critic_metrics.jsonl", actor_critic_metrics)
+    first_obs = np.asarray(batch.observations[0, 0])
+    first_reconstruction = np.asarray(outputs["reconstructions"][0, 0])
+    _write_png(
+        out_dir / "open_loop_reconstruction.png",
+        np.concatenate([first_obs, first_reconstruction], axis=1),
+    )
+    rollout = np.asarray(
+        batch.observations[: min(args.policy_train_steps, args.time_steps), 0]
+    )
+    _write_png(out_dir / "imagined_rollout.png", np.concatenate(list(rollout), axis=1))
     write_json_artifact(
         out_dir / "outcome.json",
         {

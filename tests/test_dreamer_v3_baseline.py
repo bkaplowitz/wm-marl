@@ -171,6 +171,8 @@ def test_dreamer_cli_smoke_writes_expected_artifacts(tmp_path) -> None:
         "sources.json",
         "world_model_metrics.jsonl",
         "actor_critic_metrics.jsonl",
+        "open_loop_reconstruction.png",
+        "imagined_rollout.png",
         "outcome.json",
         "summary.json",
     ):
