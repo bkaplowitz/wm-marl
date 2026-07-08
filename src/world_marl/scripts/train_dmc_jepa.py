@@ -28,6 +28,15 @@ from world_marl.checkpointing import load_params, save_checkpoint
 from world_marl.envs.brax_adapter import BraxVectorAdapter, brax_env_name
 from world_marl.envs.dmc_adapter import DMCVectorAdapter, dmc_env_name
 from world_marl.envs.gymnax_adapter import GymnaxVectorAdapter, gymnax_env_name
+from world_marl.jepa.decoder import (
+    DecoderConfig,
+    create_decoder_train_state,
+    decode_open_loop_rollout,
+    decoder_reconstruction_mse,
+    encode_observations,
+    select_display_trajectories,
+    train_decoder_step,
+)
 from world_marl.jepa.models import JepaConfig, JepaWorldModel
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
@@ -62,6 +71,12 @@ from world_marl.jepa.validation import (
     summarize,
 )
 from world_marl.logging import RunLogger, dependency_versions, timestamp, to_jsonable
+from world_marl.scripts.plot_jepa_decoder import (
+    FRAMES_FILENAME,
+    TRACES_FILENAME,
+    save_rollout_frames_plot,
+    save_rollout_traces_plot,
+)
 
 FROZEN_RANDOM_WORLD_MODEL_CONTROL = "frozen-random-world-model"
 
@@ -97,6 +112,33 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-interval", type=int, default=250)
     parser.add_argument("--model-horizon", type=int, default=1)
     parser.add_argument("--open-loop-horizon", type=int, default=5)
+    parser.add_argument(
+        "--decoder-train-steps",
+        type=int,
+        default=0,
+        help=(
+            "Fit steps for a post-hoc observation decoder used only as a "
+            "visual diagnostic (LeJEPA-style). 0 disables it; the world model "
+            "itself never trains on reconstruction."
+        ),
+    )
+    parser.add_argument("--decoder-hidden-dim", type=int, default=256)
+    parser.add_argument("--decoder-learning-rate", type=float, default=1e-3)
+    parser.add_argument(
+        "--decoder-rollout-horizon",
+        type=int,
+        default=0,
+        help=(
+            "Imagined rollout length for the decoder diagnostic frames "
+            "(0 uses --open-loop-horizon)."
+        ),
+    )
+    parser.add_argument(
+        "--decoder-rollout-trajectories",
+        type=int,
+        default=4,
+        help="Held-out trajectories shown in the decoder diagnostic figures.",
+    )
     parser.add_argument(
         "--context-window",
         type=int,
@@ -541,6 +583,22 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
             parser.error(f"--{name.replace('_', '-')} must be >= 0")
     if args.policy_confirmation_episodes < 0:
         parser.error("--policy-confirmation-episodes must be >= 0")
+    if args.decoder_train_steps < 0:
+        parser.error("--decoder-train-steps must be >= 0")
+    if args.decoder_rollout_horizon < 0:
+        parser.error("--decoder-rollout-horizon must be >= 0")
+    if args.decoder_train_steps > 0:
+        for name in ("decoder_hidden_dim", "decoder_rollout_trajectories"):
+            if getattr(args, name) < 1:
+                parser.error(f"--{name.replace('_', '-')} must be >= 1")
+        if args.decoder_learning_rate <= 0.0:
+            parser.error("--decoder-learning-rate must be > 0")
+        decoder_horizon = args.decoder_rollout_horizon or args.open_loop_horizon
+        if args.validation_steps < args.context_window + decoder_horizon:
+            parser.error(
+                "--validation-steps must cover context-window + decoder rollout "
+                "horizon for the decoder diagnostic"
+            )
     if args.final_policy_eval_episodes < 0:
         parser.error("--final-policy-eval-episodes must be >= 0")
     if args.online_collect_steps is not None and args.online_collect_steps < 1:
@@ -1312,6 +1370,22 @@ def run_one(
         )
         logger.write_json("model_metrics_final.json", final_metrics)
 
+        if args.decoder_train_steps > 0:
+            rng, decoder_key = jax.random.split(rng)
+            decoder_summary = _fit_decoder_diagnostic(
+                args,
+                logger,
+                state,
+                config,
+                replay,
+                validation_replay,
+                np_rng=np_rng,
+                key=decoder_key,
+                run_dir=run_dir,
+                control=control,
+            )
+            logger.write_json("decoder_metrics.json", decoder_summary)
+
         checkpoint_dir = run_dir / "checkpoint"
         save_checkpoint(
             checkpoint_dir,
@@ -1995,6 +2069,143 @@ def _fit_world_model(
                 }
             )
     return state, rng, to_jsonable(metrics), [float(loss) for loss in loss_history]
+
+
+def _fit_decoder_diagnostic(
+    args: argparse.Namespace,
+    logger: RunLogger,
+    state,
+    config: JepaConfig,
+    replay: SequenceReplayBuffer,
+    validation_replay: SequenceReplayBuffer,
+    *,
+    np_rng: np.random.Generator,
+    key: jax.Array,
+    run_dir: Path,
+    control: ControlMode,
+) -> dict[str, Any]:
+    horizon = args.decoder_rollout_horizon or args.open_loop_horizon
+    if not validation_replay.can_sample(
+        chunk_length=config.context_window,
+        max_horizon=horizon,
+    ):
+        raise ValueError(
+            "validation replay is too small for the decoder rollout diagnostic "
+            f"(need {config.context_window + horizon} steps, "
+            f"have {validation_replay.size})"
+        )
+    decoder_config = DecoderConfig(
+        latent_dim=config.latent_dim,
+        observation_dim=config.observation_dim,
+        hidden_dim=args.decoder_hidden_dim,
+        learning_rate=args.decoder_learning_rate,
+    )
+    decoder_state = create_decoder_train_state(key, decoder_config)
+
+    def flat_pairs(batch: ReplayBatch) -> tuple[jax.Array, jax.Array]:
+        latents = encode_observations(state, batch.observations)
+        return (
+            latents.reshape((-1, config.latent_dim)),
+            batch.observations.reshape((-1, config.observation_dim)),
+        )
+
+    loss_history: list[jax.Array] = []
+    fit_steps = tqdm(
+        range(1, args.decoder_train_steps + 1),
+        desc=f"{control} fit diagnostic decoder",
+        unit="update",
+        disable=args.quiet,
+    )
+    for step_index in fit_steps:
+        batch = replay.sample(
+            np_rng,
+            batch_size=args.batch_size,
+            chunk_length=args.chunk_length,
+            max_horizon=1,
+        )
+        decoder_state, loss = train_decoder_step(decoder_state, *flat_pairs(batch))
+        loss_history.append(loss)
+        if (
+            step_index == 1
+            or step_index == args.decoder_train_steps
+            or step_index % args.eval_interval == 0
+        ):
+            fit_steps.set_postfix(recon=f"{float(loss):.4g}")
+            logger.append_metrics(
+                {
+                    "phase": "observation_decoder",
+                    "update": step_index,
+                    "control": control,
+                    "decoder/recon_loss": float(loss),
+                }
+            )
+
+    validation_batch = validation_replay.sample(
+        np_rng,
+        batch_size=args.batch_size,
+        chunk_length=args.chunk_length,
+        max_horizon=1,
+    )
+    validation_mse = float(
+        decoder_reconstruction_mse(decoder_state, *flat_pairs(validation_batch))
+    )
+
+    candidate_batch = validation_replay.sample(
+        np_rng,
+        batch_size=max(32, 8 * args.decoder_rollout_trajectories),
+        chunk_length=config.context_window,
+        max_horizon=horizon,
+    )
+    display_batch = select_display_trajectories(
+        candidate_batch,
+        context_window=config.context_window,
+        horizon=horizon,
+        count=args.decoder_rollout_trajectories,
+    )
+    rollout = decode_open_loop_rollout(
+        state,
+        decoder_state,
+        display_batch,
+        config,
+        horizon=horizon,
+    )
+    rollout_np = {name: np.asarray(value) for name, value in rollout.items()}
+    rollout_path = run_dir / "decoder_rollout.npz"
+    np.savez(rollout_path, **rollout_np)
+    title = (
+        f"{args.env}: real vs imagined decoded rollout "
+        f"(context={config.context_window}, horizon={horizon})"
+    )
+    frames_path = save_rollout_frames_plot(
+        rollout_np,
+        run_dir / FRAMES_FILENAME,
+        title=title,
+    )
+    traces_path = save_rollout_traces_plot(
+        rollout_np,
+        run_dir / TRACES_FILENAME,
+        title=title,
+    )
+    validity = rollout_np["validity"]
+    cosine = rollout_np["open_loop_cosine"]
+    valid_total = float(validity.sum())
+    return {
+        "decoder_config": dataclasses.asdict(decoder_config),
+        "train_steps": args.decoder_train_steps,
+        "final_train_recon_mse": float(loss_history[-1]),
+        "validation_recon_mse": validation_mse,
+        "rollout_horizon": horizon,
+        "rollout_trajectories": int(cosine.shape[0]),
+        "rollout_open_loop_cosine_mean": (
+            float((cosine * validity).sum() / valid_total)
+            if valid_total > 0.0
+            else None
+        ),
+        "rollout_valid_fraction": float(validity.mean()),
+        "rollout_npz": str(rollout_path),
+        "frames_plot": str(frames_path),
+        "traces_plot": str(traces_path),
+    }
 
 
 def _maybe_train_policy(

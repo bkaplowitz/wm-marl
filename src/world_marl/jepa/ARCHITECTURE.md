@@ -145,8 +145,20 @@ Episode boundaries are masked so the model is not trained to predict through
 environment resets.
 
 The current implementation uses one encoder. There is no EMA target encoder and
-no observation decoder. The default target-gradient mode is stop-gradient; the
-same encoder defines both the current latent and the future target latent.
+no observation decoder in the world-model loss. The default target-gradient
+mode is stop-gradient; the same encoder defines both the current latent and the
+future target latent.
+
+## Diagnostic Decoder
+
+Following the LeJEPA visualization recipe, an optional observation decoder can
+be fit *after* world-model training (`decoder.py`, enabled with
+`--decoder-train-steps`). It is an MLP probe from frozen latents back to
+observations, optimized separately so no reconstruction gradient ever reaches
+the encoder or dynamics. It is used only to render open-loop imagined rollouts
+next to real held-out trajectories (`decoder_rollout_frames.png`,
+`decoder_rollout_traces.png`); it plays no role in training or the pass/fail
+gate.
 
 ## Control-Relevant Online Loss
 
