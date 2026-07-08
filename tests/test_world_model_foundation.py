@@ -98,7 +98,12 @@ def test_metric_keys_and_sources_cover_world_model_foundation() -> None:
 
     sources = world_model_sources()
     assert sources["dreamer_v3"]["paper_url"] == "https://arxiv.org/abs/2301.04104"
+    assert (
+        sources["genie_2"]["announcement_url"]
+        == "https://deepmind.google/blog/genie-2-a-large-scale-foundation-world-model/"
+    )
     assert sources["genie"]["paper_url"] == "https://arxiv.org/abs/2402.15391"
+    assert sources["genie"]["role"] == "genie1_vq_maskgit_ablation"
     assert (
         sources["genie_3"]["announcement_url"]
         == "https://deepmind.google/blog/genie-3-a-new-frontier-for-world-models/"
@@ -111,22 +116,28 @@ def test_architecture_docs_lock_source_papers_and_boundaries() -> None:
     dreamer_doc = (
         ROOT / "src/world_marl/dreamer_v3_baseline/ARCHITECTURE.md"
     ).read_text()
-    genie_doc = (ROOT / "src/world_marl/genie_like_jax/ARCHITECTURE.md").read_text()
+    genie_doc = (
+        ROOT / "src/world_marl/genie2_continuous_jax/ARCHITECTURE.md"
+    ).read_text()
 
     assert "https://arxiv.org/abs/2301.04104" in dreamer_doc
     assert "taken directly from the DreamerV3 paper" in dreamer_doc
     assert "Genie" not in dreamer_doc
     assert "LeJEPA" not in dreamer_doc
 
-    assert "https://arxiv.org/abs/2402.15391" in genie_doc
-    assert "taken directly from the public Genie paper" in genie_doc
-    assert "LAM produces discrete latent action codes" in genie_doc
-    assert "VQ-VAE video tokenizer is primary" in genie_doc
-    assert "dynamics predicts next-frame tokens" in genie_doc
-    assert "Direct next-observation generation is a modern variant" in genie_doc
     assert (
-        "Genie 3 is a capability target, not a complete public architecture"
+        "https://deepmind.google/blog/genie-2-a-large-scale-foundation-world-model/"
         in genie_doc
     )
+    assert "Genie 2 is the primary architecture target" in genie_doc
+    assert "autoregressive latent diffusion world model" in genie_doc
+    assert "continuous latent autoencoder" in genie_doc
+    assert "causal transformer dynamics" in genie_doc
+    assert "classifier-free guidance" in genie_doc
+    assert "continuous LAM" in genie_doc
+    assert "LAM infers continuous latent actions" in genie_doc
+    assert "VQ/MaskGIT is ablation-only" in genie_doc
+    assert "Genie 3 is a capability target" in genie_doc
+    assert "latent-to-real-action bridge" in genie_doc
     assert "https://github.com/p-doom/jasmine" in genie_doc
     assert "LeWM/LeJEPA innovations are ablations only" in genie_doc

@@ -9,9 +9,15 @@ def world_model_sources() -> dict[str, dict[str, Any]]:
             "paper": "DreamerV3: Mastering Diverse Domains through World Models",
             "paper_url": "https://arxiv.org/abs/2301.04104",
         },
+        "genie_2": {
+            "announcement": "Genie 2: A large-scale foundation world model",
+            "announcement_url": "https://deepmind.google/blog/genie-2-a-large-scale-foundation-world-model/",
+            "role": "primary continuous latent diffusion target",
+        },
         "genie": {
             "paper": "Genie: Generative Interactive Environments",
             "paper_url": "https://arxiv.org/abs/2402.15391",
+            "role": "genie1_vq_maskgit_ablation",
         },
         "genie_3": {
             "announcement": "Genie 3: A new frontier for world models",
