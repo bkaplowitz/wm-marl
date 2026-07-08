@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 from typing import Any
 
+import matplotlib.image as mpimg
 import numpy as np
 
 from world_marl.genie2_continuous_jax.action_bridge import fit_linear_action_bridge
@@ -60,6 +61,11 @@ def _config_payload(
 
 def _split_metrics(metrics: list[dict[str, float]], key: str) -> list[dict[str, float]]:
     return [{"step": row["step"], key: row[key]} for row in metrics]
+
+
+def _write_png(path: Path, image: np.ndarray) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mpimg.imsave(path, np.clip(image, 0.0, 1.0))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -129,6 +135,18 @@ def main(argv: list[str] | None = None) -> int:
             "real_action_dim": bridge.real_action_dim,
         },
     )
+    rollout = np.asarray(
+        batch.observations[: min(args.policy_train_steps, args.time_steps), 0]
+    )
+    _write_png(out_dir / "open_loop_rollout.png", np.concatenate(list(rollout), axis=1))
+    action_grid = latent_actions
+    if action_grid.shape[0] < action_grid.shape[1]:
+        pad = np.zeros(
+            (action_grid.shape[1] - action_grid.shape[0], action_grid.shape[1]),
+            dtype=np.float32,
+        )
+        action_grid = np.concatenate([action_grid, pad], axis=0)
+    _write_png(out_dir / "latent_action_grid.png", action_grid)
     write_json_artifact(
         out_dir / "outcome.json",
         {

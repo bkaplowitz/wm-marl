@@ -206,6 +206,9 @@ def test_genie2_cli_smoke_writes_expected_artifacts(tmp_path) -> None:
         "dynamics_metrics.jsonl",
         "reward_continue_metrics.jsonl",
         "latent_action_bridge.json",
+        "latent_action_usage.json",
+        "open_loop_rollout.png",
+        "latent_action_grid.png",
         "outcome.json",
         "summary.json",
     ):
