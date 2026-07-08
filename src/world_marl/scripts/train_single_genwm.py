@@ -9,6 +9,12 @@ replay and stay frozen (refitting would silently re-map every token id the
 model has already learned); later out-of-range observations clip into the edge
 bins.
 
+``--tokenizer genie`` replaces the frozen quantile bins with a Genie-style
+transformer VQ-VAE (token arms only): the codebook's ids become the world
+model's targets, the policy/head consume flattened codebook embeddings, and
+the tokenizer co-trains on the growing raw replay each online iteration with
+the world model retrained on the re-encoded ids to absorb code drift.
+
 ``--collect-steps``/``--online-collect-steps`` are per-env steps (total
 transitions = steps x ``--num-envs``), the same units as ``train_dmc_jepa``.
 On gymnax/brax, collection and evaluation run on-device through the adapters'
@@ -40,16 +46,21 @@ import numpy as np
 
 from world_marl.genwm import (
     GENWM_ARMS,
+    CodebookTokenizer,
+    GenieTokenizer,
     GenWMConfig,
     PPOConfig,
     QuantileTokenizer,
+    create_genie_state,
     create_genwm_state,
     create_head_state,
     create_policy_state,
     fit_quantile_tokenizer,
+    genie_train_step,
     genwm_train_step,
     head_train_step,
     imagined_rollout,
+    make_genie_encode,
     ppo_update,
 )
 from world_marl.genwm.imagination import ImaginedBatch
@@ -146,6 +157,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Path to a jepa checkpoint dir; tokenize and model its frozen "
         "latents instead of raw observations.",
     )
+    parser.add_argument(
+        "--tokenizer",
+        choices=("quantile", "genie"),
+        default="quantile",
+        help="Observation tokenizer for the token arms: frozen quantile bins, "
+        "or a Genie-style transformer VQ-VAE whose learned code ids are the "
+        "world model's targets (codebook size = --obs-bins).",
+    )
+    parser.add_argument("--genie-code-dim", type=int, default=16)
+    parser.add_argument("--genie-model-dim", type=int, default=64)
+    parser.add_argument("--genie-heads", type=int, default=4)
+    parser.add_argument("--genie-layers", type=int, default=2)
+    parser.add_argument("--genie-learning-rate", type=float, default=3e-4)
+    parser.add_argument("--genie-train-steps", type=int, default=2000)
+    parser.add_argument("--genie-online-train-steps", type=int, default=500)
     parser.add_argument("--block-size", type=int, default=None)
     parser.add_argument("--steps-per-block", type=int, default=None)
     # PPO.
@@ -262,13 +288,20 @@ def _policy_actions(
 
 
 def _make_scan_action_fns(
-    adapter, action_mode: str, *, encode_fn: Any | None = None
+    adapter,
+    action_mode: str,
+    *,
+    encode_fn: Any | None = None,
+    encoder_in_state: bool = False,
 ) -> dict[str, Any]:
     """Action callbacks in ``scan_rollout``'s 3-arg shape.
 
     ``scan_rollout`` caches compiled programs by ``id(fn)``, so one set is
     created per run and reused across every collection/eval call. When
-    ``encode_fn`` is given the policy consumes latents, not raw observations.
+    ``encode_fn`` is given the policy consumes latents, not raw observations;
+    with ``encoder_in_state`` the train_state is a ``(policy_state,
+    encoder_params)`` tuple so co-trained encoder params ride through the scan
+    as traced values instead of baked-in constants.
     """
     action_dim = adapter.action_dim
     if action_mode == "discrete":
@@ -291,19 +324,30 @@ def _make_scan_action_fns(
             zeros = jnp.zeros((rows,), dtype=jnp.float32)
             return actions, zeros, zeros, zeros
 
-    def policy_inputs(obs_flat):
-        return obs_flat if encode_fn is None else encode_fn(obs_flat)
+    def unpack(train_state):
+        if encoder_in_state:
+            return train_state
+        return train_state, None
+
+    def policy_inputs(encoder_params, obs_flat):
+        if encode_fn is None:
+            return obs_flat
+        if encoder_in_state:
+            return encode_fn(encoder_params, obs_flat)
+        return encode_fn(obs_flat)
 
     def sample_fn(train_state, key, obs_flat):
-        policy, values = train_state.apply_fn(
-            {"params": train_state.params}, policy_inputs(obs_flat)
+        policy_state, encoder_params = unpack(train_state)
+        policy, values = policy_state.apply_fn(
+            {"params": policy_state.params}, policy_inputs(encoder_params, obs_flat)
         )
         actions = policy.sample(seed=key)
         return actions, policy.log_prob(actions), values, policy.entropy()
 
     def mode_fn(train_state, _key, obs_flat):
-        policy, values = train_state.apply_fn(
-            {"params": train_state.params}, policy_inputs(obs_flat)
+        policy_state, encoder_params = unpack(train_state)
+        policy, values = policy_state.apply_fn(
+            {"params": policy_state.params}, policy_inputs(encoder_params, obs_flat)
         )
         actions = policy.mode()
         return actions, policy.log_prob(actions), values, policy.entropy()
@@ -400,6 +444,67 @@ def _resolve_latent_encoder(
             "collection path feeds raw observations to the policy"
         )
     return load_frozen_encoder(latent_encoder)
+
+
+def _resolve_genie(args: argparse.Namespace, adapter) -> GenieTokenizer | None:
+    """Build the Genie VQ-VAE tokenizer module (None for the quantile default)."""
+    if args.tokenizer != "genie":
+        return None
+    if args.arm not in ("discrete-transformer", "llada2"):
+        raise ValueError(
+            "--tokenizer genie requires a token arm (discrete-transformer or "
+            f"llada2), got {args.arm!r}"
+        )
+    if args.latent_encoder is not None:
+        raise ValueError(
+            "--tokenizer genie and --latent-encoder are mutually exclusive; "
+            "both replace the observation representation"
+        )
+    if not hasattr(adapter, "scan_rollout"):
+        raise ValueError(
+            "--tokenizer genie requires an adapter with scan_rollout; the loop "
+            "collection path feeds raw observations to the policy"
+        )
+    return GenieTokenizer(
+        obs_dim=int(np.prod(adapter.observation_shape)),
+        codebook_size=args.obs_bins,
+        code_dim=args.genie_code_dim,
+        model_dim=args.genie_model_dim,
+        num_heads=args.genie_heads,
+        num_layers=args.genie_layers,
+        mlp_ratio=args.mlp_ratio,
+    )
+
+
+def _train_genie(
+    genie_state,
+    data: dict[str, np.ndarray],
+    *,
+    steps: int,
+    batch_size: int,
+    rng: np.random.Generator,
+    log_every: int,
+    quiet: bool,
+    label: str,
+):
+    """Fit the VQ-VAE by reconstruction on raw replay observations."""
+    samples = np.concatenate([data["observations"], data["next_observations"]])
+    metrics: dict[str, Any] = {}
+    for step_index in range(steps):
+        index = rng.integers(0, samples.shape[0], size=batch_size)
+        genie_state, step_metrics = genie_train_step(
+            genie_state, jnp.asarray(samples[index])
+        )
+        if step_index % log_every == 0 or step_index == steps - 1:
+            metrics = {name: float(value) for name, value in step_metrics.items()}
+            if not quiet:
+                print(
+                    f"[{label}] step {step_index + 1}/{steps} "
+                    f"recon={metrics['genie_recon_loss']:.4f} "
+                    f"vq={metrics['genie_codebook_loss']:.4f}",
+                    flush=True,
+                )
+    return genie_state, metrics
 
 
 def _encode_replay(encode_fn, replay: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
@@ -781,8 +886,17 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
         encode_fn, obs_dim = _resolve_latent_encoder(
             args.latent_encoder, adapter, obs_dim, arm=args.arm
         )
+        genie_module = _resolve_genie(args, adapter)
+        genie_encode = (
+            make_genie_encode(genie_module) if genie_module is not None else None
+        )
         action_fns = (
-            _make_scan_action_fns(adapter, action_mode, encode_fn=encode_fn)
+            _make_scan_action_fns(
+                adapter,
+                action_mode,
+                encode_fn=genie_encode if genie_module is not None else encode_fn,
+                encoder_in_state=genie_module is not None,
+            )
             if hasattr(adapter, "scan_rollout")
             else None
         )
@@ -803,6 +917,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
             integration_steps=args.integration_steps,
             block_size=args.block_size,
             steps_per_block=args.steps_per_block,
+            code_dim=args.genie_code_dim if genie_module is not None else 1,
         )
         ppo_config = PPOConfig(
             learning_rate=args.ppo_learning_rate,
@@ -820,6 +935,24 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                 head_key, config, learning_rate=args.head_learning_rate
             )
         policy_state = create_policy_state(policy_key, config, ppo_config)
+        genie_state = None
+        genie_metrics: dict[str, Any] = {}
+        if genie_module is not None:
+            key, genie_key = jax.random.split(key)
+            genie_state = create_genie_state(
+                genie_key, genie_module, learning_rate=args.genie_learning_rate
+            )
+
+        def policy_carry(state):
+            """Pair the policy with the current encoder params for the scan fns."""
+            if genie_state is None or state is None:
+                return state
+            return (state, genie_state.params)
+
+        def genie_replay(replay):
+            """Re-encode raw replay observations with the current codebook."""
+            params = genie_state.params
+            return _encode_replay(lambda obs: genie_encode(params, obs), replay)
 
         key, random_eval_key, initial_eval_key = jax.random.split(key, 3)
         random_return = _eval_return(
@@ -837,7 +970,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
             rng=rng,
             eval_key=initial_eval_key,
             action_fns=action_fns,
-            policy_state=policy_state,
+            policy_state=policy_carry(policy_state),
             action_mode=action_mode,
         )
         record_eval("initial", 0, initial_return)
@@ -869,10 +1002,27 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
             )
             if encode_fn is not None:
                 data = _encode_replay(encode_fn, data)
-            obs_tokenizer = fit_quantile_tokenizer(
-                np.concatenate([data["observations"], data["next_observations"]]),
-                args.obs_bins,
-            )
+            raw_data = data
+            if genie_module is not None:
+                genie_state, genie_metrics = _train_genie(
+                    genie_state,
+                    raw_data,
+                    steps=args.genie_train_steps,
+                    batch_size=args.batch_size,
+                    rng=rng,
+                    log_every=max(1, args.genie_train_steps // 10),
+                    quiet=args.quiet,
+                    label=f"run {run_index} genie",
+                )
+                obs_tokenizer = CodebookTokenizer(
+                    codebook=genie_state.params["codebook"]
+                )
+                data = genie_replay(raw_data)
+            else:
+                obs_tokenizer = fit_quantile_tokenizer(
+                    np.concatenate([data["observations"], data["next_observations"]]),
+                    args.obs_bins,
+                )
             if action_mode == "continuous":
                 action_tokenizer = fit_quantile_tokenizer(
                     data["actions"], args.action_bins
@@ -937,7 +1087,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
             rng=rng,
             eval_key=offline_eval_key,
             action_fns=action_fns,
-            policy_state=policy_state,
+            policy_state=policy_carry(policy_state),
             action_mode=action_mode,
         )
         record_eval("offline", args.collect_steps, offline_return)
@@ -954,14 +1104,34 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                     rng=rng,
                     collect_key=collect_key,
                     action_fns=action_fns,
-                    policy_state=policy_state,
+                    policy_state=policy_carry(policy_state),
                     action_mode=action_mode,
                 )
                 if encode_fn is not None:
                     fresh = _encode_replay(encode_fn, fresh)
-                data = {
-                    name: np.concatenate([data[name], fresh[name]]) for name in data
-                }
+                if genie_module is not None:
+                    raw_data = {
+                        name: np.concatenate([raw_data[name], fresh[name]])
+                        for name in raw_data
+                    }
+                    genie_state, genie_metrics = _train_genie(
+                        genie_state,
+                        raw_data,
+                        steps=args.genie_online_train_steps,
+                        batch_size=args.batch_size,
+                        rng=rng,
+                        log_every=max(1, args.genie_online_train_steps // 5),
+                        quiet=args.quiet,
+                        label=f"run {run_index} online {iteration} genie",
+                    )
+                    obs_tokenizer = CodebookTokenizer(
+                        codebook=genie_state.params["codebook"]
+                    )
+                    data = genie_replay(raw_data)
+                else:
+                    data = {
+                        name: np.concatenate([data[name], fresh[name]]) for name in data
+                    }
                 key, fit_key, policy_fit_key = jax.random.split(key, 3)
                 wm_state, head_state, wm_loss, head_metrics = _fit_models(
                     wm_state,
@@ -1019,7 +1189,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                 rng=rng,
                 eval_key=iter_eval_key,
                 action_fns=action_fns,
-                policy_state=policy_state,
+                policy_state=policy_carry(policy_state),
                 action_mode=action_mode,
             )
             iteration_returns.append(iteration_return)
@@ -1044,7 +1214,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
             rng=rng,
             eval_key=final_eval_key,
             action_fns=action_fns,
-            policy_state=policy_state,
+            policy_state=policy_carry(policy_state),
             action_mode=action_mode,
         )
         record_eval("final", total_steps_per_env, trained_return)
@@ -1076,7 +1246,9 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
         "policy_trained_mean": trained_return,
         "policy_iteration_returns": iteration_returns,
         "eval_points": eval_points,
+        "tokenizer": args.tokenizer,
         "world_model_final_loss": wm_loss,
+        "genie_final_metrics": genie_metrics,
         "head_final_metrics": head_metrics,
         "ppo_final_metrics": ppo_metrics,
         "real_env_steps": real_env_steps,

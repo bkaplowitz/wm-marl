@@ -64,7 +64,7 @@ def create_policy_state(
         network = MLPActorCritic(action_dim=config.action_dim)
     else:
         network = GaussianMLPActorCritic(action_dim=config.action_dim)
-    params = network.init(key, jnp.zeros((1, config.obs_dim), dtype=jnp.float32))[
+    params = network.init(key, jnp.zeros((1, config.float_obs_dim), dtype=jnp.float32))[
         "params"
     ]
     tx = optax.chain(
@@ -84,7 +84,7 @@ def create_head_state(
     network = RewardContinueHead(hidden_dims=hidden_dims)
     params = network.init(
         key,
-        jnp.zeros((1, config.obs_dim), dtype=jnp.float32),
+        jnp.zeros((1, config.float_obs_dim), dtype=jnp.float32),
         jnp.zeros((1, config.action_dim), dtype=jnp.float32),
     )["params"]
     return TrainState.create(

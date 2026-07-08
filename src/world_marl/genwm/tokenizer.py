@@ -1,10 +1,13 @@
-"""Per-dimension quantile tokenizer for continuous observation/action vectors.
+"""Tokenizers mapping continuous vectors to per-factor token ids and back.
 
 The generative token arms (discrete-transformer CTMC flow, LLaDA2 block
-diffusion) model per-factor categoricals, so continuous vectors must be binned.
-Edges/centers are fit host-side from replay data quantiles (numpy, once per fit
-phase); encode/decode are pure jnp so the tokenizer can flow through jit as a
-traced pytree.
+diffusion) model per-factor categoricals, so continuous vectors must be
+discretized. ``QuantileTokenizer`` bins each dimension independently on fixed
+data quantiles; ``CodebookTokenizer`` exposes a learned VQ codebook (fit by
+:mod:`world_marl.genwm.genie`) where each token decodes to a ``code_dim``
+embedding vector rather than a scalar. Both are flax pytrees so they flow
+through jit as traced arguments; ``encode_tokens``/``decode_tokens`` dispatch
+on the tokenizer type.
 """
 
 from __future__ import annotations
@@ -37,6 +40,27 @@ class QuantileTokenizer:
         return self.centers.shape[0]
 
 
+@struct.dataclass
+class CodebookTokenizer:
+    """Maps flattened codebook embeddings to token ids and back.
+
+    ``codebook`` is ``[num_bins, code_dim]``. Values are ``[..., dim * code_dim]``
+    floats; encode is nearest-neighbor over codebook rows, which is the exact
+    inverse of decode on any point that lies on the codebook, so round trips
+    through the token world model are lossless.
+    """
+
+    codebook: jax.Array
+
+    @property
+    def num_bins(self) -> int:
+        return self.codebook.shape[0]
+
+    @property
+    def code_dim(self) -> int:
+        return self.codebook.shape[-1]
+
+
 def fit_quantile_tokenizer(samples: np.ndarray, num_bins: int) -> QuantileTokenizer:
     """Fit per-dimension bin edges and centers from data quantiles.
 
@@ -62,8 +86,15 @@ def fit_quantile_tokenizer(samples: np.ndarray, num_bins: int) -> QuantileTokeni
     )
 
 
-def encode_tokens(tokenizer: QuantileTokenizer, values: jax.Array) -> jax.Array:
-    """``[..., dim]`` floats -> ``[..., dim]`` int32 bin ids."""
+def encode_tokens(
+    tokenizer: QuantileTokenizer | CodebookTokenizer, values: jax.Array
+) -> jax.Array:
+    """``[..., dim]`` floats (``[..., dim * code_dim]`` for codebooks) -> int32 ids."""
+    if isinstance(tokenizer, CodebookTokenizer):
+        code_dim = tokenizer.code_dim
+        rows = values.reshape((*values.shape[:-1], -1, code_dim))
+        distances = jnp.sum((rows[..., None, :] - tokenizer.codebook) ** 2, axis=-1)
+        return jnp.argmin(distances, axis=-1).astype(jnp.int32)
     flat = values.reshape((-1, tokenizer.dim))
     tokens = jax.vmap(
         lambda edges, column: jnp.searchsorted(edges, column, side="right"),
@@ -73,8 +104,13 @@ def encode_tokens(tokenizer: QuantileTokenizer, values: jax.Array) -> jax.Array:
     return tokens.reshape(values.shape).astype(jnp.int32)
 
 
-def decode_tokens(tokenizer: QuantileTokenizer, tokens: jax.Array) -> jax.Array:
-    """``[..., dim]`` int32 bin ids -> ``[..., dim]`` float32 bin centers."""
+def decode_tokens(
+    tokenizer: QuantileTokenizer | CodebookTokenizer, tokens: jax.Array
+) -> jax.Array:
+    """``[..., dim]`` int32 ids -> bin centers (``[..., dim * code_dim]`` embeddings)."""
+    if isinstance(tokenizer, CodebookTokenizer):
+        embeddings = tokenizer.codebook[tokens]
+        return embeddings.reshape((*tokens.shape[:-1], -1)).astype(jnp.float32)
     flat = tokens.reshape((-1, tokenizer.dim))
     values = jax.vmap(
         lambda centers, column: centers[column],

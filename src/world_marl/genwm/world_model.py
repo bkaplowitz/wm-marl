@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import partial
+from typing import TypeAlias
 
 import jax
 import jax.numpy as jnp
@@ -44,10 +45,13 @@ from flow_matching.train import (
 )
 from world_marl.genwm.models import ContinuousTokenTransformer
 from world_marl.genwm.tokenizer import (
+    CodebookTokenizer,
     QuantileTokenizer,
     decode_tokens,
     encode_tokens,
 )
+
+ObsTokenizer: TypeAlias = QuantileTokenizer | CodebookTokenizer
 
 GENWM_ARMS = ("discrete-transformer", "continuous-transformer", "llada2")
 
@@ -69,6 +73,7 @@ class GenWMConfig:
     action_mode: str  # "discrete" | "continuous"
     obs_bins: int = 32  # observation-token vocabulary for the token arms
     action_bins: int = 8  # llada2 action-token vocabulary (continuous actions)
+    code_dim: int = 1  # floats per observation token (>1 = codebook embeddings)
     model_dim: int = 128
     num_heads: int = 4
     num_layers: int = 2
@@ -94,10 +99,16 @@ class GenWMConfig:
             raise ValueError(f"unsupported action_mode {self.action_mode!r}")
 
     @property
+    def float_obs_dim(self) -> int:
+        # Width of the float observation the policy/head/imagination see;
+        # equals obs_dim except with a codebook tokenizer.
+        return self.obs_dim * self.code_dim
+
+    @property
     def cond_dim(self) -> int:
         # One-hot discrete actions and raw continuous action vectors are both
         # action_dim wide.
-        return self.obs_dim + self.action_dim
+        return self.float_obs_dim + self.action_dim
 
     @property
     def num_action_tokens(self) -> int:
@@ -183,7 +194,7 @@ def genwm_train_step(
     observations: jax.Array,
     actions: jax.Array,
     next_observations: jax.Array,
-    obs_tokenizer: QuantileTokenizer,
+    obs_tokenizer: ObsTokenizer,
     action_tokenizer: QuantileTokenizer | None,
     config: GenWMConfig,
 ) -> tuple[TrainState, jax.Array]:
@@ -230,11 +241,11 @@ def genwm_predict_next(
     key: jax.Array,
     observations: jax.Array,
     actions: jax.Array,
-    obs_tokenizer: QuantileTokenizer,
+    obs_tokenizer: ObsTokenizer,
     action_tokenizer: QuantileTokenizer | None,
     config: GenWMConfig,
 ) -> jax.Array:
-    """Sample next observations ``(B, obs_dim)`` floats from the fitted model."""
+    """Sample next observations ``(B, float_obs_dim)`` floats from the fitted model."""
     if config.arm == "llada2":
         tokens = sample_llada2_block_diffusion(
             state.apply_fn,
