@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -22,6 +24,14 @@ from world_marl.genie2_continuous_jax.lam import (
     lam_kl_loss,
     sample_latent_actions,
 )
+from world_marl.genie2_continuous_jax.rl_heads import RewardContinueHead
+from world_marl.genie2_continuous_jax.sampling import sample_next_observation
+from world_marl.genie2_continuous_jax.training import (
+    create_genie2_train_state,
+    genie2_train_step,
+)
+from world_marl.scripts.train_genie2_continuous_jax import main as train_genie2_main
+from world_marl.world_model_foundation.collect import synthetic_sequence_collector
 
 
 def test_config_defaults_use_continuous_latents_not_vq_primary() -> None:
@@ -112,3 +122,93 @@ def test_linear_action_bridge_recovers_known_action_mapping() -> None:
     np.testing.assert_allclose(predicted, real_actions, atol=1e-4)
     assert bridge.latent_action_dim == 2
     assert bridge.real_action_dim == 1
+
+
+def test_reward_continue_head_and_sampler_shapes_are_finite() -> None:
+    latents = jnp.ones((3, 12), dtype=jnp.float32)
+    latent_actions = jnp.zeros((3, 5), dtype=jnp.float32)
+    head = RewardContinueHead(hidden_dims=(16,))
+    params = head.init(jax.random.PRNGKey(4), latents, latent_actions)
+
+    reward, continue_logit = head.apply(params, latents, latent_actions)
+
+    assert reward.shape == (3,)
+    assert continue_logit.shape == (3,)
+    assert bool(jnp.all(jnp.isfinite(reward)))
+
+    autoencoder = ContinuousLatentAutoencoder(latent_dim=12, hidden_dims=(16,))
+    obs = jnp.ones((3, 6, 6, 3), dtype=jnp.float32) * 0.25
+    ae_params = autoencoder.init(jax.random.PRNGKey(5), obs)
+    decoded = sample_next_observation(autoencoder.apply, ae_params, latents)
+
+    assert decoded.shape == obs.shape
+    assert bool(jnp.all((decoded >= 0.0) & (decoded <= 1.0)))
+
+
+def test_genie2_train_step_updates_params_and_returns_finite_metrics() -> None:
+    config = Genie2ContinuousConfig()
+    batch = synthetic_sequence_collector(
+        env_name="synthetic:image-grid",
+        time_steps=4,
+        batch_size=2,
+        observation_shape=(6, 6, 3),
+        action_dim=3,
+    )
+    state = create_genie2_train_state(
+        jax.random.PRNGKey(6),
+        observation_shape=(6, 6, 3),
+        config=config,
+        learning_rate=1e-3,
+    )
+
+    updated, metrics = genie2_train_step(state, batch, config)
+
+    assert updated.step == state.step + 1
+    for key in (
+        "loss",
+        "reconstruction_loss",
+        "lam_kl_loss",
+        "dynamics_loss",
+        "reward_loss",
+        "continue_loss",
+    ):
+        assert key in metrics
+        assert bool(jnp.isfinite(metrics[key]))
+
+
+def test_genie2_cli_smoke_writes_expected_artifacts(tmp_path) -> None:
+    exit_code = train_genie2_main(
+        [
+            "--env",
+            "synthetic:image-grid",
+            "--out-dir",
+            str(tmp_path),
+            "--train-steps",
+            "2",
+            "--policy-train-steps",
+            "2",
+            "--time-steps",
+            "4",
+            "--batch-size",
+            "2",
+            "--image-size",
+            "6",
+            "--allow-fail",
+        ]
+    )
+
+    assert exit_code == 0
+    for name in (
+        "config.json",
+        "sources.json",
+        "autoencoder_metrics.jsonl",
+        "lam_metrics.jsonl",
+        "dynamics_metrics.jsonl",
+        "reward_continue_metrics.jsonl",
+        "latent_action_bridge.json",
+        "outcome.json",
+        "summary.json",
+    ):
+        assert (tmp_path / name).exists()
+    summary = json.loads((tmp_path / "summary.json").read_text())
+    assert summary["model"] == "genie2_continuous_jax"
