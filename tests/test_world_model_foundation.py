@@ -5,6 +5,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from world_marl.world_model_foundation.collect import (
+    synthetic_sequence_collector,
+    write_json_artifact,
+    write_jsonl_metrics,
+)
 from world_marl.world_model_foundation.metrics import METRIC_KEYS
 from world_marl.world_model_foundation.preprocess import normalize_observations
 from world_marl.world_model_foundation.replay import (
@@ -141,3 +146,26 @@ def test_architecture_docs_lock_source_papers_and_boundaries() -> None:
     assert "latent-to-real-action bridge" in genie_doc
     assert "https://github.com/p-doom/jasmine" in genie_doc
     assert "LeWM/LeJEPA innovations are ablations only" in genie_doc
+
+
+def test_synthetic_collector_and_artifact_writers(tmp_path: Path) -> None:
+    batch = synthetic_sequence_collector(
+        env_name="synthetic:image-grid",
+        time_steps=4,
+        batch_size=2,
+        observation_shape=(5, 5, 3),
+        action_dim=3,
+    )
+
+    assert batch.observations.shape == (4, 2, 5, 5, 3)
+    assert batch.metadata["env"] == "synthetic:image-grid"
+    assert batch.metadata["collector"] == "synthetic_sequence_collector"
+
+    config_path = write_json_artifact(tmp_path / "config.json", {"train_steps": 2})
+    metrics_path = write_jsonl_metrics(
+        tmp_path / "metrics.jsonl",
+        [{"step": 0, "loss": 1.0}, {"step": 1, "loss": 0.5}],
+    )
+
+    assert config_path.read_text().strip() == '{\n  "train_steps": 2\n}'
+    assert metrics_path.read_text().count("\n") == 2
