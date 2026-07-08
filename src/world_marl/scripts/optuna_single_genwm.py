@@ -2,10 +2,12 @@
 
 Wraps ``world-marl-train-single-genwm`` in one subprocess per trial, so every
 trial produces the standard config/outcome/summary artifacts in a fresh JAX
-process. The objective is ``policy_trained_mean`` from the trial's
-``summary.json``. W&B logging is delegated to the training script itself
-(``--wandb-project`` is forwarded, one W&B run per trial), keeping this
-wrapper a thin controller: sqlite study, ``trials.csv``, ``best_trial.json``.
+process. Each trial runs ``--runs-per-trial`` seeded runs inside that one
+subprocess (``--num-runs``); the objective is ``policy_trained_mean`` from the
+trial's ``summary.json``, which is already the mean across runs. W&B logging
+is delegated to the training script itself (``--wandb-project`` is forwarded,
+one W&B run per seed, grouped per trial), keeping this wrapper a thin
+controller: sqlite study, ``trials.csv``, ``best_trial.json``.
 
 Budgets come from the shared JEPA presets (same keys ``compare_single_wm``
 forwards), so tuned trials stay comparable to the benchmark arms. Needs the
@@ -44,7 +46,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--study-name", default=None)
     parser.add_argument("--storage", default=None)
     parser.add_argument("--n-trials", type=int, default=20)
+    parser.add_argument(
+        "--runs-per-trial",
+        type=int,
+        default=3,
+        help="Seeded runs per trial; the objective averages across them.",
+    )
     parser.add_argument("--sampler-seed", type=int, default=0)
+    parser.add_argument(
+        "--enqueue",
+        action="append",
+        default=[],
+        metavar="JSON",
+        help="JSON dict of sampled params to enqueue as an initial trial "
+        "(repeatable; values must match the search-space choices).",
+    )
     parser.add_argument(
         "--extra-arg",
         action="append",
@@ -94,12 +110,17 @@ def base_params(args: argparse.Namespace) -> dict[str, Any]:
     params.update({key: COMMON_PARAMS[key] for key in GENWM_COMMON_KEYS})
     params["eval_episodes"] = preset.get("policy_eval_episodes", 64)
     params["max_cycles"] = MAX_CYCLES
+    params["num_runs"] = args.runs_per_trial
     params["allow_fail"] = True
     return params
 
 
 def build_command(
-    args: argparse.Namespace, params: dict[str, Any], trial_dir: Path, seed: int
+    args: argparse.Namespace,
+    params: dict[str, Any],
+    trial_dir: Path,
+    seed: int,
+    trial_number: int,
 ) -> list[str]:
     command = [
         sys.executable,
@@ -123,7 +144,8 @@ def build_command(
         command.extend(["--wandb-project", args.wandb_project])
         if args.wandb_entity:
             command.extend(["--wandb-entity", args.wandb_entity])
-        command.extend(["--wandb-group", args.wandb_group or args.study_name])
+        group = args.wandb_group or args.study_name
+        command.extend(["--wandb-group", f"{group}_trial{trial_number:04d}"])
     command.extend(["--out-dir", str(trial_dir)])
     command.extend(args.extra_arg)
     return command
@@ -143,7 +165,7 @@ def run_trial(args: argparse.Namespace, trial) -> float:
     trial_dir = args.out_root / f"trial_{trial.number:04d}"
     trial_dir.mkdir(parents=True, exist_ok=True)
     seed = args.seed + trial.number
-    command = build_command(args, params, trial_dir, seed)
+    command = build_command(args, params, trial_dir, seed, trial.number)
     trial.set_user_attr("trial_dir", str(trial_dir))
     trial.set_user_attr("command", shlex.join(command))
     if args.dry_run:
@@ -168,14 +190,20 @@ def run_trial(args: argparse.Namespace, trial) -> float:
         return FAILED_SCORE
     score = float(summary["policy_trained_mean"])
     for key in (
+        "num_runs",
         "policy_random_mean",
         "policy_initial_mean",
         "improvement_over_baseline",
     ):
         if summary.get(key) is not None:
             trial.set_user_attr(key, summary[key])
+    per_run = [
+        json.loads(path.read_text()).get("policy_trained_mean")
+        for path in sorted(trial_dir.rglob("outcome.json"))
+    ]
+    trial.set_user_attr("per_run_trained", per_run)
     print(
-        f"[trial {trial.number}] trained={score:.2f} "
+        f"[trial {trial.number}] trained={score:.2f} per-run={per_run} "
         f"exit={result.returncode} ({elapsed / 60:.1f} min)",
         flush=True,
     )
@@ -211,6 +239,8 @@ def main(argv: list[str] | None = None) -> int:
         sampler=optuna.samplers.TPESampler(seed=args.sampler_seed),
         load_if_exists=True,
     )
+    for raw in args.enqueue:
+        study.enqueue_trial(json.loads(raw), skip_if_exists=True)
     study.optimize(lambda trial: run_trial(args, trial), n_trials=args.n_trials)
 
     frame = study.trials_dataframe(attrs=("number", "value", "params", "state"))
