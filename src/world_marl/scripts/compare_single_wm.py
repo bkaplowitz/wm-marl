@@ -91,8 +91,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--wandb-project",
         default=None,
-        help="Forward W&B logging to train_single_genwm jobs (jepa jobs have "
-        "no W&B support and are left unchanged).",
+        help="Forward W&B logging to every job (genwm and jepa alike).",
     )
     parser.add_argument("--wandb-entity", default=None)
     parser.add_argument(
@@ -128,11 +127,22 @@ def _flag_tokens(params: dict[str, Any]) -> list[str]:
     return tokens
 
 
+def _add_wandb_params(params: dict[str, Any], args: argparse.Namespace) -> None:
+    if not args.wandb_project:
+        return
+    params["wandb_project"] = args.wandb_project
+    if args.wandb_entity:
+        params["wandb_entity"] = args.wandb_entity
+    if args.wandb_group:
+        params["wandb_group"] = args.wandb_group
+
+
 def build_command(
     env: str, arm: str, job_dir: Path, args: argparse.Namespace
 ) -> list[str]:
     if arm == JEPA_ARM:
         params = {**COMMON_PARAMS, **PRESETS[args.preset]}
+        _add_wandb_params(params, args)
         return [
             "uv",
             "run",
@@ -152,12 +162,7 @@ def build_command(
     params["eval_episodes"] = preset.get("policy_eval_episodes", 64)
     params["max_cycles"] = MAX_CYCLES
     params["allow_fail"] = True
-    if args.wandb_project:
-        params["wandb_project"] = args.wandb_project
-        if args.wandb_entity:
-            params["wandb_entity"] = args.wandb_entity
-        if args.wandb_group:
-            params["wandb_group"] = args.wandb_group
+    _add_wandb_params(params, args)
     return [
         "uv",
         "run",

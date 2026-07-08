@@ -489,6 +489,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--allow-fail", action="store_true")
+    # Weights & Biases (disabled unless --wandb-project is set).
+    parser.add_argument("--wandb-project", default=None)
+    parser.add_argument("--wandb-entity", default=None)
+    parser.add_argument("--wandb-group", default=None)
     args = parser.parse_args()
     _validate_args(parser, args)
     return args
@@ -751,6 +755,25 @@ def _make_vector_adapter(
     raise ValueError(f"unsupported env: {args.env!r}")
 
 
+def _init_wandb(args: argparse.Namespace, *, run_index: int, control: ControlMode):
+    """Create a W&B run when --wandb-project is set (returns None otherwise)."""
+    if not args.wandb_project:
+        return None
+    import wandb
+
+    env_slug = args.env.replace(":", "_").replace("/", "_")
+    config = to_jsonable(vars(args))
+    config.update({"run_index": run_index, "control": control})
+    return wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        group=args.wandb_group or f"{env_slug}-jepa",
+        name=f"{env_slug}-jepa-{control}-run{run_index:03d}",
+        config=config,
+        reinit=True,
+    )
+
+
 def run_one(
     args: argparse.Namespace,
     *,
@@ -758,7 +781,8 @@ def run_one(
     run_index: int,
     control: ControlMode,
 ) -> dict[str, Any]:
-    logger = RunLogger(run_dir)
+    wandb_run = _init_wandb(args, run_index=run_index, control=control)
+    logger = RunLogger(run_dir, wandb_run=wandb_run)
     seed = args.seed + 10_000 * run_index
     adapter = _make_vector_adapter(args, seed=seed)
     action_mode = _action_mode(args.env)
@@ -1402,9 +1426,19 @@ def run_one(
             )
         )
         logger.write_json("outcome.json", outcome)
+        if wandb_run is not None:
+            wandb_run.summary.update(
+                {
+                    key: value
+                    for key, value in to_jsonable(outcome).items()
+                    if isinstance(value, (int, float, bool, str))
+                }
+            )
         return to_jsonable(outcome)
     finally:
         adapter.close()
+        if wandb_run is not None:
+            wandb_run.finish()
 
 
 def _collect_random_steps(
