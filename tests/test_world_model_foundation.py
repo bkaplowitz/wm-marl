@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from world_marl.world_model_foundation.collect import (
+    adapter_action_mode,
+    collect_adapter_sequence,
+    collect_world_model_sequence,
+    make_single_agent_adapter,
     synthetic_sequence_collector,
     write_json_artifact,
     write_jsonl_metrics,
@@ -20,6 +25,103 @@ from world_marl.world_model_foundation.sources import world_model_sources
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class _FakeDiscreteVectorAdapter:
+    substrate = "fake:discrete-vector"
+    num_envs = 2
+    observation_shape = (3,)
+    raw_observation_shape = observation_shape
+    action_shape = ()
+    action_dim = 3
+    action_low = None
+    action_high = None
+
+    def __init__(self) -> None:
+        self._step = 0
+
+    def reset(self) -> np.ndarray:
+        self._step = 0
+        return np.zeros((self.num_envs, 1, *self.observation_shape), dtype=np.float32)
+
+    def step(self, actions: np.ndarray) -> SimpleNamespace:
+        self._step += 1
+        flat_actions = np.asarray(actions, dtype=np.int32).reshape((self.num_envs,))
+        observations = np.full(
+            (self.num_envs, 1, *self.observation_shape),
+            fill_value=float(self._step),
+            dtype=np.float32,
+        )
+        rewards = flat_actions.astype(np.float32).reshape((self.num_envs, 1))
+        dones = np.zeros((self.num_envs, 1), dtype=np.float32)
+        dones[0, 0] = float(self._step == 3)
+        return SimpleNamespace(
+            observations=observations,
+            rewards=rewards,
+            dones=dones,
+            completed_returns=(),
+            completed_lengths=(),
+            step_infos=(),
+            infos=(),
+        )
+
+    def sample_actions(self, rng: np.random.Generator) -> np.ndarray:
+        return rng.integers(
+            low=0,
+            high=self.action_dim,
+            size=(self.num_envs, 1),
+            dtype=np.int32,
+        )
+
+
+class _FakeContinuousImageAdapter:
+    substrate = "fake:continuous-image"
+    num_envs = 2
+    observation_shape = (4, 5, 3)
+    raw_observation_shape = observation_shape
+    action_shape = (2,)
+    action_dim = 2
+    action_low = np.array([-1.0, -0.5], dtype=np.float32)
+    action_high = np.array([1.0, 0.5], dtype=np.float32)
+
+    def __init__(self) -> None:
+        self._step = 0
+        self.seen_actions: list[np.ndarray] = []
+
+    def reset(self) -> np.ndarray:
+        self._step = 0
+        self.seen_actions.clear()
+        return np.zeros((self.num_envs, 1, *self.observation_shape), dtype=np.float32)
+
+    def step(self, actions: np.ndarray) -> SimpleNamespace:
+        self._step += 1
+        action_batch = np.asarray(actions, dtype=np.float32).reshape(
+            (self.num_envs, self.action_dim)
+        )
+        self.seen_actions.append(action_batch)
+        observations = np.full(
+            (self.num_envs, 1, *self.observation_shape),
+            fill_value=float(self._step) / 10.0,
+            dtype=np.float32,
+        )
+        rewards = action_batch.sum(axis=-1, keepdims=True).astype(np.float32)
+        dones = np.zeros((self.num_envs, 1), dtype=np.float32)
+        return SimpleNamespace(
+            observations=observations,
+            rewards=rewards,
+            dones=dones,
+            completed_returns=(),
+            completed_lengths=(),
+            step_infos=(),
+            infos=(),
+        )
+
+    def sample_actions(self, rng: np.random.Generator) -> np.ndarray:
+        return rng.uniform(
+            low=self.action_low,
+            high=self.action_high,
+            size=(self.num_envs, self.action_dim),
+        ).astype(np.float32)[:, None, :]
 
 
 def test_sequence_batch_validates_time_major_contract() -> None:
@@ -169,3 +271,88 @@ def test_synthetic_collector_and_artifact_writers(tmp_path: Path) -> None:
 
     assert config_path.read_text().strip() == '{\n  "train_steps": 2\n}'
     assert metrics_path.read_text().count("\n") == 2
+
+
+def test_adapter_collection_preserves_vector_observation_and_discrete_actions() -> None:
+    adapter = _FakeDiscreteVectorAdapter()
+
+    batch = collect_adapter_sequence(
+        adapter,
+        env_name="fake:discrete-vector",
+        time_steps=4,
+        seed=7,
+    )
+
+    assert adapter_action_mode(adapter) == "discrete"
+    assert batch.observations.shape == (4, 2, 3)
+    assert batch.actions.shape == (4, 2)
+    assert batch.actions.dtype == np.int32
+    assert batch.rewards.shape == (4, 2)
+    assert batch.continues.shape == (4, 2)
+    assert bool(np.all(batch.is_first[0]))
+    assert not bool(np.any(batch.is_first[1:]))
+    assert bool(batch.is_terminal[2, 0])
+    assert batch.continues[2, 0] == 0.0
+    assert batch.metadata["env"] == "fake:discrete-vector"
+    assert batch.metadata["action_mode"] == "discrete"
+    assert batch.metadata["observation_shape"] == (3,)
+    assert batch.metadata["action_shape"] == ()
+    assert batch.metadata["action_dim"] == 3
+
+
+def test_adapter_collection_preserves_hwc_observation_and_continuous_actions() -> None:
+    adapter = _FakeContinuousImageAdapter()
+
+    batch = collect_adapter_sequence(
+        adapter,
+        env_name="fake:continuous-image",
+        time_steps=3,
+        seed=11,
+    )
+
+    assert adapter_action_mode(adapter) == "continuous"
+    assert batch.observations.shape == (3, 2, 4, 5, 3)
+    assert batch.actions.shape == (3, 2, 2)
+    assert batch.actions.dtype == np.float32
+    assert len(adapter.seen_actions) == 3
+    assert np.all(batch.actions >= adapter.action_low - 1e-6)
+    assert np.all(batch.actions <= adapter.action_high + 1e-6)
+    assert batch.metadata["env"] == "fake:continuous-image"
+    assert batch.metadata["action_mode"] == "continuous"
+    assert batch.metadata["observation_shape"] == (4, 5, 3)
+    assert batch.metadata["action_shape"] == (2,)
+    assert batch.metadata["action_dim"] == 2
+
+
+def test_collect_world_model_sequence_dispatches_synthetic_and_real_adapters() -> None:
+    synthetic = collect_world_model_sequence(
+        env_name="synthetic:image-grid",
+        time_steps=2,
+        batch_size=2,
+        observation_shape=(3, 3, 1),
+        action_dim=2,
+    )
+    assert synthetic.observations.shape == (2, 2, 3, 3, 1)
+    assert synthetic.metadata["collector"] == "synthetic_sequence_collector"
+
+    with pytest.raises(ValueError, match="dmc:<domain>/<task>"):
+        make_single_agent_adapter("dmc:cartpole", num_envs=1, max_cycles=2, seed=0)
+
+
+def test_brax_adapter_can_be_constructed_when_dependency_is_installed() -> None:
+    pytest.importorskip("brax")
+
+    adapter = make_single_agent_adapter(
+        "brax:reacher",
+        num_envs=1,
+        max_cycles=2,
+        seed=0,
+    )
+    try:
+        assert adapter_action_mode(adapter) == "continuous"
+        assert adapter.observation_shape == (11,)
+        assert adapter.action_shape == (2,)
+    finally:
+        close = getattr(adapter, "close", None)
+        if close is not None:
+            close()
