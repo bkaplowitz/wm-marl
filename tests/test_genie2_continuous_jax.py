@@ -5,6 +5,7 @@ import json
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from world_marl.genie2_continuous_jax.action_bridge import (
     fit_linear_action_bridge,
@@ -32,6 +33,7 @@ from world_marl.genie2_continuous_jax.training import (
 )
 from world_marl.scripts.train_genie2_continuous_jax import main as train_genie2_main
 from world_marl.world_model_foundation.collect import synthetic_sequence_collector
+from world_marl.world_model_foundation.replay import WorldModelSequenceBatch
 
 
 def test_config_defaults_use_continuous_latents_not_vq_primary() -> None:
@@ -176,6 +178,34 @@ def test_genie2_train_step_updates_params_and_returns_finite_metrics() -> None:
         assert bool(jnp.isfinite(metrics[key]))
 
 
+def test_genie2_train_step_accepts_vector_adapter_replay() -> None:
+    config = Genie2ContinuousConfig()
+    batch = WorldModelSequenceBatch(
+        observations=np.linspace(0.0, 1.0, num=4 * 2 * 5, dtype=np.float32).reshape(
+            (4, 2, 5)
+        ),
+        actions=np.zeros((4, 2, 2), dtype=np.float32),
+        rewards=np.zeros((4, 2), dtype=np.float32),
+        continues=np.ones((4, 2), dtype=np.float32),
+        is_first=np.array(
+            [[True, True], [False, False], [False, False], [False, False]]
+        ),
+        is_terminal=np.zeros((4, 2), dtype=bool),
+        metadata={"action_mode": "continuous", "env": "fake:continuous"},
+    )
+    state = create_genie2_train_state(
+        jax.random.PRNGKey(7),
+        observation_shape=batch.observation_shape,
+        config=config,
+        learning_rate=1e-3,
+    )
+
+    updated, metrics = genie2_train_step(state, batch, config)
+
+    assert updated.step == state.step + 1
+    assert bool(jnp.isfinite(metrics["loss"]))
+
+
 def test_genie2_cli_smoke_writes_expected_artifacts(tmp_path) -> None:
     exit_code = train_genie2_main(
         [
@@ -215,3 +245,50 @@ def test_genie2_cli_smoke_writes_expected_artifacts(tmp_path) -> None:
         assert (tmp_path / name).exists()
     summary = json.loads((tmp_path / "summary.json").read_text())
     assert summary["model"] == "genie2_continuous_jax"
+
+
+def test_genie2_cli_brax_smoke_writes_real_env_bridge_artifacts(tmp_path) -> None:
+    pytest.importorskip("brax")
+
+    exit_code = train_genie2_main(
+        [
+            "--env",
+            "brax:reacher",
+            "--out-dir",
+            str(tmp_path),
+            "--num-envs",
+            "2",
+            "--collect-steps",
+            "4",
+            "--max-cycles",
+            "4",
+            "--train-steps",
+            "2",
+            "--policy-train-steps",
+            "2",
+            "--eval-episodes",
+            "1",
+            "--allow-fail",
+        ]
+    )
+
+    assert exit_code == 0
+    for name in (
+        "config.json",
+        "autoencoder_metrics.jsonl",
+        "lam_metrics.jsonl",
+        "dynamics_metrics.jsonl",
+        "reward_continue_metrics.jsonl",
+        "latent_action_bridge.json",
+        "latent_action_usage.json",
+        "real_env_metrics.jsonl",
+        "open_loop_rollout.png",
+        "latent_action_grid.png",
+        "outcome.json",
+        "summary.json",
+    ):
+        assert (tmp_path / name).exists()
+    summary = json.loads((tmp_path / "summary.json").read_text())
+    assert summary["env"] == "brax:reacher"
+    assert summary["action_mode"] == "continuous"
+    assert "real_env_bridged_return" in summary
