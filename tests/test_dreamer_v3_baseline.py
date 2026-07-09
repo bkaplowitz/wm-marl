@@ -4,6 +4,8 @@ import json
 
 import jax
 import jax.numpy as jnp
+import numpy as np
+import pytest
 
 from world_marl.dreamer_v3_baseline.config import DreamerV3Config
 from world_marl.dreamer_v3_baseline.losses import (
@@ -30,6 +32,7 @@ from world_marl.dreamer_v3_baseline.training import (
 )
 from world_marl.scripts.train_dreamer_v3_baseline import main as train_dreamer_main
 from world_marl.world_model_foundation.collect import synthetic_sequence_collector
+from world_marl.world_model_foundation.replay import WorldModelSequenceBatch
 
 
 def test_config_defaults_lock_categorical_rssm_contract() -> None:
@@ -144,6 +147,35 @@ def test_world_model_train_step_updates_params_and_returns_finite_metrics() -> N
         assert bool(jnp.isfinite(metrics[key]))
 
 
+def test_world_model_train_step_accepts_continuous_adapter_actions() -> None:
+    config = DreamerV3Config(
+        action_dim=2,
+        action_mode="continuous",
+        observation_shape=(5,),
+    )
+    batch = WorldModelSequenceBatch(
+        observations=np.linspace(0.0, 1.0, num=4 * 2 * 5, dtype=np.float32).reshape(
+            (4, 2, 5)
+        ),
+        actions=np.zeros((4, 2, config.action_dim), dtype=np.float32),
+        rewards=np.zeros((4, 2), dtype=np.float32),
+        continues=np.ones((4, 2), dtype=np.float32),
+        is_first=np.array(
+            [[True, True], [False, False], [False, False], [False, False]]
+        ),
+        is_terminal=np.zeros((4, 2), dtype=bool),
+        metadata={"action_mode": "continuous", "env": "fake:continuous"},
+    )
+    state = create_dreamer_train_state(
+        jax.random.PRNGKey(9), config, learning_rate=1e-3
+    )
+
+    updated, metrics = dreamer_train_step(state, batch, config)
+
+    assert updated.step == state.step + 1
+    assert bool(jnp.isfinite(metrics["loss"]))
+
+
 def test_dreamer_cli_smoke_writes_expected_artifacts(tmp_path) -> None:
     exit_code = train_dreamer_main(
         [
@@ -179,3 +211,46 @@ def test_dreamer_cli_smoke_writes_expected_artifacts(tmp_path) -> None:
         assert (tmp_path / name).exists()
     outcome = json.loads((tmp_path / "outcome.json").read_text())
     assert outcome["status"] in {"ok", "learning_gate_failed"}
+
+
+def test_dreamer_cli_brax_smoke_writes_real_env_artifacts(tmp_path) -> None:
+    pytest.importorskip("brax")
+
+    exit_code = train_dreamer_main(
+        [
+            "--env",
+            "brax:reacher",
+            "--out-dir",
+            str(tmp_path),
+            "--num-envs",
+            "2",
+            "--collect-steps",
+            "4",
+            "--max-cycles",
+            "4",
+            "--train-steps",
+            "2",
+            "--policy-train-steps",
+            "2",
+            "--eval-episodes",
+            "1",
+            "--allow-fail",
+        ]
+    )
+
+    assert exit_code == 0
+    for name in (
+        "config.json",
+        "world_model_metrics.jsonl",
+        "actor_critic_metrics.jsonl",
+        "real_env_metrics.jsonl",
+        "open_loop_reconstruction.png",
+        "imagined_rollout.png",
+        "outcome.json",
+        "summary.json",
+    ):
+        assert (tmp_path / name).exists()
+    summary = json.loads((tmp_path / "summary.json").read_text())
+    assert summary["env"] == "brax:reacher"
+    assert summary["action_mode"] == "continuous"
+    assert "real_env_return" in summary

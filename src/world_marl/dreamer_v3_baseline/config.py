@@ -48,6 +48,7 @@ class ContinueHeadConfig:
 class DreamerV3Config:
     action_dim: int
     observation_shape: tuple[int, ...]
+    action_mode: str = "discrete"
     rssm: RSSMConfig = field(default_factory=RSSMConfig)
     encoder: EncoderConfig = field(default_factory=EncoderConfig)
     reward_head: RewardHeadConfig = field(default_factory=RewardHeadConfig)
@@ -59,6 +60,8 @@ class DreamerV3Config:
     def __post_init__(self) -> None:
         if self.action_dim <= 0:
             raise ValueError("action_dim must be positive")
+        if self.action_mode not in {"discrete", "continuous"}:
+            raise ValueError("action_mode must be 'discrete' or 'continuous'")
         if not self.observation_shape or any(
             dim <= 0 for dim in self.observation_shape
         ):

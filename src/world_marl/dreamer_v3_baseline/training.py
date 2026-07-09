@@ -64,9 +64,7 @@ class DreamerWorldModel(nn.Module):
         features = []
         for t in range(time_steps):
             embed = encoder(observations[t])
-            action_features = jax.nn.one_hot(
-                actions[t].astype(jnp.int32), self.config.action_dim
-            )
+            action_features = dreamer_action_features(actions[t], self.config)
             prior, posterior = rssm(prev_state, action_features, embed)
             feature = flatten_rssm_state(posterior)
             reconstructions.append(decoder(feature))
@@ -86,6 +84,12 @@ class DreamerWorldModel(nn.Module):
         }
 
 
+def dreamer_action_features(actions: jax.Array, config: DreamerV3Config) -> jax.Array:
+    if config.action_mode == "discrete":
+        return jax.nn.one_hot(actions.astype(jnp.int32), config.action_dim)
+    return actions.astype(jnp.float32).reshape((actions.shape[0], config.action_dim))
+
+
 def create_dreamer_train_state(
     key: jax.Array,
     config: DreamerV3Config,
@@ -94,7 +98,10 @@ def create_dreamer_train_state(
 ) -> TrainState:
     model = DreamerWorldModel(config)
     dummy_obs = jnp.zeros((1, 1, *config.observation_shape), dtype=jnp.float32)
-    dummy_actions = jnp.zeros((1, 1), dtype=jnp.int32)
+    if config.action_mode == "discrete":
+        dummy_actions = jnp.zeros((1, 1), dtype=jnp.int32)
+    else:
+        dummy_actions = jnp.zeros((1, 1, config.action_dim), dtype=jnp.float32)
     params = model.init(key, dummy_obs, dummy_actions)
     return TrainState.create(
         apply_fn=model.apply,
@@ -110,7 +117,8 @@ def dreamer_world_model_loss(
     config: DreamerV3Config,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     observations = jnp.asarray(batch.observations, dtype=jnp.float32)
-    actions = jnp.asarray(batch.actions, dtype=jnp.int32)
+    action_dtype = jnp.int32 if config.action_mode == "discrete" else jnp.float32
+    actions = jnp.asarray(batch.actions, dtype=action_dtype)
     rewards = jnp.asarray(batch.rewards, dtype=jnp.float32)
     continues = jnp.asarray(batch.continues, dtype=jnp.float32)
     outputs = state.apply_fn(params, observations, actions)
