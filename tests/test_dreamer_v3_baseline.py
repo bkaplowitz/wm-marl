@@ -300,6 +300,13 @@ def test_dreamer_cli_smoke_writes_expected_artifacts(tmp_path) -> None:
         assert (tmp_path / name).exists()
     outcome = json.loads((tmp_path / "outcome.json").read_text())
     assert outcome["status"] in {"ok", "learning_gate_failed"}
+    summary = json.loads((tmp_path / "summary.json").read_text())
+    assert summary["environment_backend"] == "synthetic"
+    assert summary["observation_mode"] == "pixels"
+    assert summary["real_env_transitions"] == 0
+    assert summary["model_updates"] == 2
+    assert summary["policy_updates"] == 2
+    assert summary["imagined_transitions"] == 60
 
 
 def test_dreamer_cli_brax_smoke_writes_real_env_artifacts(tmp_path) -> None:
@@ -343,8 +350,58 @@ def test_dreamer_cli_brax_smoke_writes_real_env_artifacts(tmp_path) -> None:
     assert summary["env"] == "brax:reacher"
     assert summary["action_mode"] == "continuous"
     assert summary["policy_source"] == "imagined_actor"
+    assert summary["environment_backend"] == "brax"
+    assert summary["observation_mode"] == "vector"
+    assert summary["real_env_transitions"] == 8
+    assert summary["model_updates"] == 2
+    assert summary["policy_updates"] == 2
     assert "real_env_return" in summary
     real_env_row = json.loads(
         (tmp_path / "real_env_metrics.jsonl").read_text().splitlines()[0]
     )
     assert real_env_row["policy_source"] == "imagined_actor"
+
+
+@pytest.mark.integration
+def test_dreamer_cli_official_dmc_pixel_smoke_writes_genuine_provenance(
+    tmp_path,
+) -> None:
+    pytest.importorskip("dm_control")
+
+    exit_code = train_dreamer_main(
+        [
+            "--env",
+            "dmc-pixels:point_mass/easy",
+            "--out-dir",
+            str(tmp_path),
+            "--num-envs",
+            "1",
+            "--collect-steps",
+            "4",
+            "--max-cycles",
+            "4",
+            "--train-steps",
+            "2",
+            "--policy-train-steps",
+            "2",
+            "--eval-episodes",
+            "1",
+            "--image-size",
+            "16",
+            "--dmc-camera-id",
+            "0",
+            "--allow-fail",
+        ]
+    )
+
+    assert exit_code == 0
+    summary = json.loads((tmp_path / "summary.json").read_text())
+    assert summary["env"] == "dmc-pixels:point_mass/easy"
+    assert summary["seed"] == 0
+    assert summary["environment_backend"] == "dm_control"
+    assert summary["observation_mode"] == "pixels"
+    assert summary["observation_shape"] == [16, 16, 3]
+    assert summary["real_env_transitions"] == 4
+    assert summary["evaluation_env_transitions"] == 4
+    assert summary["policy_source"] == "imagined_actor"
+    assert np.isfinite(summary["real_env_return"])

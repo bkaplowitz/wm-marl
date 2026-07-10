@@ -62,3 +62,17 @@ continues, values -> actor and critic objectives
 Evaluation returns are measured in the real environment. Imagined returns,
 world-model losses, finite checks, and reconstruction diagnostics are supporting
 metrics, not substitutes for real-environment evaluation.
+
+### Genuine pixel evaluation
+
+`dmc-pixels:<domain>/<task>` loads an official DeepMind Control Suite task and
+renders observations with dm_control's pixel wrapper. The required initial
+matrix is `point_mass/easy`, `point_mass/hard`, `cartpole/swingup`, and
+`finger/spin`, using five seeds and identical interaction/update budgets across
+model arms. Evaluation freezes the learned world model and imagined actor, then
+measures completed-episode returns in a separately seeded real MuJoCo task.
+
+`pixels:pointmass` is a synthetic tensor-plumbing fixture. Its results must not
+be presented or aggregated as DMC evaluation evidence. See the
+[official DMC repository](https://github.com/google-deepmind/dm_control) and
+[pixel wrapper](https://github.com/google-deepmind/dm_control/blob/main/dm_control/suite/wrappers/pixels.py).

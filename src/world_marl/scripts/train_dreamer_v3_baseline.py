@@ -57,6 +57,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--brax-backend", default=None)
     parser.add_argument("--dmc-workers", type=int, default=1)
+    parser.add_argument("--dmc-camera-id", type=int, default=0)
     parser.add_argument("--eval-episodes", type=int, default=1)
     parser.add_argument("--allow-fail", action="store_true")
     return parser.parse_args(argv)
@@ -76,6 +77,7 @@ def _config_payload(
         "num_envs": args.num_envs,
         "max_cycles": args.max_cycles,
         "image_size": args.image_size,
+        "dmc_camera_id": args.dmc_camera_id,
         "action_dim": config.action_dim,
         "action_mode": config.action_mode,
         "observation_shape": config.observation_shape,
@@ -147,13 +149,16 @@ def _evaluate_real_env(
             }
         ]
 
+    evaluation_num_envs = min(args.num_envs, max(args.eval_episodes, 1))
     adapter = make_single_agent_adapter(
         args.env,
-        num_envs=args.num_envs,
+        num_envs=evaluation_num_envs,
         max_cycles=args.max_cycles,
         seed=args.seed + 10_000,
         brax_backend=args.brax_backend,
         dmc_workers=args.dmc_workers,
+        image_size=args.image_size,
+        dmc_camera_id=args.dmc_camera_id,
     )
     try:
         rows: list[dict[str, float | str]] = []
@@ -168,85 +173,88 @@ def _evaluate_real_env(
             action_high = np.asarray(action_high, dtype=np.float32).reshape(
                 (config.action_dim,)
             )
-        for episode in range(max(args.eval_episodes, 1)):
-            observations = _squeeze_single_agent_axis(
-                adapter.reset(),
+        observations = _squeeze_single_agent_axis(
+            adapter.reset(),
+            num_envs=adapter.num_envs,
+        ).reshape((adapter.num_envs, *config.observation_shape))
+        latent_state = initial_rssm_state(
+            batch_size=adapter.num_envs,
+            config=config.rssm,
+        )
+        if config.action_mode == "discrete":
+            previous_action = jnp.zeros((adapter.num_envs,), dtype=jnp.int32)
+        else:
+            previous_action = jnp.zeros(
+                (adapter.num_envs, config.action_dim), dtype=jnp.float32
+            )
+        target_episodes = max(args.eval_episodes, 1)
+        while len(rows) < target_episodes:
+            action_features = dreamer_action_features(previous_action, config)
+            _, latent_state, _ = model.apply(
+                world_model_state.params,
+                latent_state,
+                action_features,
+                jnp.asarray(observations, dtype=jnp.float32),
+                method=model.observe_step,
+            )
+            actions = dreamer_policy_action(
+                actor_state,
+                flatten_rssm_state(latent_state),
+                config,
+            )
+            if config.action_mode == "discrete":
+                policy_action = np.asarray(actions, dtype=np.int32).reshape(
+                    (adapter.num_envs, 1)
+                )
+                previous_action = actions
+            else:
+                policy_action = np.asarray(actions, dtype=np.float32).reshape(
+                    (adapter.num_envs, config.action_dim)
+                )
+                if action_low is not None and action_high is not None:
+                    policy_action = np.clip(policy_action, action_low, action_high)
+                previous_action = jnp.asarray(policy_action, dtype=jnp.float32)
+            step = adapter.step(policy_action)
+            for episode_return, episode_length in zip(
+                step.completed_returns,
+                step.completed_lengths,
+                strict=True,
+            ):
+                if len(rows) >= target_episodes:
+                    break
+                rows.append(
+                    {
+                        "episode": len(rows),
+                        "return": float(episode_return[0]),
+                        "length": float(episode_length),
+                        "policy_source": "imagined_actor",
+                    }
+                )
+            terminals = _squeeze_single_agent_axis(
+                step.dones,
                 num_envs=adapter.num_envs,
-            ).reshape((adapter.num_envs, *config.observation_shape))
-            episode_return = np.zeros((adapter.num_envs,), dtype=np.float32)
-            latent_state = initial_rssm_state(
-                batch_size=adapter.num_envs,
+            ).reshape((adapter.num_envs,))
+            latent_state = reset_rssm_state(
+                latent_state,
+                jnp.asarray(terminals > 0.5),
                 config=config.rssm,
             )
             if config.action_mode == "discrete":
-                previous_action = jnp.zeros((adapter.num_envs,), dtype=jnp.int32)
-            else:
-                previous_action = jnp.zeros(
-                    (adapter.num_envs, config.action_dim), dtype=jnp.float32
-                )
-            for _ in range(args.max_cycles):
-                action_features = dreamer_action_features(previous_action, config)
-                _, latent_state, _ = model.apply(
-                    world_model_state.params,
-                    latent_state,
-                    action_features,
-                    jnp.asarray(observations, dtype=jnp.float32),
-                    method=model.observe_step,
-                )
-                actions = dreamer_policy_action(
-                    actor_state,
-                    flatten_rssm_state(latent_state),
-                    config,
-                )
-                if config.action_mode == "discrete":
-                    policy_action = np.asarray(actions, dtype=np.int32).reshape(
-                        (adapter.num_envs, 1)
-                    )
-                    previous_action = actions
-                else:
-                    policy_action = np.asarray(actions, dtype=np.float32).reshape(
-                        (adapter.num_envs, config.action_dim)
-                    )
-                    if action_low is not None and action_high is not None:
-                        policy_action = np.clip(policy_action, action_low, action_high)
-                    previous_action = jnp.asarray(policy_action, dtype=jnp.float32)
-                step = adapter.step(policy_action)
-                episode_return += np.asarray(step.rewards, dtype=np.float32).reshape(
-                    (adapter.num_envs,)
-                )
-                terminals = _squeeze_single_agent_axis(
-                    step.dones,
-                    num_envs=adapter.num_envs,
-                ).reshape((adapter.num_envs,))
-                latent_state = reset_rssm_state(
-                    latent_state,
+                previous_action = jnp.where(
                     jnp.asarray(terminals > 0.5),
-                    config=config.rssm,
+                    jnp.zeros_like(previous_action),
+                    previous_action,
                 )
-                if config.action_mode == "discrete":
-                    previous_action = jnp.where(
-                        jnp.asarray(terminals > 0.5),
-                        jnp.zeros_like(previous_action),
-                        previous_action,
-                    )
-                else:
-                    previous_action = jnp.where(
-                        jnp.asarray(terminals > 0.5)[:, None],
-                        jnp.zeros_like(previous_action),
-                        previous_action,
-                    )
-                observations = _squeeze_single_agent_axis(
-                    step.observations,
-                    num_envs=adapter.num_envs,
-                ).reshape((adapter.num_envs, *config.observation_shape))
-            rows.append(
-                {
-                    "episode": episode,
-                    "return": float(np.mean(episode_return)),
-                    "length": float(args.max_cycles),
-                    "policy_source": "imagined_actor",
-                }
-            )
+            else:
+                previous_action = jnp.where(
+                    jnp.asarray(terminals > 0.5)[:, None],
+                    jnp.zeros_like(previous_action),
+                    previous_action,
+                )
+            observations = _squeeze_single_agent_axis(
+                step.observations,
+                num_envs=adapter.num_envs,
+            ).reshape((adapter.num_envs, *config.observation_shape))
         return rows
     finally:
         close = getattr(adapter, "close", None)
@@ -273,7 +281,36 @@ def _make_batch(args: argparse.Namespace):
         seed=args.seed,
         brax_backend=args.brax_backend,
         dmc_workers=args.dmc_workers,
+        image_size=args.image_size,
+        dmc_camera_id=args.dmc_camera_id,
     )
+
+
+def _run_accounting(
+    args: argparse.Namespace,
+    batch: Any,
+    real_env_metrics: list[dict[str, float | str]],
+) -> dict[str, Any]:
+    environment_backend = str(batch.metadata.get("environment_backend", "unknown"))
+    evaluation_transitions = 0
+    if environment_backend not in {"synthetic", "unknown"}:
+        evaluation_transitions = int(
+            sum(float(row["length"]) for row in real_env_metrics)
+        )
+    return {
+        "seed": args.seed,
+        "evaluation_seed": args.seed + 10_000,
+        "environment_backend": environment_backend,
+        "observation_mode": str(batch.metadata.get("observation_mode", "unknown")),
+        "real_env_transitions": int(batch.metadata.get("real_env_transitions", 0)),
+        "evaluation_env_transitions": evaluation_transitions,
+        "evaluation_episodes": len(real_env_metrics),
+        "model_updates": args.train_steps,
+        "policy_updates": args.policy_train_steps,
+        "imagined_transitions": (
+            args.policy_train_steps * args.imagination_horizon * batch.batch_size
+        ),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -324,6 +361,7 @@ def main(argv: list[str] | None = None) -> int:
         actor_state,
     )
     real_env_return = float(np.mean([row["return"] for row in real_env_metrics]))
+    accounting = _run_accounting(args, batch, real_env_metrics)
 
     write_json_artifact(out_dir / "config.json", _config_payload(args, config))
     write_json_artifact(out_dir / "sources.json", world_model_sources())
@@ -357,6 +395,7 @@ def main(argv: list[str] | None = None) -> int:
             "initial_loss": world_metrics[0]["loss"],
             "real_env_return": real_env_return,
             "policy_source": "imagined_actor",
+            **accounting,
         },
     )
     write_json_artifact(
@@ -371,6 +410,7 @@ def main(argv: list[str] | None = None) -> int:
             "real_env_return": real_env_return,
             "policy_source": "imagined_actor",
             "learning_gate_passed": gate_passed,
+            **accounting,
         },
     )
     return 0 if gate_passed or args.allow_fail else 1
