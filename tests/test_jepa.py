@@ -44,6 +44,7 @@ from world_marl.jepa.validation import (
     candidate_refit_gate_report,
     merge_online_policy_baseline,
     online_history_metrics,
+    policy_selection_report,
     real_step_accounting,
     run_passed as dmc_run_passed,
     sample_online_candidate_batch,
@@ -1730,6 +1731,123 @@ def test_online_history_metrics_rejects_actor_replay_regression():
     assert metrics["online_actor_replay_iterations"] == 1
     assert metrics["online_actor_replay_vs_initial_policy"] == -3.0
     assert not metrics["online_actor_replay_trend_passed"]
+
+
+def _selection_record(step: int, mean_return: float, selected: bool) -> dict:
+    return {
+        "policy_selection_step": step,
+        "policy_selection_selected": selected,
+        "policy_selection_mean_return": mean_return,
+    }
+
+
+def test_policy_selection_report_best_and_last_from_history():
+    report = policy_selection_report(
+        [
+            _selection_record(0, -32.0, True),
+            _selection_record(250, -28.0, True),
+            _selection_record(500, -30.5, False),
+        ],
+        selection_enabled=True,
+    )
+
+    assert report["policy_best_trained_selection_mean"] == -28.0
+    assert report["policy_best_trained_selection_step"] == 250
+    assert report["policy_last_iterate_selection_mean"] == -30.5
+    assert report["policy_selection_reverted"] is False
+
+
+def test_policy_selection_report_flags_revert_to_step_zero():
+    report = policy_selection_report(
+        [
+            _selection_record(0, -32.0, True),
+            _selection_record(250, -36.0, False),
+            _selection_record(500, -35.0, False),
+        ],
+        selection_enabled=True,
+    )
+
+    assert report["policy_best_trained_selection_mean"] == -35.0
+    assert report["policy_best_trained_selection_step"] == 500
+    assert report["policy_last_iterate_selection_mean"] == -35.0
+    assert report["policy_selection_reverted"] is True
+
+
+def test_policy_selection_report_disabled_returns_nones():
+    disabled = policy_selection_report(
+        [_selection_record(0, -32.0, True)],
+        selection_enabled=False,
+    )
+    empty = policy_selection_report([], selection_enabled=True)
+
+    for report in (disabled, empty):
+        assert report["policy_best_trained_selection_mean"] is None
+        assert report["policy_best_trained_selection_step"] is None
+        assert report["policy_last_iterate_selection_mean"] is None
+        assert report["policy_selection_reverted"] is None
+
+
+def test_online_history_metrics_exposes_best_trained_selection_returns():
+    metrics = online_history_metrics(
+        [
+            {
+                "actor_replay": {"mean_return": 10.0},
+                "policy": {"policy_training_enabled": True, "policy_passed": True},
+                "candidate_policy": {
+                    "policy_training_enabled": True,
+                    "policy_trained_mean": -28.0,
+                    "policy_best_trained_selection_mean": -28.0,
+                    "policy_selection_reverted": False,
+                },
+            },
+            {
+                "actor_replay": {"mean_return": 12.0},
+                "policy": {"policy_training_enabled": True, "policy_passed": True},
+                "candidate_policy": {
+                    "policy_training_enabled": True,
+                    "policy_trained_mean": -28.0,
+                    "policy_best_trained_selection_mean": -35.0,
+                    "policy_selection_reverted": True,
+                },
+            },
+        ],
+        {"policy_trained_mean": 8.0},
+    )
+
+    assert metrics["online_policy_best_trained_selection_returns"] == [-28.0, -35.0]
+    assert metrics["online_policy_selection_reverted"] == [False, True]
+    assert metrics["online_policy_selection_revert_rate"] == 0.5
+
+
+def test_online_history_metrics_tolerates_missing_selection_keys():
+    metrics = online_history_metrics(
+        [
+            {
+                "actor_replay": {"mean_return": 10.0},
+                "policy": {"policy_training_enabled": True, "policy_passed": True},
+                "candidate_policy": {
+                    "policy_training_enabled": True,
+                    "policy_trained_mean": -40.0,
+                    "policy_best_trained_selection_mean": None,
+                    "policy_selection_reverted": None,
+                },
+            },
+            {
+                "actor_replay": {"mean_return": 12.0},
+                "policy": {"policy_training_enabled": True, "policy_passed": True},
+                "candidate_policy": {
+                    "policy_training_enabled": True,
+                    "policy_trained_mean": -35.0,
+                },
+            },
+        ],
+        {"policy_trained_mean": 8.0},
+    )
+
+    assert metrics["online_policy_best_trained_selection_returns"] == [None, None]
+    assert metrics["online_policy_selection_reverted"] == [None, None]
+    assert metrics["online_policy_selection_revert_rate"] is None
+    assert metrics["online_policy_candidate_returns"] == [-40.0, -35.0]
 
 
 def test_decoder_config_validation():

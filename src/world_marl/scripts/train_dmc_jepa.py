@@ -65,6 +65,7 @@ from world_marl.jepa.validation import (
     merge_online_policy_baseline,
     metrics_finite,
     online_history_metrics,
+    policy_selection_report,
     real_step_accounting,
     run_passed,
     sample_online_candidate_batch,
@@ -2727,6 +2728,9 @@ def _maybe_train_policy(
         "best_policy_step": best_policy_step if selection_enabled else None,
         "best_policy_selection_mean": (
             best_selection_mean if selection_enabled else None
+        ),
+        **policy_selection_report(
+            selection_history, selection_enabled=selection_enabled
         ),
         "last_policy_metrics": last_policy_metrics_json,
         "critic_warmup_steps": args.critic_warmup_steps,

@@ -172,6 +172,58 @@ def eval_completed_episode_steps(evaluation: dict[str, Any] | None) -> int:
     return maybe_int(evaluation.get("completed_episode_steps"))
 
 
+def policy_selection_report(
+    selection_history: list[dict[str, Any]],
+    *,
+    selection_enabled: bool,
+) -> dict[str, Any]:
+    """Summarize a policy-selection history with honest trained-candidate scores.
+
+    ``best_policy_step``/``best_policy_selection_mean`` alone can mask a cycle
+    where every trained checkpoint scored worse than the incoming actor:
+    selection reverts to step 0 and the final eval re-runs identical params, so
+    the reported "candidate" return equals the champion return. These keys keep
+    the true trained-checkpoint scores visible.
+    """
+    if not selection_enabled or not selection_history:
+        return {
+            "policy_best_trained_selection_mean": None,
+            "policy_best_trained_selection_step": None,
+            "policy_last_iterate_selection_mean": None,
+            "policy_selection_reverted": None,
+        }
+    trained_records = [
+        record
+        for record in selection_history
+        if maybe_int(record.get("policy_selection_step")) > 0
+        and record.get("policy_selection_mean_return") is not None
+    ]
+    best_trained = max(
+        trained_records,
+        key=lambda record: record["policy_selection_mean_return"],
+        default=None,
+    )
+    selected_steps = [
+        maybe_int(record.get("policy_selection_step"))
+        for record in selection_history
+        if record.get("policy_selection_selected")
+    ]
+    return {
+        "policy_best_trained_selection_mean": (
+            best_trained["policy_selection_mean_return"] if best_trained else None
+        ),
+        "policy_best_trained_selection_step": (
+            maybe_int(best_trained["policy_selection_step"]) if best_trained else None
+        ),
+        "policy_last_iterate_selection_mean": selection_history[-1].get(
+            "policy_selection_mean_return"
+        ),
+        "policy_selection_reverted": (
+            max(selected_steps) == 0 if selected_steps else None
+        ),
+    }
+
+
 def merge_online_policy_baseline(
     final_outcome: dict[str, Any],
     initial_outcome: dict[str, Any],
@@ -308,6 +360,22 @@ def online_history_metrics(
         for item in online_history
         if item.get("policy", {}).get("policy_champion_return") is not None
     ]
+    # None entries preserved so cycles stay aligned, unlike the filtered arrays.
+    policy_training_cycles = [
+        item.get("candidate_policy", {})
+        for item in online_history
+        if item.get("candidate_policy", {}).get("policy_training_enabled", False)
+    ]
+    policy_best_trained_selection_returns = [
+        cycle.get("policy_best_trained_selection_mean")
+        for cycle in policy_training_cycles
+    ]
+    policy_selection_reverts = [
+        cycle.get("policy_selection_reverted") for cycle in policy_training_cycles
+    ]
+    policy_selection_revert_flags = [
+        bool(flag) for flag in policy_selection_reverts if flag is not None
+    ]
     policy_update_acceptances = [
         bool(item["policy"].get("policy_update_accepted", False))
         for item in online_history
@@ -363,6 +431,15 @@ def online_history_metrics(
         "online_policy_phase_passed": bool(policy_passed and all(policy_passed)),
         "online_policy_candidate_returns": policy_candidate_returns,
         "online_policy_champion_returns": policy_champion_returns,
+        "online_policy_best_trained_selection_returns": (
+            policy_best_trained_selection_returns
+        ),
+        "online_policy_selection_reverted": policy_selection_reverts,
+        "online_policy_selection_revert_rate": (
+            float(np.mean(policy_selection_revert_flags))
+            if policy_selection_revert_flags
+            else None
+        ),
         "online_policy_update_acceptances": policy_update_acceptances,
         "online_policy_update_acceptance_rate": (
             float(np.mean(policy_update_acceptances))
