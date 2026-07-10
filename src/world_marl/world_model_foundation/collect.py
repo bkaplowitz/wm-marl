@@ -200,14 +200,30 @@ def collect_adapter_sequence(
         continues[step_index] = 1.0 - terminal.astype(np.float32)
         current_obs = _squeeze_single_agent_axis(step.observations, num_envs=num_envs)
 
+    environment_name = env_name or getattr(adapter, "substrate", "adapter")
     environment_metadata = dict(getattr(adapter, "environment_metadata", {}))
-    is_real_environment = environment_metadata.get("environment_backend") not in {
-        None,
+    namespace = environment_name.split(":", 1)[0]
+    inferred_backends = {
+        "brax": "brax",
+        "dmc": "dm_control",
+        "dmc-pixels": "dm_control",
+        "gymnax": "gymnax",
+        "pixels": "synthetic",
+        "synthetic": "synthetic",
+    }
+    environment_metadata.setdefault(
+        "environment_backend", inferred_backends.get(namespace, "unknown")
+    )
+    environment_metadata.setdefault(
+        "observation_mode", "pixels" if len(observation_shape) == 3 else "vector"
+    )
+    is_real_environment = environment_metadata["environment_backend"] not in {
         "synthetic",
+        "unknown",
     }
     metadata = {
         "collector": "adapter_sequence_collector",
-        "env": env_name or getattr(adapter, "substrate", "adapter"),
+        "env": environment_name,
         "action_mode": action_mode,
         "observation_shape": observation_shape,
         "raw_observation_shape": tuple(
