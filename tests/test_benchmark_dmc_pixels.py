@@ -108,6 +108,46 @@ def test_aggregate_benchmark_summaries_rejects_synthetic_pixels(tmp_path):
         aggregate_benchmark_summaries([path])
 
 
+def test_privileged_state_baseline_is_explicit_and_never_pooled(tmp_path):
+    pixel_path = tmp_path / "pixel.json"
+    state_path = tmp_path / "state.json"
+    shared = {
+        "model": "dreamer_v3_baseline",
+        "seed": 0,
+        "environment_backend": "dm_control",
+        "real_env_return": 1.0,
+    }
+    pixel_path.write_text(
+        json.dumps(
+            {
+                **shared,
+                "env": "dmc-pixels:point_mass/easy",
+                "observation_mode": "pixels",
+            }
+        )
+    )
+    state_path.write_text(
+        json.dumps(
+            {
+                **shared,
+                "model": "dreamer_v3_privileged_state",
+                "env": "dmc:point_mass/easy",
+                "observation_mode": "vector",
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="genuine dm_control pixel run"):
+        aggregate_benchmark_summaries([state_path])
+
+    rows = aggregate_benchmark_summaries(
+        [pixel_path, state_path], allow_privileged_state=True
+    )
+    assert len(rows) == 2
+    assert {row["observation_mode"] for row in rows} == {"pixels", "vector"}
+    assert {row["task"] for row in rows} == {"point_mass/easy"}
+
+
 def test_benchmark_dry_run_writes_default_matrix_without_launching(tmp_path):
     assert main(["--out-dir", str(tmp_path), "--dry-run"]) == 0
     commands = json.loads((tmp_path / "commands.json").read_text())
