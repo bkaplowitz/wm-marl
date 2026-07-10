@@ -313,6 +313,17 @@ def test_adapter_collection_preserves_vector_observation_and_discrete_actions() 
     assert batch.metadata["action_dim"] == 3
 
 
+def test_adapter_collection_infers_real_backend_from_substrate_namespace() -> None:
+    adapter = _FakeDiscreteVectorAdapter()
+    adapter.substrate = "brax:fake"
+
+    batch = collect_adapter_sequence(adapter, time_steps=3, seed=5)
+
+    assert batch.metadata["environment_backend"] == "brax"
+    assert batch.metadata["observation_mode"] == "vector"
+    assert batch.metadata["real_env_transitions"] == 6
+
+
 def test_adapter_collection_preserves_hwc_observation_and_continuous_actions() -> None:
     adapter = _FakeContinuousImageAdapter()
 
