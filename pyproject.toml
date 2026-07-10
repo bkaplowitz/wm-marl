@@ -42,6 +42,7 @@ world-marl-plot-brax-diagnostics = "world_marl.scripts.plot_brax_diagnostics:mai
 world-marl-plot-jepa-decoder = "world_marl.scripts.plot_jepa_decoder:main"
 world-marl-plot-wm-curves = "world_marl.scripts.plot_wm_curves:main"
 world-marl-plot-wm-losses = "world_marl.scripts.plot_wm_losses:main"
+world-marl-plot-wm-runtime = "world_marl.scripts.plot_wm_runtime:main"
 world-marl-train-brax-ppo = "world_marl.scripts.train_brax_ppo:main"
 world-marl-train-dmc-jepa = "world_marl.scripts.train_dmc_jepa:main"
 world-marl-train-e2e = "world_marl.scripts.train_e2e:main"
