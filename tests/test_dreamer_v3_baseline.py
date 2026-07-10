@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from flax.core import freeze, unfreeze
 
 from flax.traverse_util import flatten_dict
 
@@ -116,6 +117,23 @@ def test_encoder_decoder_reward_continue_heads_match_world_model_shapes() -> Non
     assert reward_logits.shape == (2, config.reward_head.bins)
     assert continue_logits.shape == (2,)
     assert bool(jnp.all((reconstructions >= 0.0) & (reconstructions <= 1.0)))
+
+
+def test_decoder_vector_observations_are_unbounded() -> None:
+    decoder = DreamerDecoder((5,), hidden_dims=())
+    features = jnp.zeros((2, 4), dtype=jnp.float32)
+    params = decoder.init(jax.random.PRNGKey(41), features)
+    mutable = unfreeze(params)
+    mutable["params"]["Dense_0"]["kernel"] = jnp.zeros_like(
+        mutable["params"]["Dense_0"]["kernel"]
+    )
+    mutable["params"]["Dense_0"]["bias"] = jnp.full_like(
+        mutable["params"]["Dense_0"]["bias"], -2.0
+    )
+
+    reconstructions = decoder.apply(freeze(mutable), features)
+
+    assert bool(jnp.allclose(reconstructions, -2.0))
 
 
 def test_symlog_symexp_and_two_hot_reward_targets() -> None:

@@ -31,7 +31,9 @@ class DreamerDecoder(nn.Module):
         flat_dim = 1
         for dim in self.observation_shape:
             flat_dim *= dim
-        recon = nn.sigmoid(nn.Dense(flat_dim)(x))
+        recon = nn.Dense(flat_dim)(x)
+        if len(self.observation_shape) == 3 and self.observation_shape[-1] in {1, 3, 4}:
+            recon = nn.sigmoid(recon)
         return recon.reshape((features.shape[0], *self.observation_shape))
 
 
