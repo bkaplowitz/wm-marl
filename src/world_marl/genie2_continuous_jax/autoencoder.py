@@ -12,7 +12,12 @@ class ContinuousLatentAutoencoder(nn.Module):
     hidden_dims: Sequence[int] = (256, 256)
 
     @nn.compact
-    def __call__(self, observations: jax.Array) -> tuple[jax.Array, jax.Array]:
+    def __call__(
+        self,
+        observations: jax.Array,
+        *,
+        decode_latents: jax.Array | None = None,
+    ) -> tuple[jax.Array, jax.Array]:
         if observations.ndim < 2:
             raise ValueError("observations must have shape (batch, ...)")
 
@@ -22,13 +27,13 @@ class ContinuousLatentAutoencoder(nn.Module):
             x = nn.silu(nn.Dense(dim)(x))
         latents = nn.Dense(self.latent_dim, name="latent")(x)
 
-        y = latents
+        y = latents if decode_latents is None else decode_latents.astype(jnp.float32)
         for dim in reversed(tuple(self.hidden_dims)):
             y = nn.silu(nn.Dense(dim)(y))
         recon_flat = nn.Dense(int(jnp.prod(jnp.asarray(obs_shape))), name="decoder")(y)
-        reconstructions = nn.sigmoid(recon_flat).reshape(
-            (observations.shape[0], *obs_shape)
-        )
+        if len(obs_shape) == 3 and obs_shape[-1] in {1, 3, 4}:
+            recon_flat = nn.sigmoid(recon_flat)
+        reconstructions = recon_flat.reshape((observations.shape[0], *obs_shape))
         return latents, reconstructions
 
 

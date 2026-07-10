@@ -21,6 +21,7 @@ class CausalLatentDynamics(nn.Module):
         latent_actions: jax.Array,
         noise_level: jax.Array | None = None,
         condition_keep_mask: jax.Array | None = None,
+        query_latent: jax.Array | None = None,
     ) -> jax.Array:
         if latent_history.ndim != 3:
             raise ValueError("latent_history must have shape (batch, time, latent_dim)")
@@ -56,6 +57,13 @@ class CausalLatentDynamics(nn.Module):
             (self.max_context, self.model_dim),
         )
         h = h + positions[:time_steps][None, :, :]
+        if query_latent is not None:
+            if query_latent.shape != (batch_size, self.latent_dim):
+                raise ValueError("query_latent must have shape (batch, latent_dim)")
+            query = nn.Dense(self.model_dim, name="query_in")(
+                query_latent.astype(jnp.float32)
+            )
+            h = h.at[:, -1, :].add(query)
         if noise_level is not None:
             noise = noise_level.astype(jnp.float32).reshape((batch_size, 1))
             h = h + nn.Dense(self.model_dim, name="noise_in")(noise)[:, None, :]

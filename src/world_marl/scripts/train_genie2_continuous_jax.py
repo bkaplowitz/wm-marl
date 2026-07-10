@@ -7,10 +7,18 @@ from typing import Any
 import jax.numpy as jnp
 import matplotlib.image as mpimg
 import numpy as np
+from flax.training.train_state import TrainState
 
 from world_marl.genie2_continuous_jax.action_bridge import fit_linear_action_bridge
 from world_marl.genie2_continuous_jax.config import Genie2ContinuousConfig
-from world_marl.genie2_continuous_jax.training import train_genie2_world_model
+from world_marl.genie2_continuous_jax.policy import (
+    latent_policy_action,
+    train_genie2_latent_policy,
+)
+from world_marl.genie2_continuous_jax.training import (
+    Genie2WorldModel,
+    train_genie2_world_model,
+)
 from world_marl.genie2_continuous_jax.validation import (
     finite_metric_check,
     loss_decreased,
@@ -33,6 +41,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--train-steps", type=int, default=10)
     parser.add_argument("--policy-train-steps", type=int, default=10)
+    parser.add_argument("--imagination-horizon", type=int, default=5)
     parser.add_argument("--collect-steps", type=int, default=None)
     parser.add_argument("--time-steps", type=int, default=6)
     parser.add_argument("--batch-size", type=int, default=4)
@@ -61,6 +70,7 @@ def _config_payload(
         "seed": args.seed,
         "train_steps": args.train_steps,
         "policy_train_steps": args.policy_train_steps,
+        "imagination_horizon": args.imagination_horizon,
         "collect_steps": _collect_steps(args),
         "batch_size": args.batch_size,
         "num_envs": args.num_envs,
@@ -72,7 +82,10 @@ def _config_payload(
         "representation": config.representation,
         "latent_dim": config.autoencoder.latent_dim,
         "latent_action_dim": config.lam.latent_action_dim,
+        "lam_kl_scale": config.lam.kl_scale,
         "dynamics_objective": config.dynamics.objective,
+        "dynamics_sampling_steps": config.dynamics.sampling_steps,
+        "policy_source": "latent_policy_bridge",
     }
 
 
@@ -155,42 +168,50 @@ def _bridge_real_actions(
     return actions.reshape((-1, action_dim)).astype(np.float32)
 
 
-def _bridged_policy_action(
+def _bridge_policy_actions(
     bridge,
     latent_actions: np.ndarray,
     *,
     action_mode: str,
     action_dim: int,
-    num_envs: int,
     action_low: np.ndarray | None,
     action_high: np.ndarray | None,
 ) -> np.ndarray:
-    latent_action = np.mean(latent_actions, axis=0, keepdims=True)
-    real_action = bridge.predict(latent_action)[0]
+    real_actions = bridge.predict(np.asarray(latent_actions, dtype=np.float32))
     if action_mode == "discrete":
-        action = int(np.clip(np.rint(real_action[0]), 0, action_dim - 1))
-        return np.full((num_envs, 1), action, dtype=np.int32)
+        return np.clip(np.rint(real_actions[:, :1]), 0, action_dim - 1).astype(np.int32)
 
     if action_low is not None and action_high is not None:
-        real_action = np.clip(real_action, action_low, action_high)
-    return np.broadcast_to(real_action, (num_envs, action_dim)).astype(np.float32)
+        real_actions = np.clip(real_actions, action_low, action_high)
+    return real_actions.reshape((-1, action_dim)).astype(np.float32)
+
+
+def _squeeze_single_agent_axis(array: Any, *, num_envs: int) -> np.ndarray:
+    values = np.asarray(array)
+    if values.ndim >= 2 and values.shape[:2] == (num_envs, 1):
+        return values[:, 0, ...]
+    return values
 
 
 def _evaluate_bridged_real_env(
     args: argparse.Namespace,
     bridge,
-    latent_actions: np.ndarray,
+    world_model_state: TrainState,
+    actor_state: TrainState,
+    config: Genie2ContinuousConfig,
     *,
+    observation_shape: tuple[int, ...],
     action_mode: str,
     action_dim: int,
     batch: Any,
-) -> list[dict[str, float]]:
+) -> list[dict[str, float | str]]:
     if args.env.startswith("synthetic:"):
         return [
             {
                 "episode": 0,
                 "return": float(np.mean(np.sum(batch.rewards, axis=0))),
                 "length": float(batch.time_steps),
+                "policy_source": "latent_policy_bridge",
             }
         ]
 
@@ -203,7 +224,8 @@ def _evaluate_bridged_real_env(
         dmc_workers=args.dmc_workers,
     )
     try:
-        rows: list[dict[str, float]] = []
+        rows: list[dict[str, float | str]] = []
+        model = Genie2WorldModel(observation_shape=observation_shape, config=config)
         action_low = getattr(adapter, "action_low", None)
         action_high = getattr(adapter, "action_high", None)
         if action_low is not None:
@@ -212,28 +234,41 @@ def _evaluate_bridged_real_env(
             action_high = np.asarray(action_high, dtype=np.float32).reshape(
                 (action_dim,)
             )
-        policy_action = _bridged_policy_action(
-            bridge,
-            latent_actions,
-            action_mode=action_mode,
-            action_dim=action_dim,
-            num_envs=adapter.num_envs,
-            action_low=action_low,
-            action_high=action_high,
-        )
         for episode in range(max(args.eval_episodes, 1)):
-            adapter.reset()
+            observations = _squeeze_single_agent_axis(
+                adapter.reset(),
+                num_envs=adapter.num_envs,
+            ).reshape((adapter.num_envs, *observation_shape))
             episode_return = np.zeros((adapter.num_envs,), dtype=np.float32)
             for _ in range(args.max_cycles):
+                latents = model.apply(
+                    world_model_state.params,
+                    jnp.asarray(observations, dtype=jnp.float32),
+                    method=model.encode,
+                )
+                latent_actions = latent_policy_action(actor_state, latents)
+                policy_action = _bridge_policy_actions(
+                    bridge,
+                    np.asarray(latent_actions, dtype=np.float32),
+                    action_mode=action_mode,
+                    action_dim=action_dim,
+                    action_low=action_low,
+                    action_high=action_high,
+                )
                 step = adapter.step(policy_action)
                 episode_return += np.asarray(step.rewards, dtype=np.float32).reshape(
                     (adapter.num_envs,)
                 )
+                observations = _squeeze_single_agent_axis(
+                    step.observations,
+                    num_envs=adapter.num_envs,
+                ).reshape((adapter.num_envs, *observation_shape))
             rows.append(
                 {
                     "episode": episode,
                     "return": float(np.mean(episode_return)),
                     "length": float(args.max_cycles),
+                    "policy_source": "latent_policy_bridge",
                 }
             )
         return rows
@@ -266,10 +301,27 @@ def main(argv: list[str] | None = None) -> int:
         action_dim=action_dim,
     )
     bridge = fit_linear_action_bridge(latent_actions, real_actions)
+    actor_state, critic_state, policy_metrics, imagined_rollout = (
+        train_genie2_latent_policy(
+            world_model_state=state,
+            batch=batch,
+            observation_shape=observation_shape,
+            config=config,
+            train_steps=args.policy_train_steps,
+            learning_rate=args.learning_rate,
+            imagination_horizon=args.imagination_horizon,
+            seed=args.seed + 1,
+        )
+    )
+    del critic_state
+    finite_metric_check(policy_metrics[-1])
     real_env_metrics = _evaluate_bridged_real_env(
         args,
         bridge,
-        latent_actions,
+        state,
+        actor_state,
+        config,
+        observation_shape=observation_shape,
         action_mode=action_mode,
         action_dim=action_dim,
         batch=batch,
@@ -295,7 +347,15 @@ def main(argv: list[str] | None = None) -> int:
         _split_metrics(metrics, "reconstruction_loss"),
     )
     write_jsonl_metrics(
-        out_dir / "lam_metrics.jsonl", _split_metrics(metrics, "lam_kl_loss")
+        out_dir / "lam_metrics.jsonl",
+        [
+            {
+                "step": row["step"],
+                "lam_kl_loss": row["lam_kl_loss"],
+                "lam_reconstruction_loss": row["lam_reconstruction_loss"],
+            }
+            for row in metrics
+        ],
     )
     write_jsonl_metrics(
         out_dir / "dynamics_metrics.jsonl",
@@ -312,6 +372,7 @@ def main(argv: list[str] | None = None) -> int:
             for row in metrics
         ],
     )
+    write_jsonl_metrics(out_dir / "policy_metrics.jsonl", policy_metrics)
     write_json_artifact(
         out_dir / "latent_action_usage.json",
         {
@@ -331,8 +392,13 @@ def main(argv: list[str] | None = None) -> int:
         },
     )
     write_jsonl_metrics(out_dir / "real_env_metrics.jsonl", real_env_metrics)
+    model = Genie2WorldModel(observation_shape=observation_shape, config=config)
     rollout = np.asarray(
-        batch.observations[: min(args.policy_train_steps, batch.time_steps), 0]
+        model.apply(
+            state.params,
+            imagined_rollout.latents[:, 0],
+            method=model.decode,
+        )
     )
     _write_png(
         out_dir / "open_loop_rollout.png",
@@ -346,6 +412,7 @@ def main(argv: list[str] | None = None) -> int:
             "initial_loss": metrics[0]["loss"],
             "final_loss": metrics[-1]["loss"],
             "real_env_bridged_return": real_env_return,
+            "policy_source": "latent_policy_bridge",
         },
     )
     write_json_artifact(
@@ -358,6 +425,7 @@ def main(argv: list[str] | None = None) -> int:
             "observation_shape": observation_shape,
             "final_loss": metrics[-1]["loss"],
             "real_env_bridged_return": real_env_return,
+            "policy_source": "latent_policy_bridge",
             "learning_gate_passed": gate_passed,
         },
     )

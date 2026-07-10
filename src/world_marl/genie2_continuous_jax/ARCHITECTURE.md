@@ -51,15 +51,19 @@ encoder/decoder, but it must produce continuous latent frames rather than a
 discrete token codebook in the primary arm.
 
 The continuous LAM infers continuous latent actions from adjacent observations or
-latent frames. It can be trained as inverse dynamics, a variational latent-action
-posterior, or a small flow/MDN over action latents. LAM infers continuous latent
-actions for unlabeled video-style data; where labeled environment actions exist,
-the labeled actions supervise alignment and the latent-to-real-action bridge.
+latent frames. The baseline trains a variational posterior together with a
+transition reconstructor that predicts the next latent from the previous latent
+and inferred action; a scaled Gaussian KL regularizes the action bottleneck. LAM
+infers continuous latent actions for unlabeled video-style data; where labeled
+environment actions exist, the labeled actions supervise alignment and the
+latent-to-real-action bridge.
 
 The dynamics model is a causal transformer over latent-frame history, latent
 actions, optional prompt embeddings, and optional world-event conditioning. Its
 head predicts the diffusion noise, velocity, or flow target needed to sample the
-next latent frame or a short latent chunk.
+next latent frame or a short latent chunk. The baseline uses linear conditional
+flow matching from Gaussian noise to the next latent, classifier-free action
+dropout during training, and guided Euler integration during rollout.
 
 ## VLA-Style Control
 
@@ -74,6 +78,12 @@ latent action u_t -> bridge -> real environment action when labels exist
 The VLA-style actor may output continuous latent actions directly, distribution
 parameters, or short action chunks. It is separate from the dynamics model and
 does not turn real environment actions into the main conditioning signal.
+
+The baseline actor and value model are trained from reward- and continue-weighted
+rollouts inside the learned latent dynamics. During real-environment evaluation,
+each current observation is encoded, the trained actor chooses a latent action,
+and only then does the calibrated bridge map that latent action to an environment
+action.
 
 ## Sampling
 

@@ -14,6 +14,9 @@ def sample_next_observation(
 ) -> jnp.ndarray:
     dummy = jnp.zeros((next_latents.shape[0], *observation_shape), dtype=jnp.float32)
     variables = autoencoder_params
-    _, decoded = autoencoder_apply(variables, dummy, method=None)
-    del next_latents
+    _, decoded = autoencoder_apply(
+        variables,
+        dummy,
+        decode_latents=next_latents,
+    )
     return decoded

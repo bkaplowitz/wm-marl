@@ -37,6 +37,25 @@ class ContinuousLAM(nn.Module):
         return mean, log_std
 
 
+class LatentActionReconstructor(nn.Module):
+    latent_dim: int
+    hidden_dims: Sequence[int] = (256, 256)
+
+    @nn.compact
+    def __call__(
+        self,
+        prev_latents: jax.Array,
+        latent_actions: jax.Array,
+    ) -> jax.Array:
+        x = jnp.concatenate(
+            [prev_latents.astype(jnp.float32), latent_actions.astype(jnp.float32)],
+            axis=-1,
+        )
+        for dim in self.hidden_dims:
+            x = nn.silu(nn.Dense(dim)(x))
+        return nn.Dense(self.latent_dim, name="next_latent")(x)
+
+
 def sample_latent_actions(
     key: jax.Array,
     mean: jax.Array,
