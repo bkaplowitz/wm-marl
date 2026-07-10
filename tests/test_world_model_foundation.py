@@ -76,6 +76,15 @@ class _FakeDiscreteVectorAdapter:
 
 class _FakeContinuousImageAdapter:
     substrate = "fake:continuous-image"
+    environment_metadata = {
+        "environment_backend": "dm_control",
+        "observation_mode": "pixels",
+        "dmc_domain": "fake",
+        "dmc_task": "image",
+        "image_height": 4,
+        "image_width": 5,
+        "camera_id": 0,
+    }
     num_envs = 2
     observation_shape = (4, 5, 3)
     raw_observation_shape = observation_shape
@@ -217,6 +226,10 @@ def test_metric_keys_and_sources_cover_world_model_foundation() -> None:
     )
     assert sources["jasmine"]["repo_url"] == "https://github.com/p-doom/jasmine"
     assert sources["jafar"]["repo_url"] == "https://github.com/FLAIROx/jafar"
+    assert sources["dm_control"]["repo_url"] == (
+        "https://github.com/google-deepmind/dm_control"
+    )
+    assert sources["dm_control"]["observation_mode"] == "official_pixel_wrapper"
 
 
 def test_architecture_docs_lock_source_papers_and_boundaries() -> None:
@@ -322,6 +335,43 @@ def test_adapter_collection_preserves_hwc_observation_and_continuous_actions() -
     assert batch.metadata["observation_shape"] == (4, 5, 3)
     assert batch.metadata["action_shape"] == (2,)
     assert batch.metadata["action_dim"] == 2
+    assert batch.metadata["environment_backend"] == "dm_control"
+    assert batch.metadata["observation_mode"] == "pixels"
+    assert batch.metadata["real_env_transitions"] == 6
+
+
+def test_make_single_agent_adapter_dispatches_official_dmc_pixels(monkeypatch):
+    from world_marl.envs import dmc_pixel_adapter
+
+    captured = {}
+
+    class _FakeDMCPixelAdapter:
+        def __init__(self, env_id, **kwargs):
+            captured["env_id"] = env_id
+            captured.update(kwargs)
+
+    monkeypatch.setattr(dmc_pixel_adapter, "DMCPixelAdapter", _FakeDMCPixelAdapter)
+
+    adapter = make_single_agent_adapter(
+        "dmc-pixels:point_mass/easy",
+        num_envs=2,
+        max_cycles=100,
+        seed=7,
+        image_size=32,
+        dmc_camera_id=1,
+        dmc_workers=2,
+    )
+
+    assert isinstance(adapter, _FakeDMCPixelAdapter)
+    assert captured == {
+        "env_id": "point_mass/easy",
+        "num_envs": 2,
+        "max_cycles": 100,
+        "seed": 7,
+        "image_size": 32,
+        "camera_id": 1,
+        "num_workers": 2,
+    }
 
 
 def test_collect_world_model_sequence_dispatches_synthetic_and_real_adapters() -> None:
@@ -337,9 +387,13 @@ def test_collect_world_model_sequence_dispatches_synthetic_and_real_adapters() -
 
     with pytest.raises(ValueError, match="dmc:<domain>/<task>"):
         make_single_agent_adapter("dmc:cartpole", num_envs=1, max_cycles=2, seed=0)
+    with pytest.raises(ValueError, match="dmc-pixels:<domain>/<task>"):
+        make_single_agent_adapter(
+            "dmc-pixels:point_mass", num_envs=1, max_cycles=2, seed=0
+        )
 
 
-def test_pixel_pointmass_adapter_collects_hwc_replay_from_real_adapter() -> None:
+def test_synthetic_pixel_pointmass_fixture_is_explicitly_labeled() -> None:
     adapter = make_single_agent_adapter(
         "pixels:pointmass",
         num_envs=2,
@@ -369,6 +423,9 @@ def test_pixel_pointmass_adapter_collects_hwc_replay_from_real_adapter() -> None
     assert batch.metadata["collector"] == "adapter_sequence_collector"
     assert batch.metadata["action_mode"] == "continuous"
     assert batch.metadata["observation_shape"] == (16, 16, 3)
+    assert batch.metadata["environment_backend"] == "synthetic"
+    assert batch.metadata["observation_mode"] == "pixels"
+    assert batch.metadata["real_env_transitions"] == 0
     assert float(np.min(batch.observations)) >= 0.0
     assert float(np.max(batch.observations)) <= 1.0
 

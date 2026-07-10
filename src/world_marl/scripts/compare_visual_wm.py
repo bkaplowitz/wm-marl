@@ -15,10 +15,16 @@ ARM_COMMANDS = {
 FIELDS = (
     "model",
     "env",
+    "seed",
     "status",
+    "environment_backend",
+    "observation_mode",
     "final_loss",
     "real_env_return",
     "real_env_bridged_return",
+    "real_env_transitions",
+    "model_updates",
+    "imagined_transitions",
     "learning_gate_passed",
     "summary_path",
 )
@@ -46,6 +52,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--train-steps", type=int, default=10)
     parser.add_argument("--policy-train-steps", type=int, default=10)
     parser.add_argument("--eval-episodes", type=int, default=1)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--image-size", type=int, default=64)
+    parser.add_argument("--dmc-camera-id", type=int, default=0)
+    parser.add_argument("--dmc-workers", type=int, default=1)
     parser.add_argument("--allow-fail", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
@@ -56,10 +66,16 @@ def load_summary(path: Path) -> dict[str, Any]:
     return {
         "model": payload.get("model", path.parent.name),
         "env": payload.get("env"),
+        "seed": payload.get("seed"),
         "status": payload.get("status", "unknown"),
+        "environment_backend": payload.get("environment_backend"),
+        "observation_mode": payload.get("observation_mode"),
         "final_loss": payload.get("final_loss"),
         "real_env_return": payload.get("real_env_return"),
         "real_env_bridged_return": payload.get("real_env_bridged_return"),
+        "real_env_transitions": payload.get("real_env_transitions"),
+        "model_updates": payload.get("model_updates"),
+        "imagined_transitions": payload.get("imagined_transitions"),
         "learning_gate_passed": payload.get("learning_gate_passed"),
         "summary_path": str(path),
     }
@@ -86,6 +102,10 @@ def build_arm_command(
     policy_train_steps: int,
     eval_episodes: int,
     allow_fail: bool,
+    seed: int | None = None,
+    image_size: int | None = None,
+    dmc_camera_id: int | None = None,
+    dmc_workers: int | None = None,
 ) -> list[str]:
     try:
         cli = ARM_COMMANDS[arm]
@@ -115,6 +135,14 @@ def build_arm_command(
     ]
     if allow_fail:
         command.append("--allow-fail")
+    if seed is not None:
+        command.extend(("--seed", str(seed)))
+    if image_size is not None:
+        command.extend(("--image-size", str(image_size)))
+    if dmc_camera_id is not None:
+        command.extend(("--dmc-camera-id", str(dmc_camera_id)))
+    if dmc_workers is not None:
+        command.extend(("--dmc-workers", str(dmc_workers)))
     return command
 
 
@@ -134,6 +162,10 @@ def _dispatch_arms(args: argparse.Namespace) -> list[Path]:
             policy_train_steps=args.policy_train_steps,
             eval_episodes=args.eval_episodes,
             allow_fail=args.allow_fail,
+            seed=args.seed,
+            image_size=args.image_size,
+            dmc_camera_id=args.dmc_camera_id,
+            dmc_workers=args.dmc_workers,
         )
         commands.append({"arm": arm, "command": command})
         summary_paths.append(arm_out_dir / "summary.json")
