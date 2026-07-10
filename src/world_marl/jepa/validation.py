@@ -426,7 +426,7 @@ def real_step_accounting(
         for item in online_history
     )
     online_validation_env_steps = sum(
-        maybe_int(item.get("recent_policy_validation", {}).get("env_steps"))
+        maybe_int((item.get("recent_policy_validation") or {}).get("env_steps"))
         for item in online_history
     )
     initial_policy_eval_env_steps = maybe_int(

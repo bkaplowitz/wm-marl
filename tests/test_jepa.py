@@ -44,6 +44,7 @@ from world_marl.jepa.validation import (
     candidate_refit_gate_report,
     merge_online_policy_baseline,
     online_history_metrics,
+    real_step_accounting,
     run_passed as dmc_run_passed,
     sample_online_candidate_batch,
     summarize as summarize_dmc_jepa,
@@ -1083,6 +1084,25 @@ def test_online_candidate_batch_mixes_anchor_and_recent_replay():
     assert batch.observations.shape == (4, 3, 1)
     assert np.all(np.asarray(batch.observations[:2]) < 100.0)
     assert np.all(np.asarray(batch.observations[2:]) >= 100.0)
+
+
+def test_real_step_accounting_tolerates_disabled_candidate_refit():
+    accounting = real_step_accounting(
+        initial_train_replay_env_steps=100,
+        initial_validation_env_steps=10,
+        initial_policy_outcome={"policy_total_eval_env_steps": 5},
+        online_history=[
+            {
+                "actor_replay": {"env_steps": 20},
+                "recent_policy_validation": None,
+                "candidate_policy": {},
+            }
+        ],
+    )
+
+    assert accounting["real_online_validation_env_steps"] == 0
+    assert accounting["real_train_replay_env_steps"] == 120
+    assert accounting["real_total_env_steps"] == 135
 
 
 def test_candidate_refit_gate_requires_recent_improvement_and_anchor_preservation():
