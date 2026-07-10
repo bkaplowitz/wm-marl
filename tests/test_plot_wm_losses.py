@@ -14,6 +14,14 @@ def _write_metrics(path, records):
     path.write_text("\n".join(json.dumps(record) for record in records))
 
 
+CONFIG = {
+    "policy_batch_size": 4,
+    "imag_horizon": 3,
+    "mf_rollout_steps": 8,
+    "num_envs": 2,
+}
+
+
 def test_genwm_loss_points_cumulative_segments(tmp_path):
     metrics = tmp_path / "metrics.jsonl"
     _write_metrics(
@@ -46,9 +54,11 @@ def test_genwm_loss_points_cumulative_segments(tmp_path):
             {"phase": "run 0 online 1 fit", "step": 2, "total": 2, "wm_loss": 5.0},
         ],
     )
-    losses = genwm_loss_points(metrics)
+    losses = genwm_loss_points(metrics, CONFIG)
     assert losses["wm_loss"] == [(1, 10.0), (3, 8.0), (5, 6.0), (8, 5.0)]
-    assert losses["ppo_loss"] == [(1, 2.0), (3, 1.0), (5, 0.5)]
+    # policy updates consume policy_batch_size * imag_horizon = 12 imagined
+    # transitions each; cumulative update index scales to transitions.
+    assert losses["ppo_loss"] == [(12, 2.0), (36, 1.0), (60, 0.5)]
 
 
 def test_genwm_loss_points_model_free_and_non_ppo_records(tmp_path):
@@ -79,9 +89,21 @@ def test_genwm_loss_points_model_free_and_non_ppo_records(tmp_path):
             },
         ],
     )
-    losses = genwm_loss_points(metrics)
-    assert losses["ppo_loss"] == [(6, 77.4), (11, 70.7)]
+    losses = genwm_loss_points(metrics, CONFIG)
+    # model-free updates consume mf_rollout_steps * num_envs = 16 real
+    # transitions each, selected by the phase label not the arm name.
+    assert losses["ppo_loss"] == [(96, 77.4), (176, 70.7)]
     assert losses["wm_loss"] == []
+
+
+def test_genwm_loss_points_without_config_keeps_update_counts(tmp_path):
+    metrics = tmp_path / "metrics.jsonl"
+    _write_metrics(
+        metrics,
+        [{"phase": "run 0 policy", "step": 2, "total": 3, "total_loss": 1.5}],
+    )
+    losses = genwm_loss_points(metrics, {})
+    assert losses["ppo_loss"] == [(2, 1.5)]
 
 
 def test_loss_axis_scale_log_when_all_positive():
@@ -131,6 +153,24 @@ def test_build_loss_figure_shared_log_axes():
         ((low, high),) = limits
         assert low <= 0.05
         assert high >= 80.0
+    finally:
+        plt.close(fig)
+
+
+def test_build_loss_figure_ppo_xlabels_distinguish_real_vs_imagined():
+    import matplotlib.pyplot as plt
+
+    arms = {
+        "llada2": [{"seed": "s0", "point": 7680, "value": 10.0}],
+        "model-free": [{"seed": "s0", "point": 2048, "value": 80.0}],
+    }
+    fig, axes = build_loss_figure(
+        arms, env="brax_reacher", metric_kind="ppo_loss", jepa_metric="m"
+    )
+    try:
+        labels = {axis.get_title(): axis.get_xlabel() for axis in axes}
+        assert labels["model-free"] == "PPO transitions (real)"
+        assert labels["llada2"] == "PPO transitions (imagined)"
     finally:
         plt.close(fig)
 

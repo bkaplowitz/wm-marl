@@ -15,7 +15,11 @@ Loss sources per arm:
   (``phase``/``step``/``total`` plus the trainer's metric values), with the
   step axis accumulated across the offline fit and online refit phases.
   ``wm_loss`` records feed the wm_loss figure; policy/model-free
-  ``total_loss`` records feed ppo_loss.
+  ``total_loss`` records feed ppo_loss. The ppo_loss x axis is converted from
+  update counts to transitions consumed per update using the experiment's
+  ``config.json`` (model-free: ``mf_rollout_steps * num_envs`` real
+  transitions; WM policy phases: ``policy_batch_size * imag_horizon``
+  imagined transitions, selected by the record's phase label).
 """
 
 from __future__ import annotations
@@ -32,12 +36,32 @@ from world_marl.scripts.plot_brax_diagnostics import (
     plot_aggregate_curve,
     style_paper_axis,
 )
+from world_marl.scripts.plot_wm_curves import _find_config
 
 JEPA_ARM = "jepa"
+MODEL_FREE_ARM = "model-free"
 
 
-def genwm_loss_points(metrics_path: Path) -> dict[str, list[tuple[int, float]]]:
-    """Cumulative-step (x, loss) curves from a run's metrics.jsonl records."""
+def ppo_samples_per_update(config: dict[str, Any], phase: str) -> int:
+    """Transitions consumed by one PPO update in this phase (1 if unknown)."""
+    if "model-free" in phase:
+        keys = ("mf_rollout_steps", "num_envs")
+    else:
+        keys = ("policy_batch_size", "imag_horizon")
+    factor = 1
+    for key in keys:
+        factor *= int(config.get(key) or 1)
+    return factor
+
+
+def genwm_loss_points(
+    metrics_path: Path, config: dict[str, Any]
+) -> dict[str, list[tuple[int, float]]]:
+    """Cumulative (x, loss) curves from a run's metrics.jsonl records.
+
+    wm_loss x is the cumulative WM train step; ppo_loss x is cumulative
+    transitions consumed by PPO, scaled per update via ``config``.
+    """
     losses: dict[str, list[tuple[int, float]]] = {"wm_loss": [], "ppo_loss": []}
     phases: dict[str, tuple[str, int, int]] = {}
     for line in metrics_path.read_text().splitlines():
@@ -59,7 +83,10 @@ def genwm_loss_points(metrics_path: Path) -> dict[str, list[tuple[int, float]]]:
         if phase != previous_phase:
             offset += previous_total
         phases[metric] = (phase, offset, int(total))
-        losses[metric].append((offset + int(step), float(value)))
+        x = offset + int(step)
+        if metric == "ppo_loss":
+            x *= ppo_samples_per_update(config, phase)
+        losses[metric].append((x, float(value)))
     return losses
 
 
@@ -105,7 +132,9 @@ def collect_loss_rows(
                         continue
                     curves = {"wm_loss": [], "ppo_loss": []}
                     for metrics_path in metrics_paths:
-                        for kind, points in genwm_loss_points(metrics_path).items():
+                        config = _find_config(metrics_path, arm_dir)
+                        points_by_kind = genwm_loss_points(metrics_path, config)
+                        for kind, points in points_by_kind.items():
                             curves[kind].extend(points)
                 for metric_kind, points in curves.items():
                     if not points:
@@ -158,8 +187,10 @@ def build_loss_figure(
             xlabel, ylabel = "Logged train checkpoint", jepa_metric
         elif metric_kind == "wm_loss":
             xlabel, ylabel = "WM train step", "wm_loss"
+        elif arm == MODEL_FREE_ARM:
+            xlabel, ylabel = "PPO transitions (real)", "ppo_loss"
         else:
-            xlabel, ylabel = "PPO update", "ppo_loss"
+            xlabel, ylabel = "PPO transitions (imagined)", "ppo_loss"
         style_paper_axis(axis, title=arm, xlabel=xlabel, ylabel=ylabel)
         axis.set_yscale(scale)
         axis.set_ylim(low, high)
