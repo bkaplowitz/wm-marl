@@ -60,9 +60,21 @@ def make_single_agent_adapter(
             max_cycles=max_cycles,
             seed=seed,
         )
+    if env_name.startswith("pixels:"):
+        from world_marl.envs.pixel_control_adapter import (
+            PixelPointMassAdapter,
+            pixel_env_name,
+        )
+
+        return PixelPointMassAdapter(
+            pixel_env_name(env_name),
+            num_envs=num_envs,
+            max_cycles=max_cycles,
+            seed=seed,
+        )
     raise ValueError(
         "--env must be formatted as synthetic:<name>, brax:<env>, "
-        "gymnax:<env_id>, or dmc:<domain>/<task>"
+        "gymnax:<env_id>, pixels:<env_id>, or dmc:<domain>/<task>"
     )
 
 

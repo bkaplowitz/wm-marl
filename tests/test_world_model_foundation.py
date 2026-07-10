@@ -339,6 +339,40 @@ def test_collect_world_model_sequence_dispatches_synthetic_and_real_adapters() -
         make_single_agent_adapter("dmc:cartpole", num_envs=1, max_cycles=2, seed=0)
 
 
+def test_pixel_pointmass_adapter_collects_hwc_replay_from_real_adapter() -> None:
+    adapter = make_single_agent_adapter(
+        "pixels:pointmass",
+        num_envs=2,
+        max_cycles=4,
+        seed=0,
+    )
+    try:
+        assert adapter_action_mode(adapter) == "continuous"
+        assert adapter.observation_shape == (16, 16, 3)
+        assert adapter.action_shape == (2,)
+    finally:
+        close = getattr(adapter, "close", None)
+        if close is not None:
+            close()
+
+    batch = collect_world_model_sequence(
+        env_name="pixels:pointmass",
+        time_steps=4,
+        num_envs=2,
+        max_cycles=4,
+        seed=1,
+    )
+
+    assert batch.observations.shape == (4, 2, 16, 16, 3)
+    assert batch.actions.shape == (4, 2, 2)
+    assert batch.metadata["env"] == "pixels:pointmass"
+    assert batch.metadata["collector"] == "adapter_sequence_collector"
+    assert batch.metadata["action_mode"] == "continuous"
+    assert batch.metadata["observation_shape"] == (16, 16, 3)
+    assert float(np.min(batch.observations)) >= 0.0
+    assert float(np.max(batch.observations)) <= 1.0
+
+
 def test_brax_adapter_can_be_constructed_when_dependency_is_installed() -> None:
     pytest.importorskip("brax")
 
