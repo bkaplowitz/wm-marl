@@ -79,6 +79,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dmc-workers", type=int, default=1)
     parser.add_argument("--allow-fail", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--aggregate-only", action="store_true")
     parser.add_argument(
         "--random-baseline", action=argparse.BooleanOptionalAction, default=True
     )
@@ -253,6 +254,22 @@ def evaluate_random_policy(
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.aggregate_only:
+        summary_paths = [*args.summary, *args.baseline_summary]
+        if not summary_paths:
+            raise SystemExit(
+                "--aggregate-only requires --summary or --baseline-summary"
+            )
+        args.out_dir.mkdir(parents=True, exist_ok=True)
+        _write_json(args.out_dir / "commands.json", [])
+        rows = aggregate_benchmark_summaries(
+            summary_paths,
+            allow_privileged_state=bool(args.baseline_summary),
+        )
+        _write_json(args.out_dir / "aggregate.json", rows)
+        _write_csv(args.out_dir / "aggregate.csv", rows)
+        return 0
+
     arms = tuple(args.arm or DEFAULT_ARMS)
     tasks = tuple(args.task or DEFAULT_TASKS)
     seeds = tuple(args.seed or DEFAULT_SEEDS)
