@@ -153,3 +153,51 @@ def test_benchmark_dry_run_writes_default_matrix_without_launching(tmp_path):
     commands = json.loads((tmp_path / "commands.json").read_text())
     assert len(commands) == 40
     assert not (tmp_path / "aggregate.json").exists()
+
+
+def test_aggregate_only_combines_separate_branch_summaries(tmp_path):
+    summaries = []
+    for model, observation_mode, env in (
+        (
+            "genie2_continuous_jax",
+            "pixels",
+            "dmc-pixels:point_mass/easy",
+        ),
+        ("dreamer_v3_privileged_state", "vector", "dmc:point_mass/easy"),
+    ):
+        path = tmp_path / model / "summary.json"
+        path.parent.mkdir()
+        path.write_text(
+            json.dumps(
+                {
+                    "model": model,
+                    "env": env,
+                    "seed": 0,
+                    "environment_backend": "dm_control",
+                    "observation_mode": observation_mode,
+                    "real_env_return": 1.0,
+                }
+            )
+        )
+        summaries.append(path)
+
+    out_dir = tmp_path / "aggregate"
+    assert (
+        main(
+            [
+                "--aggregate-only",
+                "--summary",
+                str(summaries[0]),
+                "--baseline-summary",
+                str(summaries[1]),
+                "--out-dir",
+                str(out_dir),
+            ]
+        )
+        == 0
+    )
+
+    assert json.loads((out_dir / "commands.json").read_text()) == []
+    rows = json.loads((out_dir / "aggregate.json").read_text())
+    assert len(rows) == 2
+    assert {row["observation_mode"] for row in rows} == {"pixels", "vector"}
