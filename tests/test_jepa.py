@@ -1443,8 +1443,11 @@ def test_online_policy_outcome_keeps_original_baseline_for_summary():
     assert merged["policy_pre_online_trained_mean"] == 40.0
     assert merged["policy_online_total_improvement_vs_pre_online"] == 20.0
     assert merged["policy_improvement"] == 50.0
-    assert merged["policy_primary_improvement"] == 10.0
-    assert merged["policy_primary_improvement_key"] == "policy_online_phase_improvement"
+    assert merged["policy_primary_improvement"] == 20.0
+    assert (
+        merged["policy_primary_improvement_key"]
+        == "policy_online_total_improvement_vs_pre_online"
+    )
     assert merged["policy_trained_minus_random"] == 59.0
     assert merged["policy_passed"]
 
@@ -1472,7 +1475,7 @@ def test_online_policy_regression_fails_even_when_total_return_improves():
     merged = merge_online_policy_baseline(final, initial)
 
     assert merged["policy_improvement"] == 30.0
-    assert merged["policy_primary_improvement"] == -10.0
+    assert merged["policy_primary_improvement"] == -5.0
     assert merged["policy_online_total_improvement_vs_pre_online"] == -5.0
     assert not merged["policy_passed"]
 
@@ -1499,12 +1502,55 @@ def test_online_policy_fails_when_phase_improves_but_loses_pre_online_actor():
 
     merged = merge_online_policy_baseline(final, initial)
 
-    assert merged["policy_primary_improvement"] == 20.0
+    assert merged["policy_primary_improvement"] == -30.0
+    assert merged["policy_online_phase_improvement"] == 20.0
     assert merged["policy_online_total_improvement_vs_pre_online"] == -30.0
     assert not merged["policy_passed"]
 
 
-def test_dmc_jepa_summary_uses_online_phase_as_primary_policy_signal():
+def test_online_policy_converged_run_passes_on_cumulative_improvement():
+    initial = {
+        "policy_initial_mean": -405.8,
+        "policy_random_mean": -827.7,
+        "policy_trained_mean": -67.26,
+        "policy_confirmation_initial_mean": -400.0,
+        "policy_confirmation_random_mean": -820.0,
+        "policy_confirmation_trained_mean": -37.16,
+    }
+    final = {
+        "policy_initial_mean": -33.58,
+        "policy_random_mean": -827.7,
+        "policy_trained_mean": -33.58,
+        "policy_improvement": 0.0,
+        "policy_trained_minus_random": 794.12,
+        "policy_confirmation_enabled": True,
+        "policy_confirmation_improvement": 0.0,
+        "policy_confirmation_trained_mean": -33.58,
+        "policy_final_metrics": {
+            "policy/action_saturation_fraction": 0.1,
+        },
+        "critic_final_metrics": {
+            "critic/finite_fraction": 1.0,
+        },
+    }
+
+    merged = merge_online_policy_baseline(final, initial)
+
+    assert merged["policy_online_phase_improvement"] == 0.0
+    assert merged["policy_primary_improvement"] == pytest.approx(33.68)
+    assert (
+        merged["policy_primary_improvement_key"]
+        == "policy_online_total_improvement_vs_pre_online"
+    )
+    assert merged[
+        "policy_online_total_confirmation_improvement_vs_pre_online"
+    ] == pytest.approx(3.58)
+    assert merged["policy_primary_confirmation_improvement"] == pytest.approx(3.58)
+    assert merged["policy_confirmation_passed"]
+    assert merged["policy_passed"]
+
+
+def test_dmc_jepa_summary_uses_online_primary_improvement_as_policy_signal():
     def outcome(control: str, total: float, online: float):
         return {
             "run_index": 0,
@@ -1521,9 +1567,9 @@ def test_dmc_jepa_summary_uses_online_phase_as_primary_policy_signal():
             "policy_initial_mean": 10.0,
             "policy_trained_mean": 10.0 + total,
             "policy_improvement": total,
-            "policy_online_phase_improvement": online,
+            "policy_online_total_improvement_vs_pre_online": online,
             "policy_primary_improvement": online,
-            "policy_primary_improvement_key": "policy_online_phase_improvement",
+            "policy_primary_improvement_key": "policy_online_total_improvement_vs_pre_online",
             "policy_trained_minus_random": 10.0 + total,
             "final_model_metrics": {"model/jepa_loss": 0.1},
         }

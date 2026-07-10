@@ -322,6 +322,13 @@ The current mainline is:
   accepted only if real-environment evaluation does not regress beyond the
   configured tolerance.
 
+When the online phase runs, the reported `policy_primary_improvement` is the
+cumulative gain of the final champion over the pre-online offline policy
+(`policy_online_total_improvement_vs_pre_online`), not the final cycle's
+within-cycle delta — a converged run whose last cycles add nothing still
+passes on its accumulated improvement (`policy_primary_improvement_key`
+records which definition was used).
+
 The current working configuration for vector DMC/Brax Reacher-style tasks is the
 small-batch online-cadence setting:
 

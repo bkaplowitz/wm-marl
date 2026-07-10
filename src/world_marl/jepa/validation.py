@@ -200,13 +200,18 @@ def merge_online_policy_baseline(
     merged["policy_improvement"] = (
         merged["policy_trained_mean"] - merged["policy_initial_mean"]
     )
-    primary_improvement = (
-        phase_improvement
-        if phase_improvement is not None
-        else merged["policy_improvement"]
-    )
+    total_online_improvement = merged["policy_online_total_improvement_vs_pre_online"]
+    if total_online_improvement is not None:
+        primary_improvement = total_online_improvement
+        primary_improvement_key = "policy_online_total_improvement_vs_pre_online"
+    elif phase_improvement is not None:
+        primary_improvement = phase_improvement
+        primary_improvement_key = "policy_online_phase_improvement"
+    else:
+        primary_improvement = merged["policy_improvement"]
+        primary_improvement_key = "policy_improvement"
     merged["policy_primary_improvement"] = primary_improvement
-    merged["policy_primary_improvement_key"] = "policy_online_phase_improvement"
+    merged["policy_primary_improvement_key"] = primary_improvement_key
     merged["policy_trained_minus_random"] = (
         merged["policy_trained_mean"] - merged["policy_random_mean"]
     )
@@ -229,11 +234,25 @@ def merge_online_policy_baseline(
             merged["policy_confirmation_trained_mean"]
             - merged["policy_confirmation_random_mean"]
         )
-    primary_confirmation_improvement = (
-        phase_confirmation_improvement
-        if phase_confirmation_improvement is not None
-        else merged.get("policy_confirmation_improvement")
+    pre_online_confirmation_trained_mean = initial_outcome.get(
+        "policy_confirmation_trained_mean"
     )
+    total_online_confirmation_improvement = (
+        merged["policy_confirmation_trained_mean"]
+        - pre_online_confirmation_trained_mean
+        if pre_online_confirmation_trained_mean is not None
+        and merged.get("policy_confirmation_trained_mean") is not None
+        else None
+    )
+    merged["policy_online_total_confirmation_improvement_vs_pre_online"] = (
+        total_online_confirmation_improvement
+    )
+    if total_online_confirmation_improvement is not None:
+        primary_confirmation_improvement = total_online_confirmation_improvement
+    elif phase_confirmation_improvement is not None:
+        primary_confirmation_improvement = phase_confirmation_improvement
+    else:
+        primary_confirmation_improvement = merged.get("policy_confirmation_improvement")
     merged["policy_primary_confirmation_improvement"] = primary_confirmation_improvement
     confirmation_passed = not confirmation_enabled or (
         primary_confirmation_improvement is not None
