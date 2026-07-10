@@ -30,7 +30,24 @@ def make_single_agent_adapter(
     seed: int,
     brax_backend: str | None = None,
     dmc_workers: int = 1,
+    image_size: int = 64,
+    dmc_camera_id: int = 0,
 ) -> Any:
+    if env_name.startswith("dmc-pixels:"):
+        from world_marl.envs.dmc_pixel_adapter import (
+            DMCPixelAdapter,
+            dmc_pixel_env_name,
+        )
+
+        return DMCPixelAdapter(
+            dmc_pixel_env_name(env_name),
+            num_envs=num_envs,
+            max_cycles=max_cycles,
+            seed=seed,
+            image_size=image_size,
+            camera_id=dmc_camera_id,
+            num_workers=dmc_workers,
+        )
     if env_name.startswith("dmc:"):
         from world_marl.envs.dmc_adapter import DMCVectorAdapter, dmc_env_name
 
@@ -74,7 +91,8 @@ def make_single_agent_adapter(
         )
     raise ValueError(
         "--env must be formatted as synthetic:<name>, brax:<env>, "
-        "gymnax:<env_id>, pixels:<env_id>, or dmc:<domain>/<task>"
+        "gymnax:<env_id>, pixels:<env_id>, dmc:<domain>/<task>, or "
+        "dmc-pixels:<domain>/<task>"
     )
 
 
@@ -90,6 +108,8 @@ def collect_world_model_sequence(
     seed: int = 0,
     brax_backend: str | None = None,
     dmc_workers: int = 1,
+    image_size: int = 64,
+    dmc_camera_id: int = 0,
 ) -> WorldModelSequenceBatch:
     if env_name.startswith("synthetic:"):
         if batch_size is None:
@@ -115,6 +135,8 @@ def collect_world_model_sequence(
         seed=seed,
         brax_backend=brax_backend,
         dmc_workers=dmc_workers,
+        image_size=image_size,
+        dmc_camera_id=dmc_camera_id,
     )
     try:
         return collect_adapter_sequence(
@@ -178,6 +200,27 @@ def collect_adapter_sequence(
         continues[step_index] = 1.0 - terminal.astype(np.float32)
         current_obs = _squeeze_single_agent_axis(step.observations, num_envs=num_envs)
 
+    environment_metadata = dict(getattr(adapter, "environment_metadata", {}))
+    is_real_environment = environment_metadata.get("environment_backend") not in {
+        None,
+        "synthetic",
+    }
+    metadata = {
+        "collector": "adapter_sequence_collector",
+        "env": env_name or getattr(adapter, "substrate", "adapter"),
+        "action_mode": action_mode,
+        "observation_shape": observation_shape,
+        "raw_observation_shape": tuple(
+            getattr(adapter, "raw_observation_shape", observation_shape)
+        ),
+        "action_shape": action_shape,
+        "action_dim": action_dim,
+        "num_envs": num_envs,
+        "environment_transitions": time_steps * num_envs,
+        "real_env_transitions": time_steps * num_envs if is_real_environment else 0,
+    }
+    metadata.update(environment_metadata)
+
     return WorldModelSequenceBatch(
         observations=observations,
         actions=actions,
@@ -185,18 +228,7 @@ def collect_adapter_sequence(
         continues=continues,
         is_first=is_first,
         is_terminal=is_terminal,
-        metadata={
-            "collector": "adapter_sequence_collector",
-            "env": env_name or getattr(adapter, "substrate", "adapter"),
-            "action_mode": action_mode,
-            "observation_shape": observation_shape,
-            "raw_observation_shape": tuple(
-                getattr(adapter, "raw_observation_shape", observation_shape)
-            ),
-            "action_shape": action_shape,
-            "action_dim": action_dim,
-            "num_envs": num_envs,
-        },
+        metadata=metadata,
     )
 
 
@@ -265,7 +297,16 @@ def synthetic_sequence_collector(
         action_dim=action_dim,
     )
     metadata = dict(batch.metadata)
-    metadata.update({"collector": "synthetic_sequence_collector", "env": env_name})
+    metadata.update(
+        {
+            "collector": "synthetic_sequence_collector",
+            "env": env_name,
+            "environment_backend": "synthetic",
+            "observation_mode": "pixels" if len(observation_shape) == 3 else "vector",
+            "environment_transitions": time_steps * batch_size,
+            "real_env_transitions": 0,
+        }
+    )
     return WorldModelSequenceBatch(
         observations=batch.observations,
         actions=batch.actions,

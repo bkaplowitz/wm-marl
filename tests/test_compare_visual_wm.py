@@ -69,6 +69,10 @@ def test_compare_visual_wm_builds_real_cli_commands(tmp_path) -> None:
         policy_train_steps=2,
         eval_episodes=1,
         allow_fail=True,
+        seed=3,
+        image_size=32,
+        dmc_camera_id=1,
+        dmc_workers=2,
     )
     genie2 = build_arm_command(
         "genie2_continuous_jax",
@@ -81,12 +85,20 @@ def test_compare_visual_wm_builds_real_cli_commands(tmp_path) -> None:
         policy_train_steps=2,
         eval_episodes=1,
         allow_fail=True,
+        seed=3,
+        image_size=32,
+        dmc_camera_id=1,
+        dmc_workers=2,
     )
 
     assert dreamer[:3] == ["uv", "run", "world-marl-train-dreamer-v3-baseline"]
     assert genie2[:3] == ["uv", "run", "world-marl-train-genie2-continuous-jax"]
     assert "genie-like-jax" not in " ".join(dreamer + genie2)
     assert "codex/" not in " ".join(dreamer + genie2)
+    assert dreamer[dreamer.index("--seed") + 1] == "3"
+    assert dreamer[dreamer.index("--image-size") + 1] == "32"
+    assert dreamer[dreamer.index("--dmc-camera-id") + 1] == "1"
+    assert dreamer[dreamer.index("--dmc-workers") + 1] == "2"
 
 
 def test_compare_visual_wm_dispatches_real_cli_outputs(monkeypatch, tmp_path) -> None:
