@@ -1378,6 +1378,7 @@ def run_one(
                 state,
                 config,
                 replay,
+                anchor_replay,
                 validation_replay,
                 np_rng=np_rng,
                 key=decoder_key,
@@ -2077,6 +2078,7 @@ def _fit_decoder_diagnostic(
     state,
     config: JepaConfig,
     replay: SequenceReplayBuffer,
+    anchor_replay: SequenceReplayBuffer,
     validation_replay: SequenceReplayBuffer,
     *,
     np_rng: np.random.Generator,
@@ -2109,6 +2111,15 @@ def _fit_decoder_diagnostic(
             batch.observations.reshape((-1, config.observation_dim)),
         )
 
+    # The long replay ring buffer may have evicted the offline random data by
+    # decoder-fit time (mainline writes past --replay-capacity), while the
+    # validation/display windows are random-policy; mix anchor data in so the
+    # probe covers both distributions, mirroring the online refit batches.
+    anchor_fraction = (
+        0.5
+        if anchor_replay.can_sample(chunk_length=args.chunk_length, max_horizon=1)
+        else 0.0
+    )
     loss_history: list[jax.Array] = []
     fit_steps = tqdm(
         range(1, args.decoder_train_steps + 1),
@@ -2117,11 +2128,15 @@ def _fit_decoder_diagnostic(
         disable=args.quiet,
     )
     for step_index in fit_steps:
-        batch = replay.sample(
+        batch = sample_online_candidate_batch(
             np_rng,
+            replay=replay,
+            anchor_replay=anchor_replay,
+            recent_replay=replay,
             batch_size=args.batch_size,
             chunk_length=args.chunk_length,
             max_horizon=1,
+            anchor_batch_fraction=anchor_fraction,
         )
         decoder_state, loss = train_decoder_step(decoder_state, *flat_pairs(batch))
         loss_history.append(loss)
@@ -2192,6 +2207,7 @@ def _fit_decoder_diagnostic(
     return {
         "decoder_config": dataclasses.asdict(decoder_config),
         "train_steps": args.decoder_train_steps,
+        "anchor_batch_fraction": anchor_fraction,
         "final_train_recon_mse": float(loss_history[-1]),
         "validation_recon_mse": validation_mse,
         "rollout_horizon": horizon,

@@ -160,6 +160,14 @@ next to real held-out trajectories (`decoder_rollout_frames.png`,
 `decoder_rollout_traces.png`); it plays no role in training or the pass/fail
 gate.
 
+Decoder batches mix the long replay 50/50 with the random-policy anchor
+replay (via `sample_online_candidate_batch`, the same helper the online
+refits use). After long online runs the ring buffer has evicted the offline
+random data, but the rollout diagnostic still displays random-policy
+validation windows — without the anchor mix the probe trains only on the
+final actor distribution and reconstructs the display windows poorly, which
+reads as (nonexistent) dynamics error.
+
 ## Control-Relevant Online Loss
 
 Online refits keep the observation encoder frozen. The update changes the
