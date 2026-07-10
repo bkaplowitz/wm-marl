@@ -50,6 +50,12 @@ from world_marl.jepa.validation import (
     sample_online_candidate_batch,
     summarize as summarize_dmc_jepa,
 )
+from world_marl.scripts.compare_single_wm import _flag_tokens
+from world_marl.scripts.write_dmc_vector_launcher import (
+    COMMON_PARAMS,
+    PRESETS,
+    params_to_shell_args,
+)
 
 
 def _config() -> JepaConfig:
@@ -1848,6 +1854,60 @@ def test_online_history_metrics_tolerates_missing_selection_keys():
     assert metrics["online_policy_selection_reverted"] == [None, None]
     assert metrics["online_policy_selection_revert_rate"] is None
     assert metrics["online_policy_candidate_returns"] == [-40.0, -35.0]
+
+
+def test_dmc_presets_budget_arithmetic():
+    for name in ("offline", "online", "hybrid"):
+        preset = PRESETS[name]
+        iterations = preset["online_iterations"]
+        collect = preset["collect_steps"] + iterations * preset.get(
+            "online_collect_steps", 0
+        )
+        model_updates = preset["train_steps"] + iterations * preset.get(
+            "online_train_steps", 0
+        )
+        policy_updates = preset["policy_train_steps"] + iterations * preset.get(
+            "online_policy_train_steps", 0
+        )
+        assert collect == 32768, name
+        assert model_updates == 30000, name
+        assert policy_updates == 7500, name
+
+    assert PRESETS["mainline"] is PRESETS["hybrid"]
+
+    offline = PRESETS["offline"]
+    assert offline["replay_capacity"] >= offline["collect_steps"] * offline["num_envs"]
+
+    online = PRESETS["online"]
+    assert online["policy_selection_interval"] == 0
+    assert online["online_policy_champion"] is False
+    assert online["policy_selection_episodes"] >= 1
+
+    hybrid = PRESETS["hybrid"]
+    assert hybrid["policy_selection_interval"] > 0
+    assert hybrid["online_policy_champion"] is True
+
+
+def test_params_to_shell_args_negatable_false_emits_no_flag():
+    shell_args = params_to_shell_args({**COMMON_PARAMS, **PRESETS["online"]})
+    tokens = [token for token in shell_args.split() if token != "\\"]
+
+    assert "--no-online-policy-champion" in tokens
+    interval_index = tokens.index("--policy-selection-interval")
+    assert tokens[interval_index + 1] == "0"
+    assert "--clip-imagined-rewards" not in tokens
+
+
+def test_compare_single_wm_flag_tokens_mirror_negation():
+    tokens = _flag_tokens(
+        {
+            "online_policy_champion": False,
+            "clip_imagined_rewards": False,
+            "allow_fail": True,
+        }
+    )
+
+    assert tokens == ["--no-online-policy-champion", "--allow-fail"]
 
 
 def test_decoder_config_validation():
