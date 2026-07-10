@@ -18,6 +18,7 @@ from world_marl.scripts.train_single_genwm import (
     _configure_wandb_metrics,
     _fit_models,
     _wandb_phase_namespace,
+    parse_args,
 )
 
 OBS_DIM = 4
@@ -98,6 +99,12 @@ def test_fit_models_writes_metrics_records(tmp_path):
     assert all(record["total"] == 2 for record in records)
     assert all(np.isfinite(record["wm_loss"]) for record in records)
     assert all("head_total_loss" in record for record in records)
+
+
+def test_parse_args_log_every_default_and_override():
+    base = ["--env", "brax:reacher", "--arm", "llada2"]
+    assert parse_args(base).log_every == 10
+    assert parse_args([*base, "--log-every", "5"]).log_every == 5
 
 
 def test_wandb_phase_namespace_covers_label_grammar():

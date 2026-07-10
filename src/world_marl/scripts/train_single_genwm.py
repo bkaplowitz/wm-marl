@@ -34,7 +34,9 @@ comparison harness can glob both layouts.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -63,6 +65,7 @@ from world_marl.genwm import (
     make_genie_encode,
     ppo_update,
 )
+from world_marl.checkpointing import save_checkpoint
 from world_marl.genwm.imagination import ImaginedBatch
 from world_marl.jepa.training import load_frozen_encoder
 from world_marl.logging import RunLogger
@@ -195,6 +198,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--allow-fail",
         action="store_true",
         help="Exit 0 even when the improvement gate fails.",
+    )
+    parser.add_argument(
+        "--log-every",
+        type=int,
+        default=10,
+        help="Record metrics every N train steps/updates in every phase.",
     )
     parser.add_argument("--quiet", action="store_true")
     # Weights & Biases (disabled unless --wandb-project is set).
@@ -988,6 +997,61 @@ def _init_wandb(args: argparse.Namespace, *, run_index: int):
     return run
 
 
+def _save_policy_checkpoint(
+    run_dir: Path,
+    policy_state,
+    *,
+    args: argparse.Namespace,
+    config: GenWMConfig,
+    ppo_config: PPOConfig,
+    genie_module: GenieTokenizer | None,
+    genie_state,
+    action_mode: str,
+    obs_dim: int,
+    action_dim: int,
+    seed: int,
+) -> None:
+    """Persist the final policy so ``render_brax_policy`` can replay it."""
+    checkpoint_dir = run_dir / "policy_checkpoint"
+    genie_kwargs = None
+    if genie_module is not None:
+        genie_kwargs = {
+            "obs_dim": genie_module.obs_dim,
+            "codebook_size": genie_module.codebook_size,
+            "code_dim": genie_module.code_dim,
+            "model_dim": genie_module.model_dim,
+            "num_heads": genie_module.num_heads,
+            "num_layers": genie_module.num_layers,
+            "mlp_ratio": genie_module.mlp_ratio,
+        }
+    save_checkpoint(
+        checkpoint_dir,
+        policy_state,
+        metadata={
+            "algorithm": "single_genwm_policy",
+            "arm": args.arm,
+            "env": args.env,
+            "action_mode": action_mode,
+            "obs_dim": obs_dim,
+            "action_dim": action_dim,
+            "seed": seed,
+            "genwm_config": dataclasses.asdict(config),
+            "ppo_config": dataclasses.asdict(ppo_config),
+            "tokenizer": args.tokenizer,
+            "latent_encoder": args.latent_encoder,
+            "genie": genie_kwargs,
+        },
+    )
+    if genie_state is not None and genie_kwargs is not None:
+        save_checkpoint(checkpoint_dir / "genie", genie_state, metadata=genie_kwargs)
+    if args.latent_encoder is not None:
+        encoder_dir = checkpoint_dir / "latent_encoder"
+        encoder_dir.mkdir(parents=True, exist_ok=True)
+        source = Path(args.latent_encoder)
+        for name in ("checkpoint.msgpack", "metadata.json"):
+            shutil.copy2(source / name, encoder_dir / name)
+
+
 def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
     started = time.time()
     seed = args.seed + 10_000 * run_index
@@ -1136,7 +1200,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                     steps=args.genie_train_steps,
                     batch_size=args.batch_size,
                     rng=rng,
-                    log_every=max(1, args.genie_train_steps // 10),
+                    log_every=args.log_every,
                     quiet=args.quiet,
                     label=f"run {run_index} genie",
                     metrics_logger=metrics_logger,
@@ -1168,7 +1232,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                 steps=args.train_steps,
                 batch_size=args.batch_size,
                 rng=rng,
-                log_every=max(1, args.train_steps // 10),
+                log_every=args.log_every,
                 quiet=args.quiet,
                 label=f"run {run_index} fit",
                 metrics_logger=metrics_logger,
@@ -1189,7 +1253,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                 batch_size=args.policy_batch_size,
                 horizon=args.imag_horizon,
                 rng=rng,
-                log_every=max(1, args.policy_train_steps // 10),
+                log_every=args.log_every,
                 quiet=args.quiet,
                 label=f"run {run_index} policy",
                 metrics_logger=metrics_logger,
@@ -1206,7 +1270,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                 ppo_config,
                 steps_per_env=args.collect_steps,
                 rollout_steps=args.mf_rollout_steps,
-                log_every=max(1, args.collect_steps // args.mf_rollout_steps // 10),
+                log_every=args.log_every,
                 quiet=args.quiet,
                 label=f"run {run_index} model-free",
                 metrics_logger=metrics_logger,
@@ -1253,7 +1317,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                         steps=args.genie_online_train_steps,
                         batch_size=args.batch_size,
                         rng=rng,
-                        log_every=max(1, args.genie_online_train_steps // 5),
+                        log_every=args.log_every,
                         quiet=args.quiet,
                         label=f"run {run_index} online {iteration} genie",
                         metrics_logger=metrics_logger,
@@ -1279,7 +1343,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                     steps=args.online_train_steps,
                     batch_size=args.batch_size,
                     rng=rng,
-                    log_every=max(1, args.online_train_steps // 5),
+                    log_every=args.log_every,
                     quiet=args.quiet,
                     label=f"run {run_index} online {iteration} fit",
                     metrics_logger=metrics_logger,
@@ -1299,7 +1363,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                     batch_size=args.policy_batch_size,
                     horizon=args.imag_horizon,
                     rng=rng,
-                    log_every=max(1, args.online_policy_train_steps // 5),
+                    log_every=args.log_every,
                     quiet=args.quiet,
                     label=f"run {run_index} online {iteration} policy",
                     metrics_logger=metrics_logger,
@@ -1314,9 +1378,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                     ppo_config,
                     steps_per_env=args.online_collect_steps,
                     rollout_steps=args.mf_rollout_steps,
-                    log_every=max(
-                        1, args.online_collect_steps // args.mf_rollout_steps // 5
-                    ),
+                    log_every=args.log_every,
                     quiet=args.quiet,
                     label=f"run {run_index} model-free online {iteration}",
                     metrics_logger=metrics_logger,
@@ -1358,6 +1420,19 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
             action_mode=action_mode,
         )
         record_eval("final", total_steps_per_env, trained_return)
+        _save_policy_checkpoint(
+            run_dir,
+            policy_state,
+            args=args,
+            config=config,
+            ppo_config=ppo_config,
+            genie_module=genie_module,
+            genie_state=genie_state,
+            action_mode=action_mode,
+            obs_dim=obs_dim,
+            action_dim=int(adapter.action_dim),
+            seed=seed,
+        )
         if wandb_run is not None:
             wandb_run.summary.update(
                 {
