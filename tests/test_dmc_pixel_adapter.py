@@ -141,10 +141,19 @@ def test_dmc_pixel_adapter_marks_adapter_time_limit_as_truncation():
 
 
 @pytest.mark.integration
-def test_official_dmc_point_mass_renders_nonblank_hwc_pixels():
+@pytest.mark.parametrize(
+    "env_id",
+    [
+        "point_mass/easy",
+        "point_mass/hard",
+        "cartpole/swingup",
+        "finger/spin",
+    ],
+)
+def test_official_dmc_benchmark_tasks_render_nonblank_hwc_pixels(env_id):
     pytest.importorskip("dm_control")
     adapter = DMCPixelAdapter(
-        "point_mass/easy",
+        env_id,
         num_envs=1,
         max_cycles=4,
         seed=0,
@@ -159,7 +168,8 @@ def test_official_dmc_point_mass_renders_nonblank_hwc_pixels():
         assert float(observations.std()) > 0.0
         assert np.isfinite(step.rewards).all()
         assert adapter.environment_metadata["environment_backend"] == "dm_control"
-        assert adapter.environment_metadata["dmc_domain"] == "point_mass"
-        assert adapter.environment_metadata["dmc_task"] == "easy"
+        domain, task = env_id.split("/", 1)
+        assert adapter.environment_metadata["dmc_domain"] == domain
+        assert adapter.environment_metadata["dmc_task"] == task
     finally:
         adapter.close()

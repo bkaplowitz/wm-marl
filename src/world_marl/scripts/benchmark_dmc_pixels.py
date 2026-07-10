@@ -66,6 +66,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--task", action="append")
     parser.add_argument("--seed", action="append", type=int)
     parser.add_argument("--summary", action="append", type=Path, default=[])
+    parser.add_argument("--baseline-summary", action="append", type=Path, default=[])
     parser.add_argument("--out-dir", type=Path, default=Path("runs/dmc_pixels"))
     parser.add_argument("--collect-steps", type=int, default=1000)
     parser.add_argument("--num-envs", type=int, default=4)
@@ -142,24 +143,36 @@ def build_benchmark_runs(
 
 def aggregate_benchmark_summaries(
     summary_paths: list[Path] | tuple[Path, ...],
+    *,
+    allow_privileged_state: bool = False,
 ) -> list[dict[str, Any]]:
-    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    grouped: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for path in summary_paths:
         payload = json.loads(Path(path).read_text())
-        if (
-            payload.get("environment_backend") != "dm_control"
-            or payload.get("observation_mode") != "pixels"
-        ):
+        observation_mode = str(payload.get("observation_mode"))
+        valid_observation = observation_mode == "pixels" or (
+            allow_privileged_state and observation_mode == "vector"
+        )
+        if payload.get("environment_backend") != "dm_control" or not valid_observation:
             raise ValueError(f"{path} is not a genuine dm_control pixel run")
         model = str(payload.get("model", Path(path).parent.name))
         env = str(payload.get("env"))
+        task = _task_from_env(env)
+        comparison_role = str(
+            payload.get(
+                "comparison_role",
+                "privileged_state" if observation_mode == "vector" else "primary",
+            )
+        )
         result = dict(payload)
         result["summary_path"] = str(path)
         result["evaluation_return"] = _evaluation_return(payload)
-        grouped[(model, env)].append(result)
+        grouped[(model, task, observation_mode, comparison_role)].append(result)
 
     rows = []
-    for (model, env), runs in sorted(grouped.items()):
+    for (model, task, observation_mode, comparison_role), runs in sorted(
+        grouped.items()
+    ):
         successful = [run for run in runs if run["evaluation_return"] is not None]
         successful.sort(key=lambda run: int(run.get("seed", -1)))
         returns = [float(run["evaluation_return"]) for run in successful]
@@ -170,9 +183,11 @@ def aggregate_benchmark_summaries(
         rows.append(
             {
                 "model": model,
-                "env": env,
+                "env": str(runs[0].get("env")),
+                "task": task,
                 "environment_backend": "dm_control",
-                "observation_mode": "pixels",
+                "observation_mode": observation_mode,
+                "comparison_role": comparison_role,
                 "successful_seed_count": len(successful),
                 "requested_run_count": len(runs),
                 "seeds": seeds,
@@ -304,7 +319,11 @@ def main(argv: list[str] | None = None) -> int:
                     _write_json(summary_path, payload)
                 summary_paths.append(summary_path)
 
-    rows = aggregate_benchmark_summaries(summary_paths)
+    summary_paths.extend(args.baseline_summary)
+    rows = aggregate_benchmark_summaries(
+        summary_paths,
+        allow_privileged_state=bool(args.baseline_summary),
+    )
     _write_json(args.out_dir / "aggregate.json", rows)
     _write_csv(args.out_dir / "aggregate.csv", rows)
     return 1 if failed else 0
@@ -339,6 +358,14 @@ def _validate_task(task: str) -> None:
         raise ValueError("DMC tasks must be formatted as '<domain>/<task>'")
 
 
+def _task_from_env(env: str) -> str:
+    if ":" not in env:
+        raise ValueError(f"invalid DMC environment name: {env!r}")
+    task = env.split(":", 1)[1]
+    _validate_task(task)
+    return task
+
+
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n")
@@ -348,8 +375,10 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     fields = (
         "model",
         "env",
+        "task",
         "environment_backend",
         "observation_mode",
+        "comparison_role",
         "successful_seed_count",
         "requested_run_count",
         "mean_return",
