@@ -9,7 +9,11 @@ import optax
 from flax.training.train_state import TrainState
 
 from world_marl.dreamer_v3_baseline.config import DreamerV3Config
-from world_marl.dreamer_v3_baseline.losses import categorical_kl_loss, symlog, two_hot
+from world_marl.dreamer_v3_baseline.losses import (
+    balanced_categorical_kl_loss,
+    symlog,
+    two_hot,
+)
 from world_marl.dreamer_v3_baseline.models import (
     ContinueHead,
     DreamerDecoder,
@@ -18,8 +22,10 @@ from world_marl.dreamer_v3_baseline.models import (
 )
 from world_marl.dreamer_v3_baseline.rssm import (
     DreamerRSSM,
+    RSSMState,
     flatten_rssm_state,
     initial_rssm_state,
+    reset_rssm_state,
 )
 from world_marl.world_model_foundation.replay import WorldModelSequenceBatch
 
@@ -27,34 +33,67 @@ from world_marl.world_model_foundation.replay import WorldModelSequenceBatch
 class DreamerWorldModel(nn.Module):
     config: DreamerV3Config
 
-    @nn.compact
-    def __call__(
-        self, observations: jax.Array, actions: jax.Array
-    ) -> dict[str, jax.Array]:
-        time_steps, batch_size = observations.shape[:2]
-        encoder = DreamerEncoder(
+    def setup(self) -> None:
+        self.encoder = DreamerEncoder(
             self.config.encoder.embedding_dim,
             hidden_dims=self.config.encoder.hidden_dims,
             name="encoder",
         )
-        rssm = DreamerRSSM(
+        self.rssm = DreamerRSSM(
             self.config.rssm,
             action_dim=self.config.action_dim,
             name="rssm",
         )
-        decoder = DreamerDecoder(
+        self.decoder = DreamerDecoder(
             self.config.observation_shape,
             name="decoder",
         )
-        reward_head = RewardHead(
+        self.reward_head = RewardHead(
             self.config.reward_head.bins,
             hidden_dims=self.config.reward_head.hidden_dims,
             name="reward_head",
         )
-        continue_head = ContinueHead(
+        self.continue_head = ContinueHead(
             hidden_dims=self.config.continue_head.hidden_dims,
             name="continue_head",
         )
+
+    def observe_step(
+        self,
+        prev_state: RSSMState,
+        action_features: jax.Array,
+        observations: jax.Array,
+    ) -> tuple[RSSMState, RSSMState, dict[str, jax.Array]]:
+        embed = self.encoder(observations)
+        prior, posterior = self.rssm(prev_state, action_features, embed)
+        feature = flatten_rssm_state(posterior)
+        return prior, posterior, self.predict(feature)
+
+    def imagine_step(
+        self,
+        prev_state: RSSMState,
+        action_features: jax.Array,
+    ) -> tuple[RSSMState, dict[str, jax.Array]]:
+        prior = self.rssm.prior(prev_state, action_features)
+        return prior, self.predict(flatten_rssm_state(prior))
+
+    def predict(self, features: jax.Array) -> dict[str, jax.Array]:
+        return {
+            "features": features,
+            "reconstructions": self.decoder(features),
+            "reward_logits": self.reward_head(features),
+            "continue_logits": self.continue_head(features),
+        }
+
+    def __call__(
+        self,
+        observations: jax.Array,
+        actions: jax.Array,
+        is_first: jax.Array | None = None,
+    ) -> dict[str, jax.Array]:
+        time_steps, batch_size = observations.shape[:2]
+        if is_first is None:
+            is_first = jnp.zeros((time_steps, batch_size), dtype=bool)
         prev_state = initial_rssm_state(batch_size=batch_size, config=self.config.rssm)
         reconstructions = []
         reward_logits = []
@@ -62,17 +101,28 @@ class DreamerWorldModel(nn.Module):
         prior_logits = []
         posterior_logits = []
         features = []
+        deterministic = []
+        stochastic = []
         for t in range(time_steps):
-            embed = encoder(observations[t])
+            prev_state = reset_rssm_state(
+                prev_state,
+                is_first[t],
+                config=self.config.rssm,
+            )
             action_features = dreamer_action_features(actions[t], self.config)
-            prior, posterior = rssm(prev_state, action_features, embed)
-            feature = flatten_rssm_state(posterior)
-            reconstructions.append(decoder(feature))
-            reward_logits.append(reward_head(feature))
-            continue_logits.append(continue_head(feature))
+            prior, posterior, prediction = self.observe_step(
+                prev_state,
+                action_features,
+                observations[t],
+            )
+            reconstructions.append(prediction["reconstructions"])
+            reward_logits.append(prediction["reward_logits"])
+            continue_logits.append(prediction["continue_logits"])
             prior_logits.append(prior.logits)
             posterior_logits.append(posterior.logits)
-            features.append(feature)
+            features.append(prediction["features"])
+            deterministic.append(posterior.deterministic)
+            stochastic.append(posterior.stochastic)
             prev_state = posterior
         return {
             "reconstructions": jnp.stack(reconstructions),
@@ -81,6 +131,8 @@ class DreamerWorldModel(nn.Module):
             "prior_logits": jnp.stack(prior_logits),
             "posterior_logits": jnp.stack(posterior_logits),
             "features": jnp.stack(features),
+            "deterministic": jnp.stack(deterministic),
+            "stochastic": jnp.stack(stochastic),
         }
 
 
@@ -121,7 +173,8 @@ def dreamer_world_model_loss(
     actions = jnp.asarray(batch.actions, dtype=action_dtype)
     rewards = jnp.asarray(batch.rewards, dtype=jnp.float32)
     continues = jnp.asarray(batch.continues, dtype=jnp.float32)
-    outputs = state.apply_fn(params, observations, actions)
+    is_first = jnp.asarray(batch.is_first, dtype=bool)
+    outputs = state.apply_fn(params, observations, actions, is_first)
     reconstruction_loss = jnp.mean(
         jnp.square(outputs["reconstructions"] - observations)
     )
@@ -137,13 +190,19 @@ def dreamer_world_model_loss(
             axis=-1,
         )
     )
-    continue_loss = jnp.mean(
-        optax.sigmoid_binary_cross_entropy(outputs["continue_logits"], continues)
+    continue_losses = optax.sigmoid_binary_cross_entropy(
+        outputs["continue_logits"], continues
     )
-    kl_loss = categorical_kl_loss(
+    continue_mask = 1.0 - is_first.astype(jnp.float32)
+    continue_loss = jnp.sum(continue_losses * continue_mask) / jnp.maximum(
+        jnp.sum(continue_mask), 1.0
+    )
+    kl_loss, dynamics_kl_loss, representation_kl_loss = balanced_categorical_kl_loss(
         outputs["posterior_logits"],
         outputs["prior_logits"],
         free_nats=config.kl_free_nats,
+        dynamics_scale=config.dynamics_kl_scale,
+        representation_scale=config.representation_kl_scale,
     )
     loss = reconstruction_loss + reward_loss + continue_loss + kl_loss
     metrics = {
@@ -152,6 +211,8 @@ def dreamer_world_model_loss(
         "reward_loss": reward_loss,
         "continue_loss": continue_loss,
         "kl_loss": kl_loss,
+        "dynamics_kl_loss": dynamics_kl_loss,
+        "representation_kl_loss": representation_kl_loss,
     }
     return loss, metrics
 

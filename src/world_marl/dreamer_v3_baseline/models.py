@@ -56,3 +56,32 @@ class ContinueHead(nn.Module):
         for dim in self.hidden_dims:
             x = nn.silu(nn.Dense(dim)(x))
         return nn.Dense(1)(x)[..., 0]
+
+
+class DreamerActor(nn.Module):
+    action_dim: int
+    action_mode: str
+    hidden_dims: Sequence[int] = (128, 128)
+
+    @nn.compact
+    def __call__(self, features: jax.Array) -> dict[str, jax.Array]:
+        x = features.astype(jnp.float32)
+        for dim in self.hidden_dims:
+            x = nn.silu(nn.LayerNorm()(nn.Dense(dim)(x)))
+        if self.action_mode == "discrete":
+            return {"logits": nn.Dense(self.action_dim, name="logits")(x)}
+        mean = nn.Dense(self.action_dim, name="mean")(x)
+        log_std = jnp.clip(nn.Dense(self.action_dim, name="log_std")(x), -5.0, 2.0)
+        return {"mean": mean, "log_std": log_std}
+
+
+class DreamerCritic(nn.Module):
+    bins: int
+    hidden_dims: Sequence[int] = (128, 128)
+
+    @nn.compact
+    def __call__(self, features: jax.Array) -> jax.Array:
+        x = features.astype(jnp.float32)
+        for dim in self.hidden_dims:
+            x = nn.silu(nn.LayerNorm()(nn.Dense(dim)(x)))
+        return nn.Dense(self.bins, name="value_logits")(x)

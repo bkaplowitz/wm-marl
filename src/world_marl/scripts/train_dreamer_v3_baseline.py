@@ -7,10 +7,23 @@ from typing import Any
 import jax.numpy as jnp
 import matplotlib.image as mpimg
 import numpy as np
+from flax.training.train_state import TrainState
 
 from world_marl.dreamer_v3_baseline.config import DreamerV3Config
-from world_marl.dreamer_v3_baseline.imagination import open_loop_diagnostic
-from world_marl.dreamer_v3_baseline.training import train_dreamer_world_model
+from world_marl.dreamer_v3_baseline.imagination import (
+    dreamer_policy_action,
+    train_dreamer_actor_critic,
+)
+from world_marl.dreamer_v3_baseline.rssm import (
+    flatten_rssm_state,
+    initial_rssm_state,
+    reset_rssm_state,
+)
+from world_marl.dreamer_v3_baseline.training import (
+    DreamerWorldModel,
+    dreamer_action_features,
+    train_dreamer_world_model,
+)
 from world_marl.dreamer_v3_baseline.validation import (
     finite_metric_check,
     loss_decreased,
@@ -33,6 +46,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--train-steps", type=int, default=10)
     parser.add_argument("--policy-train-steps", type=int, default=10)
+    parser.add_argument("--imagination-horizon", type=int, default=15)
     parser.add_argument("--collect-steps", type=int, default=None)
     parser.add_argument("--time-steps", type=int, default=6)
     parser.add_argument("--batch-size", type=int, default=4)
@@ -56,6 +70,7 @@ def _config_payload(
         "seed": args.seed,
         "train_steps": args.train_steps,
         "policy_train_steps": args.policy_train_steps,
+        "imagination_horizon": args.imagination_horizon,
         "collect_steps": _collect_steps(args),
         "batch_size": args.batch_size,
         "num_envs": args.num_envs,
@@ -68,6 +83,11 @@ def _config_payload(
             "deterministic_size": config.rssm.deterministic_size,
             "stochastic_size": config.rssm.stochastic_size,
             "discrete_classes": config.rssm.discrete_classes,
+        },
+        "actor_critic": {
+            "value_bins": config.actor_critic.value_bins,
+            "discount_lambda": config.actor_critic.discount_lambda,
+            "entropy_scale": config.actor_critic.entropy_scale,
         },
     }
 
@@ -103,43 +123,27 @@ def _to_rgb_panel(array: np.ndarray) -> np.ndarray:
     return np.clip(values, 0.0, 1.0)
 
 
-def _constant_policy_action(
-    batch_actions: np.ndarray,
-    *,
-    action_mode: str,
-    action_dim: int,
-    num_envs: int,
-    action_low: np.ndarray | None,
-    action_high: np.ndarray | None,
-) -> np.ndarray:
-    if action_mode == "discrete":
-        counts = np.bincount(
-            batch_actions.reshape(-1).astype(np.int64), minlength=action_dim
-        )
-        action = int(np.argmax(counts))
-        return np.full((num_envs, 1), action, dtype=np.int32)
-
-    mean_action = (
-        np.asarray(batch_actions, dtype=np.float32)
-        .reshape((-1, action_dim))
-        .mean(axis=0)
-    )
-    if action_low is not None and action_high is not None:
-        mean_action = np.clip(mean_action, action_low, action_high)
-    return np.broadcast_to(mean_action, (num_envs, action_dim)).astype(np.float32)
+def _squeeze_single_agent_axis(array: Any, *, num_envs: int) -> np.ndarray:
+    values = np.asarray(array)
+    if values.ndim >= 2 and values.shape[:2] == (num_envs, 1):
+        return values[:, 0, ...]
+    return values
 
 
 def _evaluate_real_env(
     args: argparse.Namespace,
     batch: Any,
     config: DreamerV3Config,
-) -> list[dict[str, float]]:
+    world_model_state: TrainState,
+    actor_state: TrainState,
+) -> list[dict[str, float | str]]:
     if args.env.startswith("synthetic:"):
         return [
             {
                 "episode": 0,
                 "return": float(np.mean(np.sum(batch.rewards, axis=0))),
                 "length": float(batch.time_steps),
+                "policy_source": "imagined_actor",
             }
         ]
 
@@ -152,7 +156,8 @@ def _evaluate_real_env(
         dmc_workers=args.dmc_workers,
     )
     try:
-        rows: list[dict[str, float]] = []
+        rows: list[dict[str, float | str]] = []
+        model = DreamerWorldModel(config)
         action_low = getattr(adapter, "action_low", None)
         action_high = getattr(adapter, "action_high", None)
         if action_low is not None:
@@ -164,26 +169,82 @@ def _evaluate_real_env(
                 (config.action_dim,)
             )
         for episode in range(max(args.eval_episodes, 1)):
-            adapter.reset()
-            episode_return = np.zeros((adapter.num_envs,), dtype=np.float32)
-            policy_action = _constant_policy_action(
-                batch.actions,
-                action_mode=config.action_mode,
-                action_dim=config.action_dim,
+            observations = _squeeze_single_agent_axis(
+                adapter.reset(),
                 num_envs=adapter.num_envs,
-                action_low=action_low,
-                action_high=action_high,
+            ).reshape((adapter.num_envs, *config.observation_shape))
+            episode_return = np.zeros((adapter.num_envs,), dtype=np.float32)
+            latent_state = initial_rssm_state(
+                batch_size=adapter.num_envs,
+                config=config.rssm,
             )
+            if config.action_mode == "discrete":
+                previous_action = jnp.zeros((adapter.num_envs,), dtype=jnp.int32)
+            else:
+                previous_action = jnp.zeros(
+                    (adapter.num_envs, config.action_dim), dtype=jnp.float32
+                )
             for _ in range(args.max_cycles):
+                action_features = dreamer_action_features(previous_action, config)
+                _, latent_state, _ = model.apply(
+                    world_model_state.params,
+                    latent_state,
+                    action_features,
+                    jnp.asarray(observations, dtype=jnp.float32),
+                    method=model.observe_step,
+                )
+                actions = dreamer_policy_action(
+                    actor_state,
+                    flatten_rssm_state(latent_state),
+                    config,
+                )
+                if config.action_mode == "discrete":
+                    policy_action = np.asarray(actions, dtype=np.int32).reshape(
+                        (adapter.num_envs, 1)
+                    )
+                    previous_action = actions
+                else:
+                    policy_action = np.asarray(actions, dtype=np.float32).reshape(
+                        (adapter.num_envs, config.action_dim)
+                    )
+                    if action_low is not None and action_high is not None:
+                        policy_action = np.clip(policy_action, action_low, action_high)
+                    previous_action = jnp.asarray(policy_action, dtype=jnp.float32)
                 step = adapter.step(policy_action)
                 episode_return += np.asarray(step.rewards, dtype=np.float32).reshape(
                     (adapter.num_envs,)
                 )
+                terminals = _squeeze_single_agent_axis(
+                    step.dones,
+                    num_envs=adapter.num_envs,
+                ).reshape((adapter.num_envs,))
+                latent_state = reset_rssm_state(
+                    latent_state,
+                    jnp.asarray(terminals > 0.5),
+                    config=config.rssm,
+                )
+                if config.action_mode == "discrete":
+                    previous_action = jnp.where(
+                        jnp.asarray(terminals > 0.5),
+                        jnp.zeros_like(previous_action),
+                        previous_action,
+                    )
+                else:
+                    previous_action = jnp.where(
+                        jnp.asarray(terminals > 0.5)[:, None],
+                        jnp.zeros_like(previous_action),
+                        previous_action,
+                    )
+                observations = _squeeze_single_agent_axis(
+                    step.observations,
+                    num_envs=adapter.num_envs,
+                ).reshape((adapter.num_envs, *config.observation_shape))
             rows.append(
                 {
                     "episode": episode,
                     "return": float(np.mean(episode_return)),
                     "length": float(args.max_cycles),
+                    "policy_source": "imagined_actor",
                 }
             )
         return rows
@@ -239,19 +300,29 @@ def main(argv: list[str] | None = None) -> int:
         state.params,
         jnp.asarray(batch.observations, dtype=jnp.float32),
         jnp.asarray(batch.actions, dtype=action_dtype),
+        jnp.asarray(batch.is_first, dtype=bool),
     )
-    diagnostic = open_loop_diagnostic(outputs["features"], args.policy_train_steps)
-    actor_critic_metrics = [
-        {
-            "step": step,
-            "imagined_reward": float(jnp.mean(diagnostic.rewards)),
-            "imagined_value": float(jnp.mean(diagnostic.values)),
-        }
-        for step in range(args.policy_train_steps)
-    ]
+    actor_state, critic_state, actor_critic_metrics, imagined_rollout = (
+        train_dreamer_actor_critic(
+            world_model_state=state,
+            batch=batch,
+            config=config,
+            train_steps=args.policy_train_steps,
+            learning_rate=args.learning_rate,
+            imagination_horizon=args.imagination_horizon,
+            seed=args.seed + 1,
+        )
+    )
+    finite_metric_check(actor_critic_metrics[-1])
     gate_passed = loss_decreased(world_metrics)
     status = "ok" if gate_passed else "learning_gate_failed"
-    real_env_metrics = _evaluate_real_env(args, batch, config)
+    real_env_metrics = _evaluate_real_env(
+        args,
+        batch,
+        config,
+        state,
+        actor_state,
+    )
     real_env_return = float(np.mean([row["return"] for row in real_env_metrics]))
 
     write_json_artifact(out_dir / "config.json", _config_payload(args, config))
@@ -267,9 +338,13 @@ def main(argv: list[str] | None = None) -> int:
             [_to_rgb_panel(first_obs), _to_rgb_panel(first_reconstruction)], axis=1
         ),
     )
-    rollout = np.asarray(
-        batch.observations[: min(args.policy_train_steps, batch.time_steps), 0]
+    model = DreamerWorldModel(config)
+    imagined_predictions = model.apply(
+        state.params,
+        imagined_rollout.features[:, 0],
+        method=model.predict,
     )
+    rollout = np.asarray(imagined_predictions["reconstructions"])
     _write_png(
         out_dir / "imagined_rollout.png",
         np.concatenate([_to_rgb_panel(item) for item in rollout], axis=1),
@@ -281,6 +356,7 @@ def main(argv: list[str] | None = None) -> int:
             "final_loss": world_metrics[-1]["loss"],
             "initial_loss": world_metrics[0]["loss"],
             "real_env_return": real_env_return,
+            "policy_source": "imagined_actor",
         },
     )
     write_json_artifact(
@@ -293,6 +369,7 @@ def main(argv: list[str] | None = None) -> int:
             "observation_shape": config.observation_shape,
             "final_loss": world_metrics[-1]["loss"],
             "real_env_return": real_env_return,
+            "policy_source": "imagined_actor",
             "learning_gate_passed": gate_passed,
         },
     )

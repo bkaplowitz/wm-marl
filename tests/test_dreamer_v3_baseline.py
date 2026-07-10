@@ -7,7 +7,12 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from world_marl.dreamer_v3_baseline.config import DreamerV3Config
+from flax.traverse_util import flatten_dict
+
+from world_marl.dreamer_v3_baseline.config import DreamerV3Config, RSSMConfig
+from world_marl.dreamer_v3_baseline.imagination import (
+    train_dreamer_actor_critic,
+)
 from world_marl.dreamer_v3_baseline.losses import (
     categorical_kl_loss,
     symexp,
@@ -16,6 +21,8 @@ from world_marl.dreamer_v3_baseline.losses import (
 )
 from world_marl.dreamer_v3_baseline.models import (
     ContinueHead,
+    DreamerActor,
+    DreamerCritic,
     DreamerDecoder,
     DreamerEncoder,
     RewardHead,
@@ -79,6 +86,8 @@ def test_rssm_prior_and_posterior_shapes_and_finite_kl() -> None:
     )
     assert flatten_rssm_state(posterior).shape == (3, config.rssm.latent_size)
     assert bool(jnp.isfinite(kl))
+    parameter_paths = {"/".join(path) for path in flatten_dict(params["params"]).keys()}
+    assert any("recurrent" in path for path in parameter_paths)
 
 
 def test_encoder_decoder_reward_continue_heads_match_world_model_shapes() -> None:
@@ -176,6 +185,68 @@ def test_world_model_train_step_accepts_continuous_adapter_actions() -> None:
     assert bool(jnp.isfinite(metrics["loss"]))
 
 
+@pytest.mark.parametrize("action_mode", ["discrete", "continuous"])
+def test_imagined_actor_critic_training_returns_finite_policy_rollout(
+    action_mode: str,
+) -> None:
+    config = DreamerV3Config(
+        action_dim=3 if action_mode == "discrete" else 2,
+        action_mode=action_mode,
+        observation_shape=(5,),
+        rssm=RSSMConfig(
+            deterministic_size=16,
+            stochastic_size=4,
+            discrete_classes=4,
+            hidden_size=32,
+        ),
+    )
+    if action_mode == "discrete":
+        actions = np.zeros((4, 2), dtype=np.int32)
+    else:
+        actions = np.zeros((4, 2, config.action_dim), dtype=np.float32)
+    batch = WorldModelSequenceBatch(
+        observations=np.linspace(0.0, 1.0, num=4 * 2 * 5, dtype=np.float32).reshape(
+            (4, 2, 5)
+        ),
+        actions=actions,
+        rewards=np.zeros((4, 2), dtype=np.float32),
+        continues=np.ones((4, 2), dtype=np.float32),
+        is_first=np.array(
+            [[True, True], [False, False], [False, False], [False, False]]
+        ),
+        is_terminal=np.zeros((4, 2), dtype=bool),
+        metadata={"action_mode": action_mode, "env": "fake:policy"},
+    )
+    world_model_state = create_dreamer_train_state(
+        jax.random.PRNGKey(20), config, learning_rate=1e-3
+    )
+
+    actor_state, critic_state, metrics, rollout = train_dreamer_actor_critic(
+        world_model_state=world_model_state,
+        batch=batch,
+        config=config,
+        train_steps=2,
+        learning_rate=1e-3,
+        imagination_horizon=3,
+        seed=21,
+    )
+
+    actor = DreamerActor(config.action_dim, config.action_mode)
+    critic = DreamerCritic(config.reward_head.bins)
+    actor_outputs = actor.apply({"params": actor_state.params}, rollout.features[0])
+    critic_logits = critic.apply({"params": critic_state.params}, rollout.features[0])
+    assert actor_state.step == 2
+    assert critic_state.step == 2
+    assert ("logits" in actor_outputs) == (action_mode == "discrete")
+    assert critic_logits.shape == (2, config.reward_head.bins)
+    assert len(metrics) == 2
+    assert rollout.actions.shape[:2] == (3, 2)
+    assert rollout.features.shape == (3, 2, config.rssm.latent_size)
+    for row in metrics:
+        for key in ("actor_loss", "critic_loss", "imagined_reward", "imagined_value"):
+            assert np.isfinite(row[key])
+
+
 def test_dreamer_cli_smoke_writes_expected_artifacts(tmp_path) -> None:
     exit_code = train_dreamer_main(
         [
@@ -253,4 +324,9 @@ def test_dreamer_cli_brax_smoke_writes_real_env_artifacts(tmp_path) -> None:
     summary = json.loads((tmp_path / "summary.json").read_text())
     assert summary["env"] == "brax:reacher"
     assert summary["action_mode"] == "continuous"
+    assert summary["policy_source"] == "imagined_actor"
     assert "real_env_return" in summary
+    real_env_row = json.loads(
+        (tmp_path / "real_env_metrics.jsonl").read_text().splitlines()[0]
+    )
+    assert real_env_row["policy_source"] == "imagined_actor"

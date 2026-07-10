@@ -63,32 +63,66 @@ def flatten_rssm_state(state: RSSMState) -> jax.Array:
     )
 
 
+def reset_rssm_state(
+    state: RSSMState,
+    is_first: jax.Array,
+    *,
+    config: RSSMConfig,
+) -> RSSMState:
+    initial = initial_rssm_state(batch_size=state.deterministic.shape[0], config=config)
+    deterministic_mask = is_first.astype(bool).reshape((-1, 1))
+    stochastic_mask = is_first.astype(bool).reshape((-1, 1, 1))
+    return RSSMState(
+        deterministic=jnp.where(
+            deterministic_mask, initial.deterministic, state.deterministic
+        ),
+        stochastic=jnp.where(stochastic_mask, initial.stochastic, state.stochastic),
+        logits=jnp.where(stochastic_mask, initial.logits, state.logits),
+    )
+
+
 class DreamerRSSM(nn.Module):
     config: RSSMConfig
     action_dim: int
 
-    @nn.compact
-    def __call__(
-        self,
-        prev_state: RSSMState,
-        actions: jax.Array,
-        embed: jax.Array,
-    ) -> tuple[RSSMState, RSSMState]:
-        prev_features = jnp.concatenate(
-            [flatten_rssm_state(prev_state), actions], axis=-1
+    def setup(self) -> None:
+        self.prior_input = nn.Dense(self.config.hidden_size, name="prior_input")
+        self.recurrent = nn.GRUCell(
+            features=self.config.deterministic_size,
+            name="recurrent",
         )
-        prior_hidden = nn.silu(
-            nn.Dense(self.config.hidden_size, name="prior_hidden")(prev_features)
-        )
-        prior_deterministic = nn.tanh(
-            nn.Dense(self.config.deterministic_size, name="prior_deterministic")(
-                prior_hidden
-            )
-        )
-        prior_logits = nn.Dense(
+        self.prior_logits = nn.Dense(
             self.config.stochastic_size * self.config.discrete_classes,
             name="prior_logits",
-        )(prior_deterministic)
+        )
+        self.posterior_hidden = nn.Dense(
+            self.config.hidden_size,
+            name="posterior_hidden",
+        )
+        self.posterior_logits = nn.Dense(
+            self.config.stochastic_size * self.config.discrete_classes,
+            name="posterior_logits",
+        )
+
+    def prior(self, prev_state: RSSMState, actions: jax.Array) -> RSSMState:
+        recurrent_input = nn.silu(
+            self.prior_input(
+                jnp.concatenate(
+                    [
+                        prev_state.stochastic.reshape(
+                            (prev_state.stochastic.shape[0], -1)
+                        ),
+                        actions,
+                    ],
+                    axis=-1,
+                )
+            )
+        )
+        prior_deterministic, _ = self.recurrent(
+            prev_state.deterministic,
+            recurrent_input,
+        )
+        prior_logits = self.prior_logits(prior_deterministic)
         prior_logits = prior_logits.reshape(
             (-1, self.config.stochastic_size, self.config.discrete_classes)
         )
@@ -98,15 +132,18 @@ class DreamerRSSM(nn.Module):
             stochastic=prior_stochastic,
             logits=prior_logits,
         )
+        return prior
 
+    def __call__(
+        self,
+        prev_state: RSSMState,
+        actions: jax.Array,
+        embed: jax.Array,
+    ) -> tuple[RSSMState, RSSMState]:
+        prior = self.prior(prev_state, actions)
         posterior_input = jnp.concatenate([prior.deterministic, embed], axis=-1)
-        posterior_hidden = nn.silu(
-            nn.Dense(self.config.hidden_size, name="posterior_hidden")(posterior_input)
-        )
-        posterior_logits = nn.Dense(
-            self.config.stochastic_size * self.config.discrete_classes,
-            name="posterior_logits",
-        )(posterior_hidden)
+        posterior_hidden = nn.silu(self.posterior_hidden(posterior_input))
+        posterior_logits = self.posterior_logits(posterior_hidden)
         posterior_logits = posterior_logits.reshape(
             (-1, self.config.stochastic_size, self.config.discrete_classes)
         )

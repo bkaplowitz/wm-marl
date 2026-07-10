@@ -45,6 +45,27 @@ class ContinueHeadConfig:
 
 
 @dataclass(frozen=True)
+class ActorCriticConfig:
+    hidden_dims: tuple[int, ...] = (128, 128)
+    value_bins: int = 255
+    imagination_horizon: int = 15
+    discount_lambda: float = 0.95
+    entropy_scale: float = 3e-4
+
+    def __post_init__(self) -> None:
+        if not self.hidden_dims or any(dim <= 0 for dim in self.hidden_dims):
+            raise ValueError("hidden_dims must contain positive dimensions")
+        if self.value_bins <= 1:
+            raise ValueError("value_bins must be greater than one")
+        if self.imagination_horizon <= 0:
+            raise ValueError("imagination_horizon must be positive")
+        if not 0.0 <= self.discount_lambda <= 1.0:
+            raise ValueError("discount_lambda must be in [0, 1]")
+        if self.entropy_scale < 0.0:
+            raise ValueError("entropy_scale must be non-negative")
+
+
+@dataclass(frozen=True)
 class DreamerV3Config:
     action_dim: int
     observation_shape: tuple[int, ...]
@@ -53,6 +74,7 @@ class DreamerV3Config:
     encoder: EncoderConfig = field(default_factory=EncoderConfig)
     reward_head: RewardHeadConfig = field(default_factory=RewardHeadConfig)
     continue_head: ContinueHeadConfig = field(default_factory=ContinueHeadConfig)
+    actor_critic: ActorCriticConfig = field(default_factory=ActorCriticConfig)
     kl_free_nats: float = 1.0
     dynamics_kl_scale: float = 0.5
     representation_kl_scale: float = 0.1

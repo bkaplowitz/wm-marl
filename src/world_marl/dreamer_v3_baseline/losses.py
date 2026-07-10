@@ -51,3 +51,25 @@ def categorical_kl_loss(
     if free_nats > 0.0:
         kl = jnp.maximum(kl, free_nats)
     return jnp.mean(kl)
+
+
+def balanced_categorical_kl_loss(
+    posterior_logits: jax.Array,
+    prior_logits: jax.Array,
+    *,
+    free_nats: float,
+    dynamics_scale: float,
+    representation_scale: float,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    dynamics_kl = categorical_kl_loss(
+        jax.lax.stop_gradient(posterior_logits),
+        prior_logits,
+        free_nats=free_nats,
+    )
+    representation_kl = categorical_kl_loss(
+        posterior_logits,
+        jax.lax.stop_gradient(prior_logits),
+        free_nats=free_nats,
+    )
+    total = dynamics_scale * dynamics_kl + representation_scale * representation_kl
+    return total, dynamics_kl, representation_kl
