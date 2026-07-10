@@ -34,6 +34,12 @@ def world_model_sources() -> dict[str, dict[str, Any]]:
             "repo_url": "https://github.com/FLAIROx/jafar",
             "role": "implementation reference",
         },
+        "dm_control": {
+            "repo_url": "https://github.com/google-deepmind/dm_control",
+            "point_mass_url": "https://github.com/google-deepmind/dm_control/blob/main/dm_control/suite/point_mass.py",
+            "pixels_wrapper_url": "https://github.com/google-deepmind/dm_control/blob/main/dm_control/suite/wrappers/pixels.py",
+            "observation_mode": "official_pixel_wrapper",
+        },
     }
 
 

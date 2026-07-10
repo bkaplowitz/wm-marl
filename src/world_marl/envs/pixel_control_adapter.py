@@ -48,6 +48,13 @@ class PixelPointMassAdapter:
         self.include_observation_scalars = False
         self.scalar_observation_keys: tuple[str, ...] = ()
         self.append_agent_id = False
+        self.environment_metadata = {
+            "environment_backend": "synthetic",
+            "observation_mode": "pixels",
+            "synthetic_task": env_id,
+            "image_height": self.image_size,
+            "image_width": self.image_size,
+        }
 
         self.action_shape = (2,)
         self.action_dim = 2
