@@ -65,6 +65,7 @@ from world_marl.genwm import (
 )
 from world_marl.genwm.imagination import ImaginedBatch
 from world_marl.jepa.training import load_frozen_encoder
+from world_marl.logging import RunLogger
 from world_marl.world_model_training import _replay_scan_episode_bookkeeping
 
 MODEL_FREE_ARM = "model-free"
@@ -476,6 +477,17 @@ def _resolve_genie(args: argparse.Namespace, adapter) -> GenieTokenizer | None:
     )
 
 
+def _log_metrics(
+    logger: RunLogger | None,
+    phase: str,
+    step: int,
+    total: int,
+    metrics: dict[str, Any],
+) -> None:
+    if logger is not None:
+        logger.append_metrics({"phase": phase, "step": step, "total": total, **metrics})
+
+
 def _train_genie(
     genie_state,
     data: dict[str, np.ndarray],
@@ -486,6 +498,7 @@ def _train_genie(
     log_every: int,
     quiet: bool,
     label: str,
+    metrics_logger: RunLogger | None = None,
 ):
     """Fit the VQ-VAE by reconstruction on raw replay observations."""
     samples = np.concatenate([data["observations"], data["next_observations"]])
@@ -497,6 +510,7 @@ def _train_genie(
         )
         if step_index % log_every == 0 or step_index == steps - 1:
             metrics = {name: float(value) for name, value in step_metrics.items()}
+            _log_metrics(metrics_logger, label, step_index + 1, steps, metrics)
             if not quiet:
                 print(
                     f"[{label}] step {step_index + 1}/{steps} "
@@ -672,6 +686,7 @@ def _fit_models(
     log_every: int,
     quiet: bool,
     label: str,
+    metrics_logger: RunLogger | None = None,
 ):
     """Interleave world-model and reward/continue-head updates on replay data.
 
@@ -711,6 +726,13 @@ def _fit_models(
         if step_index % log_every == 0 or step_index == steps - 1:
             wm_loss = float(loss)
             head_metrics = {name: float(value) for name, value in metrics.items()}
+            _log_metrics(
+                metrics_logger,
+                label,
+                step_index + 1,
+                steps,
+                {"wm_loss": wm_loss, **head_metrics},
+            )
             if not quiet:
                 print(
                     f"[{label}] step {step_index + 1}/{steps} "
@@ -739,6 +761,7 @@ def _train_policy(
     log_every: int,
     quiet: bool,
     label: str,
+    metrics_logger: RunLogger | None = None,
 ):
     metrics: dict[str, Any] = {}
     for step_index in range(steps):
@@ -763,6 +786,7 @@ def _train_policy(
         )
         if step_index % log_every == 0 or step_index == steps - 1:
             metrics = {name: float(value) for name, value in step_metrics.items()}
+            _log_metrics(metrics_logger, label, step_index + 1, steps, metrics)
             if not quiet:
                 print(
                     f"[{label}] step {step_index + 1}/{steps} "
@@ -792,6 +816,7 @@ def _train_policy_real(
     quiet: bool,
     label: str,
     wandb_run=None,
+    metrics_logger: RunLogger | None = None,
 ):
     """PPO on real on-policy rollouts (the model-free arm's phase trainer).
 
@@ -827,6 +852,7 @@ def _train_policy_real(
         observations = np.asarray(last_obs_flat, dtype=np.float32)
         if update_index % log_every == 0 or update_index == num_updates - 1:
             metrics = {name: float(value) for name, value in step_metrics.items()}
+            _log_metrics(metrics_logger, label, update_index + 1, num_updates, metrics)
             if wandb_run is not None:
                 wandb_run.log({f"ppo/{name}": value for name, value in metrics.items()})
             if not quiet:
@@ -871,6 +897,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
     adapter = _make_adapter(args, seed=seed)
     num_envs = int(adapter.num_envs)
     wandb_run = _init_wandb(args, run_index=run_index)
+    metrics_logger = RunLogger(run_dir)
     eval_points: list[dict[str, Any]] = []
 
     def record_eval(tag: str, steps_per_env: int, value: float) -> None:
@@ -1013,6 +1040,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                     log_every=max(1, args.genie_train_steps // 10),
                     quiet=args.quiet,
                     label=f"run {run_index} genie",
+                    metrics_logger=metrics_logger,
                 )
                 obs_tokenizer = CodebookTokenizer(
                     codebook=genie_state.params["codebook"]
@@ -1043,6 +1071,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                 log_every=max(1, args.train_steps // 10),
                 quiet=args.quiet,
                 label=f"run {run_index} fit",
+                metrics_logger=metrics_logger,
             )
             key, policy_fit_key = jax.random.split(key)
             policy_state, ppo_metrics = _train_policy(
@@ -1062,6 +1091,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                 log_every=max(1, args.policy_train_steps // 10),
                 quiet=args.quiet,
                 label=f"run {run_index} policy",
+                metrics_logger=metrics_logger,
             )
         else:
             assert action_fns is not None
@@ -1078,6 +1108,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                 quiet=args.quiet,
                 label=f"run {run_index} model-free",
                 wandb_run=wandb_run,
+                metrics_logger=metrics_logger,
             )
 
         key, offline_eval_key = jax.random.split(key)
@@ -1123,6 +1154,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                         log_every=max(1, args.genie_online_train_steps // 5),
                         quiet=args.quiet,
                         label=f"run {run_index} online {iteration} genie",
+                        metrics_logger=metrics_logger,
                     )
                     obs_tokenizer = CodebookTokenizer(
                         codebook=genie_state.params["codebook"]
@@ -1147,6 +1179,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                     log_every=max(1, args.online_train_steps // 5),
                     quiet=args.quiet,
                     label=f"run {run_index} online {iteration} fit",
+                    metrics_logger=metrics_logger,
                 )
                 policy_state, ppo_metrics = _train_policy(
                     policy_state,
@@ -1165,6 +1198,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                     log_every=max(1, args.online_policy_train_steps // 5),
                     quiet=args.quiet,
                     label=f"run {run_index} online {iteration} policy",
+                    metrics_logger=metrics_logger,
                 )
             else:
                 policy_state, ppo_metrics = _train_policy_real(
@@ -1181,6 +1215,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                     quiet=args.quiet,
                     label=f"run {run_index} model-free online {iteration}",
                     wandb_run=wandb_run,
+                    metrics_logger=metrics_logger,
                 )
             key, iter_eval_key = jax.random.split(key)
             iteration_return = _eval_return(
