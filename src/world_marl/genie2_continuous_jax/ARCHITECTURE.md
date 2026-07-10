@@ -114,6 +114,22 @@ policy(observation) -> latent action -> bridge -> real environment action
 The bridge supports real-environment evaluation and calibration. It does not
 replace the continuous latent action interface inside the learned simulator.
 
+### Genuine pixel evaluation
+
+`dmc-pixels:<domain>/<task>` loads an official DeepMind Control Suite task and
+renders observations with dm_control's pixel wrapper. The required initial
+matrix is `point_mass/easy`, `point_mass/hard`, `cartpole/swingup`, and
+`finger/spin`, using five seeds and identical interaction/update budgets across
+model arms. The benchmark bridge is calibrated from action-labeled adapter
+replay; its sample count and replay MSE are reported. During evaluation, the
+frozen latent policy selects a continuous latent action and only the calibrated
+bridge converts it to the MuJoCo action.
+
+`pixels:pointmass` is a synthetic tensor-plumbing fixture. Its results must not
+be presented or aggregated as DMC evaluation evidence. See the
+[official DMC repository](https://github.com/google-deepmind/dm_control) and
+[pixel wrapper](https://github.com/google-deepmind/dm_control/blob/main/dm_control/suite/wrappers/pixels.py).
+
 ## Reward, Continue, and Evaluation Heads
 
 Reward and continue heads are added for RL evaluation:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--brax-backend", default=None)
     parser.add_argument("--dmc-workers", type=int, default=1)
+    parser.add_argument("--dmc-camera-id", type=int, default=0)
     parser.add_argument("--eval-episodes", type=int, default=1)
     parser.add_argument("--allow-fail", action="store_true")
     return parser.parse_args(argv)
@@ -76,6 +78,7 @@ def _config_payload(
         "num_envs": args.num_envs,
         "max_cycles": args.max_cycles,
         "image_size": args.image_size,
+        "dmc_camera_id": args.dmc_camera_id,
         "action_dim": action_dim,
         "action_mode": action_mode,
         "observation_shape": observation_shape,
@@ -143,6 +146,8 @@ def _make_batch(args: argparse.Namespace):
         seed=args.seed,
         brax_backend=args.brax_backend,
         dmc_workers=args.dmc_workers,
+        image_size=args.image_size,
+        dmc_camera_id=args.dmc_camera_id,
     )
 
 
@@ -215,13 +220,17 @@ def _evaluate_bridged_real_env(
             }
         ]
 
+    target_episodes = max(args.eval_episodes, 1)
+    evaluation_num_envs = math.gcd(args.num_envs, target_episodes)
     adapter = make_single_agent_adapter(
         args.env,
-        num_envs=args.num_envs,
+        num_envs=evaluation_num_envs,
         max_cycles=args.max_cycles,
         seed=args.seed + 20_000,
         brax_backend=args.brax_backend,
         dmc_workers=args.dmc_workers,
+        image_size=args.image_size,
+        dmc_camera_id=args.dmc_camera_id,
     )
     try:
         rows: list[dict[str, float | str]] = []
@@ -234,48 +243,80 @@ def _evaluate_bridged_real_env(
             action_high = np.asarray(action_high, dtype=np.float32).reshape(
                 (action_dim,)
             )
-        for episode in range(max(args.eval_episodes, 1)):
+        observations = _squeeze_single_agent_axis(
+            adapter.reset(),
+            num_envs=adapter.num_envs,
+        ).reshape((adapter.num_envs, *observation_shape))
+        while len(rows) < target_episodes:
+            latents = model.apply(
+                world_model_state.params,
+                jnp.asarray(observations, dtype=jnp.float32),
+                method=model.encode,
+            )
+            latent_actions = latent_policy_action(actor_state, latents)
+            policy_action = _bridge_policy_actions(
+                bridge,
+                np.asarray(latent_actions, dtype=np.float32),
+                action_mode=action_mode,
+                action_dim=action_dim,
+                action_low=action_low,
+                action_high=action_high,
+            )
+            step = adapter.step(policy_action)
+            for episode_return, episode_length in zip(
+                step.completed_returns,
+                step.completed_lengths,
+                strict=True,
+            ):
+                rows.append(
+                    {
+                        "episode": len(rows),
+                        "return": float(episode_return[0]),
+                        "length": float(episode_length),
+                        "policy_source": "latent_policy_bridge",
+                    }
+                )
             observations = _squeeze_single_agent_axis(
-                adapter.reset(),
+                step.observations,
                 num_envs=adapter.num_envs,
             ).reshape((adapter.num_envs, *observation_shape))
-            episode_return = np.zeros((adapter.num_envs,), dtype=np.float32)
-            for _ in range(args.max_cycles):
-                latents = model.apply(
-                    world_model_state.params,
-                    jnp.asarray(observations, dtype=jnp.float32),
-                    method=model.encode,
-                )
-                latent_actions = latent_policy_action(actor_state, latents)
-                policy_action = _bridge_policy_actions(
-                    bridge,
-                    np.asarray(latent_actions, dtype=np.float32),
-                    action_mode=action_mode,
-                    action_dim=action_dim,
-                    action_low=action_low,
-                    action_high=action_high,
-                )
-                step = adapter.step(policy_action)
-                episode_return += np.asarray(step.rewards, dtype=np.float32).reshape(
-                    (adapter.num_envs,)
-                )
-                observations = _squeeze_single_agent_axis(
-                    step.observations,
-                    num_envs=adapter.num_envs,
-                ).reshape((adapter.num_envs, *observation_shape))
-            rows.append(
-                {
-                    "episode": episode,
-                    "return": float(np.mean(episode_return)),
-                    "length": float(args.max_cycles),
-                    "policy_source": "latent_policy_bridge",
-                }
-            )
         return rows
     finally:
         close = getattr(adapter, "close", None)
         if close is not None:
             close()
+
+
+def _run_accounting(
+    args: argparse.Namespace,
+    batch: Any,
+    real_env_metrics: list[dict[str, float | str]],
+    *,
+    bridge_replay_mse: float,
+) -> dict[str, Any]:
+    environment_backend = str(batch.metadata.get("environment_backend", "unknown"))
+    evaluation_transitions = 0
+    if environment_backend not in {"synthetic", "unknown"}:
+        evaluation_transitions = int(
+            sum(float(row["length"]) for row in real_env_metrics)
+        )
+    return {
+        "seed": args.seed,
+        "evaluation_seed": args.seed + 20_000,
+        "environment_backend": environment_backend,
+        "observation_mode": str(batch.metadata.get("observation_mode", "unknown")),
+        "real_env_transitions": int(batch.metadata.get("real_env_transitions", 0)),
+        "evaluation_env_transitions": evaluation_transitions,
+        "evaluation_episodes": len(real_env_metrics),
+        "model_updates": args.train_steps,
+        "policy_updates": args.policy_train_steps,
+        "imagined_transitions": (
+            args.policy_train_steps * args.imagination_horizon * batch.batch_size
+        ),
+        "bridge_replay_mse": bridge_replay_mse,
+        "bridge_calibration_samples": int(batch.time_steps * batch.batch_size),
+        "bridge_source": "action_labeled_adapter_replay",
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -301,6 +342,9 @@ def main(argv: list[str] | None = None) -> int:
         action_dim=action_dim,
     )
     bridge = fit_linear_action_bridge(latent_actions, real_actions)
+    bridge_replay_mse = float(
+        np.mean(np.square(bridge.predict(latent_actions) - real_actions))
+    )
     actor_state, critic_state, policy_metrics, imagined_rollout = (
         train_genie2_latent_policy(
             world_model_state=state,
@@ -327,6 +371,12 @@ def main(argv: list[str] | None = None) -> int:
         batch=batch,
     )
     real_env_return = float(np.mean([row["return"] for row in real_env_metrics]))
+    accounting = _run_accounting(
+        args,
+        batch,
+        real_env_metrics,
+        bridge_replay_mse=bridge_replay_mse,
+    )
     gate_passed = loss_decreased(metrics)
     status = "ok" if gate_passed else "learning_gate_failed"
 
@@ -388,7 +438,9 @@ def main(argv: list[str] | None = None) -> int:
             "latent_action_dim": bridge.latent_action_dim,
             "real_action_dim": bridge.real_action_dim,
             "action_mode": action_mode,
-            "source": "lam_replay_actions",
+            "source": "action_labeled_adapter_replay",
+            "calibration_samples": int(latent_actions.shape[0]),
+            "replay_mse": bridge_replay_mse,
         },
     )
     write_jsonl_metrics(out_dir / "real_env_metrics.jsonl", real_env_metrics)
@@ -413,6 +465,7 @@ def main(argv: list[str] | None = None) -> int:
             "final_loss": metrics[-1]["loss"],
             "real_env_bridged_return": real_env_return,
             "policy_source": "latent_policy_bridge",
+            **accounting,
         },
     )
     write_json_artifact(
@@ -427,6 +480,7 @@ def main(argv: list[str] | None = None) -> int:
             "real_env_bridged_return": real_env_return,
             "policy_source": "latent_policy_bridge",
             "learning_gate_passed": gate_passed,
+            **accounting,
         },
     )
     return 0 if gate_passed or args.allow_fail else 1
