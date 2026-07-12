@@ -69,6 +69,52 @@ def test_replay_fingerprint_survives_round_trip_and_detects_changes(tmp_path):
     assert restored.fingerprint() != expected
 
 
+def test_replay_can_materialize_pre_generated_sample_indices():
+    replay = SequenceReplayBuffer(
+        capacity=12,
+        num_envs=2,
+        observation_shape=(2,),
+        action_shape=(1,),
+        action_dtype=np.float32,
+    )
+    for step in range(10):
+        replay.add_step(
+            observations=np.asarray(
+                [[step, 0], [step, 1]],
+                dtype=np.float32,
+            ),
+            actions=np.asarray([[step], [-step]], dtype=np.float32),
+            rewards=np.asarray([step, step + 1], dtype=np.float32),
+            dones=np.zeros(2, dtype=np.float32),
+        )
+
+    first_rng = np.random.default_rng(23)
+    starts, envs = replay.sample_indices(
+        first_rng,
+        batch_size=4,
+        chunk_length=3,
+        max_horizon=2,
+    )
+    indexed = replay.sample_from_indices(
+        starts,
+        envs,
+        chunk_length=3,
+        max_horizon=2,
+    )
+
+    direct = replay.sample(
+        np.random.default_rng(23),
+        batch_size=4,
+        chunk_length=3,
+        max_horizon=2,
+    )
+    for field in ("observations", "actions", "rewards", "dones"):
+        np.testing.assert_array_equal(
+            getattr(indexed, field),
+            getattr(direct, field),
+        )
+
+
 def test_pytree_fingerprint_is_stable_and_value_sensitive():
     tree = {"a": jnp.asarray([1.0, 2.0]), "b": {"c": jnp.asarray(3)}}
     same = {"a": jnp.asarray([1.0, 2.0]), "b": {"c": jnp.asarray(3)}}

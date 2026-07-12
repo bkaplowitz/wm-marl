@@ -175,6 +175,29 @@ class SequenceReplayBuffer:
         chunk_length: int,
         max_horizon: int,
     ) -> ReplayBatch:
+        starts, envs = self.sample_indices(
+            rng,
+            batch_size=batch_size,
+            chunk_length=chunk_length,
+            max_horizon=max_horizon,
+        )
+        return self.sample_from_indices(
+            starts,
+            envs,
+            chunk_length=chunk_length,
+            max_horizon=max_horizon,
+        )
+
+    def sample_indices(
+        self,
+        rng: np.random.Generator,
+        *,
+        batch_size: int,
+        chunk_length: int,
+        max_horizon: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Draw logical sequence starts and environment indices."""
+
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1")
         if chunk_length < 1:
@@ -190,6 +213,37 @@ class SequenceReplayBuffer:
         max_start = self._size - sequence_length
         starts = rng.integers(0, max_start + 1, size=(batch_size,))
         envs = rng.integers(0, self.num_envs, size=(batch_size,))
+        return starts.astype(np.int64), envs.astype(np.int64)
+
+    def sample_from_indices(
+        self,
+        starts: np.ndarray,
+        envs: np.ndarray,
+        *,
+        chunk_length: int,
+        max_horizon: int,
+    ) -> ReplayBatch:
+        """Materialize a batch from pre-generated logical replay indices."""
+
+        if chunk_length < 1:
+            raise ValueError("chunk_length must be >= 1")
+        if max_horizon < 1:
+            raise ValueError("max_horizon must be >= 1")
+        sequence_length = chunk_length + max_horizon
+        if self._size < sequence_length:
+            raise ValueError(
+                f"need at least {sequence_length} steps to sample, have {self._size}"
+            )
+        starts = np.asarray(starts, dtype=np.int64).reshape((-1,))
+        envs = np.asarray(envs, dtype=np.int64).reshape((-1,))
+        if starts.shape != envs.shape:
+            raise ValueError("starts and envs must have the same shape")
+        max_start = self._size - sequence_length
+        if np.any(starts < 0) or np.any(starts > max_start):
+            raise ValueError(f"starts must be in [0, {max_start}]")
+        if np.any(envs < 0) or np.any(envs >= self.num_envs):
+            raise ValueError(f"envs must be in [0, {self.num_envs})")
+
         offsets = np.arange(sequence_length)
         indices = starts[:, None] + offsets[None, :]
         # Map logical oldest-first indices to physical ring-buffer positions so

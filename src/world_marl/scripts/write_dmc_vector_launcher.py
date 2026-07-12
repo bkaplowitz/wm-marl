@@ -299,6 +299,27 @@ PRESETS: dict[str, dict[str, Any]] = {
         "online_checkpoint_interval": 10,
         "wandb_video_every_phases": 20,
     },
+    "jepa_stability_v0": {
+        **_JEPA_DREAMER_PARITY_BASE,
+        # Deliberately simple offline rung for reproducibility checks.
+        "env_workers": 1,
+        "dynamics_ensemble_size": 1,
+        "model_horizon": 5,
+        "open_loop_horizon": 5,
+        "imag_horizon": 5,
+        "online_iterations": 0,
+        "online_candidate_refit": False,
+        "online_freeze_encoder": False,
+        "policy_return_mode": "reward-only",
+        "policy_actor_baseline": "none",
+        "policy_return_normalization": "none",
+        "policy_replay_critic_loss_coef": 0.0,
+        "policy_slow_value_regularization_coef": 0.0,
+        "target_critic_ema_decay": 0.0,
+        "regularizer": "none",
+        "regularizer_weight": 0.0,
+        "final_policy_eval_episodes": 100,
+    },
     "jepa_dreamer_parity_500k": {
         **_JEPA_DREAMER_PARITY_BASE,
         # 496,896 train-replay transitions; 498,176 including held-out replay.
@@ -544,6 +565,13 @@ OVERRIDABLE_PARAMS = (
     "batch_size",
     "policy_batch_size",
     "imag_horizon",
+    "model_horizon",
+    "open_loop_horizon",
+    "context_window",
+    "dynamics_ensemble_size",
+    "regularizer",
+    "regularizer_weight",
+    "target_gradient",
     "gamma",
     "lambda_return",
     "latent_dim",
@@ -1051,6 +1079,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--policy-batch-size", type=int, default=None)
     parser.add_argument("--imag-horizon", type=int, default=None)
+    parser.add_argument("--model-horizon", type=int, default=None)
+    parser.add_argument("--open-loop-horizon", type=int, default=None)
+    parser.add_argument("--context-window", type=int, default=None)
+    parser.add_argument("--dynamics-ensemble-size", type=int, default=None)
+    parser.add_argument(
+        "--regularizer",
+        choices=("sigreg", "none"),
+        default=None,
+    )
+    parser.add_argument("--regularizer-weight", type=float, default=None)
+    parser.add_argument(
+        "--target-gradient",
+        choices=("stopgrad", "symmetric"),
+        default=None,
+    )
     parser.add_argument("--gamma", type=float, default=None)
     parser.add_argument("--lambda-return", type=float, default=None)
     parser.add_argument("--latent-dim", type=int, default=None)

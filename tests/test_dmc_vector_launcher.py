@@ -107,3 +107,25 @@ def test_interleaved_parity_presets_preserve_exact_budgets():
             == baseline["online_policy_train_steps"]
         )
         assert interleaved["online_iterations"] == baseline["online_iterations"] * 2
+
+
+def test_stability_preset_removes_online_and_long_horizon_complexity():
+    params = {**COMMON_PARAMS, **PRESETS["jepa_stability_v0"]}
+    command = params_to_shell_args(params)
+
+    assert params["env_workers"] == 1
+    assert params["dynamics_ensemble_size"] == 1
+    assert params["model_horizon"] == 5
+    assert params["open_loop_horizon"] == 5
+    assert params["imag_horizon"] == 5
+    assert params["online_iterations"] == 0
+    assert params["regularizer"] == "none"
+    assert params["policy_return_mode"] == "reward-only"
+    assert params["policy_actor_baseline"] == "none"
+    assert not params["online_candidate_refit"]
+    assert not params["online_policy_champion"]
+    assert "--model-horizon" in command
+    assert "--open-loop-horizon" in command
+    assert "--dynamics-ensemble-size" in command
+    assert "--regularizer" in command
+    assert "none" in command
