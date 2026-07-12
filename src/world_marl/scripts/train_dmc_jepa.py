@@ -1614,9 +1614,7 @@ def run_one(
                     jax.config.jax_default_matmul_precision
                 ),
                 "xla_flags": os.environ.get("XLA_FLAGS"),
-                "cublas_workspace_config": os.environ.get(
-                    "CUBLAS_WORKSPACE_CONFIG"
-                ),
+                "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
                 "nvidia_tf32_override": os.environ.get("NVIDIA_TF32_OVERRIDE"),
             },
         )
@@ -1908,6 +1906,12 @@ def run_one(
             env_steps += added_env_steps
             train_replay_env_steps += added_env_steps
             logger.set_train_env_steps(train_replay_env_steps)
+            _log_collection_episode_reports(
+                logger,
+                collect_metrics,
+                online_iteration=online_index,
+                control=control,
+            )
             collect_payload = {
                 **collect_metrics,
                 "reset_env_before_collection": args.online_reset_replay_env,
@@ -1923,6 +1927,7 @@ def run_one(
                     "phase": "online_actor_replay",
                     "online_iteration": online_index,
                     "control": control,
+                    "report": _collection_report_summary(collect_metrics),
                     **collect_payload,
                 }
             )
@@ -2705,6 +2710,43 @@ def _collect_policy_steps(
             }
         )
     return observations, steps * adapter.num_envs, metrics
+
+
+def _collection_report_summary(metrics: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "return_mean": metrics.get("mean_return"),
+        "return_std": metrics.get("std_return"),
+        "return_p10": metrics.get("return_p10"),
+        "return_cvar10": metrics.get("return_cvar10"),
+        "failure_rate": metrics.get("failure_rate"),
+        "success_rate": metrics.get("success_rate"),
+        "completed_episodes": metrics.get("completed_episodes", 0),
+    }
+
+
+def _log_collection_episode_reports(
+    logger: RunLogger,
+    metrics: dict[str, Any],
+    *,
+    online_iteration: int,
+    control: ControlMode,
+) -> None:
+    returns = metrics.get("returns", ())
+    lengths = metrics.get("lengths", ())
+    finish_steps = metrics.get("episode_finish_train_env_steps", ())
+    for index, episode_return in enumerate(returns):
+        if index >= len(finish_steps):
+            break
+        row = {
+            "phase": "online_episode",
+            "online_iteration": online_iteration,
+            "control": control,
+            "budget/train_env_steps": int(finish_steps[index]),
+            "report/episode_return": float(episode_return),
+        }
+        if index < len(lengths):
+            row["report/episode_length"] = int(lengths[index])
+        logger.append_metrics(row)
 
 
 def _completed_env_indices(step, completed_count: int) -> list[int]:

@@ -20,9 +20,13 @@ class _FakeConfig(dict):
 class _FakeRun:
     def __init__(self):
         self.logged = []
+        self.defined_metrics = []
         self.summary = {}
         self.config = _FakeConfig()
         self.exit_code = None
+
+    def define_metric(self, name, **kwargs):
+        self.defined_metrics.append((name, kwargs))
 
     def log(self, payload):
         self.logged.append(payload)
@@ -66,6 +70,10 @@ def test_run_logger_mirrors_scalars_and_keeps_local_metrics(tmp_path, monkeypatc
     assert local_row["model"]["loss"] == 0.25
     assert run.logged[0]["model/loss"] == 0.25
     assert run.logged[0]["budget/train_env_steps"] == 128
+    assert (
+        "report/*",
+        {"step_metric": "budget/train_env_steps"},
+    ) in run.defined_metrics
     assert "ignored" not in run.logged[0]
     assert run.config["resolved"]["latent_dim"] == 64
     assert run.summary["eval/return_mean"] == 950.0

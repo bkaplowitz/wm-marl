@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -183,6 +184,42 @@ def test_policy_score_penalizes_failure_rate():
     assert metrics["failure_rate"] == 0.25
     assert metrics["success_rate"] == 0.75
     assert score == pytest.approx(732.5 - 0.5 * 25.0 - 400.0 * 0.25)
+
+
+def test_collection_reports_use_episode_finish_train_steps():
+    rows = []
+    logger = SimpleNamespace(append_metrics=rows.append)
+    metrics = {
+        "returns": [100.0, 950.0],
+        "lengths": [1000, 1000],
+        "episode_finish_train_env_steps": [16_000, 16_016],
+        "mean_return": 525.0,
+        "std_return": 425.0,
+        "return_p10": 185.0,
+        "return_cvar10": 100.0,
+        "failure_rate": 0.0,
+        "success_rate": 0.5,
+        "completed_episodes": 2,
+    }
+
+    train_dmc_jepa._log_collection_episode_reports(
+        logger,
+        metrics,
+        online_iteration=3,
+        control="none",
+    )
+
+    assert [row["budget/train_env_steps"] for row in rows] == [16_000, 16_016]
+    assert [row["report/episode_return"] for row in rows] == [100.0, 950.0]
+    assert train_dmc_jepa._collection_report_summary(metrics) == {
+        "return_mean": 525.0,
+        "return_std": 425.0,
+        "return_p10": 185.0,
+        "return_cvar10": 100.0,
+        "failure_rate": 0.0,
+        "success_rate": 0.5,
+        "completed_episodes": 2,
+    }
 
 
 def test_single_agent_jepa_cli_accepts_candidate_refit_flags(monkeypatch):

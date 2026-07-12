@@ -154,6 +154,7 @@ class RunLogger:
                     "critic/*",
                     "eval/*",
                     "data/*",
+                    "report/*",
                     "run/*",
                 ):
                     define_metric(
