@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -54,6 +56,64 @@ class SequenceReplayBuffer:
     def size(self) -> int:
         return self._size
 
+    def save_npz(self, path: str | Path) -> None:
+        """Persist ordered replay contents for exact diagnostic reuse."""
+
+        observations, actions, rewards, dones = self._ordered_arrays()
+        np.savez_compressed(
+            Path(path),
+            observations=observations,
+            actions=actions,
+            rewards=rewards,
+            dones=dones,
+            capacity=np.asarray(self.capacity, dtype=np.int64),
+            num_envs=np.asarray(self.num_envs, dtype=np.int64),
+            observation_shape=np.asarray(self.observation_shape, dtype=np.int64),
+            action_shape=np.asarray(self.action_shape, dtype=np.int64),
+            action_dtype=np.asarray(str(self.action_dtype), dtype="U32"),
+        )
+
+    @classmethod
+    def load_npz(
+        cls,
+        path: str | Path,
+        *,
+        capacity: int | None = None,
+    ) -> "SequenceReplayBuffer":
+        data = np.load(Path(path), allow_pickle=False)
+        observations = np.asarray(data["observations"], dtype=np.float32)
+        actions = np.asarray(data["actions"])
+        rewards = np.asarray(data["rewards"], dtype=np.float32)
+        dones = np.asarray(data["dones"], dtype=np.float32)
+
+        if observations.ndim < 3:
+            raise ValueError("saved replay observations must be [T, N, ...]")
+        size = int(observations.shape[0])
+        num_envs = int(observations.shape[1])
+        observation_shape = tuple(int(dim) for dim in observations.shape[2:])
+        action_shape = tuple(int(dim) for dim in actions.shape[2:])
+        action_dtype = actions.dtype
+        buffer_capacity = int(capacity) if capacity is not None else size
+        if buffer_capacity < size:
+            raise ValueError(
+                f"capacity {buffer_capacity} is smaller than saved replay size {size}"
+            )
+
+        replay = cls(
+            capacity=buffer_capacity,
+            num_envs=num_envs,
+            observation_shape=observation_shape,
+            action_shape=action_shape,
+            action_dtype=action_dtype,
+        )
+        replay.observations[:size] = observations
+        replay.actions[:size] = actions.astype(replay.action_dtype, copy=False)
+        replay.rewards[:size] = rewards
+        replay.dones[:size] = dones
+        replay._size = size
+        replay._position = size % replay.capacity
+        return replay
+
     def add_step(
         self,
         *,
@@ -104,20 +164,23 @@ class SequenceReplayBuffer:
                 f"need at least {sequence_length} steps to sample, have {self._size}"
             )
 
-        observations, actions, rewards, dones = self._ordered_arrays()
         max_start = self._size - sequence_length
         starts = rng.integers(0, max_start + 1, size=(batch_size,))
         envs = rng.integers(0, self.num_envs, size=(batch_size,))
         offsets = np.arange(sequence_length)
         indices = starts[:, None] + offsets[None, :]
+        # Map logical oldest-first indices to physical ring-buffer positions so
+        # sampling does not reorder the whole replay on every batch.
+        if self._size == self.capacity:
+            indices = (self._position + indices) % self.capacity
 
-        obs_batch = observations[indices, envs[:, None]]
+        obs_batch = self.observations[indices, envs[:, None]]
         # actions/rewards/dones align with transitions out of obs[t], so one fewer
         # item than the observation sequence is needed.
         trans_indices = indices[:, :-1]
-        action_batch = actions[trans_indices, envs[:, None]]
-        reward_batch = rewards[trans_indices, envs[:, None]]
-        done_batch = dones[trans_indices, envs[:, None]]
+        action_batch = self.actions[trans_indices, envs[:, None]]
+        reward_batch = self.rewards[trans_indices, envs[:, None]]
+        done_batch = self.dones[trans_indices, envs[:, None]]
         return ReplayBatch(
             observations=jnp.asarray(obs_batch, dtype=jnp.float32),
             actions=jnp.asarray(

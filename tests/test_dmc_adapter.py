@@ -23,11 +23,20 @@ class _TimeStep:
         return self._last
 
 
+class _FakePhysics:
+    def __init__(self, seed: int):
+        self.seed = seed
+
+    def render(self, *, height, width, camera_id):
+        return np.full((height, width, 3), self.seed + camera_id, dtype=np.uint8)
+
+
 class _FakeDMCEnv:
     def __init__(self, seed: int):
         self.seed = seed
         self.count = 0
         self.closed = False
+        self.physics = _FakePhysics(seed)
 
     def observation_spec(self):
         return {
@@ -36,7 +45,9 @@ class _FakeDMCEnv:
         }
 
     def action_spec(self):
-        return _Spec((2,), minimum=np.asarray([-1.0, -2.0]), maximum=np.asarray([1.0, 2.0]))
+        return _Spec(
+            (2,), minimum=np.asarray([-1.0, -2.0]), maximum=np.asarray([1.0, 2.0])
+        )
 
     def reset(self):
         self.count = 0
@@ -92,3 +103,20 @@ def test_dmc_adapter_reset_step_and_completion(num_workers):
         assert second.completed_lengths == (2, 2)
     finally:
         adapter.close()
+
+
+def test_dmc_adapter_renders_one_vector_member():
+    adapter = DMCVectorAdapter(
+        "fake/task",
+        num_envs=2,
+        seed=10,
+        env_factory=lambda seed: _FakeDMCEnv(seed),
+    )
+    try:
+        frame = adapter.render(1, height=12, width=16, camera_id=2)
+    finally:
+        adapter.close()
+
+    assert frame.shape == (12, 16, 3)
+    assert frame.dtype == np.uint8
+    assert np.all(frame == 13)

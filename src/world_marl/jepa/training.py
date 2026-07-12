@@ -27,7 +27,14 @@ ControlMode = Literal[
 ]
 PolicyReturnMode = Literal["reward-only", "lambda"]
 PolicyActorBaseline = Literal["none", "value"]
-PolicyReturnNormalization = Literal["none", "batch"]
+PolicyReturnNormalization = Literal[
+    "none",
+    "batch",
+    "percentile",
+    "ema-percentile",
+]
+PolicyGradientMode = Literal["dynamics", "reinforce"]
+ReplayCriticReturnMode = Literal["reward-only", "lambda"]
 
 MODEL_GROUPS = frozenset(
     {
@@ -71,6 +78,9 @@ class JepaTrainState:
     actor_opt_state: optax.OptState
     critic_tx: optax.GradientTransformation = struct.field(pytree_node=False)
     critic_opt_state: optax.OptState
+    target_critic_params: FrozenDict
+    return_range_ema: jax.Array
+    return_range_initialized: jax.Array
 
     def apply_model_gradients(self, grads) -> "JepaTrainState":
         updates, opt_state = self.model_tx.update(
@@ -108,16 +118,28 @@ class JepaTrainState:
             actor_opt_state=opt_state,
         )
 
-    def apply_critic_gradients(self, grads) -> "JepaTrainState":
+    def apply_critic_gradients(
+        self,
+        grads,
+        *,
+        target_critic_ema_decay: float = 0.0,
+    ) -> "JepaTrainState":
         updates, opt_state = self.critic_tx.update(
             grads,
             self.critic_opt_state,
             self.params,
         )
+        params = optax.apply_updates(self.params, updates)
+        target_critic_params = _update_target_critic_params(
+            self.target_critic_params,
+            params,
+            target_critic_ema_decay=target_critic_ema_decay,
+        )
         return self.replace(
             step=self.step + 1,
-            params=optax.apply_updates(self.params, updates),
+            params=params,
             critic_opt_state=opt_state,
+            target_critic_params=target_critic_params,
         )
 
 
@@ -149,24 +171,36 @@ def create_jepa_train_state(
         MODEL_GROUPS,
         config.learning_rate,
         clip_norm=config.model_grad_clip_norm,
+        warmup_steps=config.optimizer_warmup_steps,
+        adaptive_clip=config.adaptive_grad_clip,
+        epsilon=config.optimizer_epsilon,
     )
     frozen_encoder_model_tx = _masked_adam(
         params,
         ONLINE_FROZEN_ENCODER_MODEL_GROUPS,
         config.learning_rate,
         clip_norm=config.model_grad_clip_norm,
+        warmup_steps=config.optimizer_warmup_steps,
+        adaptive_clip=config.adaptive_grad_clip,
+        epsilon=config.optimizer_epsilon,
     )
     actor_tx = _masked_adam(
         params,
         ACTOR_GROUPS,
         config.actor_learning_rate,
         clip_norm=config.actor_grad_clip_norm,
+        warmup_steps=config.optimizer_warmup_steps,
+        adaptive_clip=config.adaptive_grad_clip,
+        epsilon=config.optimizer_epsilon,
     )
     critic_tx = _masked_adam(
         params,
         CRITIC_GROUPS,
         config.actor_learning_rate,
         clip_norm=config.critic_grad_clip_norm,
+        warmup_steps=config.optimizer_warmup_steps,
+        adaptive_clip=config.adaptive_grad_clip,
+        epsilon=config.optimizer_epsilon,
     )
     return JepaTrainState(
         step=0,
@@ -180,7 +214,31 @@ def create_jepa_train_state(
         actor_opt_state=actor_tx.init(params),
         critic_tx=critic_tx,
         critic_opt_state=critic_tx.init(params),
+        target_critic_params=params,
+        return_range_ema=jnp.asarray(1.0, dtype=jnp.float32),
+        return_range_initialized=jnp.asarray(False),
     )
+
+
+def _update_target_critic_params(
+    target_params: FrozenDict,
+    source_params: FrozenDict,
+    *,
+    target_critic_ema_decay: float,
+) -> FrozenDict:
+    """Copy current params while EMA-updating only the value head."""
+
+    raw = unfreeze(source_params)
+    if target_critic_ema_decay > 0.0:
+        raw["value_head"] = jax.tree_util.tree_map(
+            lambda target, source: (
+                target_critic_ema_decay * target
+                + (1.0 - target_critic_ema_decay) * source
+            ),
+            target_params["value_head"],
+            source_params["value_head"],
+        )
+    return freeze(raw)
 
 
 @partial(
@@ -396,6 +454,29 @@ def world_model_loss(
     return loss, metrics
 
 
+@partial(jax.jit, static_argnames=("config", "chunk_length", "control"))
+def evaluate_world_model_loss(
+    state: JepaTrainState,
+    key: jax.Array,
+    batch: ReplayBatch,
+    config: JepaConfig,
+    *,
+    chunk_length: int,
+    control: ControlMode,
+) -> dict[str, jax.Array]:
+    """Jitted evaluation-only wrapper around ``world_model_loss``."""
+    _, metrics = world_model_loss(
+        state.params,
+        state.apply_fn,
+        key,
+        batch,
+        config,
+        chunk_length=chunk_length,
+        control=control,
+    )
+    return metrics
+
+
 def world_model_loss_with_outputs(
     params: FrozenDict,
     apply_fn,
@@ -560,6 +641,9 @@ def reset_policy_heads(
         params=params,
         actor_opt_state=state.actor_tx.init(params),
         critic_opt_state=state.critic_tx.init(params),
+        target_critic_params=params,
+        return_range_ema=fresh.return_range_ema,
+        return_range_initialized=fresh.return_range_initialized,
     )
 
 
@@ -577,6 +661,9 @@ def copy_policy_heads(
         params=params,
         actor_opt_state=target.actor_tx.init(params),
         critic_opt_state=target.critic_tx.init(params),
+        target_critic_params=params,
+        return_range_ema=source.return_range_ema,
+        return_range_initialized=source.return_range_initialized,
     )
 
 
@@ -589,6 +676,400 @@ def copy_policy_heads(
         "policy_return_mode",
         "policy_actor_baseline",
         "policy_return_normalization",
+        "policy_actor_cvar_fraction",
+        "policy_gradient_mode",
+    ),
+)
+def continuous_policy_score(
+    state: JepaTrainState,
+    key: jax.Array,
+    start_observations: jax.Array,
+    config: JepaConfig,
+    action_low: jax.Array,
+    action_high: jax.Array,
+    *,
+    imag_horizon: int,
+    control: ControlMode = "none",
+    policy_return_mode: PolicyReturnMode = "reward-only",
+    policy_actor_baseline: PolicyActorBaseline = "none",
+    policy_return_normalization: PolicyReturnNormalization = "none",
+    policy_actor_cvar_fraction: float = 1.0,
+    policy_actor_cvar_coef: float = 0.0,
+    value_clip: float = 100.0,
+    action_saturation_threshold: float = 0.95,
+    start_actions: jax.Array | None = None,
+    uncertainty_penalty: float = 0.0,
+    uncertainty_latent_weight: float = 1.0,
+    uncertainty_reward_weight: float = 1.0,
+    uncertainty_continue_weight: float = 1.0,
+    uncertainty_threshold: float = float("inf"),
+    uncertainty_budget: float = float("inf"),
+    reference_actor_params: FrozenDict | None = None,
+    policy_trust_coef: float = 0.0,
+    policy_uncertainty_coef: float = 0.0,
+    policy_action_bound_coef: float = 0.0,
+    policy_action_bound_limit: float = 0.85,
+    policy_hard_action_bound_coef: float = 0.0,
+    hard_start_mask: jax.Array | None = None,
+    actor_entropy_coef: float = 0.0,
+    target_critic_params: FrozenDict | None = None,
+    policy_gradient_mode: PolicyGradientMode = "dynamics",
+) -> dict[str, jax.Array]:
+    if config.action_mode != "continuous":
+        raise ValueError("continuous_policy_score requires continuous actions")
+
+    rollout = continuous_imagine_rollout(
+        key,
+        state.params,
+        state.apply_fn,
+        start_observations,
+        config,
+        action_low,
+        action_high,
+        imag_horizon=imag_horizon,
+        control=control,
+        start_actions=start_actions,
+        uncertainty_penalty=uncertainty_penalty,
+        uncertainty_latent_weight=uncertainty_latent_weight,
+        uncertainty_reward_weight=uncertainty_reward_weight,
+        uncertainty_continue_weight=uncertainty_continue_weight,
+        uncertainty_threshold=uncertainty_threshold,
+        uncertainty_budget=uncertainty_budget,
+        target_critic_params=target_critic_params,
+        policy_gradient_mode=policy_gradient_mode,
+    )
+    if policy_return_mode == "reward-only":
+        actor_returns = reward_only_returns(
+            rollout["rewards"],
+            rollout["continues"],
+            gamma=config.gamma,
+        )
+    else:
+        actor_returns = lambda_returns(
+            rollout["rewards"],
+            rollout["continues"],
+            rollout["fixed_values"],
+            rollout["fixed_last_value"],
+            gamma=config.gamma,
+            lambda_return=config.lambda_return,
+        )
+    clipped_returns = jnp.clip(actor_returns, -value_clip, value_clip)
+    weights = survival_weights(rollout["continues"], gamma=config.gamma)
+    if policy_actor_baseline == "none":
+        actor_scores = clipped_returns
+    elif policy_actor_baseline == "value":
+        actor_scores = clipped_returns - jax.lax.stop_gradient(
+            rollout["fixed_values"]
+        )
+    else:
+        raise ValueError(f"unknown policy_actor_baseline: {policy_actor_baseline}")
+    if policy_return_normalization == "ema-percentile":
+        actor_objective_scores = actor_scores / jax.lax.stop_gradient(
+            jnp.maximum(state.return_range_ema, 1.0)
+        )
+    else:
+        actor_objective_scores = normalize_weighted_values(
+            actor_scores,
+            weights,
+            mode=policy_return_normalization,
+        )
+    mean_actor_objective = weighted_mean(actor_objective_scores, weights)
+    trajectory_scores = weighted_per_start_mean(actor_objective_scores, weights)
+    tail_threshold = jax.lax.stop_gradient(
+        jnp.percentile(trajectory_scores, 100.0 * policy_actor_cvar_fraction)
+    )
+    tail_mask = jax.lax.stop_gradient(
+        (trajectory_scores <= tail_threshold).astype(actor_objective_scores.dtype)
+    )
+    tail_weights = weights * tail_mask[None, :]
+    tail_actor_objective = weighted_mean(actor_objective_scores, tail_weights)
+    cvar_coef = jnp.asarray(policy_actor_cvar_coef, dtype=actor_objective_scores.dtype)
+    actor_objective = (
+        (1.0 - cvar_coef) * mean_actor_objective
+        + cvar_coef * tail_actor_objective
+    )
+    hard_weights, normal_weights, hard_start_fraction = split_start_weights(
+        weights,
+        hard_start_mask,
+    )
+    if reference_actor_params is None:
+        trust_action_l2 = jnp.asarray(0.0, dtype=actor_objective.dtype)
+    else:
+        reference_params = jax.tree_util.tree_map(
+            jax.lax.stop_gradient,
+            reference_actor_params,
+        )
+        reference_action_means, _ = actor_value_from_latent(
+            state.apply_fn,
+            reference_params,
+            rollout["latents"],
+        )
+        reference_normalized_actions = jnp.tanh(reference_action_means)
+        action_delta_l2 = jnp.mean(
+            jnp.square(
+                rollout["normalized_action_means"]
+                - jax.lax.stop_gradient(reference_normalized_actions),
+            ),
+            axis=-1,
+        )
+        trust_action_l2 = weighted_mean(action_delta_l2, weights)
+    action_bound_excess = jnp.maximum(
+        jnp.abs(rollout["normalized_action_means"]) - policy_action_bound_limit,
+        0.0,
+    )
+    action_bound_loss = weighted_mean(
+        jnp.mean(jnp.square(action_bound_excess), axis=-1),
+        weights,
+    )
+    if hard_start_mask is None:
+        hard_action_bound_loss = jnp.asarray(0.0, dtype=action_bound_loss.dtype)
+    else:
+        hard_weights = weights * hard_start_mask[None, :]
+        hard_action_bound_loss = weighted_mean(
+            jnp.mean(jnp.square(action_bound_excess), axis=-1),
+            hard_weights,
+        )
+    uncertainty_loss = weighted_mean(rollout["uncertainty"], weights)
+    entropy_bonus = weighted_mean(rollout["action_entropy"], weights)
+    actor_loss = (
+        -actor_objective
+        + policy_trust_coef * trust_action_l2
+        + policy_uncertainty_coef * uncertainty_loss
+        + policy_action_bound_coef * action_bound_loss
+        + policy_hard_action_bound_coef * hard_action_bound_loss
+        - actor_entropy_coef * entropy_bonus
+    )
+    action_saturation = jnp.mean(
+        (
+            jnp.abs(rollout["normalized_actions"]) >= action_saturation_threshold
+        ).astype(jnp.float32)
+    )
+    action_saturation_values = (
+        jnp.abs(rollout["normalized_actions"]) >= action_saturation_threshold
+    ).astype(jnp.float32)
+    action_saturation_per_step = jnp.mean(action_saturation_values, axis=-1)
+    finite_fraction = _all_finite_fraction(
+        rollout["latents"],
+        rollout["actions"],
+        rollout["normalized_actions"],
+        rollout["normalized_action_means"],
+        rollout["action_log_stds"],
+        rollout["action_entropy"],
+        rollout["rewards"],
+        rollout["continues"],
+        rollout["raw_rewards"],
+        rollout["values"],
+        rollout["fixed_values"],
+        rollout["uncertainty"],
+        rollout["trusted"],
+        actor_returns,
+        clipped_returns,
+        actor_scores,
+        actor_objective_scores,
+        actor_loss,
+    )
+    return {
+        "policy/actor_loss": actor_loss,
+        "policy/return_loss": -actor_objective,
+        "policy/trust_action_l2": trust_action_l2,
+        "policy/trust_coef": jnp.asarray(policy_trust_coef, dtype=actor_loss.dtype),
+        "policy/uncertainty_loss": uncertainty_loss,
+        "policy/uncertainty_coef": jnp.asarray(
+            policy_uncertainty_coef,
+            dtype=actor_loss.dtype,
+        ),
+        "policy/action_bound_loss": action_bound_loss,
+        "policy/hard_action_bound_loss": hard_action_bound_loss,
+        "policy/action_bound_coef": jnp.asarray(
+            policy_action_bound_coef,
+            dtype=actor_loss.dtype,
+        ),
+        "policy/hard_action_bound_coef": jnp.asarray(
+            policy_hard_action_bound_coef,
+            dtype=actor_loss.dtype,
+        ),
+        "policy/action_bound_limit": jnp.asarray(
+            policy_action_bound_limit,
+            dtype=actor_loss.dtype,
+        ),
+        "policy/entropy_bonus": entropy_bonus,
+        "policy/hard_entropy_bonus": weighted_mean(
+            rollout["action_entropy"],
+            hard_weights,
+        ),
+        "policy/normal_entropy_bonus": weighted_mean(
+            rollout["action_entropy"],
+            normal_weights,
+        ),
+        "policy/actor_entropy_coef": jnp.asarray(
+            actor_entropy_coef,
+            dtype=actor_loss.dtype,
+        ),
+        "policy/action_log_std_mean": jnp.mean(rollout["action_log_stds"]),
+        "policy/action_log_std_min": jnp.min(rollout["action_log_stds"]),
+        "policy/action_log_std_max": jnp.max(rollout["action_log_stds"]),
+        "policy/imagined_return": weighted_mean(actor_returns, weights),
+        "policy/hard_start_fraction": hard_start_fraction,
+        "policy/hard_imagined_return": weighted_mean(actor_returns, hard_weights),
+        "policy/normal_imagined_return": weighted_mean(actor_returns, normal_weights),
+        "policy/clipped_imagined_return": weighted_mean(clipped_returns, weights),
+        "policy/hard_clipped_imagined_return": weighted_mean(
+            clipped_returns,
+            hard_weights,
+        ),
+        "policy/normal_clipped_imagined_return": weighted_mean(
+            clipped_returns,
+            normal_weights,
+        ),
+        "policy/actor_score": weighted_mean(actor_scores, weights),
+        "policy/hard_actor_score": weighted_mean(actor_scores, hard_weights),
+        "policy/normal_actor_score": weighted_mean(actor_scores, normal_weights),
+        "policy/actor_objective_score": actor_objective,
+        "policy/actor_objective_mean_score": mean_actor_objective,
+        "policy/actor_objective_cvar_score": tail_actor_objective,
+        "policy/hard_actor_objective_mean_score": weighted_mean(
+            actor_objective_scores,
+            hard_weights,
+        ),
+        "policy/normal_actor_objective_mean_score": weighted_mean(
+            actor_objective_scores,
+            normal_weights,
+        ),
+        "policy/actor_cvar_coef": cvar_coef,
+        "policy/actor_cvar_fraction": jnp.asarray(
+            policy_actor_cvar_fraction,
+            dtype=actor_loss.dtype,
+        ),
+        "policy/actor_cvar_actual_fraction": jnp.mean(tail_mask),
+        "policy/actor_cvar_threshold": tail_threshold,
+        "policy/actor_score_std": weighted_std(actor_scores, weights),
+        "policy/actor_uses_value_baseline": jnp.asarray(
+            float(policy_actor_baseline == "value"),
+            dtype=actor_loss.dtype,
+        ),
+        "policy/return_normalization_batch": jnp.asarray(
+            float(policy_return_normalization == "batch"),
+            dtype=actor_loss.dtype,
+        ),
+        "policy/imagined_reward": weighted_mean(rollout["rewards"], weights),
+        "policy/hard_imagined_reward": weighted_mean(
+            rollout["rewards"],
+            hard_weights,
+        ),
+        "policy/normal_imagined_reward": weighted_mean(
+            rollout["rewards"],
+            normal_weights,
+        ),
+        "policy/raw_imagined_reward": weighted_mean(
+            rollout["raw_rewards"],
+            weights,
+        ),
+        "policy/hard_raw_imagined_reward": weighted_mean(
+            rollout["raw_rewards"],
+            hard_weights,
+        ),
+        "policy/normal_raw_imagined_reward": weighted_mean(
+            rollout["raw_rewards"],
+            normal_weights,
+        ),
+        "policy/raw_reward_below_min_frac": jnp.mean(
+            (
+                rollout["raw_rewards"] < config.imagined_reward_min
+            ).astype(jnp.float32)
+        ),
+        "policy/raw_reward_above_max_frac": jnp.mean(
+            (
+                rollout["raw_rewards"] > config.imagined_reward_max
+            ).astype(jnp.float32)
+        ),
+        "policy/clip_imagined_rewards": jnp.asarray(
+            float(config.clip_imagined_rewards),
+            dtype=actor_loss.dtype,
+        ),
+        "policy/imagined_continue": weighted_mean(rollout["continues"], weights),
+        "policy/survival_weight_mean": jnp.mean(weights),
+        "policy/uncertainty": weighted_mean(rollout["uncertainty"], weights),
+        "policy/hard_uncertainty": weighted_mean(
+            rollout["uncertainty"],
+            hard_weights,
+        ),
+        "policy/normal_uncertainty": weighted_mean(
+            rollout["uncertainty"],
+            normal_weights,
+        ),
+        "policy/uncertainty_abs_max": jnp.max(jnp.abs(rollout["uncertainty"])),
+        "policy/trusted_fraction": jnp.mean(rollout["trusted"]),
+        "policy/hard_trusted_fraction": weighted_mean(
+            rollout["trusted"],
+            hard_weights,
+        ),
+        "policy/normal_trusted_fraction": weighted_mean(
+            rollout["trusted"],
+            normal_weights,
+        ),
+        "policy/uncertainty_penalty": jnp.asarray(
+            uncertainty_penalty,
+            dtype=actor_loss.dtype,
+        ),
+        "policy/return_abs_mean": jnp.mean(jnp.abs(actor_returns)),
+        "policy/hard_return_abs_mean": weighted_mean(
+            jnp.abs(actor_returns),
+            hard_weights,
+        ),
+        "policy/normal_return_abs_mean": weighted_mean(
+            jnp.abs(actor_returns),
+            normal_weights,
+        ),
+        "policy/return_abs_max": jnp.max(jnp.abs(actor_returns)),
+        "policy/value_target_abs_mean": jnp.mean(jnp.abs(clipped_returns)),
+        "policy/hard_value_target_abs_mean": weighted_mean(
+            jnp.abs(clipped_returns),
+            hard_weights,
+        ),
+        "policy/normal_value_target_abs_mean": weighted_mean(
+            jnp.abs(clipped_returns),
+            normal_weights,
+        ),
+        "policy/value_target_abs_max": jnp.max(jnp.abs(clipped_returns)),
+        "policy/action_mean": jnp.mean(rollout["actions"]),
+        "policy/action_std": jnp.std(rollout["actions"]),
+        "policy/action_abs_mean": jnp.mean(jnp.abs(rollout["actions"])),
+        "policy/normalized_action_abs_mean": jnp.mean(
+            jnp.abs(rollout["normalized_actions"])
+        ),
+        "policy/normalized_action_mean_abs_mean": jnp.mean(
+            jnp.abs(rollout["normalized_action_means"])
+        ),
+        "policy/action_saturation_fraction": action_saturation,
+        "policy/hard_action_saturation_fraction": weighted_mean(
+            action_saturation_per_step,
+            hard_weights,
+        ),
+        "policy/normal_action_saturation_fraction": weighted_mean(
+            action_saturation_per_step,
+            normal_weights,
+        ),
+        "policy/finite_fraction": finite_fraction,
+    }
+
+
+@partial(
+    jax.jit,
+    static_argnames=(
+        "config",
+        "imag_horizon",
+        "control",
+        "policy_return_mode",
+        "policy_actor_baseline",
+        "policy_return_normalization",
+        "policy_actor_cvar_fraction",
+        "policy_gradient_mode",
+        "target_critic_ema_decay",
+        "real_critic_loss_enabled",
+        "real_critic_horizon",
+        "real_critic_return_mode",
+        "real_critic_all_steps",
+        "slow_value_regularization_coef",
     ),
 )
 def continuous_policy_train_step(
@@ -604,6 +1085,10 @@ def continuous_policy_train_step(
     policy_return_mode: PolicyReturnMode = "reward-only",
     policy_actor_baseline: PolicyActorBaseline = "none",
     policy_return_normalization: PolicyReturnNormalization = "none",
+    policy_actor_cvar_fraction: float = 1.0,
+    policy_actor_cvar_coef: float = 0.0,
+    policy_gradient_mode: PolicyGradientMode = "dynamics",
+    return_normalization_ema_decay: float = 0.99,
     value_clip: float = 100.0,
     action_saturation_threshold: float = 0.95,
     start_actions: jax.Array | None = None,
@@ -615,7 +1100,21 @@ def continuous_policy_train_step(
     uncertainty_budget: float = float("inf"),
     reference_actor_params: FrozenDict | None = None,
     policy_trust_coef: float = 0.0,
+    policy_uncertainty_coef: float = 0.0,
+    policy_action_bound_coef: float = 0.0,
+    policy_action_bound_limit: float = 0.85,
+    policy_hard_action_bound_coef: float = 0.0,
+    hard_start_mask: jax.Array | None = None,
     actor_entropy_coef: float = 0.0,
+    target_critic_params: FrozenDict | None = None,
+    target_critic_ema_decay: float = 0.0,
+    real_critic_batch: ReplayBatch | None = None,
+    real_critic_loss_enabled: bool = False,
+    real_critic_loss_coef: float = 0.0,
+    real_critic_horizon: int = 32,
+    real_critic_return_mode: ReplayCriticReturnMode = "reward-only",
+    real_critic_all_steps: bool = False,
+    slow_value_regularization_coef: float = 0.0,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     if config.action_mode != "continuous":
         raise ValueError("continuous_policy_train_step requires continuous actions")
@@ -638,6 +1137,8 @@ def continuous_policy_train_step(
             uncertainty_continue_weight=uncertainty_continue_weight,
             uncertainty_threshold=uncertainty_threshold,
             uncertainty_budget=uncertainty_budget,
+            target_critic_params=target_critic_params,
+            policy_gradient_mode=policy_gradient_mode,
         )
         if policy_return_mode == "reward-only":
             actor_returns = reward_only_returns(
@@ -664,12 +1165,53 @@ def continuous_policy_train_step(
             )
         else:
             raise ValueError(f"unknown policy_actor_baseline: {policy_actor_baseline}")
-        actor_objective_scores = normalize_weighted_values(
-            actor_scores,
-            weights,
-            mode=policy_return_normalization,
+        return_range = jnp.maximum(
+            jnp.percentile(clipped_returns.reshape((-1,)), 95.0)
+            - jnp.percentile(clipped_returns.reshape((-1,)), 5.0),
+            1.0,
         )
-        return_loss = -weighted_mean(actor_objective_scores, weights)
+        next_return_range_ema = jnp.where(
+            state.return_range_initialized,
+            return_normalization_ema_decay * state.return_range_ema
+            + (1.0 - return_normalization_ema_decay) * return_range,
+            return_range,
+        )
+        if policy_return_normalization == "ema-percentile":
+            actor_objective_scores = actor_scores / jax.lax.stop_gradient(
+                next_return_range_ema
+            )
+        else:
+            actor_objective_scores = normalize_weighted_values(
+                actor_scores,
+                weights,
+                mode=policy_return_normalization,
+            )
+        trajectory_scores = weighted_per_start_mean(actor_objective_scores, weights)
+        tail_threshold = jax.lax.stop_gradient(
+            jnp.percentile(trajectory_scores, 100.0 * policy_actor_cvar_fraction)
+        )
+        tail_mask = jax.lax.stop_gradient(
+            (trajectory_scores <= tail_threshold).astype(actor_objective_scores.dtype)
+        )
+        tail_weights = weights * tail_mask[None, :]
+        if policy_gradient_mode == "reinforce":
+            policy_terms = rollout["action_log_prob"] * jax.lax.stop_gradient(
+                actor_objective_scores
+            )
+        else:
+            policy_terms = actor_objective_scores
+        mean_actor_objective = weighted_mean(policy_terms, weights)
+        tail_actor_objective = weighted_mean(policy_terms, tail_weights)
+        cvar_coef = jnp.asarray(policy_actor_cvar_coef, dtype=actor_objective_scores.dtype)
+        actor_objective = (
+            (1.0 - cvar_coef) * mean_actor_objective
+            + cvar_coef * tail_actor_objective
+        )
+        return_loss = -actor_objective
+        hard_weights, normal_weights, hard_start_fraction = split_start_weights(
+            weights,
+            hard_start_mask,
+        )
         if reference_actor_params is None:
             trust_action_l2 = jnp.asarray(0.0, dtype=return_loss.dtype)
         else:
@@ -691,10 +1233,30 @@ def continuous_policy_train_step(
                 axis=-1,
             )
             trust_action_l2 = weighted_mean(action_delta_l2, weights)
+        action_bound_excess = jnp.maximum(
+            jnp.abs(rollout["normalized_action_means"]) - policy_action_bound_limit,
+            0.0,
+        )
+        action_bound_loss = weighted_mean(
+            jnp.mean(jnp.square(action_bound_excess), axis=-1),
+            weights,
+        )
+        if hard_start_mask is None:
+            hard_action_bound_loss = jnp.asarray(0.0, dtype=action_bound_loss.dtype)
+        else:
+            hard_weights = weights * hard_start_mask[None, :]
+            hard_action_bound_loss = weighted_mean(
+                jnp.mean(jnp.square(action_bound_excess), axis=-1),
+                hard_weights,
+            )
+        uncertainty_loss = weighted_mean(rollout["uncertainty"], weights)
         entropy_bonus = weighted_mean(rollout["action_entropy"], weights)
         actor_loss = (
             return_loss
             + policy_trust_coef * trust_action_l2
+            + policy_uncertainty_coef * uncertainty_loss
+            + policy_action_bound_coef * action_bound_loss
+            + policy_hard_action_bound_coef * hard_action_bound_loss
             - actor_entropy_coef * entropy_bonus
         )
         action_saturation = jnp.mean(
@@ -702,6 +1264,10 @@ def continuous_policy_train_step(
                 jnp.abs(rollout["normalized_actions"]) >= action_saturation_threshold
             ).astype(jnp.float32)
         )
+        action_saturation_values = (
+            jnp.abs(rollout["normalized_actions"]) >= action_saturation_threshold
+        ).astype(jnp.float32)
+        action_saturation_per_step = jnp.mean(action_saturation_values, axis=-1)
         finite_fraction = _all_finite_fraction(
             rollout["latents"],
             rollout["actions"],
@@ -709,6 +1275,7 @@ def continuous_policy_train_step(
             rollout["normalized_action_means"],
             rollout["action_log_stds"],
             rollout["action_entropy"],
+            rollout["action_log_prob"],
             rollout["rewards"],
             rollout["continues"],
             rollout["raw_rewards"],
@@ -727,21 +1294,96 @@ def continuous_policy_train_step(
             "policy/return_loss": return_loss,
             "policy/trust_action_l2": trust_action_l2,
             "policy/trust_coef": jnp.asarray(policy_trust_coef, dtype=actor_loss.dtype),
+            "policy/uncertainty_loss": uncertainty_loss,
+            "policy/uncertainty_coef": jnp.asarray(
+                policy_uncertainty_coef,
+                dtype=actor_loss.dtype,
+            ),
+            "policy/action_bound_loss": action_bound_loss,
+            "policy/hard_action_bound_loss": hard_action_bound_loss,
+            "policy/action_bound_coef": jnp.asarray(
+                policy_action_bound_coef,
+                dtype=actor_loss.dtype,
+            ),
+            "policy/hard_action_bound_coef": jnp.asarray(
+                policy_hard_action_bound_coef,
+                dtype=actor_loss.dtype,
+            ),
+            "policy/action_bound_limit": jnp.asarray(
+                policy_action_bound_limit,
+                dtype=actor_loss.dtype,
+            ),
             "policy/entropy_bonus": entropy_bonus,
+            "policy/hard_entropy_bonus": weighted_mean(
+                rollout["action_entropy"],
+                hard_weights,
+            ),
+            "policy/normal_entropy_bonus": weighted_mean(
+                rollout["action_entropy"],
+                normal_weights,
+            ),
             "policy/actor_entropy_coef": jnp.asarray(
                 actor_entropy_coef,
+                dtype=actor_loss.dtype,
+            ),
+            "policy/gradient_mode_reinforce": jnp.asarray(
+                float(policy_gradient_mode == "reinforce"),
+                dtype=actor_loss.dtype,
+            ),
+            "policy/action_log_prob_mean": weighted_mean(
+                rollout["action_log_prob"],
+                weights,
+            ),
+            "policy/return_range_batch": return_range,
+            "policy/return_range_ema": next_return_range_ema,
+            "policy/target_critic_ema_decay": jnp.asarray(
+                target_critic_ema_decay,
+                dtype=actor_loss.dtype,
+            ),
+            "policy/target_critic_enabled": jnp.asarray(
+                float(target_critic_params is not None),
                 dtype=actor_loss.dtype,
             ),
             "policy/action_log_std_mean": jnp.mean(rollout["action_log_stds"]),
             "policy/action_log_std_min": jnp.min(rollout["action_log_stds"]),
             "policy/action_log_std_max": jnp.max(rollout["action_log_stds"]),
             "policy/imagined_return": weighted_mean(actor_returns, weights),
-            "policy/clipped_imagined_return": weighted_mean(clipped_returns, weights),
-            "policy/actor_score": weighted_mean(actor_scores, weights),
-            "policy/actor_objective_score": weighted_mean(
-                actor_objective_scores,
-                weights,
+            "policy/hard_start_fraction": hard_start_fraction,
+            "policy/hard_imagined_return": weighted_mean(actor_returns, hard_weights),
+            "policy/normal_imagined_return": weighted_mean(
+                actor_returns,
+                normal_weights,
             ),
+            "policy/clipped_imagined_return": weighted_mean(clipped_returns, weights),
+            "policy/hard_clipped_imagined_return": weighted_mean(
+                clipped_returns,
+                hard_weights,
+            ),
+            "policy/normal_clipped_imagined_return": weighted_mean(
+                clipped_returns,
+                normal_weights,
+            ),
+            "policy/actor_score": weighted_mean(actor_scores, weights),
+            "policy/hard_actor_score": weighted_mean(actor_scores, hard_weights),
+            "policy/normal_actor_score": weighted_mean(actor_scores, normal_weights),
+            "policy/actor_objective_score": actor_objective,
+            "policy/actor_objective_mean_score": mean_actor_objective,
+            "policy/actor_objective_cvar_score": tail_actor_objective,
+            "policy/hard_actor_objective_mean_score": weighted_mean(
+                actor_objective_scores,
+                hard_weights,
+            ),
+            "policy/normal_actor_objective_mean_score": weighted_mean(
+                actor_objective_scores,
+                normal_weights,
+            ),
+            "policy/actor_cvar_coef": cvar_coef,
+            "policy/actor_cvar_fraction": jnp.asarray(
+                policy_actor_cvar_fraction,
+                dtype=actor_loss.dtype,
+            ),
+            "policy/actor_cvar_actual_fraction": jnp.mean(tail_mask),
+            "policy/actor_cvar_threshold": tail_threshold,
             "policy/actor_score_std": weighted_std(actor_scores, weights),
             "policy/actor_uses_value_baseline": jnp.asarray(
                 float(policy_actor_baseline == "value"),
@@ -751,10 +1393,30 @@ def continuous_policy_train_step(
                 float(policy_return_normalization == "batch"),
                 dtype=actor_loss.dtype,
             ),
+            "policy/return_normalization_ema_percentile": jnp.asarray(
+                float(policy_return_normalization == "ema-percentile"),
+                dtype=actor_loss.dtype,
+            ),
             "policy/imagined_reward": weighted_mean(rollout["rewards"], weights),
+            "policy/hard_imagined_reward": weighted_mean(
+                rollout["rewards"],
+                hard_weights,
+            ),
+            "policy/normal_imagined_reward": weighted_mean(
+                rollout["rewards"],
+                normal_weights,
+            ),
             "policy/raw_imagined_reward": weighted_mean(
                 rollout["raw_rewards"],
                 weights,
+            ),
+            "policy/hard_raw_imagined_reward": weighted_mean(
+                rollout["raw_rewards"],
+                hard_weights,
+            ),
+            "policy/normal_raw_imagined_reward": weighted_mean(
+                rollout["raw_rewards"],
+                normal_weights,
             ),
             "policy/raw_reward_below_min_frac": jnp.mean(
                 (
@@ -773,15 +1435,47 @@ def continuous_policy_train_step(
             "policy/imagined_continue": weighted_mean(rollout["continues"], weights),
             "policy/survival_weight_mean": jnp.mean(weights),
             "policy/uncertainty": weighted_mean(rollout["uncertainty"], weights),
+            "policy/hard_uncertainty": weighted_mean(
+                rollout["uncertainty"],
+                hard_weights,
+            ),
+            "policy/normal_uncertainty": weighted_mean(
+                rollout["uncertainty"],
+                normal_weights,
+            ),
             "policy/uncertainty_abs_max": jnp.max(jnp.abs(rollout["uncertainty"])),
             "policy/trusted_fraction": jnp.mean(rollout["trusted"]),
+            "policy/hard_trusted_fraction": weighted_mean(
+                rollout["trusted"],
+                hard_weights,
+            ),
+            "policy/normal_trusted_fraction": weighted_mean(
+                rollout["trusted"],
+                normal_weights,
+            ),
             "policy/uncertainty_penalty": jnp.asarray(
                 uncertainty_penalty,
                 dtype=actor_loss.dtype,
             ),
             "policy/return_abs_mean": jnp.mean(jnp.abs(actor_returns)),
+            "policy/hard_return_abs_mean": weighted_mean(
+                jnp.abs(actor_returns),
+                hard_weights,
+            ),
+            "policy/normal_return_abs_mean": weighted_mean(
+                jnp.abs(actor_returns),
+                normal_weights,
+            ),
             "policy/return_abs_max": jnp.max(jnp.abs(actor_returns)),
             "policy/value_target_abs_mean": jnp.mean(jnp.abs(clipped_returns)),
+            "policy/hard_value_target_abs_mean": weighted_mean(
+                jnp.abs(clipped_returns),
+                hard_weights,
+            ),
+            "policy/normal_value_target_abs_mean": weighted_mean(
+                jnp.abs(clipped_returns),
+                normal_weights,
+            ),
             "policy/value_target_abs_max": jnp.max(jnp.abs(clipped_returns)),
             "policy/action_mean": jnp.mean(rollout["actions"]),
             "policy/action_std": jnp.std(rollout["actions"]),
@@ -793,19 +1487,39 @@ def continuous_policy_train_step(
                 jnp.abs(rollout["normalized_action_means"])
             ),
             "policy/action_saturation_fraction": action_saturation,
+            "policy/hard_action_saturation_fraction": weighted_mean(
+                action_saturation_per_step,
+                hard_weights,
+            ),
+            "policy/normal_action_saturation_fraction": weighted_mean(
+                action_saturation_per_step,
+                normal_weights,
+            ),
             "policy/finite_fraction": finite_fraction,
         }
         critic_latents = jax.lax.stop_gradient(rollout["latents"])
         critic_targets = jax.lax.stop_gradient(clipped_returns)
         critic_weights = jax.lax.stop_gradient(weights)
-        return actor_loss, (metrics, critic_latents, critic_targets, critic_weights)
+        return actor_loss, (
+            metrics,
+            critic_latents,
+            critic_targets,
+            critic_weights,
+            next_return_range_ema,
+        )
 
     (actor_loss, actor_aux), actor_grads = jax.value_and_grad(
         actor_loss_fn,
         has_aux=True,
     )(state.params)
     del actor_loss
-    metrics, critic_latents, critic_targets, critic_weights = actor_aux
+    (
+        metrics,
+        critic_latents,
+        critic_targets,
+        critic_weights,
+        next_return_range_ema,
+    ) = actor_aux
     metrics = {
         **metrics,
         "policy/actor_grad_norm": optax.global_norm(actor_grads),
@@ -815,6 +1529,10 @@ def continuous_policy_train_step(
         ),
     }
     state = state.apply_actor_gradients(actor_grads)
+    state = state.replace(
+        return_range_ema=jax.lax.stop_gradient(next_return_range_ema),
+        return_range_initialized=jnp.asarray(True),
+    )
 
     def critic_loss_fn(params):
         _, value_logits = actor_value_logits_from_latent(
@@ -823,13 +1541,174 @@ def continuous_policy_train_step(
             critic_latents,
         )
         values = value_predictions_from_logits(value_logits, config)
-        value_loss = weighted_mean(
-            value_prediction_loss(value_logits, critic_targets, config),
+        value_losses = value_prediction_loss(value_logits, critic_targets, config)
+        imagined_value_loss = weighted_mean(value_losses, critic_weights)
+        hard_critic_weights, normal_critic_weights, _ = split_start_weights(
             critic_weights,
+            hard_start_mask,
         )
+        hard_imagined_value_loss = weighted_mean(
+            value_losses,
+            hard_critic_weights,
+        )
+        normal_imagined_value_loss = weighted_mean(
+            value_losses,
+            normal_critic_weights,
+        )
+        value_loss = imagined_value_loss
+        slow_value_loss = jnp.asarray(0.0, dtype=imagined_value_loss.dtype)
+        if slow_value_regularization_coef > 0.0:
+            if target_critic_params is None:
+                raise ValueError(
+                    "target_critic_params is required for slow value regularization"
+                )
+            slow_params = jax.tree_util.tree_map(
+                jax.lax.stop_gradient,
+                target_critic_params,
+            )
+            _, slow_value_logits = actor_value_logits_from_latent(
+                state.apply_fn,
+                slow_params,
+                critic_latents,
+            )
+            slow_values = jax.lax.stop_gradient(
+                value_predictions_from_logits(slow_value_logits, config)
+            )
+            slow_value_losses = value_prediction_loss(
+                value_logits,
+                slow_values,
+                config,
+            )
+            slow_value_loss = weighted_mean(slow_value_losses, critic_weights)
+            value_loss = (
+                value_loss
+                + slow_value_regularization_coef * slow_value_loss
+            )
+        real_value_loss = jnp.asarray(0.0, dtype=imagined_value_loss.dtype)
+        real_value_mean = jnp.asarray(0.0, dtype=imagined_value_loss.dtype)
+        real_target_mean = jnp.asarray(0.0, dtype=imagined_value_loss.dtype)
+        real_target_abs_mean = jnp.asarray(0.0, dtype=imagined_value_loss.dtype)
+        real_finite_fraction = jnp.asarray(1.0, dtype=imagined_value_loss.dtype)
+        if real_critic_loss_enabled:
+            if real_critic_batch is None:
+                raise ValueError(
+                    "real_critic_batch is required when real_critic_loss_enabled=True"
+                )
+            real_rewards = jnp.swapaxes(
+                real_critic_batch.rewards[:, :real_critic_horizon],
+                0,
+                1,
+            )
+            real_dones = jnp.swapaxes(
+                real_critic_batch.dones[:, :real_critic_horizon],
+                0,
+                1,
+            )
+            real_continues = 1.0 - real_dones
+            model_params = jax.tree_util.tree_map(jax.lax.stop_gradient, params)
+            real_z = state.apply_fn(
+                {"params": model_params},
+                real_critic_batch.observations[:, : real_critic_horizon + 1],
+                method=JepaWorldModel.encode,
+            )
+            bootstrap_params = jax.tree_util.tree_map(
+                jax.lax.stop_gradient,
+                target_critic_params if target_critic_params is not None else params,
+            )
+            _, bootstrap_logits = actor_value_logits_from_latent(
+                state.apply_fn,
+                bootstrap_params,
+                real_z,
+            )
+            bootstrap_values = jnp.swapaxes(
+                value_predictions_from_logits(bootstrap_logits, config),
+                0,
+                1,
+            )
+            if real_critic_return_mode == "lambda":
+                real_returns = lambda_returns(
+                    real_rewards,
+                    real_continues,
+                    bootstrap_values[:-1],
+                    bootstrap_values[-1],
+                    gamma=config.gamma,
+                    lambda_return=config.lambda_return,
+                )
+            else:
+                real_returns = reward_only_returns(
+                    real_rewards,
+                    real_continues,
+                    gamma=config.gamma,
+                )
+            if real_critic_all_steps:
+                real_targets = jnp.swapaxes(real_returns, 0, 1)
+                real_value_latents = real_z[:, :-1]
+            else:
+                real_targets = real_returns[0]
+                real_value_latents = real_z[:, 0]
+            real_targets = jax.lax.stop_gradient(
+                jnp.clip(real_targets, -value_clip, value_clip)
+            )
+            _, real_value_logits = actor_value_logits_from_latent(
+                state.apply_fn,
+                params,
+                real_value_latents,
+            )
+            real_values = value_predictions_from_logits(real_value_logits, config)
+            real_value_loss = jnp.mean(
+                value_prediction_loss(real_value_logits, real_targets, config)
+            )
+            value_loss = value_loss + real_critic_loss_coef * real_value_loss
+            real_value_mean = jnp.mean(real_values)
+            real_target_mean = jnp.mean(real_targets)
+            real_target_abs_mean = jnp.mean(jnp.abs(real_targets))
+            real_finite_fraction = _all_finite_fraction(
+                real_values,
+                real_targets,
+                real_value_loss,
+            )
         finite_fraction = _all_finite_fraction(values, critic_targets, value_loss)
         critic_metrics = {
             "policy/value_loss": value_loss,
+            "policy/imagined_value_loss": imagined_value_loss,
+            "policy/hard_imagined_value_loss": hard_imagined_value_loss,
+            "policy/normal_imagined_value_loss": normal_imagined_value_loss,
+            "policy/slow_value_loss": slow_value_loss,
+            "policy/slow_value_regularization_coef": jnp.asarray(
+                slow_value_regularization_coef,
+                dtype=value_loss.dtype,
+            ),
+            "policy/hard_value_mean": weighted_mean(values, hard_critic_weights),
+            "policy/normal_value_mean": weighted_mean(values, normal_critic_weights),
+            "policy/hard_value_target_mean": weighted_mean(
+                critic_targets,
+                hard_critic_weights,
+            ),
+            "policy/normal_value_target_mean": weighted_mean(
+                critic_targets,
+                normal_critic_weights,
+            ),
+            "policy/replay_critic_loss": real_value_loss,
+            "policy/replay_critic_loss_coef": jnp.asarray(
+                real_critic_loss_coef,
+                dtype=value_loss.dtype,
+            ),
+            "policy/replay_critic_enabled": jnp.asarray(
+                float(real_critic_loss_enabled),
+                dtype=value_loss.dtype,
+            ),
+            "policy/replay_critic_lambda_return": jnp.asarray(
+                float(real_critic_return_mode == "lambda"),
+                dtype=value_loss.dtype,
+            ),
+            "policy/replay_critic_all_steps": jnp.asarray(
+                float(real_critic_all_steps),
+                dtype=value_loss.dtype,
+            ),
+            "policy/replay_critic_value_mean": real_value_mean,
+            "policy/replay_critic_target_mean": real_target_mean,
+            "policy/replay_critic_target_abs_mean": real_target_abs_mean,
+            "policy/replay_critic_finite_fraction": real_finite_fraction,
             "policy/value_finite_fraction": finite_fraction,
         }
         return value_loss, critic_metrics
@@ -846,7 +1725,10 @@ def continuous_policy_train_step(
             dtype=value_loss.dtype,
         ),
     }
-    state = state.apply_critic_gradients(critic_grads)
+    state = state.apply_critic_gradients(
+        critic_grads,
+        target_critic_ema_decay=target_critic_ema_decay,
+    )
     total_loss = metrics["policy/actor_loss"] + value_loss
     metrics = {
         **metrics,
@@ -860,212 +1742,7 @@ def continuous_policy_train_step(
     return state, metrics
 
 
-@partial(
-    jax.jit,
-    static_argnames=("config", "imag_horizon", "control", "num_candidates"),
-)
-def continuous_candidate_distill_step(
-    state: JepaTrainState,
-    key: jax.Array,
-    start_observations: jax.Array,
-    config: JepaConfig,
-    action_low: jax.Array,
-    action_high: jax.Array,
-    *,
-    imag_horizon: int,
-    control: ControlMode = "none",
-    num_candidates: int = 64,
-    candidate_min_gap: float = 1e-3,
-    action_l2_coef: float = 1e-3,
-    action_saturation_threshold: float = 0.95,
-    start_actions: jax.Array | None = None,
-) -> tuple[JepaTrainState, dict[str, jax.Array]]:
-    if config.action_mode != "continuous":
-        raise ValueError(
-            "continuous_candidate_distill_step requires continuous actions"
-        )
-    if num_candidates < 2:
-        raise ValueError("num_candidates must be >= 2")
-    del start_actions
-
-    def loss_fn(params):
-        model_params = jax.tree_util.tree_map(jax.lax.stop_gradient, params)
-        current_observations = (
-            start_observations[:, -1]
-            if start_observations.ndim == 3
-            else start_observations
-        )
-        flat_obs = current_observations.reshape((-1, config.observation_dim))
-        z0 = state.apply_fn(
-            {"params": model_params},
-            flat_obs,
-            method=JepaWorldModel.encode,
-        )
-        candidates = jax.random.uniform(
-            key,
-            (z0.shape[0], num_candidates, config.action_dim),
-            minval=-1.0,
-            maxval=1.0,
-            dtype=jnp.float32,
-        )
-        scores = score_continuous_action_candidates(
-            params,
-            model_params,
-            state.apply_fn,
-            z0,
-            candidates,
-            config,
-            action_low,
-            action_high,
-            imag_horizon=imag_horizon,
-            control=control,
-        )
-        best_index = jnp.argmax(scores, axis=1)
-        best_action = jnp.take_along_axis(
-            candidates,
-            best_index[:, None, None],
-            axis=1,
-        )[:, 0]
-        sorted_scores = jnp.sort(scores, axis=1)
-        top_gap = sorted_scores[:, -1] - sorted_scores[:, -2]
-        score_range = sorted_scores[:, -1] - sorted_scores[:, 0]
-        weights = (top_gap > candidate_min_gap).astype(jnp.float32)
-
-        raw_actions, _ = actor_value_from_latent(
-            state.apply_fn,
-            params,
-            z0,
-        )
-        normalized_actions = jnp.tanh(raw_actions)
-        imitation_error = jnp.mean(
-            jnp.square(normalized_actions - jax.lax.stop_gradient(best_action)),
-            axis=-1,
-        )
-        imitation_loss = jnp.sum(weights * imitation_error) / (jnp.sum(weights) + 1e-6)
-        active_fraction = jnp.mean(weights)
-        action_l2 = jnp.mean(jnp.square(normalized_actions))
-        total = imitation_loss + action_l2_coef * active_fraction * action_l2
-        action_saturation = jnp.mean(
-            (jnp.abs(normalized_actions) >= action_saturation_threshold).astype(
-                jnp.float32
-            )
-        )
-        finite_fraction = _all_finite_fraction(
-            z0,
-            candidates,
-            scores,
-            best_action,
-            normalized_actions,
-            imitation_loss,
-            total,
-        )
-        metrics = {
-            "policy/total_loss": total,
-            "policy/actor_loss": imitation_loss,
-            "policy/value_loss": jnp.asarray(0.0, dtype=total.dtype),
-            "policy/candidate_best_score": jnp.mean(jnp.max(scores, axis=1)),
-            "policy/candidate_mean_score": jnp.mean(scores),
-            "policy/candidate_top_gap": jnp.mean(top_gap),
-            "policy/candidate_score_range": jnp.mean(score_range),
-            "policy/candidate_active_fraction": active_fraction,
-            "policy/action_l2": action_l2,
-            "policy/action_mean": jnp.mean(
-                scale_normalized_actions(normalized_actions, action_low, action_high)
-            ),
-            "policy/action_std": jnp.std(
-                scale_normalized_actions(normalized_actions, action_low, action_high)
-            ),
-            "policy/action_abs_mean": jnp.mean(
-                jnp.abs(
-                    scale_normalized_actions(
-                        normalized_actions,
-                        action_low,
-                        action_high,
-                    )
-                )
-            ),
-            "policy/normalized_action_abs_mean": jnp.mean(jnp.abs(normalized_actions)),
-            "policy/action_saturation_fraction": action_saturation,
-            "policy/finite_fraction": finite_fraction,
-        }
-        return total, metrics
-
-    (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
-    del loss
-    metrics = {
-        **metrics,
-        "policy/actor_grad_norm": optax.global_norm(grads),
-        "policy/actor_grad_clip_norm": jnp.asarray(
-            config.actor_grad_clip_norm,
-            dtype=metrics["policy/total_loss"].dtype,
-        ),
-    }
-    return state.apply_actor_gradients(grads), metrics
-
-
-def score_continuous_action_candidates(
-    params: FrozenDict,
-    model_params: FrozenDict,
-    apply_fn,
-    z0: jax.Array,
-    normalized_candidates: jax.Array,
-    config: JepaConfig,
-    action_low: jax.Array,
-    action_high: jax.Array,
-    *,
-    imag_horizon: int,
-    control: ControlMode,
-) -> jax.Array:
-    batch_size, num_candidates, _ = normalized_candidates.shape
-    flat_z = jnp.repeat(z0[:, None, :], num_candidates, axis=1).reshape(
-        (-1, config.latent_dim)
-    )
-    flat_actions = normalized_candidates.reshape((-1, config.action_dim))
-    returns = jnp.zeros((flat_z.shape[0],), dtype=jnp.float32)
-    weights = jnp.ones_like(returns)
-    discount = jnp.asarray(1.0, dtype=jnp.float32)
-    context = flat_z[:, None, :]
-    actions = scale_normalized_actions(flat_actions, action_low, action_high)
-
-    for _ in range(imag_horizon):
-        model_actions = (
-            jnp.zeros_like(actions) if control == "no-action-world-model" else actions
-        )
-        next_z, rewards, continue_logits = apply_fn(
-            {"params": model_params},
-            context,
-            model_actions[:, None, :],
-            method=JepaWorldModel.predict_next_from_history,
-        )
-        continues = jax.nn.sigmoid(continue_logits)
-        actor_rewards = (
-            jnp.clip(
-                rewards,
-                config.imagined_reward_min,
-                config.imagined_reward_max,
-            )
-            if config.clip_imagined_rewards
-            else rewards
-        )
-        returns = returns + discount * weights * actor_rewards
-        weights = weights * continues
-        discount = discount * config.gamma
-        raw_actions, _ = actor_value_from_latent(
-            apply_fn,
-            model_params,
-            next_z,
-        )
-        actions = scale_normalized_actions(
-            jnp.tanh(raw_actions),
-            action_low,
-            action_high,
-        )
-        context = next_z[:, None, :]
-
-    return jax.lax.stop_gradient(returns.reshape((batch_size, num_candidates)))
-
-
-@partial(jax.jit, static_argnames=("config", "horizon"))
+@partial(jax.jit, static_argnames=("config", "horizon", "target_critic_ema_decay"))
 def continuous_critic_warmup_step(
     state: JepaTrainState,
     batch: ReplayBatch,
@@ -1073,6 +1750,7 @@ def continuous_critic_warmup_step(
     *,
     horizon: int,
     value_clip: float = 100.0,
+    target_critic_ema_decay: float = 0.0,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     if config.action_mode != "continuous":
         raise ValueError("continuous_critic_warmup_step requires continuous actions")
@@ -1119,7 +1797,13 @@ def continuous_critic_warmup_step(
             dtype=metrics["critic/total_loss"].dtype,
         ),
     }
-    return state.apply_critic_gradients(grads), metrics
+    return (
+        state.apply_critic_gradients(
+            grads,
+            target_critic_ema_decay=target_critic_ema_decay,
+        ),
+        metrics,
+    )
 
 
 def continuous_imagine_rollout(
@@ -1140,8 +1824,15 @@ def continuous_imagine_rollout(
     uncertainty_continue_weight: float = 1.0,
     uncertainty_threshold: float = float("inf"),
     uncertainty_budget: float = float("inf"),
+    target_critic_params: FrozenDict | None = None,
+    policy_gradient_mode: PolicyGradientMode = "dynamics",
 ) -> dict[str, jax.Array]:
     model_params = jax.tree_util.tree_map(jax.lax.stop_gradient, params)
+    value_params = (
+        model_params
+        if target_critic_params is None
+        else jax.tree_util.tree_map(jax.lax.stop_gradient, target_critic_params)
+    )
     context, action_context = initial_imagination_context(
         apply_fn,
         model_params,
@@ -1164,14 +1855,36 @@ def continuous_imagine_rollout(
         )
         if config.stochastic_actor:
             noise = jax.random.normal(action_key, action_means.shape)
-            raw_actions = action_means + jnp.exp(action_log_stds) * noise
+            sampled_raw_actions = action_means + jnp.exp(action_log_stds) * noise
+            raw_actions = (
+                jax.lax.stop_gradient(sampled_raw_actions)
+                if policy_gradient_mode == "reinforce"
+                else sampled_raw_actions
+            )
             action_entropy = jnp.sum(
                 0.5 * jnp.log(2.0 * jnp.pi) + 0.5 + action_log_stds,
+                axis=-1,
+            )
+            log_prob_actions = jax.lax.stop_gradient(raw_actions)
+            gaussian_log_probs = (
+                -0.5
+                * jnp.square(
+                    (log_prob_actions - action_means) / jnp.exp(action_log_stds)
+                )
+                - action_log_stds
+                - 0.5 * jnp.log(2.0 * jnp.pi)
+            )
+            squash_correction = jnp.log(
+                1.0 - jnp.square(jnp.tanh(log_prob_actions)) + 1e-6
+            )
+            action_log_prob = jnp.sum(
+                gaussian_log_probs - squash_correction,
                 axis=-1,
             )
         else:
             raw_actions = action_means
             action_entropy = jnp.zeros((batch_size,), dtype=current_z.dtype)
+            action_log_prob = jnp.zeros((batch_size,), dtype=current_z.dtype)
         normalized_action_means = jnp.tanh(action_means)
         normalized_actions = jnp.tanh(raw_actions)
         actions = scale_normalized_actions(
@@ -1222,7 +1935,7 @@ def continuous_imagine_rollout(
         continues = continues * trusted
         _, fixed_values = actor_value_from_latent(
             apply_fn,
-            model_params,
+            value_params,
             current_z,
         )
         next_context = jnp.concatenate([context[:, 1:], next_z[:, None, :]], axis=1)
@@ -1244,6 +1957,7 @@ def continuous_imagine_rollout(
             "normalized_action_means": normalized_action_means,
             "action_log_stds": action_log_stds,
             "action_entropy": action_entropy,
+            "action_log_prob": action_log_prob,
             "values": values,
             "fixed_values": fixed_values,
             "raw_rewards": raw_rewards,
@@ -1261,7 +1975,7 @@ def continuous_imagine_rollout(
     )
     _, fixed_last_value = actor_value_from_latent(
         apply_fn,
-        model_params,
+        value_params,
         final_context[:, -1],
     )
     rollout["fixed_last_value"] = fixed_last_value
@@ -1323,6 +2037,7 @@ def initial_imagination_context(
     return latents, action_context
 
 
+@partial(jax.jit, static_argnames=("config", "stochastic"))
 def select_continuous_actions(
     state: JepaTrainState,
     observations: jax.Array,
@@ -1727,8 +2442,28 @@ def survival_weights(continues: jax.Array, *, gamma: float) -> jax.Array:
     )
 
 
+def split_start_weights(
+    weights: jax.Array,
+    hard_start_mask: jax.Array | None,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    if hard_start_mask is None:
+        hard_weights = jnp.zeros_like(weights)
+        normal_weights = weights
+        hard_start_fraction = jnp.asarray(0.0, dtype=weights.dtype)
+    else:
+        mask = hard_start_mask.astype(weights.dtype)[None, :]
+        hard_weights = weights * mask
+        normal_weights = weights * (1.0 - mask)
+        hard_start_fraction = jnp.mean(hard_start_mask.astype(weights.dtype))
+    return hard_weights, normal_weights, hard_start_fraction
+
+
 def weighted_mean(values: jax.Array, weights: jax.Array) -> jax.Array:
     return jnp.sum(values * weights) / (jnp.sum(weights) + 1e-6)
+
+
+def weighted_per_start_mean(values: jax.Array, weights: jax.Array) -> jax.Array:
+    return jnp.sum(values * weights, axis=0) / (jnp.sum(weights, axis=0) + 1e-6)
 
 
 def weighted_std(values: jax.Array, weights: jax.Array) -> jax.Array:
@@ -1749,6 +2484,12 @@ def normalize_weighted_values(
         mean = jax.lax.stop_gradient(weighted_mean(values, weights))
         std = jax.lax.stop_gradient(weighted_std(values, weights))
         return (values - mean) / (std + 1e-6)
+    if mode == "percentile":
+        flat_values = values.reshape((-1,))
+        low = jax.lax.stop_gradient(jnp.percentile(flat_values, 5.0))
+        high = jax.lax.stop_gradient(jnp.percentile(flat_values, 95.0))
+        scale = jnp.maximum(high - low, 1.0)
+        return values / (scale + 1e-6)
     raise ValueError(f"unknown normalization mode: {mode}")
 
 
@@ -1829,12 +2570,26 @@ def _masked_adam(
     learning_rate: float,
     *,
     clip_norm: float,
+    warmup_steps: int = 0,
+    adaptive_clip: float = 0.0,
+    epsilon: float = 1e-5,
 ) -> optax.GradientTransformation:
     labels = _label_params(params, trainable_groups)
     train_steps: list[optax.GradientTransformation] = []
+    if adaptive_clip > 0.0:
+        train_steps.append(optax.adaptive_grad_clip(adaptive_clip))
     if clip_norm > 0.0:
         train_steps.append(optax.clip_by_global_norm(clip_norm))
-    train_steps.append(optax.adam(learning_rate, eps=1e-5))
+    schedule = (
+        optax.warmup_constant_schedule(
+            init_value=0.0,
+            peak_value=learning_rate,
+            warmup_steps=warmup_steps,
+        )
+        if warmup_steps > 0
+        else learning_rate
+    )
+    train_steps.append(optax.adam(schedule, eps=epsilon))
     return optax.multi_transform(
         {
             "train": optax.chain(*train_steps),

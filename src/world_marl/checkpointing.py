@@ -21,10 +21,14 @@ def save_checkpoint(
     checkpoint_path.mkdir(parents=True, exist_ok=True)
     params_path = checkpoint_path / "checkpoint.msgpack"
     metadata_path = checkpoint_path / "metadata.json"
-    params_path.write_bytes(serialization.to_bytes(train_state.params))
-    metadata_path.write_text(
+    params_tmp = checkpoint_path / ".checkpoint.msgpack.tmp"
+    metadata_tmp = checkpoint_path / ".metadata.json.tmp"
+    params_tmp.write_bytes(serialization.to_bytes(train_state.params))
+    metadata_tmp.write_text(
         json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8"
     )
+    params_tmp.replace(params_path)
+    metadata_tmp.replace(metadata_path)
     return params_path
 
 

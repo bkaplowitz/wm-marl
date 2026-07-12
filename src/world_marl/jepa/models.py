@@ -27,9 +27,24 @@ class JepaConfig:
     model_grad_clip_norm: float = 100.0
     actor_grad_clip_norm: float = 10.0
     critic_grad_clip_norm: float = 100.0
+    optimizer_warmup_steps: int = 0
+    adaptive_grad_clip: float = 0.0
+    optimizer_epsilon: float = 1e-5
+    actor_hidden_dim: int = 0
+    critic_hidden_dim: int = 0
+    actor_num_layers: int = 1
+    critic_num_layers: int = 1
+    actor_layer_norm: bool = False
+    critic_layer_norm: bool = False
     stochastic_actor: bool = False
     actor_log_std_min: float = -5.0
     actor_log_std_max: float = 2.0
+    input_symlog: bool = False
+    activation: str = "gelu"
+    normalization: str = "layer"
+    actor_output_scale: float = 1.0
+    value_output_scale: float = 1.0
+    reward_output_scale: float = 1.0
     regularizer: str = "sigreg"
     regularizer_weight: float = 0.05
     sigreg_knots: int = 17
@@ -85,48 +100,138 @@ class JepaConfig:
             raise ValueError("actor_grad_clip_norm must be >= 0")
         if self.critic_grad_clip_norm < 0.0:
             raise ValueError("critic_grad_clip_norm must be >= 0")
+        if self.optimizer_warmup_steps < 0:
+            raise ValueError("optimizer_warmup_steps must be >= 0")
+        if self.adaptive_grad_clip < 0.0:
+            raise ValueError("adaptive_grad_clip must be >= 0")
+        if self.optimizer_epsilon <= 0.0:
+            raise ValueError("optimizer_epsilon must be > 0")
+        if self.actor_hidden_dim < 0:
+            raise ValueError("actor_hidden_dim must be >= 0")
+        if self.critic_hidden_dim < 0:
+            raise ValueError("critic_hidden_dim must be >= 0")
+        if self.actor_num_layers < 1:
+            raise ValueError("actor_num_layers must be >= 1")
+        if self.critic_num_layers < 1:
+            raise ValueError("critic_num_layers must be >= 1")
         if self.actor_log_std_min >= self.actor_log_std_max:
             raise ValueError("actor_log_std_min must be < actor_log_std_max")
+        if self.activation not in ("gelu", "silu"):
+            raise ValueError("activation must be one of: gelu, silu")
+        if self.normalization not in ("layer", "rms"):
+            raise ValueError("normalization must be one of: layer, rms")
+        for name in (
+            "actor_output_scale",
+            "value_output_scale",
+            "reward_output_scale",
+        ):
+            if getattr(self, name) < 0.0:
+                raise ValueError(f"{name} must be >= 0")
         if self.model_dim % self.num_heads != 0:
             raise ValueError("model_dim must be divisible by num_heads")
         if (self.model_dim // self.num_heads) % 2 != 0:
             raise ValueError("per-head dimension must be even for RoPE")
 
 
+def apply_activation(x: jax.Array, activation: str) -> jax.Array:
+    if activation == "gelu":
+        return nn.gelu(x)
+    if activation == "silu":
+        return nn.silu(x)
+    raise ValueError(f"unknown activation: {activation}")
+
+
+def normalization_module(normalization: str, *, name: str):
+    if normalization == "layer":
+        return nn.LayerNorm(name=name)
+    if normalization == "rms":
+        return nn.RMSNorm(name=name)
+    raise ValueError(f"unknown normalization: {normalization}")
+
+
+def apply_normalization(
+    x: jax.Array,
+    normalization: str,
+    *,
+    name: str | None = None,
+) -> jax.Array:
+    if normalization == "layer":
+        return nn.LayerNorm(name=name)(x)
+    if normalization == "rms":
+        return nn.RMSNorm(name=name)(x)
+    raise ValueError(f"unknown normalization: {normalization}")
+
+
+def scaled_kernel_init(scale: float):
+    if scale == 0.0:
+        return nn.initializers.zeros_init()
+    return nn.initializers.variance_scaling(
+        scale**2,
+        "fan_in",
+        "truncated_normal",
+    )
+
+
 class MLPEncoder(nn.Module):
     latent_dim: int
     hidden_dim: int
+    input_symlog: bool = False
+    activation: str = "gelu"
+    normalization: str = "layer"
 
     @nn.compact
     def __call__(self, observations: jax.Array) -> jax.Array:
         x = observations.astype(jnp.float32)
+        if self.input_symlog:
+            x = symlog(x)
         x = nn.Dense(self.hidden_dim)(x)
-        x = nn.gelu(x)
+        x = apply_activation(x, self.activation)
         x = nn.Dense(self.hidden_dim)(x)
-        x = nn.gelu(x)
+        x = apply_activation(x, self.activation)
         x = nn.Dense(self.latent_dim)(x)
-        return nn.LayerNorm()(x)
+        return apply_normalization(x, self.normalization)
 
 
 class MLPHead(nn.Module):
     output_dim: int
     hidden_dim: int
+    num_layers: int = 1
+    use_layer_norm: bool = False
+    activation: str = "gelu"
+    normalization: str = "layer"
+    output_scale: float = 1.0
 
     @nn.compact
     def __call__(self, x: jax.Array) -> jax.Array:
-        x = nn.Dense(self.hidden_dim)(x)
-        x = nn.gelu(x)
-        return nn.Dense(self.output_dim)(x)
+        if self.num_layers < 1:
+            raise ValueError("num_layers must be >= 1")
+        default_layout = self.num_layers == 1 and not self.use_layer_norm
+        if self.use_layer_norm:
+            x = apply_normalization(x, self.normalization, name="input_norm")
+        for index in range(self.num_layers):
+            if default_layout:
+                x = nn.Dense(self.hidden_dim)(x)
+            else:
+                x = nn.Dense(self.hidden_dim, name=f"hidden_{index}")(x)
+            x = apply_activation(x, self.activation)
+        output_kwargs = {}
+        if self.output_scale != 1.0:
+            output_kwargs["kernel_init"] = scaled_kernel_init(self.output_scale)
+        if default_layout:
+            return nn.Dense(self.output_dim, **output_kwargs)(x)
+        return nn.Dense(self.output_dim, name="out", **output_kwargs)(x)
 
 
 class TransformerBlock(nn.Module):
     model_dim: int
     num_heads: int
     mlp_ratio: int
+    activation: str = "gelu"
+    normalization: str = "layer"
 
     @nn.compact
     def __call__(self, x: jax.Array, mask: jax.Array) -> jax.Array:
-        h = nn.LayerNorm()(x)
+        h = apply_normalization(x, self.normalization)
         head_dim = self.model_dim // self.num_heads
         query = nn.DenseGeneral(
             (self.num_heads, head_dim),
@@ -161,13 +266,13 @@ class TransformerBlock(nn.Module):
             name="attention_out",
         )(attention)
         x = x + attention
-        h = nn.LayerNorm()(x)
+        h = apply_normalization(x, self.normalization)
         h = nn.Dense(
             2 * self.mlp_ratio * self.model_dim,
             name="geglu_in",
         )(h)
         value, gate = jnp.split(h, 2, axis=-1)
-        h = value * nn.gelu(gate)
+        h = value * apply_activation(gate, self.activation)
         h = nn.Dense(
             self.model_dim,
             name="geglu_out",
@@ -190,6 +295,9 @@ class JepaWorldModel(nn.Module):
         self.encoder = MLPEncoder(
             latent_dim=self.config.latent_dim,
             hidden_dim=self.config.model_dim,
+            input_symlog=self.config.input_symlog,
+            activation=self.config.activation,
+            normalization=self.config.normalization,
             name="encoder",
         )
         self.latent_proj = nn.Dense(self.config.model_dim, name="latent_proj")
@@ -218,60 +326,105 @@ class JepaWorldModel(nn.Module):
                 model_dim=self.config.model_dim,
                 num_heads=self.config.num_heads,
                 mlp_ratio=self.config.mlp_ratio,
+                activation=self.config.activation,
+                normalization=self.config.normalization,
                 name=f"block_{index}",
             )
             for index in range(self.config.num_layers)
         ]
-        self.dynamics_norm = nn.LayerNorm(name="dynamics_norm")
+        self.dynamics_norm = normalization_module(
+            self.config.normalization,
+            name="dynamics_norm",
+        )
         if self.config.dynamics_ensemble_size == 1:
             self.predictor = MLPHead(
                 self.config.latent_dim,
                 self.config.model_dim,
+                activation=self.config.activation,
+                normalization=self.config.normalization,
                 name="predictor",
             )
-            self.predictor_norm = nn.LayerNorm(name="predictor_norm")
+            self.predictor_norm = normalization_module(
+                self.config.normalization,
+                name="predictor_norm",
+            )
             self.reward_head = MLPHead(
                 reward_output_dim,
                 self.config.model_dim,
+                activation=self.config.activation,
+                normalization=self.config.normalization,
+                output_scale=self.config.reward_output_scale,
                 name="reward_head",
             )
-            self.continue_head = MLPHead(1, self.config.model_dim, name="continue_head")
+            self.continue_head = MLPHead(
+                1,
+                self.config.model_dim,
+                activation=self.config.activation,
+                normalization=self.config.normalization,
+                name="continue_head",
+            )
         else:
             self.predictors = [
                 MLPHead(
                     self.config.latent_dim,
                     self.config.model_dim,
+                    activation=self.config.activation,
+                    normalization=self.config.normalization,
                     name=f"predictor_{index}",
                 )
                 for index in range(self.config.dynamics_ensemble_size)
             ]
             self.predictor_norms = [
-                nn.LayerNorm(name=f"predictor_norm_{index}")
+                normalization_module(
+                    self.config.normalization,
+                    name=f"predictor_norm_{index}",
+                )
                 for index in range(self.config.dynamics_ensemble_size)
             ]
             self.reward_heads = [
                 MLPHead(
                     reward_output_dim,
                     self.config.model_dim,
+                    activation=self.config.activation,
+                    normalization=self.config.normalization,
+                    output_scale=self.config.reward_output_scale,
                     name=f"reward_head_{index}",
                 )
                 for index in range(self.config.dynamics_ensemble_size)
             ]
             self.continue_heads = [
-                MLPHead(1, self.config.model_dim, name=f"continue_head_{index}")
+                MLPHead(
+                    1,
+                    self.config.model_dim,
+                    activation=self.config.activation,
+                    normalization=self.config.normalization,
+                    name=f"continue_head_{index}",
+                )
                 for index in range(self.config.dynamics_ensemble_size)
             ]
         actor_output_dim = self.config.action_dim
         if self.config.action_mode == "continuous" and self.config.stochastic_actor:
             actor_output_dim = 2 * self.config.action_dim
+        actor_hidden_dim = self.config.actor_hidden_dim or self.config.model_dim
+        critic_hidden_dim = self.config.critic_hidden_dim or self.config.model_dim
         self.actor_head = MLPHead(
             actor_output_dim,
-            self.config.model_dim,
+            actor_hidden_dim,
+            num_layers=self.config.actor_num_layers,
+            use_layer_norm=self.config.actor_layer_norm,
+            activation=self.config.activation,
+            normalization=self.config.normalization,
+            output_scale=self.config.actor_output_scale,
             name="actor_head",
         )
         self.value_head = MLPHead(
             value_output_dim,
-            self.config.model_dim,
+            critic_hidden_dim,
+            num_layers=self.config.critic_num_layers,
+            use_layer_norm=self.config.critic_layer_norm,
+            activation=self.config.activation,
+            normalization=self.config.normalization,
+            output_scale=self.config.value_output_scale,
             name="value_head",
         )
 
@@ -625,7 +778,7 @@ class JepaWorldModel(nn.Module):
             )
         x = actions.astype(jnp.float32)
         x = self.action_encoder_hidden(x)
-        x = nn.gelu(x)
+        x = apply_activation(x, self.config.activation)
         return self.action_encoder_out(x)
 
 

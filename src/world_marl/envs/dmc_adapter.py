@@ -148,9 +148,7 @@ class DMCVectorAdapter:
             dones[env_index, 0] = float(done)
 
             if done:
-                completed_returns.append(
-                    (float(self._episode_returns[env_index, 0]),)
-                )
+                completed_returns.append((float(self._episode_returns[env_index, 0]),))
                 completed_lengths.append(int(self._episode_lengths[env_index]))
                 infos.append(
                     {
@@ -185,6 +183,30 @@ class DMCVectorAdapter:
             size=(self.num_envs, self.action_dim),
         ).astype(np.float32)
         return actions[:, None, :]
+
+    def render(
+        self,
+        env_index: int = 0,
+        *,
+        height: int = 64,
+        width: int = 64,
+        camera_id: int = 0,
+    ) -> np.ndarray:
+        """Render one vector member through its dm_control physics object."""
+
+        if not 0 <= env_index < self.num_envs:
+            raise IndexError(f"env_index must be in [0, {self.num_envs})")
+        if height < 1 or width < 1:
+            raise ValueError("render height and width must be >= 1")
+        physics = getattr(self._envs[env_index], "physics", None)
+        if physics is None or not hasattr(physics, "render"):
+            raise RuntimeError("DMC environment does not expose physics.render")
+        frame = physics.render(
+            height=int(height),
+            width=int(width),
+            camera_id=int(camera_id),
+        )
+        return np.asarray(frame, dtype=np.uint8)
 
     def close(self) -> None:
         for env in self._envs:

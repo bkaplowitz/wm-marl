@@ -227,9 +227,6 @@ policy returns:
   actor selected by periodic paired real-environment validation;
 - paired no-action, shuffled-action, and frozen-random-world-model controls.
 
-`candidate-distill` remains available as a diagnostic planning-teacher baseline,
-but it is not the main algorithmic path.
-
 The next engineering rung turns the offline validation into an online data loop.
 After the first frozen-model policy phase, the selected actor collects fresh real
 Brax transitions, the replay buffer is updated, the world model is refit, and the
