@@ -19,6 +19,8 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from world_marl.determinism import configure_deterministic_environment
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -1407,20 +1409,7 @@ def main() -> None:
 def _configure_deterministic_compute(enabled: bool) -> None:
     if not enabled:
         return
-    deterministic_flags = (
-        "--xla_gpu_deterministic_ops=true",
-        "--xla_gpu_autotune_level=0",
-        "--xla_gpu_enable_triton_gemm=false",
-    )
-    xla_flags = os.environ.get("XLA_FLAGS", "").strip()
-    configured_flags = xla_flags.split()
-    for deterministic_flag in deterministic_flags:
-        if deterministic_flag not in configured_flags:
-            configured_flags.append(deterministic_flag)
-    os.environ["XLA_FLAGS"] = " ".join(configured_flags)
-    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
-    os.environ.setdefault("TF_CUDNN_DETERMINISTIC", "1")
-    os.environ.setdefault("NVIDIA_TF32_OVERRIDE", "0")
+    configure_deterministic_environment()
     jax.config.update("jax_default_matmul_precision", "highest")
 
 
