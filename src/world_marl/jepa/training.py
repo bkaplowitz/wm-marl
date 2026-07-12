@@ -651,17 +651,23 @@ def copy_policy_heads(
     target: JepaTrainState,
     source: JepaTrainState,
 ) -> JepaTrainState:
-    """Copy actor/value heads while preserving the target world model."""
+    """Restore complete policy state while preserving the target world model."""
 
     raw = unfreeze(target.params)
     raw["actor_head"] = unfreeze(source.params["actor_head"])
     raw["value_head"] = unfreeze(source.params["value_head"])
     params = freeze(raw)
+
+    raw_target_critic = unfreeze(target.target_critic_params)
+    raw_target_critic["value_head"] = unfreeze(
+        source.target_critic_params["value_head"]
+    )
+    target_critic_params = freeze(raw_target_critic)
     return target.replace(
         params=params,
-        actor_opt_state=target.actor_tx.init(params),
-        critic_opt_state=target.critic_tx.init(params),
-        target_critic_params=params,
+        actor_opt_state=source.actor_opt_state,
+        critic_opt_state=source.critic_opt_state,
+        target_critic_params=target_critic_params,
         return_range_ema=source.return_range_ema,
         return_range_initialized=source.return_range_initialized,
     )
@@ -2431,7 +2437,10 @@ def terminal_prediction_metrics(
 
 
 def masked_mean(values: jax.Array, mask: jax.Array) -> jax.Array:
-    return jnp.sum(values * mask) / (jnp.sum(mask) + 1e-6)
+    mask = jnp.asarray(mask, dtype=values.dtype)
+    mask = jnp.broadcast_to(mask, values.shape)
+    denominator = jnp.maximum(jnp.sum(mask), 1.0)
+    return jnp.sum(values * mask) / denominator
 
 
 def survival_weights(continues: jax.Array, *, gamma: float) -> jax.Array:

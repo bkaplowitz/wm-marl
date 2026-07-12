@@ -16,10 +16,12 @@ from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
     continuous_critic_warmup_step,
     continuous_policy_train_step,
+    copy_policy_heads,
     create_jepa_train_state,
     evaluate_open_loop,
     lambda_returns,
     latent_collapse_metrics,
+    masked_mean,
     prediction_validity,
     reset_policy_heads,
     reward_only_returns,
@@ -67,6 +69,74 @@ def test_rotary_position_embedding_preserves_norms():
         np.asarray(jnp.linalg.norm(x, axis=-1)),
         rtol=1e-6,
         atol=1e-6,
+    )
+
+
+@pytest.mark.parametrize("ensemble_size", [1, 2, 5])
+def test_masked_mean_is_ensemble_size_invariant(ensemble_size):
+    values = jnp.ones((2, 3, 4, ensemble_size), dtype=jnp.float32)
+    mask = jnp.ones((2, 3, 4, 1), dtype=jnp.float32)
+
+    np.testing.assert_allclose(np.asarray(masked_mean(values, mask)), 1.0)
+
+
+def test_copy_policy_heads_restores_policy_training_state_only():
+    config = _config()
+    target = create_jepa_train_state(jax.random.PRNGKey(1), config)
+    source = create_jepa_train_state(jax.random.PRNGKey(2), config)
+    source = source.replace(
+        actor_opt_state=jax.tree_util.tree_map(
+            lambda value: value + jnp.ones_like(value),
+            source.actor_opt_state,
+        ),
+        critic_opt_state=jax.tree_util.tree_map(
+            lambda value: value + jnp.ones_like(value),
+            source.critic_opt_state,
+        ),
+        return_range_ema=jnp.asarray(7.0, dtype=jnp.float32),
+        return_range_initialized=jnp.asarray(True),
+    )
+
+    restored = copy_policy_heads(target, source)
+
+    for name in target.params:
+        expected = (
+            source.params[name]
+            if name in {"actor_head", "value_head"}
+            else target.params[name]
+        )
+        for actual_leaf, expected_leaf in zip(
+            jax.tree_util.tree_leaves(restored.params[name]),
+            jax.tree_util.tree_leaves(expected),
+            strict=True,
+        ):
+            np.testing.assert_array_equal(actual_leaf, expected_leaf)
+    for name in target.target_critic_params:
+        expected = (
+            source.target_critic_params[name]
+            if name == "value_head"
+            else target.target_critic_params[name]
+        )
+        for actual_leaf, expected_leaf in zip(
+            jax.tree_util.tree_leaves(restored.target_critic_params[name]),
+            jax.tree_util.tree_leaves(expected),
+            strict=True,
+        ):
+            np.testing.assert_array_equal(actual_leaf, expected_leaf)
+    for actual_state, expected_state in (
+        (restored.actor_opt_state, source.actor_opt_state),
+        (restored.critic_opt_state, source.critic_opt_state),
+    ):
+        for actual_leaf, expected_leaf in zip(
+            jax.tree_util.tree_leaves(actual_state),
+            jax.tree_util.tree_leaves(expected_state),
+            strict=True,
+        ):
+            np.testing.assert_array_equal(actual_leaf, expected_leaf)
+    np.testing.assert_array_equal(restored.return_range_ema, source.return_range_ema)
+    np.testing.assert_array_equal(
+        restored.return_range_initialized,
+        source.return_range_initialized,
     )
 
 
