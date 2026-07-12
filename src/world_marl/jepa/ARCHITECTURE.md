@@ -85,9 +85,10 @@ replayed with `--no-isolated-rng-streams`.
 
 The presets also use `--deterministic-compute`: deterministic XLA GPU
 reductions, a deterministic cuBLAS workspace, disabled TF32 overrides, and
-highest-precision JAX matrix multiplication. This costs some throughput but
-prevents tiny same-seed GPU reduction differences from being amplified by the
-online policy/data feedback loop.
+highest-precision JAX matrix multiplication. GPU GEMM autotuning and Triton
+GEMM selection are disabled so separate devices cannot choose different fused
+kernels. This costs throughput but prevents tiny same-seed numerical differences
+from being amplified by the online policy/data feedback loop.
 
 Each run records `rng_streams.json`, stable initial/validation replay digests,
 and parameter plus recent-replay digests after every online phase. Full replay

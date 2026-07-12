@@ -1407,12 +1407,17 @@ def main() -> None:
 def _configure_deterministic_compute(enabled: bool) -> None:
     if not enabled:
         return
-    deterministic_flag = "--xla_gpu_deterministic_ops=true"
+    deterministic_flags = (
+        "--xla_gpu_deterministic_ops=true",
+        "--xla_gpu_autotune_level=0",
+        "--xla_gpu_enable_triton_gemm=false",
+    )
     xla_flags = os.environ.get("XLA_FLAGS", "").strip()
-    if deterministic_flag not in xla_flags.split():
-        os.environ["XLA_FLAGS"] = " ".join(
-            item for item in (xla_flags, deterministic_flag) if item
-        )
+    configured_flags = xla_flags.split()
+    for deterministic_flag in deterministic_flags:
+        if deterministic_flag not in configured_flags:
+            configured_flags.append(deterministic_flag)
+    os.environ["XLA_FLAGS"] = " ".join(configured_flags)
     os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     os.environ.setdefault("TF_CUDNN_DETERMINISTIC", "1")
     os.environ.setdefault("NVIDIA_TF32_OVERRIDE", "0")
