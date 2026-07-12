@@ -83,3 +83,27 @@ def test_dreamer_parity_500k_preset_stays_below_training_data_budget():
 
     assert accounting["train_replay_env_steps"] == 496_896
     assert accounting["train_plus_validation_env_steps"] == 498_176
+
+
+def test_interleaved_parity_presets_preserve_exact_budgets():
+    comparisons = (
+        ("jepa_dreamer_parity_100k", "jepa_dreamer_parity_100k_interleaved"),
+        ("jepa_dreamer_parity_500k", "jepa_dreamer_parity_500k_interleaved"),
+    )
+
+    for baseline_name, interleaved_name in comparisons:
+        baseline = {**COMMON_PARAMS, **PRESETS[baseline_name]}
+        interleaved = {**COMMON_PARAMS, **PRESETS[interleaved_name]}
+        baseline_accounting = step_accounting(baseline)
+        interleaved_accounting = step_accounting(interleaved)
+
+        assert interleaved_accounting == baseline_accounting
+        assert (
+            interleaved["online_collect_steps"] * 2 == baseline["online_collect_steps"]
+        )
+        assert interleaved["online_train_steps"] * 2 == baseline["online_train_steps"]
+        assert (
+            interleaved["online_policy_train_steps"] * 2
+            == baseline["online_policy_train_steps"]
+        )
+        assert interleaved["online_iterations"] == baseline["online_iterations"] * 2

@@ -288,10 +288,31 @@ PRESETS: dict[str, dict[str, Any]] = {
         # 99,584 train-replay transitions; 100,864 including held-out replay.
         "online_iterations": 24,
     },
+    "jepa_dreamer_parity_100k_interleaved": {
+        **_JEPA_DREAMER_PARITY_BASE,
+        # Same data and update budget as the 100k preset, but update twice as
+        # often so policy/data feedback cannot drift as far between refits.
+        "online_iterations": 48,
+        "online_collect_steps": 128,
+        "online_train_steps": 2048,
+        "online_policy_train_steps": 2048,
+        "online_checkpoint_interval": 10,
+        "wandb_video_every_phases": 20,
+    },
     "jepa_dreamer_parity_500k": {
         **_JEPA_DREAMER_PARITY_BASE,
         # 496,896 train-replay transitions; 498,176 including held-out replay.
         "online_iterations": 121,
+    },
+    "jepa_dreamer_parity_500k_interleaved": {
+        **_JEPA_DREAMER_PARITY_BASE,
+        # Exact 500k parity budget with smaller, more frequent online updates.
+        "online_iterations": 242,
+        "online_collect_steps": 128,
+        "online_train_steps": 2048,
+        "online_policy_train_steps": 2048,
+        "online_checkpoint_interval": 10,
+        "wandb_video_every_phases": 20,
     },
 }
 

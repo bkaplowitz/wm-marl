@@ -100,6 +100,12 @@ robustness only after that same-seed gate passes. The parity presets evaluate
 every training seed on the same final environment seed (`9000000`) so policy
 variance is not mixed with a different set of reporting episodes.
 
+The `*_interleaved` parity presets are controlled robustness experiments. They
+halve each online collection, world-model update, and policy update burst while
+doubling the phase count. Total real transitions and optimizer updates remain
+identical to the corresponding base preset, and checkpoint/video cadence stays
+aligned in environment steps. This isolates feedback cadence from data budget.
+
 ## Current Best Preset
 
 The current reference preset is `dreamer_ac_online_adaptive_hard_start`:
