@@ -60,6 +60,10 @@ world-marl-cem-dmc-jepa = "world_marl.scripts.cem_dmc_jepa:main"
 world-marl-plot-brax-diagnostics = "world_marl.scripts.plot_brax_diagnostics:main"
 world-marl-plot-dmc-reacher-benchmark = "world_marl.scripts.plot_dmc_reacher_benchmark:main"
 world-marl-write-dmc-vector-launcher = "world_marl.scripts.write_dmc_vector_launcher:main"
+world-marl-setup-dreamerv3 = "world_marl.scripts.setup_dreamerv3:main"
+world-marl-train-dmc-dreamerv3 = "world_marl.scripts.train_dmc_dreamerv3:main"
+world-marl-eval-dmc-dreamerv3 = "world_marl.scripts.eval_dmc_dreamerv3:main"
+world-marl-normalize-dreamerv3 = "world_marl.scripts.normalize_dreamerv3_run:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -68,6 +72,7 @@ where = ["src"]
 testpaths = ["tests"]
 markers = [
   "integration: tests requiring installed Melting Pot/dmlab2d runtime",
+  "dreamerv3_integration: tests requiring the isolated DreamerV3 runtime",
 ]
 
 [tool.ruff]
