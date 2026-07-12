@@ -1,0 +1,23 @@
+# This file documents the immutable baseline contract. The learning
+# hyperparameters are loaded directly from external/dreamerv3/configs.yaml.
+implementation:
+  repository: https://github.com/danijar/dreamerv3.git
+  commit: e3f02248693a79dc8b0ebd62c93683888ddaccfe
+  config: dmc_proprio
+
+canonical_experiment:
+  task: dmc_reacher_easy
+  train_env_steps: 500000
+  seeds: [0, 1, 2, 3, 4]
+  final_eval_episodes: 20
+  checkpoint_selection: latest
+
+official_reproduction:
+  train_env_steps: 1100000
+
+reporting:
+  curve_bin_env_steps: 10000
+  count_training_env_steps: true
+  count_evaluation_env_steps_separately: true
+  report_total_real_env_steps: true
+  select_best_checkpoint: false

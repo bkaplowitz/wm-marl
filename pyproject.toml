@@ -33,6 +33,10 @@ cuda12 = [
 [project.scripts]
 world-marl-verify-install = "world_marl.scripts.verify_install:main"
 world-marl-train-e2e = "world_marl.scripts.train_e2e:main"
+world-marl-setup-dreamerv3 = "world_marl.scripts.setup_dreamerv3:main"
+world-marl-train-dmc-dreamerv3 = "world_marl.scripts.train_dmc_dreamerv3:main"
+world-marl-eval-dmc-dreamerv3 = "world_marl.scripts.eval_dmc_dreamerv3:main"
+world-marl-normalize-dreamerv3 = "world_marl.scripts.normalize_dreamerv3_run:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -41,4 +45,5 @@ where = ["src"]
 testpaths = ["tests"]
 markers = [
   "integration: tests requiring installed Melting Pot/dmlab2d runtime",
+  "dreamerv3_integration: tests requiring the isolated DreamerV3 runtime",
 ]

@@ -1,5 +1,6 @@
 .DS_Store
 .venv/
+.venv-dreamerv3/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -9,3 +10,4 @@ runs/
 dist/
 build/
 *.egg-info/
+dreamerv3-environment.json

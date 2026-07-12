@@ -1,4 +1,66 @@
-# JaxMARL + MeltingPot POC
+# World MARL
+
+## Official DreamerV3 Baseline
+
+The DreamerV3 baseline runs the pinned `danijar/dreamerv3` implementation as
+an external process. `world_marl` does not reimplement or replace its RSSM,
+replay, losses, actor, critic, or training loop. The integration owns only
+environment setup, launch metadata, fixed-checkpoint evaluation, step
+accounting, and normalized artifacts.
+
+Initialize the pinned source and create its dependency-isolated environment:
+
+```bash
+git submodule update --init --recursive
+uv sync --python 3.11 --extra dev
+uv run world-marl-setup-dreamerv3 --accelerator cpu     # macOS/local smoke
+uv run world-marl-setup-dreamerv3 --accelerator cuda12  # Linux GPU
+```
+
+Run the canonical 500K DMC Reacher Easy experiment:
+
+```bash
+uv run world-marl-train-dmc-dreamerv3 \
+  --task dmc_reacher_easy \
+  --seed 0 \
+  --total-env-steps 500000 \
+  --platform cuda \
+  --save-every-seconds 300 \
+  --wandb-project world-marl \
+  --wandb-entity osaze-obahor
+```
+
+The model, optimizer, replay, and imagination settings come directly from the
+upstream `dmc_proprio` config. Use `--official-budget` for its current 1.1M-step
+preset. `--debug --platform cpu` is available only for installation smoke tests
+and is not a learning result.
+
+Evaluate the latest periodically saved checkpoint without selecting among
+checkpoints:
+
+```bash
+uv run world-marl-eval-dmc-dreamerv3 \
+  runs/dreamerv3/dmc_reacher_easy/seed_0/<timestamp> \
+  --episodes 20 \
+  --success-threshold 900
+```
+
+Each experiment contains the untouched upstream log directory plus:
+
+- `launch.json`: exact command, upstream commit, configs, seed, and budget;
+- `process.log`: complete upstream stdout/stderr;
+- `normalized/training_episodes.jsonl`: online episode returns and steps;
+- `normalized/training_curve.json`: 10K-transition bins;
+- `normalized/official_reference.json`: bundled official five-seed curve;
+- `normalized/training_curve.png`: this run against the official curve;
+- `evaluation/*/evaluation_summary.json`: all held-out returns and separate
+  train, evaluation, and total real-transition counts.
+
+The canonical contract is recorded in
+`configs/dreamerv3/dmc_proprio.yaml`. The pinned upstream revision is
+`e3f02248693a79dc8b0ebd62c93683888ddaccfe`.
+
+## JaxMARL + MeltingPot POC
 
 ## Architecture
 
