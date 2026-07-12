@@ -51,12 +51,23 @@ class SequenceReplayBuffer:
         )
         self.rewards = np.zeros((self.capacity, self.num_envs), dtype=np.float32)
         self.dones = np.zeros((self.capacity, self.num_envs), dtype=np.float32)
+        # Cuts mark collector-imposed stream boundaries, such as reset-rich
+        # bootstrap segments. Unlike dones, they are not environment terminal
+        # targets; sampled sequences simply must not cross them.
+        self.cuts = np.zeros((self.capacity, self.num_envs), dtype=np.float32)
         self._position = 0
         self._size = 0
+        self._cut_count = 0
 
     @property
     def size(self) -> int:
         return self._size
+
+    @property
+    def cut_count(self) -> int:
+        """Number of collector-imposed boundaries in the stored replay."""
+
+        return self._cut_count
 
     def save_npz(self, path: str | Path) -> None:
         """Persist ordered replay contents for exact diagnostic reuse."""
@@ -68,6 +79,7 @@ class SequenceReplayBuffer:
             actions=actions,
             rewards=rewards,
             dones=dones,
+            cuts=self._ordered_cuts(),
             capacity=np.asarray(self.capacity, dtype=np.int64),
             num_envs=np.asarray(self.num_envs, dtype=np.int64),
             observation_shape=np.asarray(self.observation_shape, dtype=np.int64),
@@ -79,17 +91,20 @@ class SequenceReplayBuffer:
         """Return a stable digest of ordered replay contents and metadata."""
 
         observations, actions, rewards, dones = self._ordered_arrays()
-        return fingerprint_arrays(
-            {
-                "observations": observations,
-                "actions": actions,
-                "rewards": rewards,
-                "dones": dones,
-                "num_envs": np.asarray(self.num_envs, dtype=np.int64),
-                "observation_shape": np.asarray(self.observation_shape, dtype=np.int64),
-                "action_shape": np.asarray(self.action_shape, dtype=np.int64),
-            }
-        )
+        arrays = {
+            "observations": observations,
+            "actions": actions,
+            "rewards": rewards,
+            "dones": dones,
+            "num_envs": np.asarray(self.num_envs, dtype=np.int64),
+            "observation_shape": np.asarray(self.observation_shape, dtype=np.int64),
+            "action_shape": np.asarray(self.action_shape, dtype=np.int64),
+        }
+        # Preserve fingerprints for legacy and ordinary replays that contain
+        # no collector-imposed cuts.
+        if self._cut_count:
+            arrays["cuts"] = self._ordered_cuts()
+        return fingerprint_arrays(arrays)
 
     @classmethod
     def load_npz(
@@ -103,6 +118,11 @@ class SequenceReplayBuffer:
         actions = np.asarray(data["actions"])
         rewards = np.asarray(data["rewards"], dtype=np.float32)
         dones = np.asarray(data["dones"], dtype=np.float32)
+        cuts = (
+            np.asarray(data["cuts"], dtype=np.float32)
+            if "cuts" in data.files
+            else np.zeros_like(dones)
+        )
 
         if observations.ndim < 3:
             raise ValueError("saved replay observations must be [T, N, ...]")
@@ -135,8 +155,10 @@ class SequenceReplayBuffer:
         replay.actions[:size] = actions.astype(replay.action_dtype, copy=False)
         replay.rewards[:size] = rewards
         replay.dones[:size] = dones
+        replay.cuts[:size] = cuts
         replay._size = size
         replay._position = size % replay.capacity
+        replay._cut_count = int(np.count_nonzero(cuts))
         return replay
 
     def add_step(
@@ -146,6 +168,7 @@ class SequenceReplayBuffer:
         actions: np.ndarray,
         rewards: np.ndarray,
         dones: np.ndarray,
+        cuts: np.ndarray | None = None,
     ) -> None:
         obs = np.asarray(observations, dtype=np.float32).reshape(
             (self.num_envs, *self.observation_shape)
@@ -161,6 +184,14 @@ class SequenceReplayBuffer:
         self.dones[self._position] = np.asarray(dones, dtype=np.float32).reshape(
             (self.num_envs,)
         )
+        cut_values = (
+            np.zeros((self.num_envs,), dtype=np.float32)
+            if cuts is None
+            else np.asarray(cuts, dtype=np.float32).reshape((self.num_envs,))
+        )
+        self._cut_count -= int(np.count_nonzero(self.cuts[self._position]))
+        self.cuts[self._position] = cut_values
+        self._cut_count += int(np.count_nonzero(cut_values))
         self._position = (self._position + 1) % self.capacity
         self._size = min(self._size + 1, self.capacity)
 
@@ -213,7 +244,32 @@ class SequenceReplayBuffer:
         max_start = self._size - sequence_length
         starts = rng.integers(0, max_start + 1, size=(batch_size,))
         envs = rng.integers(0, self.num_envs, size=(batch_size,))
+        if self._cut_count:
+            for _ in range(1024):
+                valid = self._starts_avoid_cuts(starts, envs, sequence_length)
+                if np.all(valid):
+                    break
+                count = int(np.count_nonzero(~valid))
+                starts[~valid] = rng.integers(0, max_start + 1, size=(count,))
+                envs[~valid] = rng.integers(0, self.num_envs, size=(count,))
+            else:
+                raise ValueError(
+                    "replay cuts leave no sampleable contiguous sequence for "
+                    f"sequence length {sequence_length}"
+                )
         return starts.astype(np.int64), envs.astype(np.int64)
+
+    def _starts_avoid_cuts(
+        self,
+        starts: np.ndarray,
+        envs: np.ndarray,
+        sequence_length: int,
+    ) -> np.ndarray:
+        transition_offsets = np.arange(sequence_length - 1, dtype=np.int64)
+        indices = starts[:, None] + transition_offsets[None, :]
+        if self._size == self.capacity:
+            indices = (self._position + indices) % self.capacity
+        return ~np.any(self.cuts[indices, envs[:, None]] > 0.5, axis=1)
 
     def sample_from_indices(
         self,
@@ -292,3 +348,14 @@ class SequenceReplayBuffer:
             self.rewards[order],
             self.dones[order],
         )
+
+    def _ordered_cuts(self) -> np.ndarray:
+        if self._size < self.capacity:
+            return self.cuts[: self._size]
+        order = np.concatenate(
+            [
+                np.arange(self._position, self.capacity),
+                np.arange(0, self._position),
+            ]
+        )
+        return self.cuts[order]

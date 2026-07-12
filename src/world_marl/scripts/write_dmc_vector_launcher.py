@@ -126,7 +126,9 @@ _JEPA_DREAMER_PARITY_BASE: dict[str, Any] = {
     "isolated_rng_streams": True,
     "deterministic_compute": True,
     "collect_steps": 80,
+    "initial_reset_interval": None,
     "validation_steps": 80,
+    "validation_seed": None,
     "replay_capacity": 1_000_000,
     "batch_size": 16,
     "chunk_length": 64,
@@ -178,6 +180,7 @@ _JEPA_DREAMER_PARITY_BASE: dict[str, Any] = {
     "stochastic_actor": True,
     "stochastic_collection": True,
     "actor_entropy_coef": 3e-4,
+    "actor_entropy_mode": "gaussian",
     "actor_log_std_min": -2.302585092994046,
     "actor_log_std_max": 0.0,
     "input_symlog": True,
@@ -452,7 +455,9 @@ OVERRIDABLE_PARAMS = (
     "isolated_rng_streams",
     "deterministic_compute",
     "collect_steps",
+    "initial_reset_interval",
     "validation_steps",
+    "validation_seed",
     "replay_capacity",
     "save_initial_replay",
     "load_initial_replay",
@@ -525,6 +530,7 @@ OVERRIDABLE_PARAMS = (
     "stochastic_actor",
     "stochastic_collection",
     "actor_entropy_coef",
+    "actor_entropy_mode",
     "actor_log_std_min",
     "actor_log_std_max",
     "input_symlog",
@@ -819,7 +825,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-envs", type=int, default=None)
     parser.add_argument("--env-workers", type=int, default=None)
     parser.add_argument("--collect-steps", type=int, default=None)
+    parser.add_argument("--initial-reset-interval", type=int, default=None)
     parser.add_argument("--validation-steps", type=int, default=None)
+    parser.add_argument("--validation-seed", type=int, default=None)
     parser.add_argument("--replay-capacity", type=int, default=None)
     parser.add_argument("--save-initial-replay", default=None)
     parser.add_argument("--load-initial-replay", default=None)
@@ -983,6 +991,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
     )
     parser.add_argument("--actor-entropy-coef", type=float, default=None)
+    parser.add_argument(
+        "--actor-entropy-mode",
+        choices=("gaussian", "tanh-normal"),
+        default=None,
+    )
     parser.add_argument("--actor-log-std-min", type=float, default=None)
     parser.add_argument("--actor-log-std-max", type=float, default=None)
     parser.add_argument(

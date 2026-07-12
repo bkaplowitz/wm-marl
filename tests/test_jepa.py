@@ -26,6 +26,7 @@ from world_marl.jepa.training import (
     reset_policy_heads,
     reward_only_returns,
     select_continuous_actions,
+    tanh_normal_entropy_sample,
     train_model_step,
     transition_start_validity,
 )
@@ -78,6 +79,15 @@ def test_masked_mean_is_ensemble_size_invariant(ensemble_size):
     mask = jnp.ones((2, 3, 4, 1), dtype=jnp.float32)
 
     np.testing.assert_allclose(np.asarray(masked_mean(values, mask)), 1.0)
+
+
+def test_tanh_normal_entropy_penalizes_saturated_action_means():
+    log_stds = jnp.zeros((4, 2), dtype=jnp.float32)
+    centered = tanh_normal_entropy_sample(jnp.zeros((4, 2)), log_stds)
+    saturated = tanh_normal_entropy_sample(jnp.full((4, 2), 4.0), log_stds)
+
+    assert np.all(np.asarray(centered) > np.asarray(saturated))
+    assert np.all(np.isfinite(np.asarray(saturated)))
 
 
 def test_copy_policy_heads_restores_policy_training_state_only():
@@ -163,6 +173,27 @@ def test_sequence_replay_samples_contiguous_chunks():
         np.diff(np.asarray(batch.observations[:, :, 0]), axis=1),
         1.0,
     )
+
+
+def test_sequence_replay_does_not_sample_across_collector_cuts():
+    replay = SequenceReplayBuffer(capacity=10, num_envs=1, observation_shape=(1,))
+    for step in range(10):
+        replay.add_step(
+            observations=np.asarray([[step]], dtype=np.float32),
+            actions=np.asarray([step % 2]),
+            rewards=np.asarray([0.0], dtype=np.float32),
+            dones=np.asarray([0.0], dtype=np.float32),
+            cuts=np.asarray([float(step == 4)], dtype=np.float32),
+        )
+
+    starts, _ = replay.sample_indices(
+        np.random.default_rng(0),
+        batch_size=128,
+        chunk_length=3,
+        max_horizon=2,
+    )
+
+    assert set(starts.tolist()) <= {0, 5}
 
 
 def test_sequence_replay_supports_continuous_action_vectors():
@@ -859,6 +890,7 @@ def test_dreamer_style_policy_update_is_finite_and_keeps_world_model_frozen():
         policy_return_normalization="ema-percentile",
         policy_gradient_mode="reinforce",
         actor_entropy_coef=3e-4,
+        actor_entropy_mode="tanh-normal",
         target_critic_params=state.target_critic_params,
         target_critic_ema_decay=0.98,
         real_critic_batch=real_batch,
@@ -872,6 +904,7 @@ def test_dreamer_style_policy_update_is_finite_and_keeps_world_model_frozen():
 
     assert jnp.isfinite(metrics["policy/total_loss"])
     assert metrics["policy/gradient_mode_reinforce"] == 1.0
+    assert metrics["policy/action_entropy_tanh_normal"] == 1.0
     assert metrics["policy/return_normalization_ema_percentile"] == 1.0
     assert metrics["policy/replay_critic_lambda_return"] == 1.0
     assert metrics["policy/replay_critic_all_steps"] == 1.0

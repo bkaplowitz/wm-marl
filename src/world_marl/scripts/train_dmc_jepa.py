@@ -106,7 +106,27 @@ def parse_args() -> argparse.Namespace:
         help="Optional Brax physics backend to pass through to brax.envs.create.",
     )
     parser.add_argument("--collect-steps", type=int, default=2048)
+    parser.add_argument(
+        "--initial-reset-interval",
+        type=int,
+        default=None,
+        help=(
+            "Force a fresh environment reset after this many initial random "
+            "collection steps. Replay cuts prevent sampled sequences from "
+            "crossing these nonterminal bootstrap boundaries."
+        ),
+    )
     parser.add_argument("--validation-steps", type=int, default=512)
+    parser.add_argument(
+        "--validation-seed",
+        type=int,
+        default=None,
+        help=(
+            "Optional environment seed for the held-out validation replay. "
+            "By default, each run uses training_seed + 1000000. Set this to "
+            "compare different training seeds on one identical replay."
+        ),
+    )
     parser.add_argument("--replay-capacity", type=int, default=100_000)
     parser.add_argument(
         "--save-initial-replay",
@@ -240,6 +260,15 @@ def parse_args() -> argparse.Namespace:
         help="Sample from the tanh-normal actor during online actor replay collection.",
     )
     parser.add_argument("--actor-entropy-coef", type=float, default=0.0)
+    parser.add_argument(
+        "--actor-entropy-mode",
+        choices=("gaussian", "tanh-normal"),
+        default="gaussian",
+        help=(
+            "Entropy estimator for a stochastic continuous actor. The "
+            "tanh-normal mode includes the action-squashing Jacobian."
+        ),
+    )
     parser.add_argument("--actor-log-std-min", type=float, default=-5.0)
     parser.add_argument("--actor-log-std-max", type=float, default=2.0)
     parser.add_argument("--policy-train-steps", type=int, default=0)
@@ -1055,9 +1084,19 @@ def parse_args() -> argparse.Namespace:
 def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     if args.seed < 0:
         parser.error("--seed must be >= 0")
+    if args.validation_seed is not None and args.validation_seed < 0:
+        parser.error("--validation-seed must be >= 0")
     min_sequence_steps = args.chunk_length + max(
         args.model_horizon, args.open_loop_horizon
     )
+    if args.initial_reset_interval is not None:
+        if args.initial_reset_interval < min_sequence_steps:
+            parser.error(
+                "--initial-reset-interval must cover chunk-length + max "
+                "model/open-loop horizon"
+            )
+        if args.initial_reset_interval > args.collect_steps:
+            parser.error("--initial-reset-interval must be <= --collect-steps")
     for name in (
         "num_envs",
         "env_workers",
@@ -1497,6 +1536,9 @@ def run_one(
     control: ControlMode,
 ) -> dict[str, Any]:
     seed = args.seed + 10_000 * run_index
+    validation_seed = (
+        seed + 1_000_000 if args.validation_seed is None else args.validation_seed
+    )
     logger = RunLogger(
         run_dir,
         wandb_config=_wandb_run_config(
@@ -1593,6 +1635,17 @@ def run_one(
             seed,
             isolated=args.isolated_rng_streams,
         )
+        validation_jax_rngs = (
+            jax_rngs
+            if args.validation_seed is None
+            else JaxRngStreams.create(validation_seed, isolated=True)
+        )
+        validation_numpy_rngs = (
+            numpy_rngs
+            if args.validation_seed is None
+            else NumpyRngStreams.create(validation_seed, isolated=True)
+        )
+        validation_sampling_rng = validation_numpy_rngs.get("validation_replay")
         logger.write_json(
             "rng_streams.json",
             {
@@ -1605,6 +1658,8 @@ def run_one(
                 "xla_flags": os.environ.get("XLA_FLAGS"),
                 "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
                 "nvidia_tf32_override": os.environ.get("NVIDIA_TF32_OVERRIDE"),
+                "validation_seed": validation_seed,
+                "validation_seed_overridden": args.validation_seed is not None,
             },
         )
         init_key = jax_rngs.take("initialization")
@@ -1662,6 +1717,7 @@ def run_one(
                 numpy_rngs.get("initial_collection"),
                 (replay, anchor_replay),
                 steps=args.collect_steps,
+                reset_interval=args.initial_reset_interval,
                 desc=f"{control} collect train replay",
                 quiet=args.quiet,
             )
@@ -1675,6 +1731,18 @@ def run_one(
                 "steps_per_env": replay.size,
                 "size_per_env": replay.size,
                 "anchor_size_per_env": anchor_replay.size,
+                "collector_cut_count": replay.cut_count,
+                "initial_reset_interval": (
+                    args.initial_reset_interval
+                    if replay_source == "collected"
+                    else None
+                ),
+                "initial_segments_per_env": (
+                    math.ceil(args.collect_steps / args.initial_reset_interval)
+                    if replay_source == "collected"
+                    and args.initial_reset_interval is not None
+                    else 1
+                ),
                 "observation_dim": config.observation_dim,
                 "action_dim": config.action_dim,
                 "source": replay_source,
@@ -1718,7 +1786,7 @@ def run_one(
         validation_replay = _collect_validation_replay(
             args,
             config,
-            seed=seed + 1_000_000,
+            seed=validation_seed,
         )
         initial_validation_env_steps = args.validation_steps * args.num_envs
         logger.write_json(
@@ -1727,7 +1795,7 @@ def run_one(
                 "env_steps": initial_validation_env_steps,
                 "steps_per_env": args.validation_steps,
                 "size_per_env": validation_replay.size,
-                "seed": seed + 1_000_000,
+                "seed": validation_seed,
             },
         )
         initial_reproducibility = _reproducibility_snapshot(
@@ -1747,12 +1815,12 @@ def run_one(
         )
 
         validation_batch = validation_replay.sample(
-            numpy_rngs.get("validation_replay"),
+            validation_sampling_rng,
             batch_size=args.batch_size,
             chunk_length=args.chunk_length,
             max_horizon=max(args.model_horizon, args.open_loop_horizon),
         )
-        eval_key = jax_rngs.take("evaluation")
+        eval_key = validation_jax_rngs.take("evaluation")
         initial_metrics = _evaluate_model(
             state,
             eval_key,
@@ -1798,7 +1866,7 @@ def run_one(
                 loss_history, filename="dmc_world_model_loss.png"
             )
 
-        eval_key = jax_rngs.take("evaluation")
+        eval_key = validation_jax_rngs.take("evaluation")
         final_batch = validation_batch
         final_metrics = _evaluate_model(
             state,
@@ -1981,7 +2049,7 @@ def run_one(
                     }
                 )
                 recent_validation_batch = recent_validation_replay.sample(
-                    numpy_rngs.get("validation_replay"),
+                    validation_sampling_rng,
                     batch_size=args.batch_size,
                     chunk_length=args.chunk_length,
                     max_horizon=max(args.model_horizon, args.open_loop_horizon),
@@ -2051,7 +2119,7 @@ def run_one(
                 filename=f"{phase}_world_model_loss.png",
             )
 
-            eval_key = jax_rngs.take("evaluation")
+            eval_key = validation_jax_rngs.take("evaluation")
             online_metrics = _evaluate_model(
                 state,
                 eval_key,
@@ -2272,7 +2340,7 @@ def run_one(
                 }
             )
 
-        eval_key = jax_rngs.take("evaluation")
+        eval_key = validation_jax_rngs.take("evaluation")
         final_metrics = _evaluate_model(
             state,
             eval_key,
@@ -2528,20 +2596,27 @@ def _collect_random_steps(
     replay: SequenceReplayBuffer | tuple[SequenceReplayBuffer, ...],
     *,
     steps: int,
+    reset_interval: int | None = None,
     desc: str,
     quiet: bool,
 ) -> tuple[np.ndarray, int]:
-    for _ in tqdm(range(steps), desc=desc, unit="step", disable=quiet):
+    for step_index in tqdm(range(steps), desc=desc, unit="step", disable=quiet):
         actions = adapter.sample_actions(rng)
         step = adapter.step(actions)
+        forced_reset = (
+            reset_interval is not None and (step_index + 1) % reset_interval == 0
+        )
         _add_replay_step(
             replay,
             observations=observations[:, 0],
             actions=actions[:, 0],
             rewards=step.rewards[:, 0],
             dones=step.dones[:, 0],
+            cuts=(
+                np.ones((adapter.num_envs,), dtype=np.float32) if forced_reset else None
+            ),
         )
-        observations = step.observations
+        observations = adapter.reset() if forced_reset else step.observations
     return observations, steps * adapter.num_envs
 
 
@@ -2759,6 +2834,7 @@ def _add_replay_step(
     actions: np.ndarray,
     rewards: np.ndarray,
     dones: np.ndarray,
+    cuts: np.ndarray | None = None,
 ) -> None:
     buffers = replay if isinstance(replay, tuple) else (replay,)
     for buffer in buffers:
@@ -2767,6 +2843,7 @@ def _add_replay_step(
             actions=actions,
             rewards=rewards,
             dones=dones,
+            cuts=cuts,
         )
 
 
@@ -3982,6 +4059,7 @@ def _maybe_train_policy(
             policy_hard_action_bound_coef=args.policy_hard_action_bound_coef,
             hard_start_mask=hard_start_mask,
             actor_entropy_coef=args.actor_entropy_coef,
+            actor_entropy_mode=args.actor_entropy_mode,
             target_critic_params=(
                 candidate_state.target_critic_params
                 if args.target_critic_ema_decay > 0.0
@@ -4170,6 +4248,7 @@ def _maybe_train_policy(
             policy_hard_action_bound_coef=args.policy_hard_action_bound_coef,
             hard_start_mask=hard_start_mask,
             actor_entropy_coef=args.actor_entropy_coef,
+            actor_entropy_mode=args.actor_entropy_mode,
             target_critic_params=(
                 state.target_critic_params
                 if args.target_critic_ema_decay > 0.0
@@ -4577,6 +4656,7 @@ def _maybe_train_policy(
         "policy_stochastic_actor": args.stochastic_actor,
         "policy_stochastic_collection": args.stochastic_collection,
         "policy_actor_entropy_coef": args.actor_entropy_coef,
+        "policy_actor_entropy_mode": args.actor_entropy_mode,
         "policy_actor_log_std_min": args.actor_log_std_min,
         "policy_actor_log_std_max": args.actor_log_std_max,
         "policy_target_critic_ema_decay": args.target_critic_ema_decay,

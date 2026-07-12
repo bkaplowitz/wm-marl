@@ -3,8 +3,10 @@ from __future__ import annotations
 import sys
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
+from world_marl.jepa.replay import SequenceReplayBuffer
 from world_marl.scripts import train_dmc_jepa
 
 
@@ -33,6 +35,117 @@ def test_single_agent_jepa_cli_accepts_brax_env(monkeypatch):
     assert args.env_workers == 1
     assert args.regularizer == "sigreg"
     assert args.online_reset_replay_env
+
+
+def test_single_agent_jepa_cli_accepts_shared_validation_seed(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "world-marl-validate-single-agent-world-model",
+            "--env",
+            "dmc:reacher/easy",
+            "--collect-steps",
+            "8",
+            "--validation-steps",
+            "8",
+            "--validation-seed",
+            "1000042",
+            "--chunk-length",
+            "4",
+            "--open-loop-horizon",
+            "2",
+        ],
+    )
+
+    args = train_dmc_jepa.parse_args()
+
+    assert args.validation_seed == 1_000_042
+
+
+def test_single_agent_jepa_cli_accepts_reset_rich_bootstrap(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "world-marl-validate-single-agent-world-model",
+            "--env",
+            "dmc:reacher/easy",
+            "--collect-steps",
+            "12",
+            "--initial-reset-interval",
+            "6",
+            "--validation-steps",
+            "8",
+            "--chunk-length",
+            "4",
+            "--open-loop-horizon",
+            "2",
+        ],
+    )
+
+    args = train_dmc_jepa.parse_args()
+
+    assert args.initial_reset_interval == 6
+
+
+def test_random_collection_marks_nonterminal_reset_cuts():
+    class Adapter:
+        num_envs = 1
+
+        def __init__(self):
+            self.reset_calls = 0
+            self.step_count = 0
+
+        def reset(self):
+            self.reset_calls += 1
+            self.step_count = 0
+            return np.asarray([[[100 * self.reset_calls]]], dtype=np.float32)
+
+        def sample_actions(self, rng):
+            del rng
+            return np.zeros((1, 1, 1), dtype=np.float32)
+
+        def step(self, actions):
+            del actions
+            self.step_count += 1
+            return SimpleNamespace(
+                observations=np.asarray(
+                    [[[100 * self.reset_calls + self.step_count]]],
+                    dtype=np.float32,
+                ),
+                rewards=np.zeros((1, 1), dtype=np.float32),
+                dones=np.zeros((1, 1), dtype=np.float32),
+            )
+
+    adapter = Adapter()
+    replay = SequenceReplayBuffer(
+        capacity=6,
+        num_envs=1,
+        observation_shape=(1,),
+        action_shape=(1,),
+        action_dtype=np.float32,
+    )
+
+    observations, env_steps = train_dmc_jepa._collect_random_steps(
+        adapter,
+        adapter.reset(),
+        np.random.default_rng(0),
+        replay,
+        steps=6,
+        reset_interval=3,
+        desc="test reset-rich bootstrap",
+        quiet=True,
+    )
+
+    assert env_steps == 6
+    assert adapter.reset_calls == 3
+    np.testing.assert_array_equal(
+        replay.cuts[:, 0],
+        np.asarray([0.0, 0.0, 1.0, 0.0, 0.0, 1.0]),
+    )
+    np.testing.assert_array_equal(replay.dones[:, 0], np.zeros(6))
+    np.testing.assert_array_equal(observations, np.asarray([[[300.0]]]))
 
 
 def test_single_agent_jepa_cli_accepts_wandb_video_controls(monkeypatch):

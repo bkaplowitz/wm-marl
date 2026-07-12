@@ -34,6 +34,7 @@ PolicyReturnNormalization = Literal[
     "ema-percentile",
 ]
 PolicyGradientMode = Literal["dynamics", "reinforce"]
+PolicyActionEntropyMode = Literal["gaussian", "tanh-normal"]
 ReplayCriticReturnMode = Literal["reward-only", "lambda"]
 
 MODEL_GROUPS = frozenset(
@@ -1070,6 +1071,7 @@ def continuous_policy_score(
         "policy_return_normalization",
         "policy_actor_cvar_fraction",
         "policy_gradient_mode",
+        "actor_entropy_mode",
         "target_critic_ema_decay",
         "real_critic_loss_enabled",
         "real_critic_horizon",
@@ -1112,6 +1114,7 @@ def continuous_policy_train_step(
     policy_hard_action_bound_coef: float = 0.0,
     hard_start_mask: jax.Array | None = None,
     actor_entropy_coef: float = 0.0,
+    actor_entropy_mode: PolicyActionEntropyMode = "gaussian",
     target_critic_params: FrozenDict | None = None,
     target_critic_ema_decay: float = 0.0,
     real_critic_batch: ReplayBatch | None = None,
@@ -1145,6 +1148,7 @@ def continuous_policy_train_step(
             uncertainty_budget=uncertainty_budget,
             target_critic_params=target_critic_params,
             policy_gradient_mode=policy_gradient_mode,
+            action_entropy_mode=actor_entropy_mode,
         )
         if policy_return_mode == "reward-only":
             actor_returns = reward_only_returns(
@@ -1330,6 +1334,10 @@ def continuous_policy_train_step(
             ),
             "policy/actor_entropy_coef": jnp.asarray(
                 actor_entropy_coef,
+                dtype=actor_loss.dtype,
+            ),
+            "policy/action_entropy_tanh_normal": jnp.asarray(
+                actor_entropy_mode == "tanh-normal",
                 dtype=actor_loss.dtype,
             ),
             "policy/gradient_mode_reinforce": jnp.asarray(
@@ -1812,6 +1820,23 @@ def continuous_critic_warmup_step(
     )
 
 
+def tanh_normal_entropy_sample(
+    raw_actions: jax.Array,
+    action_log_stds: jax.Array,
+) -> jax.Array:
+    """Estimate tanh-Normal entropy with a reparameterized action sample."""
+
+    base_entropy = (
+        0.5 * jnp.log(2.0 * jnp.pi) + 0.5 + action_log_stds
+    )
+    log_abs_det_jacobian = 2.0 * (
+        jnp.log(2.0)
+        - raw_actions
+        - jax.nn.softplus(-2.0 * raw_actions)
+    )
+    return jnp.sum(base_entropy + log_abs_det_jacobian, axis=-1)
+
+
 def continuous_imagine_rollout(
     key: jax.Array,
     params: FrozenDict,
@@ -1832,6 +1857,7 @@ def continuous_imagine_rollout(
     uncertainty_budget: float = float("inf"),
     target_critic_params: FrozenDict | None = None,
     policy_gradient_mode: PolicyGradientMode = "dynamics",
+    action_entropy_mode: PolicyActionEntropyMode = "gaussian",
 ) -> dict[str, jax.Array]:
     model_params = jax.tree_util.tree_map(jax.lax.stop_gradient, params)
     value_params = (
@@ -1867,10 +1893,20 @@ def continuous_imagine_rollout(
                 if policy_gradient_mode == "reinforce"
                 else sampled_raw_actions
             )
-            action_entropy = jnp.sum(
-                0.5 * jnp.log(2.0 * jnp.pi) + 0.5 + action_log_stds,
-                axis=-1,
-            )
+            if action_entropy_mode == "gaussian":
+                action_entropy = jnp.sum(
+                    0.5 * jnp.log(2.0 * jnp.pi) + 0.5 + action_log_stds,
+                    axis=-1,
+                )
+            elif action_entropy_mode == "tanh-normal":
+                action_entropy = tanh_normal_entropy_sample(
+                    sampled_raw_actions,
+                    action_log_stds,
+                )
+            else:
+                raise ValueError(
+                    f"unknown action_entropy_mode: {action_entropy_mode}"
+                )
             log_prob_actions = jax.lax.stop_gradient(raw_actions)
             gaussian_log_probs = (
                 -0.5
@@ -1880,8 +1916,10 @@ def continuous_imagine_rollout(
                 - action_log_stds
                 - 0.5 * jnp.log(2.0 * jnp.pi)
             )
-            squash_correction = jnp.log(
-                1.0 - jnp.square(jnp.tanh(log_prob_actions)) + 1e-6
+            squash_correction = 2.0 * (
+                jnp.log(2.0)
+                - log_prob_actions
+                - jax.nn.softplus(-2.0 * log_prob_actions)
             )
             action_log_prob = jnp.sum(
                 gaussian_log_probs - squash_correction,

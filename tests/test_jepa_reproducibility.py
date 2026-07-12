@@ -52,6 +52,7 @@ def test_replay_fingerprint_survives_round_trip_and_detects_changes(tmp_path):
         actions=np.asarray([[0.25], [-0.5]], dtype=np.float32),
         rewards=np.asarray([1.0, 0.0], dtype=np.float32),
         dones=np.asarray([0.0, 1.0], dtype=np.float32),
+        cuts=np.asarray([1.0, 0.0], dtype=np.float32),
     )
     expected = replay.fingerprint()
     path = tmp_path / "replay.npz"
@@ -59,6 +60,8 @@ def test_replay_fingerprint_survives_round_trip_and_detects_changes(tmp_path):
 
     restored = SequenceReplayBuffer.load_npz(path)
     assert restored.fingerprint() == expected
+    assert restored.cut_count == 1
+    np.testing.assert_array_equal(restored.cuts[0], np.asarray([1.0, 0.0]))
 
     restored.add_step(
         observations=np.zeros((2, 3), dtype=np.float32),
