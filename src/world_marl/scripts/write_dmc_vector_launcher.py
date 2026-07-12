@@ -123,6 +123,8 @@ _JEPA_DREAMER_PARITY_BASE: dict[str, Any] = {
     # trainer permits.
     "num_envs": 16,
     "env_workers": 16,
+    "isolated_rng_streams": True,
+    "deterministic_compute": True,
     "collect_steps": 80,
     "validation_steps": 80,
     "replay_capacity": 1_000_000,
@@ -216,6 +218,7 @@ _JEPA_DREAMER_PARITY_BASE: dict[str, Any] = {
     "policy_confirmation_episodes": 0,
     "online_policy_champion": False,
     "final_policy_eval_episodes": 20,
+    "final_policy_eval_seed": 9_000_000,
     "wandb_video_every_phases": 10,
 }
 
@@ -294,6 +297,8 @@ PRESETS: dict[str, dict[str, Any]] = {
 
 COMMON_PARAMS: dict[str, Any] = {
     "num_runs": 1,
+    "isolated_rng_streams": False,
+    "deterministic_compute": False,
     "critic_warmup_steps": 1000,
     "critic_horizon": 32,
     "policy_batch_size": 512,
@@ -304,6 +309,7 @@ COMMON_PARAMS: dict[str, Any] = {
     "policy_gradient_mode": "dynamics",
     "imag_horizon": 15,
     "final_policy_eval_episodes": 0,
+    "final_policy_eval_seed": None,
     "policy_model_selection_interval": 0,
     "policy_model_selection_metric": "policy/imagined_return",
     "policy_model_selection_source": "policy-starts",
@@ -401,6 +407,8 @@ COMMON_PARAMS: dict[str, Any] = {
 OVERRIDABLE_PARAMS = (
     "num_envs",
     "env_workers",
+    "isolated_rng_streams",
+    "deterministic_compute",
     "collect_steps",
     "validation_steps",
     "replay_capacity",
@@ -436,6 +444,7 @@ OVERRIDABLE_PARAMS = (
     "policy_eval_episodes",
     "policy_confirmation_episodes",
     "final_policy_eval_episodes",
+    "final_policy_eval_seed",
     "policy_selection_std_penalty",
     "policy_selection_failure_penalty",
     "policy_failure_return_threshold",
@@ -774,6 +783,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--online-policy-train-steps", type=int, default=None)
     parser.add_argument("--online-checkpoint-interval", type=int, default=None)
     parser.add_argument(
+        "--isolated-rng-streams",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--deterministic-compute",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
         "--policy-return-mode",
         choices=("reward-only", "lambda"),
         default=None,
@@ -842,6 +861,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--policy-eval-episodes", type=int, default=None)
     parser.add_argument("--policy-confirmation-episodes", type=int, default=None)
     parser.add_argument("--final-policy-eval-episodes", type=int, default=None)
+    parser.add_argument("--final-policy-eval-seed", type=int, default=None)
     parser.add_argument("--policy-selection-std-penalty", type=float, default=None)
     parser.add_argument("--policy-selection-failure-penalty", type=float, default=None)
     parser.add_argument("--policy-failure-return-threshold", type=float, default=None)

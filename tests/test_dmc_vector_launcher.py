@@ -58,6 +58,9 @@ def test_dreamer_parity_100k_preset_is_fixed_budget_and_latest_policy():
     assert params["policy_replay_critic_all_steps"]
     assert params["value_clip"] == 100.0
     assert params["online_checkpoint_interval"] == 5
+    assert params["isolated_rng_streams"]
+    assert params["deterministic_compute"]
+    assert params["final_policy_eval_seed"] == 9_000_000
     assert params["wandb_video_every_phases"] == 10
     assert not params["policy_eval_during_training"]
     assert not params["online_policy_champion"]
@@ -69,6 +72,9 @@ def test_dreamer_parity_100k_preset_is_fixed_budget_and_latest_policy():
     assert "--value-clip" in command
     assert "100.0" in command
     assert "--online-checkpoint-interval" in command
+    assert "--isolated-rng-streams" in command
+    assert "--deterministic-compute" in command
+    assert "--final-policy-eval-seed" in command
 
 
 def test_dreamer_parity_500k_preset_stays_below_training_data_budget():

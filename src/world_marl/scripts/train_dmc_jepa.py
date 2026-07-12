@@ -13,6 +13,7 @@ import argparse
 import dataclasses
 import json
 import math
+import os
 import warnings
 from functools import partial
 from pathlib import Path
@@ -28,6 +29,11 @@ from world_marl.envs.brax_adapter import BraxVectorAdapter, brax_env_name
 from world_marl.envs.dmc_adapter import DMCVectorAdapter, dmc_env_name
 from world_marl.jepa.models import JepaConfig, JepaWorldModel
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
+from world_marl.jepa.reproducibility import (
+    JaxRngStreams,
+    NumpyRngStreams,
+    fingerprint_pytree,
+)
 from world_marl.jepa.training import (
     ControlMode,
     continuous_critic_warmup_step,
@@ -51,6 +57,28 @@ from world_marl.logging import (
 
 MIN_TERMINAL_FRACTION_FOR_CONTINUE_BASELINE = 0.01
 FROZEN_RANDOM_WORLD_MODEL_CONTROL = "frozen-random-world-model"
+
+
+def _reproducibility_snapshot(
+    state,
+    *,
+    phase: str,
+    recent_replay: SequenceReplayBuffer | None = None,
+    full_replay: SequenceReplayBuffer | None = None,
+) -> dict[str, Any]:
+    snapshot = {
+        "phase": phase,
+        "train_state_step": int(jax.device_get(state.step)),
+        "params_sha256": fingerprint_pytree(state.params),
+        "target_critic_sha256": fingerprint_pytree(state.target_critic_params),
+    }
+    if recent_replay is not None:
+        snapshot["recent_replay_sha256"] = recent_replay.fingerprint()
+        snapshot["recent_replay_size_per_env"] = recent_replay.size
+    if full_replay is not None:
+        snapshot["full_replay_sha256"] = full_replay.fingerprint()
+        snapshot["full_replay_size_per_env"] = full_replay.size
+    return snapshot
 
 
 def parse_args() -> argparse.Namespace:
@@ -570,6 +598,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--final-policy-eval-num-envs", type=int, default=None)
     parser.add_argument(
+        "--final-policy-eval-seed",
+        type=int,
+        default=None,
+        help=(
+            "Optional common environment seed for final reporting. When "
+            "omitted, final evaluation uses training_seed + 9000000."
+        ),
+    )
+    parser.add_argument(
         "--dreamer-report-window-env-steps",
         type=int,
         default=10_000,
@@ -941,6 +978,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--imagined-reward-max", type=float, default=1.0)
     parser.add_argument("--num-runs", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--isolated-rng-streams",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use independent deterministic RNG streams for initialization, "
+            "world-model training, policy training, replay sampling, online "
+            "collection, validation, and evaluation. The default preserves "
+            "legacy shared-stream runs."
+        ),
+    )
+    parser.add_argument(
+        "--deterministic-compute",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Request deterministic GPU reductions and highest-precision JAX "
+            "matrix multiplication. This can reduce throughput."
+        ),
+    )
     parser.add_argument("--max-cycles", type=int, default=1000)
     parser.add_argument("--out-dir", default="runs/dmc_jepa")
     parser.add_argument(
@@ -994,6 +1051,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if args.seed < 0:
+        parser.error("--seed must be >= 0")
     min_sequence_steps = args.chunk_length + max(
         args.model_horizon, args.open_loop_horizon
     )
@@ -1062,6 +1121,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--policy-confirmation-episodes must be >= 0")
     if args.final_policy_eval_episodes < 0:
         parser.error("--final-policy-eval-episodes must be >= 0")
+    if args.final_policy_eval_seed is not None and args.final_policy_eval_seed < 0:
+        parser.error("--final-policy-eval-seed must be >= 0")
     if not args.policy_eval_during_training:
         if args.policy_selection_interval > 0:
             parser.error(
@@ -1320,6 +1381,7 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
 
 def main() -> None:
     args = parse_args()
+    _configure_deterministic_compute(args.deterministic_compute)
     experiment_dir = (
         Path(args.out_dir) / f"{_experiment_prefix(args.env)}_{timestamp()}"
     )
@@ -1340,6 +1402,21 @@ def main() -> None:
     print(json.dumps(to_jsonable(summary), indent=2, sort_keys=True))
     if not args.allow_fail and not summary["passed"]:
         raise SystemExit(1)
+
+
+def _configure_deterministic_compute(enabled: bool) -> None:
+    if not enabled:
+        return
+    deterministic_flag = "--xla_gpu_deterministic_ops=true"
+    xla_flags = os.environ.get("XLA_FLAGS", "").strip()
+    if deterministic_flag not in xla_flags.split():
+        os.environ["XLA_FLAGS"] = " ".join(
+            item for item in (xla_flags, deterministic_flag) if item
+        )
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    os.environ.setdefault("TF_CUDNN_DETERMINISTIC", "1")
+    os.environ.setdefault("NVIDIA_TF32_OVERRIDE", "0")
+    jax.config.update("jax_default_matmul_precision", "highest")
 
 
 def _skip_world_model_fit(control: ControlMode) -> bool:
@@ -1514,10 +1591,32 @@ def run_one(
         logger.update_config(resolved_config)
         logger.write_json("versions.json", dependency_versions())
 
-        rng = jax.random.PRNGKey(seed)
-        rng, init_key = jax.random.split(rng)
+        jax_rngs = JaxRngStreams.create(
+            seed,
+            isolated=args.isolated_rng_streams,
+        )
+        numpy_rngs = NumpyRngStreams.create(
+            seed,
+            isolated=args.isolated_rng_streams,
+        )
+        logger.write_json(
+            "rng_streams.json",
+            {
+                **jax_rngs.manifest(),
+                **numpy_rngs.manifest(),
+                "deterministic_compute": args.deterministic_compute,
+                "jax_default_matmul_precision": str(
+                    jax.config.jax_default_matmul_precision
+                ),
+                "xla_flags": os.environ.get("XLA_FLAGS"),
+                "cublas_workspace_config": os.environ.get(
+                    "CUBLAS_WORKSPACE_CONFIG"
+                ),
+                "nvidia_tf32_override": os.environ.get("NVIDIA_TF32_OVERRIDE"),
+            },
+        )
+        init_key = jax_rngs.take("initialization")
         state = create_jepa_train_state(init_key, config)
-        np_rng = np.random.default_rng(seed)
         observations = adapter.reset()
         replay_source = "collected"
         if args.load_initial_replay is not None:
@@ -1568,7 +1667,7 @@ def run_one(
             observations, env_steps = _collect_random_steps(
                 adapter,
                 observations,
-                np_rng,
+                numpy_rngs.get("initial_collection"),
                 (replay, anchor_replay),
                 steps=args.collect_steps,
                 desc=f"{control} collect train replay",
@@ -1639,14 +1738,29 @@ def run_one(
                 "seed": seed + 1_000_000,
             },
         )
+        initial_reproducibility = _reproducibility_snapshot(
+            state,
+            phase="initialized",
+            full_replay=replay,
+        )
+        initial_reproducibility.update(
+            {
+                "anchor_replay_sha256": anchor_replay.fingerprint(),
+                "validation_replay_sha256": validation_replay.fingerprint(),
+            }
+        )
+        logger.write_json(
+            "reproducibility_initialized.json",
+            initial_reproducibility,
+        )
 
         validation_batch = validation_replay.sample(
-            np_rng,
+            numpy_rngs.get("validation_replay"),
             batch_size=args.batch_size,
             chunk_length=args.chunk_length,
             max_horizon=max(args.model_horizon, args.open_loop_horizon),
         )
-        rng, eval_key = jax.random.split(rng)
+        eval_key = jax_rngs.take("evaluation")
         initial_metrics = _evaluate_model(
             state,
             eval_key,
@@ -1672,25 +1786,27 @@ def run_one(
                 }
             )
         else:
-            state, rng, _, loss_history = _fit_world_model(
+            model_rng = jax_rngs.current("world_model")
+            state, model_rng, _, loss_history = _fit_world_model(
                 args,
                 logger,
                 state,
-                rng,
+                model_rng,
                 replay,
                 config,
-                np_rng=np_rng,
+                np_rng=numpy_rngs.get("world_model_replay"),
                 steps=args.train_steps,
                 control=control,
                 phase="world_model",
                 desc=f"{control} fit world model",
                 env_steps=env_steps,
             )
+            jax_rngs.update("world_model", model_rng)
             logger.plot_world_model_loss(
                 loss_history, filename="dmc_world_model_loss.png"
             )
 
-        rng, eval_key = jax.random.split(rng)
+        eval_key = jax_rngs.take("evaluation")
         final_batch = validation_batch
         final_metrics = _evaluate_model(
             state,
@@ -1704,7 +1820,15 @@ def run_one(
             action_high=adapter.action_high,
         )
         logger.write_json("model_metrics_initial_fit.json", final_metrics)
+        logger.write_json(
+            "reproducibility_initial_world_model.json",
+            _reproducibility_snapshot(
+                state,
+                phase="initial_world_model",
+            ),
+        )
 
+        policy_rng = jax_rngs.current("policy")
         policy_outcome = _maybe_train_policy(
             args,
             logger,
@@ -1713,14 +1837,21 @@ def run_one(
             replay,
             control=control,
             seed=seed,
-            np_rng=np_rng,
-            rng=rng,
+            np_rng=numpy_rngs.get("policy_replay"),
+            rng=policy_rng,
             action_low=adapter.action_low,
             action_high=adapter.action_high,
             policy_validation_replay=validation_replay,
         )
         state = policy_outcome["state"]
-        rng = policy_outcome["rng"]
+        jax_rngs.update("policy", policy_outcome["rng"])
+        logger.write_json(
+            "reproducibility_initial_policy.json",
+            _reproducibility_snapshot(
+                state,
+                phase="initial_policy",
+            ),
+        )
         initial_policy_outcome = policy_outcome["outcome"]
         champion_state = state
         champion_policy_outcome = dict(initial_policy_outcome)
@@ -1755,7 +1886,7 @@ def run_one(
                 action_high=adapter.action_high,
                 desc=f"{control} {phase} collect actor replay",
                 quiet=args.quiet,
-                np_rng=np_rng,
+                np_rng=numpy_rngs.get("online_collection"),
                 stochastic_actions=args.stochastic_collection,
                 train_env_step_offset=train_replay_env_steps,
                 failure_return_threshold=args.policy_failure_return_threshold,
@@ -1825,7 +1956,7 @@ def run_one(
                         action_high=adapter.action_high,
                         desc=f"{control} {phase} collect recent validation",
                         quiet=args.quiet,
-                        np_rng=np_rng,
+                        np_rng=numpy_rngs.get("online_validation_collection"),
                         stochastic_actions=args.stochastic_collection,
                         failure_return_threshold=args.policy_failure_return_threshold,
                         success_return_threshold=args.policy_success_return_threshold,
@@ -1851,7 +1982,7 @@ def run_one(
                     }
                 )
                 recent_validation_batch = recent_validation_replay.sample(
-                    np_rng,
+                    numpy_rngs.get("validation_replay"),
                     batch_size=args.batch_size,
                     chunk_length=args.chunk_length,
                     max_horizon=max(args.model_horizon, args.open_loop_horizon),
@@ -1861,18 +1992,19 @@ def run_one(
             online_loss_history: list[float] = []
             candidate_report = None
             if online_train_steps > 0:
+                model_rng = jax_rngs.current("world_model")
                 if args.online_candidate_refit:
                     if recent_validation_batch is None:
                         raise RuntimeError("candidate refit requires recent validation")
-                    state, rng, candidate_report, online_loss_history = (
+                    state, model_rng, candidate_report, online_loss_history = (
                         _fit_candidate_world_model(
                             args,
                             logger,
                             pre_refit_state,
-                            rng,
+                            model_rng,
                             replay,
                             config,
-                            np_rng=np_rng,
+                            np_rng=numpy_rngs.get("world_model_replay"),
                             steps=online_train_steps,
                             control=control,
                             phase=f"{phase}_candidate_world_model",
@@ -1898,14 +2030,14 @@ def run_one(
                         }
                     )
                 else:
-                    state, rng, _, online_loss_history = _fit_world_model(
+                    state, model_rng, _, online_loss_history = _fit_world_model(
                         args,
                         logger,
                         state,
-                        rng,
+                        model_rng,
                         replay,
                         config=config,
-                        np_rng=np_rng,
+                        np_rng=numpy_rngs.get("world_model_replay"),
                         steps=online_train_steps,
                         control=control,
                         phase=f"{phase}_world_model",
@@ -1914,12 +2046,13 @@ def run_one(
                         freeze_encoder=args.online_freeze_encoder,
                         control_value_weight=args.online_control_value_weight,
                     )
+                jax_rngs.update("world_model", model_rng)
             logger.plot_world_model_loss(
                 online_loss_history,
                 filename=f"{phase}_world_model_loss.png",
             )
 
-            rng, eval_key = jax.random.split(rng)
+            eval_key = jax_rngs.take("evaluation")
             online_metrics = _evaluate_model(
                 state,
                 eval_key,
@@ -1939,6 +2072,7 @@ def run_one(
                 else args.policy_train_steps
             )
             if online_policy_train_steps > 0:
+                policy_rng = jax_rngs.current("policy")
                 online_policy_outcome = _maybe_train_policy(
                     args,
                     logger,
@@ -1947,8 +2081,8 @@ def run_one(
                     replay,
                     control=control,
                     seed=seed,
-                    np_rng=np_rng,
-                    rng=rng,
+                    np_rng=numpy_rngs.get("policy_replay"),
+                    rng=policy_rng,
                     action_low=adapter.action_low,
                     action_high=adapter.action_high,
                     phase=f"{phase}_policy",
@@ -1960,7 +2094,7 @@ def run_one(
                     ),
                 )
                 candidate_policy_state = online_policy_outcome["state"]
-                rng = online_policy_outcome["rng"]
+                jax_rngs.update("policy", online_policy_outcome["rng"])
                 candidate_policy_payload = online_policy_outcome["outcome"]
                 candidate_policy_return = candidate_policy_payload.get(
                     "policy_trained_mean"
@@ -2030,7 +2164,7 @@ def run_one(
                 }
                 policy_outcome = {
                     "state": state,
-                    "rng": rng,
+                    "rng": jax_rngs.current("policy"),
                     "outcome": online_policy_payload,
                 }
                 logger.append_metrics(
@@ -2058,6 +2192,20 @@ def run_one(
             else:
                 online_policy_payload = {"policy_training_enabled": False}
                 candidate_policy_payload = {}
+            checkpoint_phase = args.online_checkpoint_interval > 0 and (
+                online_index % args.online_checkpoint_interval == 0
+                or online_index == args.online_iterations
+            )
+            reproducibility_snapshot = _reproducibility_snapshot(
+                state,
+                phase=phase,
+                recent_replay=recent_actor_replay,
+                full_replay=replay if checkpoint_phase else None,
+            )
+            logger.write_json(
+                f"{phase}_reproducibility.json",
+                reproducibility_snapshot,
+            )
             online_history.append(
                 {
                     "iteration": online_index,
@@ -2067,14 +2215,12 @@ def run_one(
                     "model_metrics": online_metrics,
                     "policy": online_policy_payload,
                     "candidate_policy": candidate_policy_payload,
+                    "reproducibility": reproducibility_snapshot,
                     "world_model_train_steps": online_train_steps,
                     "policy_train_steps": online_policy_train_steps,
                 }
             )
-            if args.online_checkpoint_interval > 0 and (
-                online_index % args.online_checkpoint_interval == 0
-                or online_index == args.online_iterations
-            ):
+            if checkpoint_phase:
                 try:
                     save_checkpoint(
                         run_dir / "checkpoint_latest",
@@ -2127,7 +2273,7 @@ def run_one(
                 }
             )
 
-        rng, eval_key = jax.random.split(rng)
+        eval_key = jax_rngs.take("evaluation")
         final_metrics = _evaluate_model(
             state,
             eval_key,
@@ -2140,6 +2286,14 @@ def run_one(
             action_high=adapter.action_high,
         )
         logger.write_json("model_metrics_final.json", final_metrics)
+        logger.write_json(
+            "reproducibility_final.json",
+            _reproducibility_snapshot(
+                state,
+                phase="final",
+                full_replay=replay,
+            ),
+        )
 
         checkpoint_dir = run_dir / "checkpoint"
         checkpoint_metadata = {
@@ -2190,6 +2344,11 @@ def run_one(
 
         final_policy_eval = None
         if args.final_policy_eval_episodes > 0:
+            final_policy_eval_seed = (
+                args.final_policy_eval_seed
+                if args.final_policy_eval_seed is not None
+                else seed + 9_000_000
+            )
             final_policy_eval_num_envs = args.final_policy_eval_num_envs or min(
                 args.num_envs,
                 args.final_policy_eval_episodes,
@@ -2198,7 +2357,7 @@ def run_one(
                 args,
                 state,
                 config,
-                seed=seed + 9_000_000,
+                seed=final_policy_eval_seed,
                 num_envs=final_policy_eval_num_envs,
                 episodes=args.final_policy_eval_episodes,
                 action_low=jnp.asarray(adapter.action_low, dtype=jnp.float32),
@@ -2215,6 +2374,10 @@ def run_one(
                     else {}
                 ),
             )
+            final_policy_eval = {
+                **final_policy_eval,
+                "evaluation_seed": final_policy_eval_seed,
+            }
             logger.write_json(
                 "final_champion_policy_evaluation.json",
                 final_policy_eval,

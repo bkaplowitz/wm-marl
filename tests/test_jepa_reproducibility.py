@@ -1,0 +1,78 @@
+from __future__ import annotations
+
+import jax.numpy as jnp
+import numpy as np
+
+from world_marl.jepa.replay import SequenceReplayBuffer
+from world_marl.jepa.reproducibility import (
+    JaxRngStreams,
+    NumpyRngStreams,
+    fingerprint_pytree,
+)
+
+
+def test_isolated_jax_streams_do_not_depend_on_other_stream_consumption():
+    interleaved = JaxRngStreams.create(7, isolated=True)
+    model_first = interleaved.take("world_model")
+    interleaved.take("evaluation")
+    model_second = interleaved.take("world_model")
+
+    model_only = JaxRngStreams.create(7, isolated=True)
+    expected_first = model_only.take("world_model")
+    expected_second = model_only.take("world_model")
+
+    np.testing.assert_array_equal(model_first, expected_first)
+    np.testing.assert_array_equal(model_second, expected_second)
+
+
+def test_isolated_numpy_streams_do_not_depend_on_other_stream_consumption():
+    interleaved = NumpyRngStreams.create(11, isolated=True)
+    model_first = interleaved.get("world_model_replay").integers(0, 10_000)
+    interleaved.get("online_collection").integers(0, 10_000, size=100)
+    model_second = interleaved.get("world_model_replay").integers(0, 10_000)
+
+    model_only = NumpyRngStreams.create(11, isolated=True)
+    expected_first = model_only.get("world_model_replay").integers(0, 10_000)
+    expected_second = model_only.get("world_model_replay").integers(0, 10_000)
+
+    assert model_first == expected_first
+    assert model_second == expected_second
+
+
+def test_replay_fingerprint_survives_round_trip_and_detects_changes(tmp_path):
+    replay = SequenceReplayBuffer(
+        capacity=8,
+        num_envs=2,
+        observation_shape=(3,),
+        action_shape=(1,),
+        action_dtype=np.float32,
+    )
+    replay.add_step(
+        observations=np.arange(6, dtype=np.float32).reshape(2, 3),
+        actions=np.asarray([[0.25], [-0.5]], dtype=np.float32),
+        rewards=np.asarray([1.0, 0.0], dtype=np.float32),
+        dones=np.asarray([0.0, 1.0], dtype=np.float32),
+    )
+    expected = replay.fingerprint()
+    path = tmp_path / "replay.npz"
+    replay.save_npz(path)
+
+    restored = SequenceReplayBuffer.load_npz(path)
+    assert restored.fingerprint() == expected
+
+    restored.add_step(
+        observations=np.zeros((2, 3), dtype=np.float32),
+        actions=np.zeros((2, 1), dtype=np.float32),
+        rewards=np.zeros(2, dtype=np.float32),
+        dones=np.zeros(2, dtype=np.float32),
+    )
+    assert restored.fingerprint() != expected
+
+
+def test_pytree_fingerprint_is_stable_and_value_sensitive():
+    tree = {"a": jnp.asarray([1.0, 2.0]), "b": {"c": jnp.asarray(3)}}
+    same = {"a": jnp.asarray([1.0, 2.0]), "b": {"c": jnp.asarray(3)}}
+    changed = {"a": jnp.asarray([1.0, 2.1]), "b": {"c": jnp.asarray(3)}}
+
+    assert fingerprint_pytree(tree) == fingerprint_pytree(same)
+    assert fingerprint_pytree(tree) != fingerprint_pytree(changed)

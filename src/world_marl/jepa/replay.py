@@ -9,6 +9,8 @@ import jax.numpy as jnp
 import numpy as np
 from flax import struct
 
+from world_marl.jepa.reproducibility import fingerprint_arrays
+
 
 @struct.dataclass
 class ReplayBatch:
@@ -73,6 +75,22 @@ class SequenceReplayBuffer:
             action_dtype=np.asarray(str(self.action_dtype), dtype="U32"),
         )
 
+    def fingerprint(self) -> str:
+        """Return a stable digest of ordered replay contents and metadata."""
+
+        observations, actions, rewards, dones = self._ordered_arrays()
+        return fingerprint_arrays(
+            {
+                "observations": observations,
+                "actions": actions,
+                "rewards": rewards,
+                "dones": dones,
+                "num_envs": np.asarray(self.num_envs, dtype=np.int64),
+                "observation_shape": np.asarray(self.observation_shape, dtype=np.int64),
+                "action_shape": np.asarray(self.action_shape, dtype=np.int64),
+            }
+        )
+
     @classmethod
     def load_npz(
         cls,
@@ -93,7 +111,14 @@ class SequenceReplayBuffer:
         observation_shape = tuple(int(dim) for dim in observations.shape[2:])
         action_shape = tuple(int(dim) for dim in actions.shape[2:])
         action_dtype = actions.dtype
-        buffer_capacity = int(capacity) if capacity is not None else size
+        saved_capacity = (
+            int(np.asarray(data["capacity"]).item())
+            if "capacity" in data.files
+            else size
+        )
+        buffer_capacity = (
+            int(capacity) if capacity is not None else max(2, saved_capacity, size)
+        )
         if buffer_capacity < size:
             raise ValueError(
                 f"capacity {buffer_capacity} is smaller than saved replay size {size}"
@@ -129,9 +154,7 @@ class SequenceReplayBuffer:
         self.actions[self._position] = np.asarray(
             actions,
             dtype=self.action_dtype,
-        ).reshape(
-            (self.num_envs, *self.action_shape)
-        )
+        ).reshape((self.num_envs, *self.action_shape))
         self.rewards[self._position] = np.asarray(rewards, dtype=np.float32).reshape(
             (self.num_envs,)
         )

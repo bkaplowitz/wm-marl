@@ -74,6 +74,31 @@ Both use a 16x64 world-model batch, 1024 imagination starts, horizon 15, a
 actor/critic MLPs. Final 20-episode evaluation is reporting overhead and is
 tracked separately from training replay.
 
+### Reproducibility Contract
+
+The parity presets use `--isolated-rng-streams`. Initialization, world-model
+updates, policy updates, replay sampling, online action sampling, validation,
+and evaluation own deterministic named streams. As a result, enabling an extra
+evaluation or changing the number of world-model updates no longer silently
+changes later collection noise or policy minibatches. Historical runs can be
+replayed with `--no-isolated-rng-streams`.
+
+The presets also use `--deterministic-compute`: deterministic XLA GPU
+reductions, a deterministic cuBLAS workspace, disabled TF32 overrides, and
+highest-precision JAX matrix multiplication. This costs some throughput but
+prevents tiny same-seed GPU reduction differences from being amplified by the
+online policy/data feedback loop.
+
+Each run records `rng_streams.json`, stable initial/validation replay digests,
+and parameter plus recent-replay digests after every online phase. Full replay
+digests are recorded at recovery-checkpoint phases and at the end. Before a
+configuration is compared across seeds, two identical same-seed jobs must
+produce matching replay digests and either identical parameter digests or a
+documented numerical tolerance. Cross-seed spread is treated as algorithmic
+robustness only after that same-seed gate passes. The parity presets evaluate
+every training seed on the same final environment seed (`9000000`) so policy
+variance is not mixed with a different set of reporting episodes.
+
 ## Current Best Preset
 
 The current reference preset is `dreamer_ac_online_adaptive_hard_start`:
