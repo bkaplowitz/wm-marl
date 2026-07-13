@@ -1,5 +1,10 @@
 """Single-agent generative world-model arms with learned reward/continue heads."""
 
+from world_marl.genwm.cem import (
+    CEMConfig,
+    cem_solve,
+    sample_candidates,
+)
 from world_marl.genwm.genie import (
     GenieTokenizer,
     create_genie_state,
@@ -39,6 +44,7 @@ from world_marl.genwm.world_model import (
 
 __all__ = [
     "GENWM_ARMS",
+    "CEMConfig",
     "CodebookTokenizer",
     "ContinuousTokenTransformer",
     "GaussianMLPActorCritic",
@@ -50,6 +56,7 @@ __all__ = [
     "RewardContinueHead",
     "action_features",
     "action_token_ids",
+    "cem_solve",
     "create_genie_state",
     "create_genwm_state",
     "create_head_state",
@@ -64,4 +71,5 @@ __all__ = [
     "imagined_rollout",
     "make_genie_encode",
     "ppo_update",
+    "sample_candidates",
 ]
