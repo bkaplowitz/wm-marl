@@ -3,6 +3,8 @@
 from world_marl.genwm.cem import (
     CEMConfig,
     cem_solve,
+    discounted_return,
+    make_genwm_plan_fn,
     sample_candidates,
 )
 from world_marl.genwm.genie import (
@@ -62,6 +64,7 @@ __all__ = [
     "create_head_state",
     "create_policy_state",
     "decode_tokens",
+    "discounted_return",
     "encode_tokens",
     "fit_quantile_tokenizer",
     "genie_train_step",
@@ -70,6 +73,7 @@ __all__ = [
     "head_train_step",
     "imagined_rollout",
     "make_genie_encode",
+    "make_genwm_plan_fn",
     "ppo_update",
     "sample_candidates",
 ]

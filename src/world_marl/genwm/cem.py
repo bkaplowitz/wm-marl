@@ -15,6 +15,14 @@ from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
+from flax.training.train_state import TrainState
+
+from world_marl.genwm.tokenizer import QuantileTokenizer
+from world_marl.genwm.world_model import (
+    GenWMConfig,
+    action_features,
+    genwm_predict_next,
+)
 
 
 @dataclass(frozen=True)
@@ -65,3 +73,104 @@ def cem_solve(cost_fn, key: jax.Array, mean_init: jax.Array, config: CEMConfig):
     keys = jax.random.split(key, config.num_iters)
     (mean, std), topk_costs = jax.lax.scan(iteration, (mean_init, std_init), keys)
     return mean, std, topk_costs[-1]
+
+
+def discounted_return(
+    rewards: jax.Array,
+    continue_probs: jax.Array,
+    gamma: float,
+) -> jax.Array:
+    """Compute discounted return with survival weighting.
+
+    Args:
+        rewards: shape ``(S, N, H)`` — samples × envs × horizon.
+        continue_probs: same shape; ``c_t = P(episode continues past step t)``.
+        gamma: discount factor.
+
+    Returns:
+        Discounted return ``(S, N)``:
+        ``sum_t  gamma^t * (prod_{s<t} c_s) * r_t``
+        where the product at ``t=0`` is the empty product (= 1).
+    """
+    H = rewards.shape[2]
+    time_indices = jnp.arange(H, dtype=rewards.dtype)
+    gamma_t = gamma**time_indices  # (H,)
+
+    cum = jnp.cumprod(continue_probs, axis=2)  # (S, N, H): [c0, c0*c1, ...]
+    ones = jnp.ones_like(cum[..., :1])
+    shifted = jnp.concatenate([ones, cum[..., :-1]], axis=2)  # empty product at t=0
+
+    return jnp.sum(rewards * shifted * gamma_t, axis=2)  # (S, N)
+
+
+def make_genwm_plan_fn(
+    wm_state: TrainState,
+    head_state: TrainState,
+    start_observations: jax.Array,
+    obs_tokenizer: QuantileTokenizer,
+    action_tokenizer: QuantileTokenizer | None,
+    config: GenWMConfig,
+    cem_config: CEMConfig,
+    gamma: float,
+):
+    """Return a jitted shooting cost function for CEM-MPC.
+
+    The returned ``cost_fn(candidates, key) -> costs`` rolls ``candidates``
+    through the world model starting from ``start_observations``, accumulates
+    predicted rewards and continue probabilities from the fitted head, and
+    returns negative discounted return (shape ``(S, N)``; lower = better for
+    the minimising CEM solver).
+
+    ``start_observations`` is captured in the closure; callers recreate this
+    closure each time the planning context changes (e.g. each call to
+    ``cem_solve``). JAX reuses the compiled kernel as long as shapes are the
+    same.
+    """
+
+    action_low = cem_config.action_low
+    action_high = cem_config.action_high
+
+    @jax.jit
+    def _shoot(candidates: jax.Array, key: jax.Array) -> jax.Array:
+        # candidates: (S, N, H, A)
+        S, N, H, _ = candidates.shape
+        clipped = jnp.clip(candidates, action_low, action_high)
+        # Permute to (H, S, N, A) for scan over horizon
+        actions_by_t = clipped.transpose(2, 0, 1, 3)
+
+        def step(carry, t_actions):
+            observations, step_key = carry
+            # observations: (S, N, obs_dim); t_actions: (S, N, A)
+            step_key, model_key = jax.random.split(step_key)
+            flat_obs = observations.reshape(S * N, -1)
+            flat_act = t_actions.reshape(S * N, -1)
+            next_flat_obs = genwm_predict_next(
+                wm_state,
+                model_key,
+                flat_obs,
+                flat_act,
+                obs_tokenizer,
+                action_tokenizer,
+                config,
+            )
+            act_feats = action_features(flat_act, config)
+            reward_flat, continue_logit_flat = head_state.apply_fn(
+                {"params": head_state.params}, flat_obs, act_feats
+            )
+            reward = reward_flat.reshape(S, N)
+            continue_prob = jax.nn.sigmoid(continue_logit_flat).reshape(S, N)
+            next_obs = next_flat_obs.reshape(S, N, -1)
+            return (next_obs, step_key), (reward, continue_prob)
+
+        init_obs = jnp.broadcast_to(
+            start_observations[None, :, :], (S, N, start_observations.shape[-1])
+        )
+        (_, _), (rewards, continue_probs) = jax.lax.scan(
+            step, (init_obs, key), actions_by_t
+        )
+        # rewards: (H, S, N) → (S, N, H)
+        rewards = rewards.transpose(1, 2, 0)
+        continue_probs = continue_probs.transpose(1, 2, 0)
+        return -discounted_return(rewards, continue_probs, gamma)
+
+    return _shoot
