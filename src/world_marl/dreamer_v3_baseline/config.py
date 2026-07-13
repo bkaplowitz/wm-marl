@@ -98,7 +98,7 @@ class RSSMConfig:
     absolute: bool
     initializer: str
     output_scale: float
-    _legacy: bool = field(repr=False, compare=False)
+    _legacy: bool = field(default=False, init=False, repr=False, compare=False)
 
     def __init__(
         self,
@@ -747,6 +747,36 @@ class DreamerV3Config:
             or self.replay.recency_fraction != 0.0
         ):
             raise ValueError("replay is not canonical uniform replay")
+        expected_components = (
+            _paper_components(self.observation_mode, self.model_size)
+            if self.profile is DreamerProfile.PAPER
+            else _upstream_current_components(self.observation_mode, self.model_size)
+        )
+        expected_components.update(
+            loss_scales=LossScaleConfig(),
+            imagination=ImaginationConfig(),
+            slow_value=SlowValueConfig(),
+            return_normalizer=NormalizerConfig(),
+            value_normalizer=NormalizerConfig(
+                implementation="none",
+                limit=1e-8,
+            ),
+            advantage_normalizer=NormalizerConfig(
+                implementation="none",
+                limit=1e-8,
+            ),
+        )
+        for name, expected in expected_components.items():
+            if getattr(self, name) != expected:
+                raise ValueError(
+                    f"{name} does not match the canonical authority snapshot"
+                )
+        if (
+            self.action_dim is not None
+            or self.observation_shape is not None
+            or self.action_mode != "continuous"
+        ):
+            raise ValueError("runtime interface does not match the canonical profile")
 
     @property
     def actor_critic(self) -> ActorCriticConfig:

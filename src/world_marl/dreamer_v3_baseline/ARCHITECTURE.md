@@ -70,7 +70,7 @@ Mixed observations are noncanonical.
 
 Enum 1M, 12M, 25M, 50M, 100M, 200M, 400M. resolve returns NetworkSize: model
 dimension H, recurrent D=8H, convolution base channels H/16, categorical
-classes C=H/16. Published 1M exceptions are 16 base channels and four classes.
+classes C=H/16. The 1M profile has four base channels and four classes.
 
 ### RSSMConfig
 

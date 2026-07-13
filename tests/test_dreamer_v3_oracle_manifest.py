@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import world_marl.dreamer_v3_baseline.oracle as oracle_module
 from world_marl.dreamer_v3_baseline.config import (
     DreamerProfile,
     ObservationMode,
@@ -25,6 +26,15 @@ PAPER_OVERRIDES = {
     "agent.enc.simple.strided": True,
     "agent.opt.beta2": 0.99,
     "run.steps": 1_000_000,
+}
+
+RSSM_SOURCE_HASHES = {
+    "dreamerv3/agent.py": (
+        "adce8e4274bc098c218bf9a20fd3327545f0ad7d850b5fe328597382e91b5269"
+    ),
+    "dreamerv3/rssm.py": (
+        "d6d50166914e94fb8bd17a5d5dbda9d42cdd37b85819bb1e9fff3a64d4ad2eb6"
+    ),
 }
 
 
@@ -83,6 +93,7 @@ def test_manifest_round_trip_validates_all_provenance_hashes(
     assert manifest.observation_mode is ObservationMode.VISION
     assert dict(manifest.overrides) == PAPER_OVERRIDES
     assert manifest.official_commit == ("bfcdfc183d2c1543a3bf3cdda6edb7fae29b6a01")
+    assert manifest.source_spec == "config"
     assert tuple(manifest.official_file_hashes) == ("dreamerv3/configs.yaml",)
     assert len(manifest.profile_hash) == 64
     assert len(manifest.fixture_sha256) == 64
@@ -107,7 +118,7 @@ def test_manifest_round_trip_validates_all_provenance_hashes(
         ("overrides", {}, "override"),
         ("jax_version", "0.0.0", "JAX"),
         ("dtype", "float32", "dtype"),
-        ("device", "", "device"),
+        ("device", "tpu", "device"),
         ("fixture_sha256", "0" * 64, "fixture"),
     ],
 )
@@ -171,6 +182,144 @@ def test_fixture_writer_is_byte_deterministic_and_sorts_tensor_names(
     with np.load(first_fixture, allow_pickle=False) as fixture:
         assert fixture.files == ["a_tensor", "z_tensor"]
         np.testing.assert_array_equal(fixture["a_tensor"], arrays["a_tensor"])
+
+
+def test_manifest_rejects_offline_wrong_source_hash_and_missing_fixture(
+    official_checkout: Path,
+    tmp_path: Path,
+) -> None:
+    harness = OracleHarness(official_checkout, tmp_path)
+    fixture_path, manifest_path = harness.write_fixture(
+        case_name="offline_validation",
+        profile=DreamerProfile.PAPER,
+        observation_mode=ObservationMode.VISION,
+        arrays={"value": np.asarray([1.0], dtype=np.float32)},
+        seed=5,
+        generator_command=("pytest", "offline_validation"),
+    )
+    tampered = tmp_path / "offline-wrong-source.manifest.json"
+    _write_tampered_manifest(
+        manifest_path,
+        tampered,
+        "official_file_hashes",
+        {"dreamerv3/configs.yaml": "f" * 64},
+    )
+
+    with pytest.raises(ValueError, match="source file hash"):
+        OracleManifest.load(tampered, fixture_path=fixture_path)
+
+    fixture_path.rename(tmp_path / "detached-fixture.npz")
+    with pytest.raises(ValueError, match="fixture.*missing"):
+        OracleManifest.load(manifest_path)
+
+
+def test_case_specific_source_specs_pin_exact_files_for_future_oracles(
+    official_checkout: Path,
+    tmp_path: Path,
+) -> None:
+    source_spec_type = getattr(oracle_module, "OracleSourceSpec")
+    register_source_spec = getattr(oracle_module, "register_oracle_source_spec")
+    source_spec = source_spec_type(
+        name="test_rssm",
+        revision_hashes={
+            oracle_module.PAPER_REVISION: RSSM_SOURCE_HASHES,
+            oracle_module.UPSTREAM_CURRENT_REVISION: RSSM_SOURCE_HASHES,
+        },
+    )
+    register_source_spec(source_spec)
+
+    for profile in DreamerProfile:
+        harness = OracleHarness(
+            official_checkout,
+            tmp_path / profile.value,
+        )
+        fixture_path, manifest_path = harness.write_fixture(
+            case_name="rssm_initial",
+            profile=profile,
+            observation_mode=ObservationMode.PROPRIO,
+            arrays={"state": np.zeros((1, 4), dtype=np.float32)},
+            seed=13,
+            generator_command=("pytest", "rssm_initial"),
+            source_spec=source_spec.name,
+        )
+
+        manifest = OracleManifest.load(manifest_path)
+
+        assert manifest.source_spec == source_spec.name
+        assert dict(manifest.official_file_hashes) == RSSM_SOURCE_HASHES
+        assert fixture_path.exists()
+
+
+def test_repeated_config_cases_are_byte_identical_and_pid_is_out_of_band(
+    official_checkout: Path,
+    tmp_path: Path,
+) -> None:
+    first = OracleHarness(official_checkout, tmp_path / "first")
+    second = OracleHarness(official_checkout, tmp_path / "second")
+
+    first_fixture, first_manifest = first.run_config_case(
+        DreamerProfile.PAPER,
+        ObservationMode.PROPRIO,
+        case_name="config_deterministic",
+    )
+    second_fixture, second_manifest = second.run_config_case(
+        DreamerProfile.PAPER,
+        ObservationMode.PROPRIO,
+        case_name="config_deterministic",
+    )
+
+    assert first.last_worker_pid is not None
+    assert second.last_worker_pid is not None
+    assert first.last_worker_pid != os.getpid()
+    assert second.last_worker_pid != os.getpid()
+    assert first_fixture.read_bytes() == second_fixture.read_bytes()
+    assert first_manifest.read_bytes() == second_manifest.read_bytes()
+    with np.load(first_fixture, allow_pickle=False) as fixture:
+        assert "worker_pid" not in fixture.files
+
+
+def test_config_generator_provenance_replays_the_exact_command_and_request(
+    official_checkout: Path,
+    tmp_path: Path,
+) -> None:
+    harness = OracleHarness(official_checkout, tmp_path)
+    fixture_path, manifest_path = harness.run_config_case(
+        DreamerProfile.UPSTREAM_CURRENT,
+        ObservationMode.VISION,
+        case_name="config_replayable",
+    )
+    manifest = OracleManifest.load(
+        manifest_path,
+        official_checkout=official_checkout,
+        fixture_path=fixture_path,
+    )
+
+    assert manifest.generator_command[-1] == "_config_worker"
+    assert manifest.generator_request is not None
+    assert json.loads(manifest.generator_request) == {
+        "official_checkout": str(official_checkout.resolve()),
+        "official_commit": oracle_module.UPSTREAM_CURRENT_REVISION,
+        "observation_mode": ObservationMode.VISION.value,
+        "overrides": {},
+        "profile": DreamerProfile.UPSTREAM_CURRENT.value,
+        "source_spec": "config",
+    }
+    replayed = subprocess.run(
+        manifest.generator_command,
+        cwd=official_checkout,
+        input=manifest.generator_request,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    replayed_payload = json.loads(replayed.stdout)
+
+    assert int(replayed_payload["worker_pid"]) != os.getpid()
+    with np.load(fixture_path, allow_pickle=False) as fixture:
+        assert tuple(fixture.files) == tuple(sorted(replayed_payload["arrays"]))
+        for name, spec in replayed_payload["arrays"].items():
+            expected = np.asarray(spec["values"], dtype=spec["dtype"])
+            np.testing.assert_array_equal(fixture[name], expected)
 
 
 @pytest.mark.parametrize(
@@ -241,10 +390,10 @@ def test_config_case_runs_in_a_process_and_profiles_apply_only_declared_override
         fixture_path=fixture_path,
     )
     assert dict(manifest.overrides) == expected_overrides
-    assert profile.value in " ".join(manifest.generator_command)
-    assert mode.value in " ".join(manifest.generator_command)
+    assert harness.last_worker_pid is not None
+    assert harness.last_worker_pid != os.getpid()
     with np.load(fixture_path, allow_pickle=False) as fixture:
-        assert int(fixture["worker_pid"][0]) != os.getpid()
+        assert "worker_pid" not in fixture.files
         for name, expected in expected_profile.items():
             np.testing.assert_allclose(fixture[name], expected, rtol=0.0, atol=0.0)
 

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
+import world_marl.dreamer_v3_baseline as dreamer_v3
 from world_marl.dreamer_v3_baseline.config import (
     DreamerProfile,
     DreamerV3Config,
@@ -15,6 +14,173 @@ from world_marl.dreamer_v3_baseline.config import (
     OptimizerConfig,
     RSSMConfig,
     resolve_dreamer_config,
+)
+
+
+CANONICAL_DIGESTS = {
+    (DreamerProfile.PAPER, ObservationMode.VISION): (
+        "0f7b619eeb24d87d2d20b3331cd0a4229d4e322f007af52a85f1eb9028af4ca3"
+    ),
+    (DreamerProfile.PAPER, ObservationMode.PROPRIO): (
+        "6e1b19b9d058ab579980dad3ed8d8caa16e805f0633bb623611d12216c5987c2"
+    ),
+    (DreamerProfile.UPSTREAM_CURRENT, ObservationMode.VISION): (
+        "8973a4665e54be56322a158ddceea785b19850806bfcdb65743a310fbed4b94c"
+    ),
+    (DreamerProfile.UPSTREAM_CURRENT, ObservationMode.PROPRIO): (
+        "ce029c8275701e2a692133b1d4bd1cdabe16144fc5864309d59fe9fdbae69908"
+    ),
+}
+
+
+CANONICAL_MUTATIONS = (
+    (
+        "profile",
+        lambda config: replace(
+            config,
+            profile=(
+                DreamerProfile.UPSTREAM_CURRENT
+                if config.profile is DreamerProfile.PAPER
+                else DreamerProfile.PAPER
+            ),
+        ),
+    ),
+    (
+        "observation_mode",
+        lambda config: replace(
+            config,
+            observation_mode=(
+                ObservationMode.PROPRIO
+                if config.observation_mode is ObservationMode.VISION
+                else ObservationMode.VISION
+            ),
+        ),
+    ),
+    (
+        "model_size",
+        lambda config: replace(
+            config,
+            model_size=(
+                ModelSize.M1 if config.model_size is ModelSize.M200 else ModelSize.M200
+            ),
+        ),
+    ),
+    (
+        "network",
+        lambda config: replace(config, network=ModelSize.M100.resolve()),
+    ),
+    (
+        "rssm",
+        lambda config: replace(
+            config,
+            rssm=replace(config.rssm, free_nats=2.0),
+        ),
+    ),
+    (
+        "encoder",
+        lambda config: replace(
+            config,
+            encoder=replace(config.encoder, layers=2),
+        ),
+    ),
+    (
+        "decoder",
+        lambda config: replace(
+            config,
+            decoder=replace(config.decoder, image_output="normal"),
+        ),
+    ),
+    (
+        "reward_head",
+        lambda config: replace(
+            config,
+            reward_head=replace(config.reward_head, output_scale=0.1),
+        ),
+    ),
+    (
+        "continue_head",
+        lambda config: replace(
+            config,
+            continue_head=replace(config.continue_head, activation="relu"),
+        ),
+    ),
+    (
+        "policy",
+        lambda config: replace(
+            config,
+            policy=replace(config.policy, min_std=0.2),
+        ),
+    ),
+    (
+        "value_head",
+        lambda config: replace(
+            config,
+            value_head=replace(config.value_head, bins=127),
+        ),
+    ),
+    (
+        "optimizer",
+        lambda config: replace(
+            config,
+            optimizer=replace(config.optimizer, learning_rate=1e-4),
+        ),
+    ),
+    (
+        "replay",
+        lambda config: replace(
+            config,
+            replay=replace(config.replay, online=False),
+        ),
+    ),
+    (
+        "run",
+        lambda config: replace(
+            config,
+            run=replace(config.run, envs=8),
+        ),
+    ),
+    (
+        "loss_scales",
+        lambda config: replace(
+            config,
+            loss_scales=replace(config.loss_scales, rec=2.0),
+        ),
+    ),
+    (
+        "imagination",
+        lambda config: replace(
+            config,
+            imagination=replace(config.imagination, length=16),
+        ),
+    ),
+    (
+        "slow_value",
+        lambda config: replace(
+            config,
+            slow_value=replace(config.slow_value, every=2),
+        ),
+    ),
+    (
+        "return_normalizer",
+        lambda config: replace(
+            config,
+            return_normalizer=replace(config.return_normalizer, rate=0.02),
+        ),
+    ),
+    (
+        "value_normalizer",
+        lambda config: replace(
+            config,
+            value_normalizer=replace(config.value_normalizer, rate=0.02),
+        ),
+    ),
+    (
+        "advantage_normalizer",
+        lambda config: replace(
+            config,
+            advantage_normalizer=replace(config.advantage_normalizer, rate=0.02),
+        ),
+    ),
 )
 
 
@@ -279,27 +445,90 @@ def test_direct_legacy_config_preserves_existing_small_baseline_dimensions() -> 
     assert config.representation_kl_scale == 0.1
 
 
-def test_canonical_hash_is_sorted_lossless_and_configuration_is_immutable() -> None:
-    config = resolve_dreamer_config()
-    expected = hashlib.sha256(
-        json.dumps(
-            config.to_dict(),
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode()
-    ).hexdigest()
+@pytest.mark.parametrize(
+    ("profile", "mode"),
+    CANONICAL_DIGESTS,
+)
+def test_canonical_hashes_are_pinned_to_all_authority_snapshots(
+    profile: DreamerProfile,
+    mode: ObservationMode,
+) -> None:
+    config = resolve_dreamer_config(profile, mode)
 
-    assert config.canonical_hash() == expected
-    assert resolve_dreamer_config().canonical_hash() == expected
+    assert config.canonical_hash() == CANONICAL_DIGESTS[(profile, mode)]
     assert (
-        resolve_dreamer_config(DreamerProfile.UPSTREAM_CURRENT).canonical_hash()
-        != expected
+        resolve_dreamer_config(profile, mode).canonical_hash()
+        == (CANONICAL_DIGESTS[(profile, mode)])
     )
+
+
+def test_canonical_configuration_is_immutable() -> None:
+    config = resolve_dreamer_config()
+
     with pytest.raises(FrozenInstanceError):
         config.profile = DreamerProfile.UPSTREAM_CURRENT  # type: ignore[misc]
     with pytest.raises(FrozenInstanceError):
         config.encoder.depth = 1  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(("profile", "mode"), CANONICAL_DIGESTS)
+@pytest.mark.parametrize(
+    ("component", "mutate"),
+    CANONICAL_MUTATIONS,
+    ids=[name for name, _ in CANONICAL_MUTATIONS],
+)
+def test_profile_labels_reject_mutation_across_the_full_canonical_tree(
+    profile: DreamerProfile,
+    mode: ObservationMode,
+    component: str,
+    mutate,
+) -> None:
+    config = resolve_dreamer_config(profile, mode)
+
+    with pytest.raises(ValueError, match="canonical|match|requires"):
+        mutate(config)
+
+
+def test_rssm_config_supports_dataclasses_replace_before_profile_rejection() -> None:
+    config = resolve_dreamer_config()
+
+    mutated_rssm = replace(config.rssm, free_nats=2.0)
+
+    assert mutated_rssm.free_nats == 2.0
+    with pytest.raises(ValueError, match="canonical"):
+        replace(config, rssm=mutated_rssm)
+
+
+def test_task_one_interfaces_are_exported_from_the_package_boundary() -> None:
+    expected = {
+        "DecoderConfig",
+        "DreamerProfile",
+        "DreamerV3Config",
+        "EncoderConfig",
+        "HeadConfig",
+        "ImaginationConfig",
+        "LossScaleConfig",
+        "ModelSize",
+        "NetworkSize",
+        "NormalizerConfig",
+        "ObservationMode",
+        "OptimizerConfig",
+        "OracleHarness",
+        "OracleManifest",
+        "OracleSourceSpec",
+        "ParameterMapping",
+        "ParameterTranslator",
+        "PolicyConfig",
+        "RSSMConfig",
+        "ReplayConfig",
+        "RunConfig",
+        "SlowValueConfig",
+        "TensorSpec",
+        "resolve_dreamer_config",
+    }
+
+    assert expected <= set(dreamer_v3.__all__)
+    assert all(getattr(dreamer_v3, name) is not None for name in expected)
 
 
 @pytest.mark.parametrize(

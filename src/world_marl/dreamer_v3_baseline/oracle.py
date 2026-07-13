@@ -34,19 +34,91 @@ else:  # pragma: no cover - exercised by the subprocess worker.
     )
 
 
-ORACLE_SCHEMA_VERSION = 1
+ORACLE_SCHEMA_VERSION = 2
 PAPER_REVISION = "bfcdfc183d2c1543a3bf3cdda6edb7fae29b6a01"
 UPSTREAM_CURRENT_REVISION = "e3f02248693a79dc8b0ebd62c93683888ddaccfe"
-OFFICIAL_FILES = ("dreamerv3/configs.yaml",)
 _CASE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+_CONFIG_SOURCE_SHA256 = (
+    "9dff9c7062e3e33951cb54c6dd4b598aaf7e56e18e2cff39c812eaa797bcfcfc"
+)
 _PAPER_OVERRIDES: dict[str, Any] = {
     "agent.dec.simple.strided": True,
     "agent.enc.simple.strided": True,
     "agent.opt.beta2": 0.99,
     "run.steps": 1_000_000,
 }
+
+
+@dataclass(frozen=True)
+class OracleSourceSpec:
+    name: str
+    revision_hashes: Mapping[str, Mapping[str, str]]
+
+    def __post_init__(self) -> None:
+        if not _CASE_PATTERN.fullmatch(self.name):
+            raise ValueError(f"invalid oracle source spec name: {self.name!r}")
+        normalized: dict[str, Mapping[str, str]] = {}
+        for revision, file_hashes in sorted(self.revision_hashes.items()):
+            if not _COMMIT_PATTERN.fullmatch(revision):
+                raise ValueError("oracle source revision must be a full Git object id")
+            if not file_hashes:
+                raise ValueError("oracle source spec must contain official files")
+            files: dict[str, str] = {}
+            for path, digest in sorted(file_hashes.items()):
+                if (
+                    not path
+                    or path.startswith("/")
+                    or ".." in Path(path).parts
+                    or not _SHA256_PATTERN.fullmatch(digest)
+                ):
+                    raise ValueError(f"invalid oracle source entry: {path!r}")
+                files[path] = digest
+            normalized[revision] = MappingProxyType(files)
+        required_revisions = {PAPER_REVISION, UPSTREAM_CURRENT_REVISION}
+        if set(normalized) != required_revisions:
+            raise ValueError("oracle source spec must pin both authority revisions")
+        object.__setattr__(
+            self,
+            "revision_hashes",
+            MappingProxyType(normalized),
+        )
+
+    def hashes_for(self, revision: str) -> Mapping[str, str]:
+        try:
+            return self.revision_hashes[revision]
+        except KeyError as error:
+            raise ValueError(
+                f"oracle source spec {self.name!r} does not pin revision {revision}"
+            ) from error
+
+
+_ORACLE_SOURCE_SPECS: dict[str, OracleSourceSpec] = {}
+
+
+def register_oracle_source_spec(source_spec: OracleSourceSpec) -> None:
+    existing = _ORACLE_SOURCE_SPECS.get(source_spec.name)
+    if existing is not None and existing != source_spec:
+        raise ValueError(f"oracle source spec already registered: {source_spec.name}")
+    _ORACLE_SOURCE_SPECS[source_spec.name] = source_spec
+
+
+def oracle_source_spec(name: str) -> OracleSourceSpec:
+    try:
+        return _ORACLE_SOURCE_SPECS[name]
+    except KeyError as error:
+        raise ValueError(f"unknown oracle source spec: {name}") from error
+
+
+CONFIG_SOURCE_SPEC = OracleSourceSpec(
+    name="config",
+    revision_hashes={
+        PAPER_REVISION: {"dreamerv3/configs.yaml": _CONFIG_SOURCE_SHA256},
+        UPSTREAM_CURRENT_REVISION: {"dreamerv3/configs.yaml": _CONFIG_SOURCE_SHA256},
+    },
+)
+register_oracle_source_spec(CONFIG_SOURCE_SPEC)
 
 
 def official_revision(profile: DreamerProfile | str) -> str:
@@ -86,6 +158,7 @@ class OracleManifest:
     profile: DreamerProfile | str
     observation_mode: ObservationMode | str
     official_commit: str
+    source_spec: str
     official_file_hashes: Mapping[str, str]
     profile_hash: str
     overrides: Mapping[str, Any]
@@ -95,6 +168,7 @@ class OracleManifest:
     seed: int
     tensor_schema: Mapping[str, TensorSpec]
     generator_command: tuple[str, ...]
+    generator_request: str | None
     fixture_file: str
     fixture_sha256: str
 
@@ -121,6 +195,9 @@ class OracleManifest:
             MappingProxyType(dict(sorted(self.tensor_schema.items()))),
         )
         object.__setattr__(self, "generator_command", tuple(self.generator_command))
+        if self.generator_request is not None:
+            canonical_request = _canonical_generator_request(self.generator_request)
+            object.__setattr__(self, "generator_request", canonical_request)
 
     @classmethod
     def create(
@@ -134,6 +211,8 @@ class OracleManifest:
         arrays: Mapping[str, np.ndarray],
         seed: int,
         generator_command: Sequence[str],
+        generator_request: Mapping[str, Any] | None = None,
+        source_spec: str | OracleSourceSpec = CONFIG_SOURCE_SPEC.name,
         dtype: str | None = None,
         device: str | None = None,
     ) -> OracleManifest:
@@ -142,10 +221,21 @@ class OracleManifest:
         config = resolve_dreamer_config(resolved_profile, resolved_mode)
         checkout = Path(official_checkout).resolve()
         revision = official_revision(resolved_profile)
+        resolved_source_spec = (
+            source_spec
+            if isinstance(source_spec, OracleSourceSpec)
+            else oracle_source_spec(source_spec)
+        )
+        expected_source_hashes = resolved_source_spec.hashes_for(revision)
         source_hashes = {
             path: _sha256_bytes(_git_show(checkout, revision, path))
-            for path in OFFICIAL_FILES
+            for path in expected_source_hashes
         }
+        if source_hashes != dict(expected_source_hashes):
+            raise ValueError(
+                f"official checkout does not match source spec "
+                f"{resolved_source_spec.name!r}"
+            )
         fixture = Path(fixture_path)
         return cls(
             schema_version=ORACLE_SCHEMA_VERSION,
@@ -153,6 +243,7 @@ class OracleManifest:
             profile=resolved_profile,
             observation_mode=resolved_mode,
             official_commit=revision,
+            source_spec=resolved_source_spec.name,
             official_file_hashes=source_hashes,
             profile_hash=config.canonical_hash(),
             overrides=profile_overrides(resolved_profile),
@@ -165,6 +256,11 @@ class OracleManifest:
                 for name, array in sorted(arrays.items())
             },
             generator_command=tuple(generator_command),
+            generator_request=(
+                _canonical_generator_request(generator_request)
+                if generator_request is not None
+                else None
+            ),
             fixture_file=fixture.name,
             fixture_sha256=_sha256_path(fixture),
         )
@@ -177,6 +273,7 @@ class OracleManifest:
             "fixture_file": self.fixture_file,
             "fixture_sha256": self.fixture_sha256,
             "generator_command": list(self.generator_command),
+            "generator_request": self.generator_request,
             "jax_version": self.jax_version,
             "observation_mode": self.observation_mode.value,
             "official_commit": self.official_commit,
@@ -186,6 +283,7 @@ class OracleManifest:
             "profile_hash": self.profile_hash,
             "schema_version": self.schema_version,
             "seed": self.seed,
+            "source_spec": self.source_spec,
             "tensor_schema": {
                 name: spec.to_dict() for name, spec in self.tensor_schema.items()
             },
@@ -219,6 +317,7 @@ class OracleManifest:
             profile=payload["profile"],
             observation_mode=payload["observation_mode"],
             official_commit=payload["official_commit"],
+            source_spec=payload["source_spec"],
             official_file_hashes=payload["official_file_hashes"],
             profile_hash=payload["profile_hash"],
             overrides=payload["overrides"],
@@ -231,13 +330,15 @@ class OracleManifest:
                 for name, spec in payload["tensor_schema"].items()
             },
             generator_command=tuple(payload["generator_command"]),
+            generator_request=payload["generator_request"],
             fixture_file=payload["fixture_file"],
             fixture_sha256=payload["fixture_sha256"],
         )
-        fixture = Path(fixture_path) if fixture_path is not None else None
-        if fixture is None:
-            candidate = source.parent / manifest.fixture_file
-            fixture = candidate if candidate.exists() else None
+        fixture = (
+            Path(fixture_path)
+            if fixture_path is not None
+            else source.parent / manifest.fixture_file
+        )
         manifest.validate(
             official_checkout=official_checkout,
             fixture_path=fixture,
@@ -263,6 +364,12 @@ class OracleManifest:
         expected_commit = official_revision(self.profile)
         if self.official_commit != expected_commit:
             raise ValueError("official commit does not match profile authority")
+        source_spec = oracle_source_spec(self.source_spec)
+        expected_source_hashes = dict(source_spec.hashes_for(expected_commit))
+        if dict(self.official_file_hashes) != expected_source_hashes:
+            raise ValueError(
+                "oracle source file hashes do not match the pinned source spec"
+            )
         expected_overrides = dict(profile_overrides(self.profile))
         if dict(self.overrides) != expected_overrides:
             raise ValueError("oracle override map does not match profile")
@@ -279,10 +386,12 @@ class OracleManifest:
         assert expected_config.run is not None
         if self.dtype != expected_config.run.compute_dtype:
             raise ValueError("oracle dtype does not match the resolved config")
-        if not self.device:
-            raise ValueError("oracle device must be recorded")
-        if tuple(self.official_file_hashes) != OFFICIAL_FILES:
-            raise ValueError("oracle source file set is incomplete")
+        expected_device = jax.default_backend()
+        if self.device != expected_device:
+            raise ValueError(
+                f"oracle device {self.device!r} does not match runtime "
+                f"{expected_device!r}"
+            )
         if official_checkout is not None:
             checkout = Path(official_checkout).resolve()
             for path, recorded_hash in self.official_file_hashes.items():
@@ -291,11 +400,6 @@ class OracleManifest:
                 )
                 if recorded_hash != expected_hash:
                     raise ValueError(f"oracle source file hash mismatch: {path}")
-        elif any(
-            not _SHA256_PATTERN.fullmatch(value)
-            for value in self.official_file_hashes.values()
-        ):
-            raise ValueError("oracle source file hash is malformed")
         if not self.generator_command:
             raise ValueError("oracle generator command must be recorded")
         if self.seed < 0:
@@ -304,6 +408,8 @@ class OracleManifest:
             raise ValueError("oracle fixture hash is malformed")
         if fixture_path is not None:
             fixture = Path(fixture_path)
+            if not fixture.is_file():
+                raise ValueError(f"oracle fixture is missing: {fixture}")
             if fixture.name != self.fixture_file:
                 raise ValueError("oracle fixture filename does not match manifest")
             if _sha256_path(fixture) != self.fixture_sha256:
@@ -470,10 +576,15 @@ class OracleHarness:
         self.official_checkout = Path(official_checkout).resolve()
         self.fixture_dir = Path(fixture_dir)
         self.python_executable = str(python_executable or sys.executable)
+        self._last_worker_pid: int | None = None
         if not self.official_checkout.is_dir():
             raise ValueError("official checkout does not exist")
         for revision in (PAPER_REVISION, UPSTREAM_CURRENT_REVISION):
             _git_object_exists(self.official_checkout, revision)
+
+    @property
+    def last_worker_pid(self) -> int | None:
+        return self._last_worker_pid
 
     def write_fixture(
         self,
@@ -484,6 +595,8 @@ class OracleHarness:
         arrays: Mapping[str, np.ndarray],
         seed: int,
         generator_command: Sequence[str],
+        generator_request: Mapping[str, Any] | None = None,
+        source_spec: str | OracleSourceSpec = CONFIG_SOURCE_SPEC.name,
     ) -> tuple[Path, Path]:
         if not _CASE_PATTERN.fullmatch(case_name):
             raise ValueError(f"invalid oracle case name: {case_name!r}")
@@ -513,6 +626,8 @@ class OracleHarness:
             arrays=normalized,
             seed=seed,
             generator_command=generator_command,
+            generator_request=generator_request,
+            source_spec=source_spec,
         )
         manifest.validate(
             official_checkout=self.official_checkout,
@@ -537,6 +652,7 @@ class OracleHarness:
             "observation_mode": resolved_mode.value,
             "overrides": dict(profile_overrides(resolved_profile)),
             "profile": resolved_profile.value,
+            "source_spec": CONFIG_SOURCE_SPEC.name,
         }
         command = (
             self.python_executable,
@@ -546,12 +662,16 @@ class OracleHarness:
         completed = subprocess.run(
             command,
             cwd=self.official_checkout,
-            input=json.dumps(request, sort_keys=True),
+            input=_canonical_json(request).decode(),
             check=True,
             capture_output=True,
             text=True,
         )
         payload = json.loads(completed.stdout)
+        worker_pid = int(payload["worker_pid"])
+        if worker_pid <= 0 or worker_pid == os.getpid():
+            raise ValueError("oracle config worker did not cross a process boundary")
+        self._last_worker_pid = worker_pid
         arrays = {
             name: np.asarray(spec["values"], dtype=spec["dtype"])
             for name, spec in payload["arrays"].items()
@@ -566,8 +686,9 @@ class OracleHarness:
             observation_mode=resolved_mode,
             arrays=arrays,
             seed=seed,
-            generator_command=command
-            + ("--request", json.dumps(request, sort_keys=True)),
+            generator_command=command,
+            generator_request=request,
+            source_spec=CONFIG_SOURCE_SPEC.name,
         )
 
 
@@ -629,7 +750,11 @@ def _config_worker(request: Mapping[str, Any]) -> dict[str, Any]:
     overrides = dict(request["overrides"])
     if overrides != dict(profile_overrides(profile)):
         raise ValueError("worker override map does not match requested profile")
-    source = yaml.safe_load(_git_show(checkout, revision, OFFICIAL_FILES[0]))
+    source_spec = oracle_source_spec(str(request["source_spec"]))
+    if source_spec != CONFIG_SOURCE_SPEC:
+        raise ValueError("config worker requires the registered config source spec")
+    source_files = tuple(source_spec.hashes_for(revision))
+    source = yaml.safe_load(_git_show(checkout, revision, source_files[0]))
     defaults = source["defaults"]
     mode_config = source[f"dmc_{mode.value}"]
     size_config = source["size200m" if mode is ObservationMode.VISION else "size1m"]
@@ -686,9 +811,8 @@ def _config_worker(request: Mapping[str, Any]) -> dict[str, Any]:
             "dtype": "float64",
             "values": [steps, mode_config["run"]["train_ratio"]],
         },
-        "worker_pid": {"dtype": "int64", "values": [os.getpid()]},
     }
-    return {"arrays": arrays}
+    return {"arrays": arrays, "worker_pid": os.getpid()}
 
 
 def _parameter_path(path: str | Sequence[str]) -> str:
@@ -708,6 +832,15 @@ def _transform_parameter(array: np.ndarray, mapping: ParameterMapping) -> np.nda
         return array.T
     assert mapping.reshape is not None
     return array.reshape(mapping.reshape)
+
+
+def _canonical_generator_request(request: Mapping[str, Any] | str) -> str:
+    payload = json.loads(request) if isinstance(request, str) else dict(request)
+    if not isinstance(payload, dict):
+        raise ValueError("oracle generator request must be a JSON object")
+    if any(not isinstance(key, str) for key in payload):
+        raise ValueError("oracle generator request keys must be strings")
+    return _canonical_json(payload).decode()
 
 
 def _canonical_json(payload: Mapping[str, Any]) -> bytes:
@@ -783,15 +916,18 @@ if __name__ == "__main__":  # pragma: no cover - subprocess boundary.
 
 
 __all__ = [
-    "OFFICIAL_FILES",
+    "CONFIG_SOURCE_SPEC",
     "ORACLE_SCHEMA_VERSION",
     "OracleHarness",
     "OracleManifest",
+    "OracleSourceSpec",
     "PAPER_REVISION",
     "ParameterMapping",
     "ParameterTranslator",
     "TensorSpec",
     "UPSTREAM_CURRENT_REVISION",
     "official_revision",
+    "oracle_source_spec",
     "profile_overrides",
+    "register_oracle_source_spec",
 ]
