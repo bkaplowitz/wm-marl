@@ -259,6 +259,8 @@ def parse_args() -> argparse.Namespace:
     online.add_argument("--online-train-steps", type=int, default=1024)
     online.add_argument("--online-policy-train-steps", type=int, default=512)
     online.add_argument("--online-checkpoint-interval", type=int, default=16)
+    online.add_argument("--online-recent-replay-fraction", type=float, default=0.0)
+    online.add_argument("--online-recent-replay-steps", type=int, default=320)
 
     reporting = parser.add_argument_group("reporting")
     reporting.add_argument("--failure-return-threshold", type=float, default=100.0)
@@ -270,6 +272,10 @@ def parse_args() -> argparse.Namespace:
         "--dreamer-report-window-env-steps", type=int, default=10_000
     )
     reporting.add_argument("--dreamer-report-budget-env-steps", type=int, default=0)
+    reporting.add_argument("--curve-eval-interval-env-steps", type=int, default=0)
+    reporting.add_argument("--curve-eval-episodes", type=int, default=0)
+    reporting.add_argument("--curve-eval-num-envs", type=int, default=None)
+    reporting.add_argument("--curve-eval-seed", type=int, default=None)
 
     reproducibility = parser.add_argument_group("reproducibility and output")
     reproducibility.add_argument("--num-runs", type=int, default=1)
@@ -341,6 +347,7 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         "policy_replay_critic_batch_size",
         "policy_replay_critic_horizon",
         "online_collect_steps",
+        "online_recent_replay_steps",
         "online_checkpoint_interval",
         "num_runs",
         "wandb_video_frame_stride",
@@ -361,6 +368,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         "final_policy_eval_episodes",
         "dreamer_report_window_env_steps",
         "dreamer_report_budget_env_steps",
+        "curve_eval_interval_env_steps",
+        "curve_eval_episodes",
         "wandb_video_camera",
     )
     for name in nonnegative:
@@ -402,11 +411,35 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--validation-seed must be >= 0")
     if args.final_policy_eval_seed is not None and args.final_policy_eval_seed < 0:
         parser.error("--final-policy-eval-seed must be >= 0")
+    if args.curve_eval_seed is not None and args.curve_eval_seed < 0:
+        parser.error("--curve-eval-seed must be >= 0")
     if (
         args.final_policy_eval_num_envs is not None
         and args.final_policy_eval_num_envs < 1
     ):
         parser.error("--final-policy-eval-num-envs must be >= 1")
+    if args.curve_eval_num_envs is not None and args.curve_eval_num_envs < 1:
+        parser.error("--curve-eval-num-envs must be >= 1")
+    if (args.curve_eval_interval_env_steps == 0) != (args.curve_eval_episodes == 0):
+        parser.error(
+            "--curve-eval-interval-env-steps and --curve-eval-episodes must "
+            "either both be zero or both be positive"
+        )
+    if not 0.0 <= args.online_recent_replay_fraction <= 1.0:
+        parser.error("--online-recent-replay-fraction must be in [0, 1]")
+    recent_min_steps = max(
+        args.chunk_length + max(args.model_horizon, args.open_loop_horizon),
+        args.context_window + 1,
+        args.policy_replay_critic_horizon + 1,
+    )
+    if (
+        args.online_recent_replay_fraction > 0.0
+        and args.online_recent_replay_steps < recent_min_steps
+    ):
+        parser.error(
+            "--online-recent-replay-steps is too short for the configured "
+            f"training sequences; need at least {recent_min_steps}"
+        )
     if args.failure_return_threshold >= args.success_return_threshold:
         parser.error(
             "--failure-return-threshold must be below --success-return-threshold"
@@ -710,6 +743,16 @@ def run_one(
             observation_dim=config.observation_dim,
             action_dim=config.action_dim,
         )
+        online_recent_replay = (
+            _new_replay_buffer(
+                capacity=args.online_recent_replay_steps,
+                num_envs=args.num_envs,
+                observation_dim=config.observation_dim,
+                action_dim=config.action_dim,
+            )
+            if args.online_recent_replay_fraction > 0.0
+            else None
+        )
 
         # Bootstrap collection uses its own adapter. This reproduces the
         # cache-loaded reference protocol without relying on an external NPZ or
@@ -720,7 +763,11 @@ def run_one(
                 bootstrap_adapter,
                 bootstrap_adapter.reset(),
                 numpy_rngs.get("initial_collection"),
-                replay,
+                (
+                    (replay, online_recent_replay)
+                    if online_recent_replay is not None
+                    else replay
+                ),
                 steps=args.collect_steps,
                 reset_interval=args.initial_reset_interval,
                 desc="collect reset-rich bootstrap replay",
@@ -857,20 +904,33 @@ def run_one(
         )
 
         online_history: list[dict[str, Any]] = []
+        curve_evaluations: list[dict[str, Any]] = []
+        next_curve_eval_step = (
+            args.curve_eval_interval_env_steps
+            if args.curve_eval_interval_env_steps > 0
+            else None
+        )
+        while (
+            next_curve_eval_step is not None and next_curve_eval_step <= train_env_steps
+        ):
+            next_curve_eval_step += args.curve_eval_interval_env_steps
         for online_index in range(1, args.online_iterations + 1):
             phase = f"online_{online_index:03d}"
-            recent_replay = _new_replay_buffer(
+            phase_replay = _new_replay_buffer(
                 capacity=args.online_collect_steps,
                 num_envs=args.num_envs,
                 observation_dim=config.observation_dim,
                 action_dim=config.action_dim,
             )
+            collection_replays = [replay, phase_replay]
+            if online_recent_replay is not None:
+                collection_replays.append(online_recent_replay)
             observations, added_env_steps, collection = _collect_policy_steps(
                 adapter,
                 observations,
                 state,
                 config,
-                (replay, recent_replay),
+                tuple(collection_replays),
                 steps=args.online_collect_steps,
                 action_low=adapter.action_low,
                 action_high=adapter.action_high,
@@ -893,7 +953,11 @@ def run_one(
                 **collection,
                 "train_replay_total_env_steps": train_env_steps,
                 "replay_size_per_env": replay.size,
-                "recent_replay_size_per_env": recent_replay.size,
+                "recent_replay_size_per_env": phase_replay.size,
+                "online_recent_replay_size_per_env": (
+                    online_recent_replay.size if online_recent_replay is not None else 0
+                ),
+                "online_recent_replay_fraction": (args.online_recent_replay_fraction),
             }
             logger.write_json(f"{phase}_actor_replay.json", collection)
             logger.append_metrics(
@@ -918,6 +982,8 @@ def run_one(
                 phase=f"{phase}_world_model",
                 desc=f"{phase} fit world model",
                 train_env_steps=train_env_steps,
+                recent_replay=online_recent_replay,
+                recent_fraction=args.online_recent_replay_fraction,
             )
             jax_rngs.update("world_model", model_rng)
             logger.plot_world_model_loss(
@@ -954,9 +1020,36 @@ def run_one(
                     args,
                     train_env_steps=train_env_steps,
                 ),
+                recent_replay=online_recent_replay,
+                recent_fraction=args.online_recent_replay_fraction,
             )
             jax_rngs.update("policy", policy_rng)
             logger.write_json(f"{phase}_policy.json", policy_metrics)
+
+            curve_evaluation = None
+            if (
+                next_curve_eval_step is not None
+                and train_env_steps >= next_curve_eval_step
+            ):
+                curve_evaluation = _curve_policy_evaluation(
+                    args,
+                    logger,
+                    state,
+                    config,
+                    seed=seed,
+                    action_low=adapter.action_low,
+                    action_high=adapter.action_high,
+                    phase=phase,
+                    online_iteration=online_index,
+                    train_env_steps=train_env_steps,
+                    scheduled_env_steps=next_curve_eval_step,
+                )
+                curve_evaluations.append(curve_evaluation)
+                while (
+                    next_curve_eval_step is not None
+                    and next_curve_eval_step <= train_env_steps
+                ):
+                    next_curve_eval_step += args.curve_eval_interval_env_steps
 
             checkpoint_phase = (
                 online_index % args.online_checkpoint_interval == 0
@@ -965,9 +1058,20 @@ def run_one(
             reproducibility = _reproducibility_snapshot(
                 state,
                 phase=phase,
-                recent_replay=recent_replay,
+                recent_replay=phase_replay,
                 full_replay=replay if checkpoint_phase else None,
             )
+            if online_recent_replay is not None:
+                reproducibility.update(
+                    {
+                        "online_recent_replay_sha256": (
+                            online_recent_replay.fingerprint()
+                        ),
+                        "online_recent_replay_size_per_env": (
+                            online_recent_replay.size
+                        ),
+                    }
+                )
             logger.write_json(f"{phase}_reproducibility.json", reproducibility)
             online_history.append(
                 {
@@ -975,6 +1079,7 @@ def run_one(
                     "actor_replay": collection,
                     "model_metrics": model_metrics,
                     "policy": policy_metrics,
+                    "policy_evaluation": curve_evaluation,
                     "reproducibility": reproducibility,
                     "world_model_train_steps": args.online_train_steps,
                     "policy_train_steps": args.online_policy_train_steps,
@@ -1105,6 +1210,7 @@ def run_one(
             ),
             "online_iterations": args.online_iterations,
             "online_history": online_history,
+            "policy_curve_evaluations": curve_evaluations,
             "dreamer_style_training_score": training_score,
             "dreamer_style_train_return_mean": training_score.get("mean_return"),
             "dreamer_style_train_return_std": training_score.get("std_return"),
@@ -1429,6 +1535,69 @@ def _log_collection_episode_reports(
         logger.append_metrics(row)
 
 
+def _recent_batch_size(
+    batch_size: int,
+    *,
+    recent_replay: SequenceReplayBuffer | None,
+    recent_fraction: float,
+) -> int:
+    if recent_replay is None or recent_fraction <= 0.0:
+        return 0
+    return max(0, min(batch_size, int(round(batch_size * recent_fraction))))
+
+
+def _sample_replay_batch(
+    replay: SequenceReplayBuffer,
+    rng: np.random.Generator,
+    *,
+    recent_replay: SequenceReplayBuffer | None,
+    recent_fraction: float,
+    batch_size: int,
+    chunk_length: int,
+    max_horizon: int,
+) -> ReplayBatch:
+    recent_size = _recent_batch_size(
+        batch_size,
+        recent_replay=recent_replay,
+        recent_fraction=recent_fraction,
+    )
+    if recent_size == 0:
+        return replay.sample(
+            rng,
+            batch_size=batch_size,
+            chunk_length=chunk_length,
+            max_horizon=max_horizon,
+        )
+    assert recent_replay is not None
+    full_size = batch_size - recent_size
+    batches = []
+    if full_size:
+        batches.append(
+            replay.sample(
+                rng,
+                batch_size=full_size,
+                chunk_length=chunk_length,
+                max_horizon=max_horizon,
+            )
+        )
+    batches.append(
+        recent_replay.sample(
+            rng,
+            batch_size=recent_size,
+            chunk_length=chunk_length,
+            max_horizon=max_horizon,
+        )
+    )
+    if len(batches) == 1:
+        return batches[0]
+    return ReplayBatch(
+        observations=jnp.concatenate([batch.observations for batch in batches], axis=0),
+        actions=jnp.concatenate([batch.actions for batch in batches], axis=0),
+        rewards=jnp.concatenate([batch.rewards for batch in batches], axis=0),
+        dones=jnp.concatenate([batch.dones for batch in batches], axis=0),
+    )
+
+
 def _fit_world_model(
     args: argparse.Namespace,
     logger: RunLogger,
@@ -1442,6 +1611,8 @@ def _fit_world_model(
     phase: str,
     desc: str,
     train_env_steps: int,
+    recent_replay: SequenceReplayBuffer | None = None,
+    recent_fraction: float = 0.0,
 ) -> tuple[Any, jax.Array, dict[str, Any], list[float]]:
     loss_history: list[jax.Array] = []
     metrics: dict[str, Any] = {}
@@ -1452,8 +1623,11 @@ def _fit_world_model(
         disable=args.quiet,
     )
     for step_index in progress:
-        batch = replay.sample(
+        batch = _sample_replay_batch(
+            replay,
             np_rng,
+            recent_replay=recent_replay,
+            recent_fraction=recent_fraction,
             batch_size=args.batch_size,
             chunk_length=args.chunk_length,
             max_horizon=max(args.model_horizon, args.open_loop_horizon),
@@ -1482,6 +1656,7 @@ def _fit_world_model(
                     "phase": phase,
                     "update": step_index,
                     "budget/train_env_steps": train_env_steps,
+                    "data/online_recent_replay_fraction": recent_fraction,
                     **metrics,
                 }
             )
@@ -1503,6 +1678,8 @@ def _train_policy(
     train_steps: int,
     reset_actor: bool,
     actor_entropy_coef: float,
+    recent_replay: SequenceReplayBuffer | None = None,
+    recent_fraction: float = 0.0,
 ) -> tuple[Any, jax.Array, dict[str, Any]]:
     if train_steps == 0:
         return (
@@ -1529,8 +1706,11 @@ def _train_policy(
             disable=args.quiet,
         )
         for step_index in critic_progress:
-            batch = replay.sample(
+            batch = _sample_replay_batch(
+                replay,
                 np_rng,
+                recent_replay=recent_replay,
+                recent_fraction=recent_fraction,
                 batch_size=args.policy_batch_size,
                 chunk_length=args.critic_horizon,
                 max_horizon=1,
@@ -1567,16 +1747,21 @@ def _train_policy(
         disable=args.quiet,
     )
     for step_index in progress:
-        start_observations, start_actions = _sample_policy_starts(
+        start_observations, start_actions = _sample_mixed_policy_starts(
             replay,
             np_rng,
             config=config,
             batch_size=args.policy_batch_size,
+            recent_replay=recent_replay,
+            recent_fraction=recent_fraction,
         )
         real_critic_batch = None
         if args.policy_replay_critic_loss_coef > 0.0:
-            real_critic_batch = replay.sample(
+            real_critic_batch = _sample_replay_batch(
+                replay,
                 np_rng,
+                recent_replay=recent_replay,
+                recent_fraction=recent_fraction,
                 batch_size=args.policy_replay_critic_batch_size,
                 chunk_length=args.policy_replay_critic_horizon,
                 max_horizon=1,
@@ -1650,12 +1835,60 @@ def _train_policy(
             "policy_actor_entropy_coef": actor_entropy_coef,
             "policy_actor_entropy_initial_coef": args.actor_entropy_coef,
             "policy_actor_entropy_final_coef": args.actor_entropy_final_coef,
+            "policy_online_recent_replay_fraction": recent_fraction,
             "policy_target_critic_ema_decay": args.target_critic_ema_decay,
             "policy_replay_critic_loss_coef": args.policy_replay_critic_loss_coef,
             "critic_warmup_steps": args.critic_warmup_steps,
             "critic_final_metrics": to_jsonable(critic_metrics),
             "policy_final_metrics": to_jsonable(metrics),
         },
+    )
+
+
+def _sample_mixed_policy_starts(
+    replay: SequenceReplayBuffer,
+    rng: np.random.Generator,
+    *,
+    config: JepaConfig,
+    batch_size: int,
+    recent_replay: SequenceReplayBuffer | None,
+    recent_fraction: float,
+) -> tuple[jax.Array, jax.Array]:
+    recent_size = _recent_batch_size(
+        batch_size,
+        recent_replay=recent_replay,
+        recent_fraction=recent_fraction,
+    )
+    if recent_size == 0:
+        return _sample_policy_starts(
+            replay,
+            rng,
+            config=config,
+            batch_size=batch_size,
+        )
+    assert recent_replay is not None
+    full_size = batch_size - recent_size
+    chunks = []
+    if full_size:
+        chunks.append(
+            _sample_policy_starts(
+                replay,
+                rng,
+                config=config,
+                batch_size=full_size,
+            )
+        )
+    chunks.append(
+        _sample_policy_starts(
+            recent_replay,
+            rng,
+            config=config,
+            batch_size=recent_size,
+        )
+    )
+    return (
+        jnp.concatenate([chunk[0] for chunk in chunks], axis=0),
+        jnp.concatenate([chunk[1] for chunk in chunks], axis=0),
     )
 
 
@@ -1759,6 +1992,69 @@ def _final_policy_evaluation(
     evaluation = {**evaluation, "evaluation_seed": evaluation_seed}
     logger.write_json("final_policy_evaluation.json", evaluation)
     logger.append_metrics({"phase": "final_policy_evaluation", **evaluation})
+    return evaluation
+
+
+def _curve_policy_evaluation(
+    args: argparse.Namespace,
+    logger: RunLogger,
+    state,
+    config: JepaConfig,
+    *,
+    seed: int,
+    action_low: np.ndarray,
+    action_high: np.ndarray,
+    phase: str,
+    online_iteration: int,
+    train_env_steps: int,
+    scheduled_env_steps: int,
+) -> dict[str, Any]:
+    evaluation_seed = (
+        args.curve_eval_seed
+        if args.curve_eval_seed is not None
+        else (
+            args.final_policy_eval_seed
+            if args.final_policy_eval_seed is not None
+            else seed + 9_000_000
+        )
+    )
+    num_envs = args.curve_eval_num_envs or min(
+        args.num_envs,
+        args.curve_eval_episodes,
+    )
+    evaluation = _evaluate_continuous_policy(
+        args,
+        state,
+        config,
+        seed=evaluation_seed,
+        num_envs=num_envs,
+        episodes=args.curve_eval_episodes,
+        action_low=jnp.asarray(action_low, dtype=jnp.float32),
+        action_high=jnp.asarray(action_high, dtype=jnp.float32),
+        desc=f"evaluate latest policy at {train_env_steps} train steps",
+    )
+    evaluation = {
+        **evaluation,
+        "evaluation_seed": evaluation_seed,
+        "online_iteration": online_iteration,
+        "scheduled_train_env_steps": scheduled_env_steps,
+        "train_env_steps": train_env_steps,
+    }
+    logger.write_json(f"{phase}_policy_evaluation.json", evaluation)
+    logger.append_metrics(
+        {
+            "phase": "policy_curve_evaluation",
+            "online_iteration": online_iteration,
+            "budget/train_env_steps": train_env_steps,
+            "eval/return_mean": evaluation["mean_return"],
+            "eval/return_std": evaluation["std_return"],
+            "eval/return_p10": evaluation["return_p10"],
+            "eval/return_cvar10": evaluation["return_cvar10"],
+            "eval/failure_rate": evaluation["failure_rate"],
+            "eval/success_rate": evaluation["success_rate"],
+            "eval/episodes": evaluation["episodes"],
+        }
+    )
     return evaluation
 
 
@@ -2024,9 +2320,20 @@ def _real_step_accounting(
     online_env_steps = sum(
         int(item["actor_replay"]["env_steps"]) for item in online_history
     )
-    policy_eval_env_steps = int(_nested(final_policy_eval, "env_steps") or 0)
-    completed_eval_steps = int(
-        _nested(final_policy_eval, "completed_episode_steps") or 0
+    curve_eval_env_steps = sum(
+        int(_nested(item.get("policy_evaluation"), "env_steps") or 0)
+        for item in online_history
+    )
+    curve_completed_eval_steps = sum(
+        int(_nested(item.get("policy_evaluation"), "completed_episode_steps") or 0)
+        for item in online_history
+    )
+    policy_eval_env_steps = curve_eval_env_steps + int(
+        _nested(final_policy_eval, "env_steps") or 0
+    )
+    completed_eval_steps = (
+        int(_nested(final_policy_eval, "completed_episode_steps") or 0)
+        + curve_completed_eval_steps
     )
     train_env_steps = initial_train_env_steps + online_env_steps
     return {

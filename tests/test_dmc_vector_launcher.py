@@ -43,6 +43,25 @@ def test_launcher_serializes_entropy_decay_controls():
     assert tokens[tokens.index("--actor-entropy-decay-end-env-steps") + 1] == "500000"
 
 
+def test_launcher_serializes_early_sample_efficiency_diagnostic_controls():
+    command = params_to_shell_args(
+        {
+            "online_recent_replay_fraction": 0.5,
+            "online_recent_replay_steps": 320,
+            "curve_eval_interval_env_steps": 50_000,
+            "curve_eval_episodes": 20,
+            "curve_eval_seed": 9_000_000,
+        }
+    )
+
+    tokens = command.replace("\\\n", " ").split()
+    assert tokens[tokens.index("--online-recent-replay-fraction") + 1] == "0.5"
+    assert tokens[tokens.index("--online-recent-replay-steps") + 1] == "320"
+    assert tokens[tokens.index("--curve-eval-interval-env-steps") + 1] == "50000"
+    assert tokens[tokens.index("--curve-eval-episodes") + 1] == "20"
+    assert tokens[tokens.index("--curve-eval-seed") + 1] == "9000000"
+
+
 def test_launcher_syncs_tracking_extra_when_enabled(tmp_path):
     write_launcher(
         tmp_path,

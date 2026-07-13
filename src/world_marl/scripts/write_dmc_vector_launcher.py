@@ -153,6 +153,7 @@ OVERRIDABLE_PARAMS = (
     "policy_train_steps",
     "online_policy_train_steps",
     "online_checkpoint_interval",
+    "online_recent_replay_steps",
     "latent_dim",
     "model_dim",
     "num_layers",
@@ -163,9 +164,14 @@ OVERRIDABLE_PARAMS = (
     "learning_rate",
     "actor_learning_rate",
     "actor_entropy_coef",
+    "online_recent_replay_fraction",
     "actor_entropy_final_coef",
     "actor_entropy_decay_start_env_steps",
     "actor_entropy_decay_end_env_steps",
+    "curve_eval_interval_env_steps",
+    "curve_eval_episodes",
+    "curve_eval_num_envs",
+    "curve_eval_seed",
     "final_policy_eval_episodes",
     "final_policy_eval_seed",
     "wandb_project",
@@ -357,6 +363,7 @@ def parse_args() -> argparse.Namespace:
         "policy_train_steps",
         "online_policy_train_steps",
         "online_checkpoint_interval",
+        "online_recent_replay_steps",
         "latent_dim",
         "model_dim",
         "num_layers",
@@ -368,12 +375,17 @@ def parse_args() -> argparse.Namespace:
         "final_policy_eval_seed",
         "actor_entropy_decay_start_env_steps",
         "actor_entropy_decay_end_env_steps",
+        "curve_eval_interval_env_steps",
+        "curve_eval_episodes",
+        "curve_eval_num_envs",
+        "curve_eval_seed",
     ):
         parser.add_argument("--" + name.replace("_", "-"), type=int, default=None)
     for name in (
         "learning_rate",
         "actor_learning_rate",
         "actor_entropy_coef",
+        "online_recent_replay_fraction",
         "actor_entropy_final_coef",
     ):
         parser.add_argument("--" + name.replace("_", "-"), type=float, default=None)

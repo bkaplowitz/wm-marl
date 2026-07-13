@@ -231,6 +231,65 @@ def test_cli_accepts_budget_relative_entropy_decay(monkeypatch):
     ) == pytest.approx(3e-4)
 
 
+def test_cli_accepts_recent_replay_and_curve_evaluation(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _minimal_args(
+            "--online-recent-replay-fraction",
+            "0.5",
+            "--online-recent-replay-steps",
+            "128",
+            "--curve-eval-interval-env-steps",
+            "50000",
+            "--curve-eval-episodes",
+            "20",
+            "--curve-eval-seed",
+            "9000000",
+        ),
+    )
+
+    args = train_dmc_jepa.parse_args()
+
+    assert args.online_recent_replay_fraction == 0.5
+    assert args.online_recent_replay_steps == 128
+    assert args.curve_eval_interval_env_steps == 50_000
+    assert args.curve_eval_episodes == 20
+    assert args.curve_eval_seed == 9_000_000
+
+
+def test_recent_replay_batch_respects_requested_fraction():
+    def replay_with_reward(reward: float) -> SequenceReplayBuffer:
+        replay = SequenceReplayBuffer(
+            capacity=12,
+            num_envs=1,
+            observation_shape=(1,),
+            action_shape=(1,),
+            action_dtype=np.float32,
+        )
+        for step in range(10):
+            replay.add_step(
+                observations=np.asarray([[step]], dtype=np.float32),
+                actions=np.zeros((1, 1), dtype=np.float32),
+                rewards=np.asarray([reward], dtype=np.float32),
+                dones=np.zeros((1,), dtype=np.float32),
+            )
+        return replay
+
+    batch = train_dmc_jepa._sample_replay_batch(
+        replay_with_reward(1.0),
+        np.random.default_rng(0),
+        recent_replay=replay_with_reward(9.0),
+        recent_fraction=0.3,
+        batch_size=10,
+        chunk_length=2,
+        max_horizon=1,
+    )
+
+    np.testing.assert_array_equal(np.asarray(batch.rewards[:7]), 1.0)
+    np.testing.assert_array_equal(np.asarray(batch.rewards[7:]), 9.0)
+
+
 def test_cli_rejects_partial_entropy_decay(monkeypatch):
     monkeypatch.setattr(
         sys,
