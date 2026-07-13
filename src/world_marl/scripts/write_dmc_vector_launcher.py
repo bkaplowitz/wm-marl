@@ -179,8 +179,10 @@ _JEPA_DREAMER_PARITY_BASE: dict[str, Any] = {
     "critic_layer_norm": True,
     "stochastic_actor": True,
     "stochastic_collection": True,
-    "actor_entropy_coef": 3e-4,
-    "actor_entropy_mode": "gaussian",
+    # Squash-aware entropy must be strong enough to prevent seed-specific
+    # collapse of the tanh policy mean at the action bounds.
+    "actor_entropy_coef": 3e-3,
+    "actor_entropy_mode": "tanh-normal",
     "actor_log_std_min": -2.302585092994046,
     "actor_log_std_max": 0.0,
     "input_symlog": True,

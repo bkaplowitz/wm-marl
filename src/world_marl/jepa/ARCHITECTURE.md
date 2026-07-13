@@ -4,12 +4,11 @@ This document describes the single-agent vector-control JEPA algorithm and its
 two maintained training tracks: the historical high-return Reacher path and an
 experimental Dreamer control-parity path for fixed-budget comparisons.
 
-The best current launcher preset is
-`dreamer_ac_online_adaptive_hard_start` in
-`src/world_marl/scripts/write_dmc_vector_launcher.py`. This is the Reacher/easy
-configuration family that reached stable 920+ mean return with many episodes
-near 950-1000. That result used extensive real-environment checkpoint selection,
-so it is a capability result rather than a clean sample-efficiency baseline.
+The historical capability preset is `dreamer_ac_online_adaptive_hard_start` in
+`src/world_marl/scripts/write_dmc_vector_launcher.py`. It reached 920+ mean
+return on Reacher/easy, but used extensive real-environment checkpoint
+selection and is therefore not the publication-clean reference. The maintained
+fixed-budget reference is the JEPA Dreamer-parity track below.
 
 ## Goal
 
@@ -42,7 +41,7 @@ actor_loss = -log pi(action | latent) * stopgrad(advantage / return_scale)
 This prevents the actor from improving its objective by following gradients
 through model errors. The supporting controls are:
 
-- stochastic tanh-normal actor with entropy coefficient `3e-4`;
+- stochastic tanh-normal actor with squash-aware entropy coefficient `3e-3`;
 - EMA-smoothed p95-p5 return scale with decay `0.99`;
 - lambda returns with `lambda=0.95` and effective horizon `333`;
 - EMA target critic with decay `0.98` and slow-value regularization `1.0`;
@@ -73,6 +72,41 @@ Both use a 16x64 world-model batch, 1024 imagination starts, horizon 15, a
 128-dimensional latent/model trunk with two transformer blocks, and 3x64
 actor/critic MLPs. Final 20-episode evaluation is reporting overhead and is
 tracked separately from training replay.
+
+### Reset-Rich Interleaved Robustness Gate
+
+The fixed-budget Reacher robustness gate uses a cached reset-rich random replay
+with four independent 80-step segments per environment, then interleaves 64
+real steps per environment with 1024 world-model and 512 actor-critic updates.
+It disables training-time policy evaluation, checkpoint selection, championing,
+hard-start replay, CVaR, candidate gates, action penalties, and reward-specific
+logic. The latest policy is evaluated once on the locked environment seed
+`9000000`.
+
+The weak seed's actor previously saturated at the tanh bounds: at online phase
+32, seed 2 had 62.5% saturated imagined actions versus 17.7% for seed 0. The
+existing `3e-4` entropy term was only about 1% of actor-loss scale. Using the
+squash-aware entropy estimator at `3e-3` reduced phase-32 saturation to 2.2%
+and 9.2%, respectively.
+
+Locked 20-episode results at 99,584 train-plus-validation transitions:
+
+| Configuration | Seed | Mean | Std | p10 | CVaR10 | Failure | Success |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `3e-4` tanh entropy | 0 | 714.30 | 272.11 | 294.8 | 150.5 | 5% | 35% |
+| `3e-4` tanh entropy | 2 | 135.15 | 70.54 | 51.0 | 21.0 | 25% | 0% |
+| `3e-3` tanh entropy | 0 | 647.55 | 419.87 | 12.0 | 1.5 | 30% | 55% |
+| `3e-3` tanh entropy | 2 | 708.25 | 324.04 | 126.0 | 9.0 | 10% | 35% |
+
+The stronger entropy raises the two-seed mean from 424.73 to 677.90 and reduces
+the seed gap from 579.15 to 60.70. It is accepted as a cross-seed stabilization,
+not as proof that catastrophic tails are solved. The fixed 500k run tests
+whether additional online data closes that remaining gap.
+
+| Schedule | Train replay | Held-out replay | Train + held-out | WM updates | Policy updates |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 100k gate: 91 online phases | 98304 | 1280 | 99584 | 94464 | 47872 |
+| 500k gate: 481 online phases | 497664 | 1280 | 498944 | 493824 | 247552 |
 
 ### Reproducibility Contract
 

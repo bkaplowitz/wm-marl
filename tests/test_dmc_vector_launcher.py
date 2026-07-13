@@ -54,6 +54,8 @@ def test_dreamer_parity_100k_preset_is_fixed_budget_and_latest_policy():
     assert accounting["world_model_replay_ratio"] == 1024.0
     assert params["policy_gradient_mode"] == "reinforce"
     assert params["policy_return_normalization"] == "ema-percentile"
+    assert params["actor_entropy_coef"] == 3e-3
+    assert params["actor_entropy_mode"] == "tanh-normal"
     assert params["policy_replay_critic_return_mode"] == "lambda"
     assert params["policy_replay_critic_all_steps"]
     assert params["value_clip"] == 100.0
