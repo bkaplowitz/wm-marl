@@ -1,11 +1,12 @@
-# JEPA Model-Based RL Reference Architecture
+# Current JEPA Reacher Architecture
 
-This document describes the maintained vector-control JEPA algorithm and the
-canonical `jepa_500k` configuration. It is an implementation reference, not an
-experiment log. The authoritative configuration lives in
-[`write_dmc_vector_launcher.py`](../scripts/write_dmc_vector_launcher.py), and
-the model and losses live in [`models.py`](models.py) and
-[`training.py`](training.py).
+This document describes only the architecture and training protocol of the
+currently running full experiment
+[`jepa-entropy-decay-300k-500k-reacher-seed2`](https://wandb.ai/osaze-obahor/world-marl/runs/hppw7dmr).
+It uses 497,664 real training transitions and finishes with a fixed 100-episode
+evaluation of the latest policy. The implementation lives in
+[`models.py`](models.py), [`training.py`](training.py), and
+[`train_dmc_jepa.py`](../scripts/train_dmc_jepa.py).
 
 ## System Overview
 
@@ -48,7 +49,7 @@ there is no separate or EMA target encoder.
 
 ## Environment Contract
 
-The maintained DMC path uses proprioceptive state observations:
+The running experiment uses DMC proprioceptive state observations:
 
 - the DMC observation dictionary is flattened into one `float32` vector;
 - actions are continuous and retain the environment's native bounds;
@@ -123,7 +124,7 @@ Given the latest transformer hidden state:
 The model is recurrently unrolled for five supervised prediction steps. Later
 steps consume the model's previous predicted latent, so the five-step loss
 directly trains short open-loop behavior rather than only one-step teacher
-forcing. The maintained configuration uses one dynamics head, not an ensemble.
+forcing. The running model uses one dynamics head.
 
 ### World-Model Objective
 
@@ -163,9 +164,8 @@ z_t
  -> Dense(4) = [mean_1, mean_2, log_std_1, log_std_2]
 ```
 
-The CLI flags are historically named `actor_layer_norm` and
-`critic_layer_norm`, but with `normalization=rms` they instantiate RMSNorm at
-the head input. They do not add normalization after every hidden layer.
+Both heads apply RMSNorm once at their input. They do not normalize after every
+hidden layer.
 
 The actor output kernel uses scale `0.01`. Log standard deviations are clipped
 to `[log(0.1), 0]`, giving pre-squash standard deviations in `[0.1, 1.0]`.
@@ -188,11 +188,11 @@ full replay and imagines 15 recurrent world-model steps. During this update:
 - the stopped EMA target-critic value is used as the actor baseline;
 - actor scores are divided by an EMA of the batch p95-p5 return range, with
   decay `0.99` and a minimum scale of 1;
-- tanh-Normal entropy is added with coefficient `3e-3` in the canonical preset.
+- tanh-Normal entropy uses coefficient `3e-3` through 300,000 training
+  transitions, then decays linearly toward `3e-4` at 500,000 transitions.
 
-The launcher supports an explicit entropy schedule override, but no schedule is
-part of `jepa_500k` unless all schedule arguments are supplied. The canonical
-preset therefore keeps `3e-3` constant.
+The run collects exactly 497,664 training transitions, so its final actor update
+uses entropy coefficient approximately `3.315e-4`.
 
 ### Critic
 
@@ -270,7 +270,7 @@ no periodic policy reset, checkpoint selection, or champion replacement.
 | Actor baseline | value |
 | Return normalization | EMA p95-p5, decay 0.99 |
 | Value clip | 100 |
-| Entropy | tanh-Normal, coefficient `3e-3` |
+| Entropy | tanh-Normal; `3e-3` through 300k, linear decay toward `3e-4` at 500k |
 | Target critic EMA | 0.98 |
 | Slow-value coefficient | 1.0 |
 | Replay critic coefficient | 0.3 |
@@ -290,17 +290,6 @@ instantiated `reacher/easy` model has:
 
 The EMA target critic adds no trainable parameters; it maintains a moving copy
 of the 33,279 critic values. Optimizer states are not included above.
-
-The same configuration remains below 0.75M parameters across the maintained DMC
-task set:
-
-| Task | Observation dim | Action dim | Total parameters |
-| --- | ---: | ---: | ---: |
-| `reacher/easy` | 6 | 2 | 745,155 |
-| `cartpole/swingup` | 5 | 1 | 744,769 |
-| `finger/spin` | 9 | 2 | 745,539 |
-| `cheetah/run` | 17 | 6 | 747,595 |
-| `walker/walk` | 24 | 6 | 748,491 |
 
 ## Data and Update Schedule
 
@@ -343,17 +332,15 @@ Each online phase performs:
 512 actor-critic updates from full replay
 ```
 
-The replay capacity is 1,000,000 total transitions, so the 500k preset retains
-all collected training data. Sampling is uniform over valid contiguous starts
-and environment streams. The encoder remains trainable in every world-model
-phase.
+The replay capacity is 1,000,000 total transitions, so the run retains all
+collected training data. Sampling is uniform over valid contiguous starts and
+environment streams. The encoder remains trainable in every world-model phase.
 
-| Preset | Online phases | Train transitions | Held-out transitions | Train + held-out | WM updates | Policy updates |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `jepa_100k` | 91 | 98,304 | 1,280 | 99,584 | 94,464 | 47,872 |
-| `jepa_500k` | 481 | 497,664 | 1,280 | 498,944 | 493,824 | 247,552 |
+| Online phases | Train transitions | Held-out transitions | Train + held-out | WM updates | Policy updates |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 481 | 497,664 | 1,280 | 498,944 | 493,824 | 247,552 |
 
-The nominal 500k budget therefore contains exactly 497,664 training
+The 500k run therefore contains exactly 497,664 training
 transitions; phase granularity leaves it 2,336 transitions below 500,000.
 Validation and final evaluation interactions are tracked separately.
 
@@ -367,9 +354,7 @@ evaluation:
 - evaluates the latest policy produced by the final optimizer update;
 - uses deterministic mean actions;
 - uses fixed evaluation seed `9_000_000`;
-- defaults to 20 episodes in `jepa_500k`;
-- is overridden to 100 episodes for the current high-confidence scientific
-  runs.
+- runs for 100 episodes.
 
 The failure threshold 100 and success threshold 900 are reporting labels for
 Reacher diagnostics only. They never affect collection, replay sampling, losses,
@@ -382,7 +367,7 @@ interactions, but those interactions are not counted as training data.
 
 ## Reproducibility
 
-The maintained presets use isolated named RNG streams for:
+The current run uses isolated named RNG streams for:
 
 - initialization;
 - initial and online collection;
@@ -397,11 +382,3 @@ fingerprints, exact transition counts, and reload-equivalence diagnostics.
 
 Recovery checkpoints are written every 16 online phases and at the final phase.
 They exist for fault recovery only and do not participate in policy selection.
-
-## Maintained Interfaces
-
-- `world-marl-train-dmc-jepa`: execute a configured JEPA run;
-- [`write_dmc_vector_launcher.py`](../scripts/write_dmc_vector_launcher.py):
-  generate `smoke`, `jepa_100k`, and `jepa_500k` launchers;
-- `world-marl-eval-jepa-wm`: evaluate a checkpoint's held-out latent dynamics,
-  reward, and continuation predictions.
