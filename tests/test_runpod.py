@@ -28,6 +28,14 @@ def test_default_job_is_compare_world_models(monkeypatch):
     assert args.job == "compare-world-models"
 
 
+def test_default_gpu_is_rtx_5090(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["world-marl-runpod"])
+
+    args = runpod.parse_args()
+
+    assert args.gpu_id == "NVIDIA GeForce RTX 5090"
+
+
 def test_compare_defaults_match_wide_transformer_run(tmp_path):
     job = runpod.build_job_spec(_compare_args(tmp_path), "20260624T120000Z")
 

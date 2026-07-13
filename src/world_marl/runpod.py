@@ -143,7 +143,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--name-prefix", default="wm-marl")
     parser.add_argument("--template-id", default="runpod-torch-v240")
-    parser.add_argument("--gpu-id", default="NVIDIA L40S")
+    parser.add_argument("--gpu-id", default="NVIDIA GeForce RTX 5090")
     parser.add_argument("--gpu-count", type=int, default=1)
     parser.add_argument(
         "--cloud-type", default="SECURE", choices=("SECURE", "COMMUNITY")
