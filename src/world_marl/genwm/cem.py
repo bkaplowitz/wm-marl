@@ -11,6 +11,7 @@ same reward/continue head the PPO arms imagine with.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 import jax
@@ -174,3 +175,143 @@ def make_genwm_plan_fn(
         return -discounted_return(rewards, continue_probs, gamma)
 
     return _shoot
+
+
+class CEMPlanner:
+    """Stateful receding-horizon MPC actor backed by the CEM solver.
+
+    ``make_plan_fn`` must be a callable with the keyword signature::
+
+        make_plan_fn(
+            wm_state, head_state, start_observations,
+            obs_tokenizer, action_tokenizer, gamma,
+        ) -> cost_fn
+
+    where the returned ``cost_fn(candidates, key) -> costs`` matches the
+    interface expected by ``cem_solve``.  The caller is responsible for
+    partially-binding ``config`` and ``cem_config`` before passing the
+    callable here (e.g. via ``functools.partial`` or a local closure).
+    """
+
+    def __init__(
+        self, make_plan_fn, key: jax.Array, cem_config: CEMConfig, action_dim: int = 1
+    ):
+        self._make_plan_fn = make_plan_fn
+        self._key = key
+        self._cem_config = cem_config
+        self._plan_horizon = cem_config.horizon
+        self._receding = cem_config.receding_horizon
+        self._action_dim = action_dim
+
+        # Buffers are allocated lazily on first act() call, once N is known.
+        self._action_buffer: jax.Array | None = None
+        self._N: int | None = None
+
+        self._step_index: int = 0
+        self._needs_replan: bool = True
+        self._topk_costs: jax.Array | None = None
+        self._solve_seconds: float = 0.0
+
+    def _ensure_buffers(self, N: int) -> None:
+        if self._N != N:
+            self._N = N
+            self._action_buffer = jnp.zeros(
+                (N, self._plan_horizon, self._action_dim), dtype=jnp.float32
+            )
+            self._topk_costs = jnp.full((N,), jnp.inf, dtype=jnp.float32)
+
+    def reset(self) -> None:
+        """Reset episode state; next act() call will trigger a replan."""
+        self._step_index = 0
+        self._needs_replan = True
+        if self._action_buffer is not None:
+            self._action_buffer = jnp.zeros_like(self._action_buffer)
+        if self._topk_costs is not None:
+            self._topk_costs = jnp.full_like(self._topk_costs, jnp.inf)
+
+    def _warm_start_shift(self) -> None:
+        """Drop the first action from the buffer and append a zero column.
+
+        After executing ``receding_horizon`` steps the old plan is stale; the
+        next replan will sample fresh candidates from the CEM prior.  The
+        zeroed tail action lets the solver's init_std exploration dominate the
+        extended horizon.
+        """
+        assert self._action_buffer is not None
+        shifted = self._action_buffer[:, 1:, :]  # (N, H-1, A)
+        zeros = jnp.zeros(
+            (self._N, 1, self._action_dim), dtype=self._action_buffer.dtype
+        )
+        self._action_buffer = jnp.concatenate([shifted, zeros], axis=1)  # (N, H, A)
+
+    def act(
+        self,
+        flat_obs,
+        key: jax.Array,
+        wm_state: TrainState,
+        head_state: TrainState,
+        start_obs_for_horizon: jax.Array,
+        current_obs_tokenizer,
+        current_action_tokenizer,
+        gamma: float,
+    ) -> jax.Array:
+        """Execute one environment step, replanning when needed.
+
+        Args:
+            flat_obs: current flat observation (unused in the CEM path;
+                included for cross-actor API consistency).
+            key: JAX RNG key (consumed; caller should split before passing).
+            wm_state: current world-model TrainState.
+            head_state: current reward/continue head TrainState.
+            start_obs_for_horizon: shape ``(N, obs_dim)`` — initial
+                observations from which to unroll the plan.
+            current_obs_tokenizer: QuantileTokenizer for observations.
+            current_action_tokenizer: QuantileTokenizer (or None) for actions.
+            gamma: discount factor.
+
+        Returns:
+            Planned actions for this step, shape ``(N, action_dim)``.
+        """
+        del flat_obs  # not used in the CEM path
+
+        N = int(start_obs_for_horizon.shape[0])
+        self._ensure_buffers(N)
+
+        if self._needs_replan:
+            cost_fn = self._make_plan_fn(
+                wm_state=wm_state,
+                head_state=head_state,
+                start_observations=start_obs_for_horizon,
+                obs_tokenizer=current_obs_tokenizer,
+                action_tokenizer=current_action_tokenizer,
+                gamma=gamma,
+            )
+
+            self._key, solve_key = jax.random.split(self._key)
+            mean_init = jnp.zeros(
+                (N, self._plan_horizon, self._action_dim), dtype=jnp.float32
+            )
+
+            t0 = time.time()
+            final_mean, _std, topk_cost = cem_solve(
+                cost_fn, solve_key, mean_init, self._cem_config
+            )
+            self._solve_seconds += time.time() - t0
+
+            self._action_buffer = jnp.clip(
+                final_mean,
+                self._cem_config.action_low,
+                self._cem_config.action_high,
+            )
+            self._topk_costs = topk_cost
+            self._step_index = 0
+            self._needs_replan = False
+
+        actions = self._action_buffer[:, self._step_index, :]  # (N, A)
+        self._step_index += 1
+
+        if self._step_index >= self._receding:
+            self._warm_start_shift()
+            self._needs_replan = True
+
+        return actions

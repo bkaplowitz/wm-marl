@@ -6,8 +6,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+import functools
+
 from world_marl.genwm import (
     CEMConfig,
+    CEMPlanner,
     GenWMConfig,
     cem_solve,
     create_genwm_state,
@@ -134,3 +137,123 @@ def test_make_genwm_plan_fn():
     costs = cost_fn(candidates, jax.random.PRNGKey(3))
     assert costs.shape == (S, N), f"Expected ({S}, {N}), got {costs.shape}"
     assert bool(jnp.all(jnp.isfinite(costs))), "Costs must be finite"
+
+
+# ---------------------------------------------------------------------------
+# CEMPlanner tests
+# ---------------------------------------------------------------------------
+
+
+def _tiny_cem_config() -> CEMConfig:
+    return CEMConfig(
+        num_samples=4,
+        topk=2,
+        num_iters=2,
+        horizon=2,
+        receding_horizon=2,
+        init_std=1.0,
+        action_low=-1.0,
+        action_high=1.0,
+    )
+
+
+def test_cem_planner_reset():
+    config = _tiny_cem_config()
+    A = 2
+
+    def dummy_make_plan_fn(**_):
+        def cost_fn(c, k):
+            return jnp.zeros(c.shape[:2])
+
+        return cost_fn
+
+    planner = CEMPlanner(
+        dummy_make_plan_fn, jax.random.PRNGKey(0), config, action_dim=A
+    )
+    planner._ensure_buffers(N=3)
+
+    planner._step_index = 1
+    planner._needs_replan = False
+    planner._action_buffer = jnp.ones_like(planner._action_buffer)
+
+    planner.reset()
+
+    assert planner._step_index == 0
+    assert planner._needs_replan is True
+    np.testing.assert_allclose(np.asarray(planner._action_buffer), 0.0)
+
+
+def test_cem_planner_warm_start_shift():
+    config = _tiny_cem_config()
+    H, N, A = config.horizon, 2, 3
+
+    def dummy_make_plan_fn(**_):
+        def cost_fn(c, k):
+            return jnp.zeros(c.shape[:2])
+
+        return cost_fn
+
+    planner = CEMPlanner(
+        dummy_make_plan_fn, jax.random.PRNGKey(1), config, action_dim=A
+    )
+    planner._ensure_buffers(N=N)
+
+    known = jnp.arange(N * H * A, dtype=jnp.float32).reshape(N, H, A)
+    planner._action_buffer = known
+
+    planner._warm_start_shift()
+
+    buf = np.asarray(planner._action_buffer)
+    assert buf.shape == (N, H, A)
+    np.testing.assert_allclose(buf[:, : H - 1, :], np.asarray(known[:, 1:, :]))
+    np.testing.assert_allclose(buf[:, H - 1, :], 0.0)
+
+
+def test_cem_planner_act_smoke():
+    rng = np.random.default_rng(42)
+    config = _genwm_config()
+
+    obs_tokenizer = fit_quantile_tokenizer(
+        rng.normal(size=(256, config.obs_dim)).astype(np.float32), config.obs_bins
+    )
+    action_tokenizer = fit_quantile_tokenizer(
+        rng.uniform(-1.0, 1.0, size=(256, config.action_dim)).astype(np.float32),
+        config.action_bins,
+    )
+    wm_state = create_genwm_state(jax.random.PRNGKey(10), config)
+    head_state = create_head_state(jax.random.PRNGKey(11), config)
+
+    N = 1
+    cem_config = CEMConfig(
+        num_samples=4, topk=2, num_iters=2, horizon=2, receding_horizon=2
+    )
+    start_obs = jnp.zeros((N, config.float_obs_dim), dtype=jnp.float32)
+
+    make_plan_fn = functools.partial(
+        make_genwm_plan_fn,
+        config=config,
+        cem_config=cem_config,
+    )
+
+    planner = CEMPlanner(
+        make_plan_fn, jax.random.PRNGKey(20), cem_config, action_dim=config.action_dim
+    )
+
+    key = jax.random.PRNGKey(21)
+    actions = planner.act(
+        flat_obs=start_obs,
+        key=key,
+        wm_state=wm_state,
+        head_state=head_state,
+        start_obs_for_horizon=start_obs,
+        current_obs_tokenizer=obs_tokenizer,
+        current_action_tokenizer=action_tokenizer,
+        gamma=0.99,
+    )
+
+    assert actions.shape == (N, config.action_dim), (
+        f"Expected ({N}, {config.action_dim}), got {actions.shape}"
+    )
+    assert bool(jnp.all(jnp.isfinite(actions))), "Actions must be finite"
+    assert planner._topk_costs is not None
+    assert planner._solve_seconds > 0.0

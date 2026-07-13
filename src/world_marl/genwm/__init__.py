@@ -2,6 +2,7 @@
 
 from world_marl.genwm.cem import (
     CEMConfig,
+    CEMPlanner,
     cem_solve,
     discounted_return,
     make_genwm_plan_fn,
@@ -47,6 +48,7 @@ from world_marl.genwm.world_model import (
 __all__ = [
     "GENWM_ARMS",
     "CEMConfig",
+    "CEMPlanner",
     "CodebookTokenizer",
     "ContinuousTokenTransformer",
     "GaussianMLPActorCritic",
