@@ -1,418 +1,126 @@
-# JEPA Architecture
+# JEPA Model-Based RL Architecture
 
-This document describes the single-agent vector-control JEPA algorithm and its
-two maintained training tracks: the historical high-return Reacher path and an
-experimental Dreamer control-parity path for fixed-budget comparisons.
+This document describes the single maintained JEPA algorithm. Historical
+checkpoint-search, champion, hard-start, candidate-refit, CEM, and task-specific
+experimental paths have been removed from the training CLI.
 
-The historical capability preset is `dreamer_ac_online_adaptive_hard_start` in
-`src/world_marl/scripts/write_dmc_vector_launcher.py`. It reached 920+ mean
-return on Reacher/easy, but used extensive real-environment checkpoint
-selection and is therefore not the publication-clean reference. The maintained
-fixed-budget reference is the JEPA Dreamer-parity track below.
+## Algorithm
 
-## Goal
-
-The world model learns action-conditioned dynamics in latent space:
+The model learns action-conditioned dynamics directly in representation space:
 
 ```text
-p(z_next, reward, continue | z, continuous_action)
+z_t = encoder(observation_t)
+p(z_{t+1}, reward_t, continue_t | z_history, action_history)
 ```
 
-where `z = encoder(observation)`. The model does not reconstruct observations
-or pixels. Control is learned by training actor and critic heads through
-imagined rollouts inside the latent world model.
+It never reconstructs observations. Actor and critic heads learn from latent
+rollouts produced by this world model, which makes the complete system
+model-based reinforcement learning rather than only representation learning.
 
-## Dreamer Control-Parity Track
+One training phase is:
 
-The presets `jepa_dreamer_parity_100k` and `jepa_dreamer_parity_500k` keep the
-JEPA world model but replace the earlier control and scheduling choices with the
-main reusable mechanics from the official DreamerV3 implementation. This path
-is experimental until full multi-seed runs validate it.
+1. collect real transitions with the current stochastic policy;
+2. append them to replay;
+3. update the JEPA world model from the full replay;
+4. update actor and critic through latent imagination;
+5. continue with the resulting latest policy.
 
-The central change is the actor gradient. The historical path differentiates
-the actor directly through imagined world-model transitions. The parity path
-stops that action-to-model gradient and uses a score-function objective:
-
-```text
-advantage = lambda_return - stopgrad(slow_value)
-actor_loss = -log pi(action | latent) * stopgrad(advantage / return_scale)
-```
-
-This prevents the actor from improving its objective by following gradients
-through model errors. The supporting controls are:
-
-- stochastic tanh-normal actor with squash-aware entropy coefficient `3e-3`;
-- EMA-smoothed p95-p5 return scale with decay `0.99`;
-- lambda returns with `lambda=0.95` and effective horizon `333`;
-- EMA target critic with decay `0.98` and slow-value regularization `1.0`;
-- replay critic loss `0.3`, using lambda targets at every state in a length-64
-  replay sequence;
-- value targets clipped at `100`; raising this to `400` destabilized the critic
-  and reduced the seed-1 final evaluation to `125.75`, so the clip is retained
-  as a control-stability bound rather than treated as a representational limit;
-- symlog inputs and 255-bin symlog two-hot reward/value targets;
-- SiLU, RMSNorm, small output initialization, 1000-update warmup, and AGC `0.3`;
-- latest-policy reporting with no real-environment checkpoint search, champion
-  selection, hard-start/CVaR objective, or candidate-refit gate;
-- online encoder updates enabled so newly collected distributions can change the
-  representation.
-- atomically replaced recovery parameters every five online phases, with plot,
-  video, and W&B artifact failures treated as nonfatal logging errors.
-
-The world-model architecture remains JEPA: normalized latent targets, causal
-action-conditioned transformer dynamics, reward/continue heads, and SIGReg. It
-does not become an RSSM and does not add an observation decoder.
-
-| Preset | Train replay | Held-out replay | Train + held-out | WM updates | Policy updates | WM replay ratio |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `jepa_dreamer_parity_100k` | 99584 | 1280 | 100864 | 99584 | 99584 | 1024 |
-| `jepa_dreamer_parity_500k` | 496896 | 1280 | 498176 | 496896 | 496896 | 1024 |
-
-Both use a 16x64 world-model batch, 1024 imagination starts, horizon 15, a
-128-dimensional latent/model trunk with two transformer blocks, and 3x64
-actor/critic MLPs. Final 20-episode evaluation is reporting overhead and is
-tracked separately from training replay.
-
-### Reset-Rich Interleaved Robustness Gate
-
-The fixed-budget Reacher robustness gate uses a cached reset-rich random replay
-with four independent 80-step segments per environment, then interleaves 64
-real steps per environment with 1024 world-model and 512 actor-critic updates.
-It disables training-time policy evaluation, checkpoint selection, championing,
-hard-start replay, CVaR, candidate gates, action penalties, and reward-specific
-logic. The latest policy is evaluated once on the locked environment seed
-`9000000`.
-
-The weak seed's actor previously saturated at the tanh bounds: at online phase
-32, seed 2 had 62.5% saturated imagined actions versus 17.7% for seed 0. The
-existing `3e-4` entropy term was only about 1% of actor-loss scale. Using the
-squash-aware entropy estimator at `3e-3` reduced phase-32 saturation to 2.2%
-and 9.2%, respectively.
-
-Locked 20-episode results at 99,584 train-plus-validation transitions:
-
-| Configuration | Seed | Mean | Std | p10 | CVaR10 | Failure | Success |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `3e-4` tanh entropy | 0 | 714.30 | 272.11 | 294.8 | 150.5 | 5% | 35% |
-| `3e-4` tanh entropy | 2 | 135.15 | 70.54 | 51.0 | 21.0 | 25% | 0% |
-| `3e-3` tanh entropy | 0 | 647.55 | 419.87 | 12.0 | 1.5 | 30% | 55% |
-| `3e-3` tanh entropy | 2 | 708.25 | 324.04 | 126.0 | 9.0 | 10% | 35% |
-
-The stronger entropy raises the two-seed mean from 424.73 to 677.90 and reduces
-the seed gap from 579.15 to 60.70. It is accepted as a cross-seed stabilization,
-not as proof that catastrophic tails are solved. The fixed 500k run tests
-whether additional online data closes that remaining gap.
-
-| Schedule | Train replay | Held-out replay | Train + held-out | WM updates | Policy updates |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 100k gate: 91 online phases | 98304 | 1280 | 99584 | 94464 | 47872 |
-| 500k gate: 481 online phases | 497664 | 1280 | 498944 | 493824 | 247552 |
-
-### Reproducibility Contract
-
-The parity presets use `--isolated-rng-streams`. Initialization, world-model
-updates, policy updates, replay sampling, online action sampling, validation,
-and evaluation own deterministic named streams. As a result, enabling an extra
-evaluation or changing the number of world-model updates no longer silently
-changes later collection noise or policy minibatches. Historical runs can be
-replayed with `--no-isolated-rng-streams`.
-
-The presets also use `--deterministic-compute`: deterministic XLA GPU
-reductions, a deterministic cuBLAS workspace, disabled TF32 overrides, and
-highest-precision JAX matrix multiplication. GPU GEMM autotuning and Triton
-GEMM selection are disabled so separate devices cannot choose different fused
-kernels. This costs throughput but prevents tiny same-seed numerical differences
-from being amplified by the online policy/data feedback loop.
-
-Each run records `rng_streams.json`, stable initial/validation replay digests,
-and parameter plus recent-replay digests after every online phase. Full replay
-digests are recorded at recovery-checkpoint phases and at the end. Before a
-configuration is compared across seeds, two identical same-seed jobs must
-produce matching replay digests and either identical parameter digests or a
-documented numerical tolerance. Cross-seed spread is treated as algorithmic
-robustness only after that same-seed gate passes. The parity presets evaluate
-every training seed on the same final environment seed (`9000000`) so policy
-variance is not mixed with a different set of reporting episodes.
-
-The `*_interleaved` parity presets are controlled robustness experiments. They
-halve each online collection, world-model update, and policy update burst while
-doubling the phase count. Total real transitions and optimizer updates remain
-identical to the corresponding base preset, and checkpoint/video cadence stays
-aligned in environment steps. This isolates feedback cadence from data budget.
-
-All W&B metrics declare `budget/train_env_steps` as their synchronized x-axis
-rather than using W&B's internal `_step` row counter. `report/episode_return` is
-logged at the exact cumulative training transition where each episode finishes,
-while `report/return_mean` and tail metrics summarize each collection phase. The
-500k parity preset therefore ends at 496,896 training transitions (498,176
-including held-out validation), with final evaluation interactions reported
-separately and excluded from the learning-curve x-axis.
-
-## Current Best Preset
-
-The current reference preset is `dreamer_ac_online_adaptive_hard_start`:
-
-| Area | Current setting |
-| --- | --- |
-| Environment track | DMC vector/proprioceptive control |
-| Parallel envs | 16 |
-| Initial random collect | 8192 vector steps, 131072 transitions |
-| Validation collect | 256 vector steps, 4096 transitions |
-| Offline WM updates | 12000 |
-| Online iterations | 8 |
-| Online collect per iteration | 6144 vector steps, 98304 transitions |
-| Online validation per iteration | 256 vector steps |
-| Online WM updates per iteration | 3000 |
-| Online actor updates per iteration | 750 |
-| WM batch size | 16 sequences |
-| WM sequence length | 64 |
-| Actor batch size | 1024 start states |
-| Context window | 8 |
-| Imagination horizon | 16 |
-| Critic real-return horizon | 32 |
-| Latent dim | 512 |
-| Transformer dim | 512 |
-| Transformer layers | 2 |
-| Transformer heads | 8 |
-| Dynamics ensemble heads | 5 |
-| Actor MLP | 3 hidden layers, width 512, LayerNorm |
-| Critic MLP | 3 hidden layers, width 512, LayerNorm |
-| WM learning rate | 1e-4 |
-| Actor and critic learning rate | 3e-5 |
-| WM grad clip | 300 |
-| Actor grad clip | 10 |
-| Critic grad clip | 30 |
-| Train replay steps | 917504 transitions |
-| Train + validation replay steps | 954368 transitions |
-
-The preset keeps the algorithm within the same broad DMC sample-efficiency
-regime, but it is not a strict 500k-step run. For paper-style comparisons,
-report the exact step accounting next to each result.
-
-## 500k Sample-Efficiency Search
-
-The current sample-efficiency target is:
-
-```text
-DMC reacher/easy mean return >= 920
-within <= 500k training-replay environment steps
-```
-
-With `16` parallel environments, a 500k training-replay budget is about `31250`
-vector steps. The launcher provides three named presets that keep the
-hard-start algorithm fixed and vary only the initial-vs-online data split:
-
-| Preset | Initial vector steps | Online phases | Online vector steps/phase | Train replay env steps | Initial share |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `dreamer_ac_500k_hard_start_lean` | 1024 | 12 | 2496 | 495616 | 3.3% |
-| `dreamer_ac_500k_hard_start_balanced` | 2048 | 12 | 2432 | 499712 | 6.6% |
-| `dreamer_ac_500k_hard_start_coverage` | 4096 | 12 | 2256 | 498688 | 13.1% |
-
-The first config to try is `dreamer_ac_500k_hard_start_balanced`: it avoids a
-large random bootstrap, gives the world model enough initial support to start
-learning, and spends most real data on the actor-induced online distribution.
-
-For each generated launcher, `manifest.json` includes a `step_accounting`
-section with:
-
-- training-replay vector and environment steps;
-- validation-replay vector and environment steps;
-- train+validation totals.
-
-Policy selection, confirmation, and final evaluation episodes are still real
-environment interactions, but they are tracked separately from training replay
-so we can report both Dreamer-style training curves and stricter audit totals.
+There is no real-environment checkpoint search, accept/reject gate, or champion
+policy. The final deterministic evaluation uses the policy produced by the last
+scheduled optimizer update.
 
 ## World Model
 
-The world model has these components:
+The maintained vector-control model contains:
 
-1. vector observation encoder;
-2. continuous action encoder;
-3. causal latent dynamics transformer;
-4. residual latent predictor;
-5. reward head;
-6. continuation head;
-7. dynamics ensemble heads.
+- an MLP observation encoder;
+- an MLP continuous-action encoder;
+- a causal transformer over latent/action history;
+- residual, normalized latent dynamics;
+- reward and continuation heads.
 
-The observation encoder is an MLP that maps vector observations to normalized
-latents:
+The predictor uses two pre-norm transformer blocks, RoPE attention, four heads,
+RMSNorm, SiLU, and GEGLU feed-forward layers in the reference configuration.
+Both latent and transformer width are 128, with an eight-step context window.
 
-```text
-z_t = E(o_t)
-```
-
-For each timestep, the dynamics stack builds a token from the current latent and
-the encoded continuous action:
+The target latent is the same encoder applied to the future observation:
 
 ```text
-x_t = W_z z_t + A(a_t)
+target = stopgrad(encoder(observation_next))
 ```
 
-The dynamics model is a causal transformer over latent/action history. It uses
-RoPE attention, pre-norm transformer blocks, and GEGLU feed-forward blocks.
-Attention is causal and masked across episode boundaries.
-
-The latent transition is residual:
-
-```text
-z_hat_next = normalize(z_t + delta_theta(history, action))
-```
-
-The reward head uses symlog two-hot targets. Continuation uses binary cross
-entropy. During imagination, predicted rewards are clipped to the valid DMC
-range `[0, 1]` before actor-critic targets are built.
-
-## JEPA Objective
-
-The target for the latent predictor is the encoder output on the next
-observation:
-
-```text
-target_z_next = stopgrad(E(o_next))
-```
-
-The latent prediction loss is cosine distance between the predicted next latent
-and the target next latent. The full world-model loss is:
-
-```text
-JEPA cosine loss
-+ reward prediction loss
-+ continuation loss
-+ SIGReg latent regularization
-```
-
-SIGReg is the anti-collapse regularizer. There is no observation decoder and no
-EMA target encoder. The current implementation uses one encoder with
-stop-gradient targets.
+The world-model objective combines cosine latent prediction, symlog two-hot
+reward prediction, continuation BCE, and SIGReg anti-collapse regularization.
+There is one online encoder and no EMA target encoder. The EMA in this algorithm
+belongs to the critic, not the JEPA encoder.
 
 ## Actor-Critic
 
-The actor and critic operate on the same latent state used by the world model.
-The current actor-critic path is Dreamer/STORM-style:
+The actor and critic are three-hidden-layer MLPs of width 64 with LayerNorm.
+The control stack retains the reusable DreamerV3 stabilization mechanisms while
+keeping the JEPA world model unchanged:
 
-- stochastic tanh-normal actor during training;
-- deterministic mean action at evaluation;
-- entropy bonus with coefficient `1e-4`;
-- actor MLP: 3 hidden layers, width 512, LayerNorm;
-- critic MLP: 3 hidden layers, width 512, LayerNorm;
-- value head trained with symlog two-hot targets;
-- target critic EMA with decay `0.98`;
-- lambda-return actor objective;
-- value baseline for actor advantages;
-- percentile normalization of imagined returns/advantages;
-- lower-tail actor CVaR term with fraction `0.25` and coefficient `0.5`;
-- action-bound penalty with coefficient `2.0` and bound `0.85`;
-- real-replay critic auxiliary loss with coefficient `0.1`.
+- stochastic tanh-normal actor for training and collection;
+- deterministic mean action for final evaluation;
+- squash-aware entropy coefficient `3e-3`;
+- REINFORCE actor gradient, avoiding gradients through model errors;
+- 15-step latent imagination and lambda returns (`lambda=0.95`);
+- EMA p95-p5 return normalization (`decay=0.99`);
+- symlog two-hot value targets with clip `100`;
+- EMA target critic (`decay=0.98`);
+- slow-value regularization (`1.0`);
+- replay critic loss (`0.3`) over every state in length-64 sequences;
+- SiLU, RMSNorm, small output initialization, optimizer warmup, and AGC.
 
-Actor and critic are trained through imagined latent rollouts. The world model
-is frozen during actor-critic updates.
+Actor-critic updates do not update the encoder, transformer, reward head, or
+continuation head. World-model parameters change only during the world-model
+part of each phase.
 
-## Policy Objective
+## Data Schedule
 
-The actor objective uses imagined lambda returns from the frozen world model:
+The initial replay contains four independent 80-step random segments per
+environment. It is regenerated from the run seed in a separate temporary
+environment adapter, so the online environments remain at their first reset.
+This reproduces the previously cached bootstrap exactly without requiring an
+external replay file.
 
-```text
-G_lambda = lambda_return(reward_hat, continue_hat, V(z_hat))
-advantage = percentile_normalize(G_lambda - V(z_start))
-```
+After bootstrap, training is tightly interleaved: 64 vector steps, 1024
+world-model updates, and 512 actor-critic updates per phase. The encoder remains
+trainable during online world-model updates.
 
-The actor maximizes the normalized imagined advantage plus entropy, with a
-lower-tail term that puts extra pressure on poor imagined starts. The critic
-learns the same lambda-return target. A soft real-replay critic auxiliary loss
-is mixed into the critic update:
+| Preset | Online phases | Train transitions | Held-out transitions | Train + held-out | WM updates | Policy updates |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `jepa_100k` | 91 | 98,304 | 1,280 | 99,584 | 94,464 | 47,872 |
+| `jepa_500k` | 481 | 497,664 | 1,280 | 498,944 | 493,824 | 247,552 |
 
-```text
-critic_loss = imagined_value_loss
-            + replay_critic_coef * real_replay_value_loss
-```
+Final evaluation interactions are reporting overhead and are tracked separately.
 
-## Hard-Start Replay
+## Reproducibility
 
-The current stability fix is a small failure-focused replay buffer, not a
-task-specific reward hack.
+The maintained presets use isolated named RNG streams for initialization,
+world-model updates, policy updates, replay sampling, online collection, and
+validation. They also request deterministic accelerator reductions and highest
+JAX matrix-multiplication precision.
 
-After actor replay collection, episodes below the hard-start return cutoff are
-stored as early-episode prefixes. During policy training:
+Each run records:
 
-- `50%` of actor imagination starts come from hard-start prefixes when enough
-  hard starts are available;
-- `50%` of replay-critic batches come from the same hard-start buffer;
-- the hard-start cutoff is the bottom `30%` of collected episode returns;
-- prefixes are capped at `64` transitions;
-- the buffer stores up to `65536` transitions.
+- resolved arguments and dependency versions;
+- initial and validation replay SHA-256 fingerprints;
+- parameter and target-critic fingerprints after every phase;
+- recent replay fingerprints every phase and full replay fingerprints at
+  recovery checkpoints;
+- exact training, validation, and evaluation transition counts.
 
-This targets the failure mode where the policy solves most starts nearly
-perfectly but catastrophically fails a small subset of initial geometries.
+All training metrics use `budget/train_env_steps` as the W&B x-axis. Episode
+returns are logged at the real training transition where the episode finishes.
 
-## Online Learning
+## Maintained Interfaces
 
-The online loop is:
+- `world-marl-train-dmc-jepa`: train one or more runs;
+- `write_dmc_vector_launcher.py`: generate `smoke`, `jepa_100k`, or
+  `jepa_500k` launchers;
+- `world-marl-eval-jepa-wm`: general held-out world-model evaluation.
 
-1. collect replay with the current actor;
-2. update the hard-start buffer from low-return actor episodes;
-3. keep held-out recent-policy validation replay;
-4. train candidate world-model refits with the encoder frozen;
-5. sample each refit batch from a fixed anchor/recent mixture;
-6. accept only candidate checkpoints that improve recent validation while
-   keeping anchor validation degradation within tolerance;
-7. continue actor-critic training in the accepted world model;
-8. keep a champion actor selected by real-environment evaluation.
-
-The encoder is frozen during online refits so the actor and critic do not lose
-their latent coordinate system. The trainable online refit components are the
-action encoder, transformer dynamics, latent predictor, reward head, and
-continuation head.
-
-The anchor/recent candidate-refit batch is:
-
-```text
-batch = rho * initial_random_anchor + (1 - rho) * latest_actor_replay
-```
-
-with `rho = 0.5`.
-
-The current online acceptance setup uses:
-
-- candidate checkpoint evaluation every 250 WM updates;
-- recent validation improvement gate;
-- anchor degradation gate with max degradation `0.08`;
-- anchor penalty `2.0`;
-- control-value consistency weight `0.1`;
-- online policy trust penalty `3.0`.
-
-## What Is Not In The Current Algorithm
-
-These were experimental or diagnostic branches and are no longer part of the
-current JEPA path:
-
-- candidate-distillation policy objective;
-- action-contrast auxiliary world-model loss;
-- latent-delta scale auxiliary world-model loss;
-- stratified reset-start sampler;
-- sampled final-evaluation diagnostic;
-- Optuna HPO launcher;
-- rollout/actor-critic diagnostic CLIs;
-- predictor-bottleneck diagnostic CLIs.
-
-The only remaining "candidate" terminology refers to online candidate
-world-model refits, which are part of the current algorithm.
-
-## Step Accounting
-
-For sample-efficiency comparisons, the most important number is real
-environment interaction. The script separates:
-
-- training replay steps;
-- held-out validation replay steps;
-- real policy selection/evaluation/confirmation episodes;
-- strict total real environment steps.
-
-Imagined rollouts, world-model optimizer updates, and actor-critic optimizer
-updates are not real environment steps.
-
-For paper-style comparisons, report both:
-
-1. training-replay-only real steps, for optimistic Dreamer/STORM-style curves;
-2. strict real steps including validation and policy evaluation, for full audit
-   transparency.
+The canonical implementation is intentionally small enough that changing a
+scientific assumption requires an explicit code or preset change rather than
+activating an old experimental flag.

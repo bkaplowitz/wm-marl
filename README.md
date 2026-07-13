@@ -149,185 +149,8 @@ uv run world-marl-train-e2e \
   --num-runs 3
 ```
 
-### DMC JEPA World-Model Validation
-
-The `world-marl-validate-dmc-world-model` command is the first
-continuous-control rung. It collects random state-observation rollouts from
-Google DeepMind Control Suite tasks and fits the SIGReg-JEPA latent world model
-to:
-
-```text
-p(z_next, reward, continue | z, continuous_action)
-```
-
-With the default `--policy-train-steps 0`, this command does **not** train a
-continuous actor and does not use MPC. It answers the narrower question: can the
-latent dynamics, reward head, and continue head fit action-conditioned
-continuous-control transitions better than no-action and shuffled-action
-controls?
-
-Install the optional DMC dependency first:
-
-```bash
-uv sync --extra dmc
-```
-
-Then run a small CartPole Swingup fit:
-
-```bash
-uv run world-marl-validate-dmc-world-model \
-  --env dmc:cartpole/swingup \
-  --num-envs 16 \
-  --collect-steps 2048 \
-  --validation-steps 512 \
-  --train-steps 5000 \
-  --batch-size 256 \
-  --chunk-length 32 \
-  --open-loop-horizon 5 \
-  --latent-dim 128 \
-  --regularizer sigreg \
-  --regularizer-weight 0.05 \
-  --controls none no-action-world-model shuffled-action-replay frozen-random-world-model \
-  --out-dir runs/dmc_jepa
-```
-
-Good first DMC tasks are `dmc:cartpole/swingup`, `dmc:pendulum/swingup`, and
-`dmc:reacher/easy`. For faster accelerator-friendly iteration, the same command
-also accepts Brax tasks with `--env brax:<env_name>`.
-
-Install the optional Brax dependency with:
-
-```bash
-uv sync --extra brax
-```
-
-Then run the same validation loop on a JAX-native Brax environment:
-
-```bash
-uv run world-marl-validate-single-agent-world-model \
-  --env brax:reacher \
-  --num-envs 256 \
-  --collect-steps 2048 \
-  --validation-steps 512 \
-  --train-steps 5000 \
-  --batch-size 512 \
-  --chunk-length 32 \
-  --open-loop-horizon 5 \
-  --latent-dim 128 \
-  --regularizer sigreg \
-  --regularizer-weight 0.05 \
-  --controls none no-action-world-model shuffled-action-replay frozen-random-world-model \
-  --out-dir runs/brax_jepa
-```
-
-Start with state observations; pixel observations and larger recurrent/history
-models are later milestones.
-
-As a first sequence-model probe, use a larger context window in model-only mode.
-This validates history-conditioned latent dynamics without yet training the
-actor from history-initialized imagined rollouts:
-
-```bash
-uv run world-marl-validate-single-agent-world-model \
-  --env brax:reacher \
-  --num-envs 512 \
-  --collect-steps 2048 \
-  --validation-steps 1024 \
-  --train-steps 5000 \
-  --batch-size 1024 \
-  --chunk-length 32 \
-  --context-window 4 \
-  --open-loop-horizon 15 \
-  --latent-dim 128 \
-  --regularizer sigreg \
-  --regularizer-weight 0.05 \
-  --controls none no-action-world-model shuffled-action-replay \
-  --out-dir runs/brax_jepa_history
-```
-
-To test Milestone 2, add frozen-world-model policy training. This uses direct
-latent-imagination RL as the main algorithm: the actor is optimized through
-imagined latent rollouts in the frozen world model, with no MPC/search and no
-JEPA backbone updates during actor/value training:
-
-```bash
-uv run world-marl-validate-dmc-world-model \
-  --env dmc:cartpole/swingup \
-  --num-envs 16 \
-  --dmc-workers 16 \
-  --collect-steps 4096 \
-  --validation-steps 1024 \
-  --train-steps 5000 \
-  --critic-warmup-steps 1000 \
-  --critic-horizon 32 \
-  --policy-train-steps 3000 \
-  --policy-objective direct \
-  --policy-return-mode reward-only \
-  --imag-horizon 15 \
-  --policy-selection-interval 500 \
-  --policy-selection-episodes 20 \
-  --policy-eval-episodes 100 \
-  --policy-eval-num-envs 16 \
-  --value-clip 100 \
-  --batch-size 256 \
-  --chunk-length 32 \
-  --open-loop-horizon 15 \
-  --latent-dim 128 \
-  --regularizer sigreg \
-  --regularizer-weight 0.05 \
-  --controls none no-action-world-model shuffled-action-replay frozen-random-world-model \
-  --out-dir runs/dmc_jepa_policy
-```
-
-This second mode reports both world-model fit metrics and real-environment
-policy returns:
-
-- random policy return;
-- freshly reset actor return before imagination training;
-- real-return critic warmup diagnostics;
-- trained actor return after frozen-model imagination training, using the best
-  actor selected by periodic paired real-environment validation;
-- paired no-action, shuffled-action, and frozen-random-world-model controls.
-
-The next engineering rung turns the offline validation into an online data loop.
-After the first frozen-model policy phase, the selected actor collects fresh real
-Brax transitions, the replay buffer is updated, the world model is refit, and the
-actor continues training in the updated latent model. Keep this as a lightweight
-single-seed pipeline check before spending on multi-seed controls:
-
-```bash
-uv run world-marl-validate-single-agent-world-model \
-  --env brax:reacher \
-  --num-runs 1 \
-  --num-envs 512 \
-  --collect-steps 2048 \
-  --validation-steps 1024 \
-  --train-steps 3000 \
-  --critic-warmup-steps 500 \
-  --critic-horizon 32 \
-  --policy-train-steps 1500 \
-  --policy-objective direct \
-  --policy-return-mode reward-only \
-  --imag-horizon 15 \
-  --policy-selection-interval 500 \
-  --policy-selection-episodes 32 \
-  --policy-eval-episodes 64 \
-  --online-iterations 1 \
-  --online-collect-steps 1024 \
-  --online-train-steps 1500 \
-  --online-policy-train-steps 1000 \
-  --batch-size 1024 \
-  --chunk-length 32 \
-  --open-loop-horizon 15 \
-  --latent-dim 128 \
-  --regularizer sigreg \
-  --regularizer-weight 0.05 \
-  --controls none no-action-world-model \
-  --out-dir runs/brax_jepa_reacher_online_dev
-```
-
-Each `metrics.jsonl` row includes rollout diagnostics for debugging learning
-failures:
+Each end-to-end `metrics.jsonl` row includes rollout diagnostics for debugging
+learning failures:
 
 - sampled action counts/frequencies, both aggregate and per agent;
 - sampled-policy entropy, aggregate and per agent;
@@ -336,6 +159,45 @@ failures:
 - generic info/event counters, including coin-related and `coin_consumed` keys
   if the Melting Pot wrapper exposes them.
 
+### JEPA Model-Based RL
+
+The maintained JEPA route learns action-conditioned latent dynamics and trains a
+stochastic actor plus critic through imagined latent rollouts. It uses no
+observation decoder, no EMA target encoder, no real-environment checkpoint
+search, and no task-specific failure buffer.
+
+Install DMC and run a local smoke test:
+
+```bash
+uv sync --extra dmc
+uv run python -m world_marl.scripts.write_dmc_vector_launcher \
+  --preset smoke \
+  --tasks reacher/easy \
+  --seeds 0 \
+  --gpus 0 \
+  --out-root runs/jepa_smoke
+bash runs/jepa_smoke/launcher.sh
+```
+
+Generate the fixed 500K experiment:
+
+```bash
+uv run python -m world_marl.scripts.write_dmc_vector_launcher \
+  --preset jepa_500k \
+  --tasks reacher/easy cartpole/swingup finger/spin cheetah/run walker/walk \
+  --seeds 0 1 2 3 4 \
+  --gpus 0 1 \
+  --out-root runs/jepa_500k
+bash runs/jepa_500k/launcher.sh
+```
+
+The 500K preset uses 497,664 training transitions plus 1,280 held-out
+world-model validation transitions. Final 20-episode evaluation is tracked
+separately. All W&B curves use actual training environment steps on the x-axis,
+and the reported final score comes from the deterministic latest policy.
+
+For the model, objective, schedule, and reproducibility contract, see
+[`src/world_marl/jepa/ARCHITECTURE.md`](src/world_marl/jepa/ARCHITECTURE.md).
 
 ## Tests
 

@@ -208,9 +208,7 @@ def online_curve_rows(
                 if int(step) <= step_limit
             ]
             in_budget_steps = [
-                int(step)
-                for step in finish_steps
-                if int(step) <= step_limit
+                int(step) for step in finish_steps if int(step) <= step_limit
             ]
             if in_budget_returns:
                 rows.append(
@@ -281,8 +279,6 @@ def summary_row(
         "dreamer_style_budget_reached": score.get("budget_reached"),
         "dreamer_style_window_start_env_step": score.get("window_start_env_step"),
         "dreamer_style_window_end_env_step": score.get("window_end_env_step"),
-        "policy_final_champion_return": run.get("policy_final_champion_return")
-        or summary.get("aggregate_policy_final_champion_return"),
         "final_eval_mean_return": final_eval.get("mean_return")
         or run.get("final_policy_eval_mean")
         or summary.get("aggregate_final_policy_eval_mean"),
@@ -402,7 +398,7 @@ def write_report(
         f"- Environment: `{env}`",
         f"- Step limit: `{step_limit}` training-replay env steps",
         "- JEPA curve source: online actor replay episodes, not best checkpoint selection",
-        "- Final evaluation source: trainer final champion evaluation",
+        "- Final evaluation source: deterministic latest policy after the fixed schedule",
         "",
         "## Best JEPA Curve Point",
         "",

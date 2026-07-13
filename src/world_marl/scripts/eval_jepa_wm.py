@@ -109,9 +109,11 @@ def main() -> None:
     metadata = load_metadata(args.checkpoint)
     env = args.env or metadata.get("env")
     if not isinstance(env, str) or not env.startswith("dmc:"):
-        raise ValueError("--env is required unless checkpoint metadata contains a DMC env")
+        raise ValueError(
+            "--env is required unless checkpoint metadata contains a DMC env"
+        )
     seed = int(metadata.get("seed", 0) if args.seed is None else args.seed)
-    config = JepaConfig(**metadata["jepa_config"])
+    config, ignored_config_keys = _jepa_config_from_metadata(metadata)
     chunk_length = int(
         args.chunk_length
         or metadata.get("chunk_length")
@@ -164,6 +166,7 @@ def main() -> None:
             "algorithm": metadata.get("algorithm"),
             "control": metadata.get("control"),
             "jepa_config": dataclasses.asdict(config),
+            "ignored_legacy_jepa_config_keys": ignored_config_keys,
         },
         "config_summary": {
             "latent_dim": config.latent_dim,
@@ -202,6 +205,19 @@ def main() -> None:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(to_jsonable(result), indent=2, sort_keys=True))
     print(json.dumps(to_jsonable(result), indent=2, sort_keys=True))
+
+
+def _jepa_config_from_metadata(
+    metadata: dict[str, Any],
+) -> tuple[JepaConfig, list[str]]:
+    payload = metadata.get("jepa_config")
+    if not isinstance(payload, dict):
+        raise ValueError("checkpoint metadata is missing jepa_config")
+    field_names = {field.name for field in dataclasses.fields(JepaConfig)}
+    ignored = sorted(set(payload) - field_names)
+    return JepaConfig(
+        **{key: value for key, value in payload.items() if key in field_names}
+    ), ignored
 
 
 def collect_dmc_replay(
@@ -467,8 +483,7 @@ def per_horizon_metrics(
         )
         metrics[f"{label}/continue_accuracy"] = masked_mean(
             (
-                continue_pred[:, :, horizon_index]
-                == continue_true[:, :, horizon_index]
+                continue_pred[:, :, horizon_index] == continue_true[:, :, horizon_index]
             ).astype(jnp.float32),
             transition_mask,
         )
@@ -509,7 +524,9 @@ def action_sensitivity(
     control: ControlMode,
 ) -> dict[str, jax.Array]:
     obs = batch.observations[:, 0]
-    latents = state.apply_fn({"params": state.params}, obs, method=JepaWorldModel.encode)
+    latents = state.apply_fn(
+        {"params": state.params}, obs, method=JepaWorldModel.encode
+    )
     latent_context = latents[:, None, :]
     if config.action_mode != "continuous" or control == "no-action-world-model":
         zero = jnp.asarray(0.0, dtype=jnp.float32)

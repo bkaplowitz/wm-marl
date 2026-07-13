@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from world_marl.scripts.write_dmc_vector_launcher import (
-    COMMON_PARAMS,
     PRESETS,
     params_to_shell_args,
     step_accounting,
@@ -9,14 +8,13 @@ from world_marl.scripts.write_dmc_vector_launcher import (
 )
 
 
-def test_launcher_serializes_wandb_tracking_controls():
+def test_launcher_serializes_tracking_controls():
     command = params_to_shell_args(
         {
             "wandb_project": "world-marl",
             "wandb_entity": "osaze-obahor",
             "wandb_tags": ("jepa", "reacher"),
             "wandb_videos": True,
-            "wandb_video_frame_stride": 4,
         }
     )
 
@@ -26,7 +24,6 @@ def test_launcher_serializes_wandb_tracking_controls():
     assert "jepa" in command
     assert "reacher" in command
     assert "--wandb-videos" in command
-    assert "--wandb-video-frame-stride" in command
 
 
 def test_launcher_syncs_tracking_extra_when_enabled(tmp_path):
@@ -42,92 +39,89 @@ def test_launcher_syncs_tracking_extra_when_enabled(tmp_path):
     assert "--extra dmc --extra cuda12 --extra tracking" in launcher
 
 
-def test_dreamer_parity_100k_preset_is_fixed_budget_and_latest_policy():
-    params = {**COMMON_PARAMS, **PRESETS["jepa_dreamer_parity_100k"]}
-    accounting = step_accounting(params)
-    command = params_to_shell_args(params)
+def test_maintained_presets_are_small_and_unambiguous():
+    assert set(PRESETS) == {"smoke", "jepa_100k", "jepa_500k"}
+    forbidden = {
+        "policy_selection_interval",
+        "policy_confirmation_episodes",
+        "online_policy_champion",
+        "online_candidate_refit",
+        "policy_hard_start_max_steps",
+        "policy_actor_cvar_coef",
+        "policy_action_bound_coef",
+    }
+    for params in PRESETS.values():
+        assert forbidden.isdisjoint(params)
 
-    assert accounting["train_replay_env_steps"] == 99_584
-    assert accounting["train_plus_validation_env_steps"] == 100_864
-    assert accounting["world_model_updates"] == 99_584
-    assert accounting["policy_updates"] == 99_584
-    assert accounting["world_model_replay_ratio"] == 1024.0
-    assert params["policy_gradient_mode"] == "reinforce"
-    assert params["policy_return_normalization"] == "ema-percentile"
-    assert params["actor_entropy_coef"] == 3e-3
-    assert params["actor_entropy_mode"] == "tanh-normal"
-    assert params["policy_replay_critic_return_mode"] == "lambda"
-    assert params["policy_replay_critic_all_steps"]
-    assert params["value_clip"] == 100.0
-    assert params["online_checkpoint_interval"] == 5
-    assert params["isolated_rng_streams"]
-    assert params["deterministic_compute"]
+
+def test_100k_preset_matches_the_reset_rich_interleaved_contract():
+    params = PRESETS["jepa_100k"]
+    accounting = step_accounting(params)
+
+    assert accounting["train_replay_env_steps"] == 98_304
+    assert accounting["validation_replay_env_steps"] == 1_280
+    assert accounting["train_plus_validation_env_steps"] == 99_584
+    assert accounting["world_model_updates"] == 94_464
+    assert accounting["policy_updates"] == 47_872
+    assert params["collect_steps"] == 320
+    assert params["initial_reset_interval"] == 80
+    assert params["online_iterations"] == 91
+    assert params["online_collect_steps"] == 64
+    assert params["online_train_steps"] == 1_024
+    assert params["online_policy_train_steps"] == 512
+
+
+def test_500k_preset_matches_the_current_running_model():
+    params = PRESETS["jepa_500k"]
+    accounting = step_accounting(params)
+
+    assert accounting["train_replay_env_steps"] == 497_664
+    assert accounting["validation_replay_env_steps"] == 1_280
+    assert accounting["train_plus_validation_env_steps"] == 498_944
+    assert accounting["world_model_updates"] == 493_824
+    assert accounting["policy_updates"] == 247_552
+    assert params["online_iterations"] == 481
+    assert params["online_checkpoint_interval"] == 16
+    assert params["validation_seed"] == 1_000_042
     assert params["final_policy_eval_seed"] == 9_000_000
-    assert params["wandb_video_every_phases"] == 10
-    assert not params["policy_eval_during_training"]
-    assert not params["online_policy_champion"]
-    assert not params["online_candidate_refit"]
-    assert "--no-policy-eval-during-training" in command
-    assert "--no-online-policy-champion" in command
-    assert "--no-online-freeze-encoder" in command
-    assert "--no-online-reset-replay-env" in command
-    assert "--value-clip" in command
-    assert "100.0" in command
-    assert "--online-checkpoint-interval" in command
+    assert params["final_policy_eval_episodes"] == 20
+
+
+def test_500k_preset_locks_current_architecture_and_control_stack():
+    params = PRESETS["jepa_500k"]
+
+    assert params["latent_dim"] == 128
+    assert params["model_dim"] == 128
+    assert params["num_layers"] == 2
+    assert params["num_heads"] == 4
+    assert params["context_window"] == 8
+    assert params["model_horizon"] == 5
+    assert params["imag_horizon"] == 15
+    assert params["actor_hidden_dim"] == 64
+    assert params["critic_hidden_dim"] == 64
+    assert params["actor_num_layers"] == 3
+    assert params["critic_num_layers"] == 3
+    assert params["policy_gradient_mode"] == "reinforce"
+    assert params["policy_return_mode"] == "lambda"
+    assert params["policy_return_normalization"] == "ema-percentile"
+    assert params["actor_entropy_mode"] == "tanh-normal"
+    assert params["actor_entropy_coef"] == 3e-3
+    assert params["value_clip"] == 100.0
+    assert params["target_critic_ema_decay"] == 0.98
+    assert params["policy_replay_critic_loss_coef"] == 0.3
+    assert params["policy_slow_value_regularization_coef"] == 1.0
+    assert params["model_grad_clip_norm"] == 0.0
+    assert params["actor_grad_clip_norm"] == 10.0
+    assert params["critic_grad_clip_norm"] == 100.0
+
+
+def test_canonical_command_contains_no_selection_or_hard_start_flags():
+    command = params_to_shell_args(PRESETS["jepa_500k"])
+
+    assert "--policy-selection" not in command
+    assert "--champion" not in command
+    assert "--candidate" not in command
+    assert "--hard-start" not in command
+    assert "--final-policy-eval-seed" in command
     assert "--isolated-rng-streams" in command
     assert "--deterministic-compute" in command
-    assert "--final-policy-eval-seed" in command
-
-
-def test_dreamer_parity_500k_preset_stays_below_training_data_budget():
-    params = {**COMMON_PARAMS, **PRESETS["jepa_dreamer_parity_500k"]}
-    accounting = step_accounting(params)
-
-    assert accounting["train_replay_env_steps"] == 496_896
-    assert accounting["train_plus_validation_env_steps"] == 498_176
-
-
-def test_interleaved_parity_presets_preserve_exact_budgets():
-    comparisons = (
-        ("jepa_dreamer_parity_100k", "jepa_dreamer_parity_100k_interleaved"),
-        ("jepa_dreamer_parity_500k", "jepa_dreamer_parity_500k_interleaved"),
-    )
-
-    for baseline_name, interleaved_name in comparisons:
-        baseline = {**COMMON_PARAMS, **PRESETS[baseline_name]}
-        interleaved = {**COMMON_PARAMS, **PRESETS[interleaved_name]}
-        baseline_accounting = step_accounting(baseline)
-        interleaved_accounting = step_accounting(interleaved)
-
-        assert interleaved_accounting == baseline_accounting
-        assert (
-            interleaved["online_collect_steps"] * 2 == baseline["online_collect_steps"]
-        )
-        assert interleaved["online_train_steps"] * 2 == baseline["online_train_steps"]
-        assert (
-            interleaved["online_policy_train_steps"] * 2
-            == baseline["online_policy_train_steps"]
-        )
-        assert interleaved["online_iterations"] == baseline["online_iterations"] * 2
-
-
-def test_stability_preset_removes_online_and_long_horizon_complexity():
-    params = {**COMMON_PARAMS, **PRESETS["jepa_stability_v0"]}
-    command = params_to_shell_args(params)
-
-    assert params["env_workers"] == 1
-    assert params["dynamics_ensemble_size"] == 1
-    assert params["model_horizon"] == 5
-    assert params["open_loop_horizon"] == 5
-    assert params["imag_horizon"] == 5
-    assert params["online_iterations"] == 0
-    assert params["regularizer"] == "none"
-    assert params["policy_return_mode"] == "reward-only"
-    assert params["policy_actor_baseline"] == "none"
-    assert not params["online_candidate_refit"]
-    assert not params["online_policy_champion"]
-    assert "--model-horizon" in command
-    assert "--open-loop-horizon" in command
-    assert "--dynamics-ensemble-size" in command
-    assert "--regularizer" in command
-    assert "none" in command

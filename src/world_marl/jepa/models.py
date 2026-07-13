@@ -56,9 +56,6 @@ class JepaConfig:
     twohot_bins: int = 41
     twohot_min: float = -20.0
     twohot_max: float = 20.0
-    clip_imagined_rewards: bool = False
-    imagined_reward_min: float = 0.0
-    imagined_reward_max: float = 1.0
     dynamics_ensemble_size: int = 1
     gamma: float = 0.99
     lambda_return: float = 0.95
@@ -82,8 +79,6 @@ class JepaConfig:
             raise ValueError("twohot_bins must be >= 3")
         if self.twohot_min >= self.twohot_max:
             raise ValueError("twohot_min must be < twohot_max")
-        if self.imagined_reward_min >= self.imagined_reward_max:
-            raise ValueError("imagined_reward_min must be < imagined_reward_max")
         if self.sigreg_knots < 2:
             raise ValueError("sigreg_knots must be >= 2")
         if self.sigreg_num_proj < 1:

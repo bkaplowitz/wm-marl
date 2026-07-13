@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from world_marl.envs.dmc_adapter import DMCVectorAdapter
-from world_marl.scripts import train_dmc_jepa
+from world_marl.scripts import eval_jepa_wm, train_dmc_jepa
 
 
 class _Spec:
@@ -91,14 +91,13 @@ def test_policy_evaluation_records_only_first_episode(monkeypatch, tmp_path):
         lambda *args, **kwargs: np.zeros((1, 1), dtype=np.float32),
     )
     args = SimpleNamespace(
-        policy_eval_episodes=1,
         quiet=True,
         wandb_video_size=8,
         wandb_video_camera=0,
         wandb_video_frame_stride=1,
         wandb_video_fps=10,
-        policy_failure_return_threshold=0.5,
-        policy_success_return_threshold=1.5,
+        failure_return_threshold=0.5,
+        success_return_threshold=1.5,
     )
     logger = _VideoLogger(tmp_path / "eval.mp4")
 
@@ -108,6 +107,7 @@ def test_policy_evaluation_records_only_first_episode(monkeypatch, tmp_path):
         config=None,
         seed=0,
         num_envs=1,
+        episodes=1,
         action_low=jnp.asarray([-1.0]),
         action_high=jnp.asarray([1.0]),
         desc="video eval",
@@ -121,3 +121,25 @@ def test_policy_evaluation_records_only_first_episode(monkeypatch, tmp_path):
     assert logger.call["filename"] == "videos/eval.mp4"
     assert logger.call["key"] == "videos/eval"
     assert len(logger.call["frames"]) == 2
+
+
+def test_world_model_evaluator_ignores_removed_checkpoint_config_keys():
+    config, ignored = eval_jepa_wm._jepa_config_from_metadata(
+        {
+            "jepa_config": {
+                "observation_dim": 4,
+                "action_dim": 2,
+                "clip_imagined_rewards": False,
+                "imagined_reward_min": 0.0,
+                "imagined_reward_max": 1.0,
+            }
+        }
+    )
+
+    assert config.observation_dim == 4
+    assert config.action_dim == 2
+    assert ignored == [
+        "clip_imagined_rewards",
+        "imagined_reward_max",
+        "imagined_reward_min",
+    ]
