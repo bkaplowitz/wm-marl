@@ -140,13 +140,13 @@ doubling the phase count. Total real transitions and optimizer updates remain
 identical to the corresponding base preset, and checkpoint/video cadence stays
 aligned in environment steps. This isolates feedback cadence from data budget.
 
-W&B learning curves use `budget/train_env_steps` rather than W&B's internal
-`_step` row counter. `report/episode_return` is logged at the exact cumulative
-training transition where each episode finishes, while `report/return_mean` and
-tail metrics summarize each collection phase. The 500k parity preset therefore
-ends at 496,896 training transitions (498,176 including held-out validation),
-with final evaluation interactions reported separately and excluded from the
-learning-curve x-axis.
+All W&B metrics declare `budget/train_env_steps` as their synchronized x-axis
+rather than using W&B's internal `_step` row counter. `report/episode_return` is
+logged at the exact cumulative training transition where each episode finishes,
+while `report/return_mean` and tail metrics summarize each collection phase. The
+500k parity preset therefore ends at 496,896 training transitions (498,176
+including held-out validation), with final evaluation interactions reported
+separately and excluded from the learning-curve x-axis.
 
 ## Current Best Preset
 

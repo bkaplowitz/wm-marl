@@ -71,8 +71,11 @@ def test_run_logger_mirrors_scalars_and_keeps_local_metrics(tmp_path, monkeypatc
     assert run.logged[0]["model/loss"] == 0.25
     assert run.logged[0]["budget/train_env_steps"] == 128
     assert (
-        "report/*",
-        {"step_metric": "budget/train_env_steps"},
+        "*",
+        {
+            "step_metric": "budget/train_env_steps",
+            "step_sync": True,
+        },
     ) in run.defined_metrics
     assert "ignored" not in run.logged[0]
     assert run.config["resolved"]["latent_dim"] == 64

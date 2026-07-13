@@ -148,19 +148,11 @@ class RunLogger:
             define_metric = getattr(self._wandb_run, "define_metric", None)
             if define_metric is not None:
                 define_metric("budget/train_env_steps")
-                for pattern in (
-                    "model/*",
-                    "policy/*",
-                    "critic/*",
-                    "eval/*",
-                    "data/*",
-                    "report/*",
-                    "run/*",
-                ):
-                    define_metric(
-                        pattern,
-                        step_metric="budget/train_env_steps",
-                    )
+                define_metric(
+                    "*",
+                    step_metric="budget/train_env_steps",
+                    step_sync=True,
+                )
         except Exception as error:  # W&B must never take down an experiment.
             self._wandb_run = None
             self._warn_wandb("initialization", error)
