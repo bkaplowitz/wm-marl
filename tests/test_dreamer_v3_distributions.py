@@ -346,6 +346,50 @@ def test_categorical_sample_matches_official_with_supplied_gumbel_noise(
     np.testing.assert_array_equal(sample, arrays["categorical.supplied_sample"])
 
 
+def test_supplied_categorical_noise_rejects_host_float64_before_jax_coercion() -> None:
+    logits = np.asarray([0.0, 1.0, 2.0], dtype=np.float32)
+    noise = np.zeros((3, 3), dtype=np.float64)
+    entered = False
+
+    with pytest.raises(ValueError, match=r"noise dtype.*float64.*float32"):
+        with dreamer_oracle._supplied_categorical_noise_scope(
+            jax.random,
+            expected_logits=logits,
+            expected_output_shape=(3,),
+            noise=noise,
+        ):
+            entered = True
+
+    assert not entered
+
+
+def test_supplied_categorical_noise_supports_logits_without_batch_dimensions() -> None:
+    logits = jnp.asarray([0.0, 1.0, 2.0], dtype=jnp.float32)
+    noise = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [0.0, 4.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+
+    with dreamer_oracle._supplied_categorical_noise_scope(
+        jax.random,
+        expected_logits=logits,
+        expected_output_shape=(3,),
+        noise=noise,
+    ):
+        sample = jax.random.categorical(
+            jax.random.PRNGKey(0),
+            logits,
+            axis=-1,
+            shape=(3,),
+        )
+
+    np.testing.assert_array_equal(sample, np.asarray([2, 0, 1], dtype=np.int32))
+
+
 def test_onehot_is_hard_forward_straight_through_backward_and_matches_oracle(
     official_case,
 ) -> None:

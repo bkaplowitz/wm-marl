@@ -1029,20 +1029,21 @@ class _SuppliedCategoricalNoise:
     ) -> None:
         self.expected_logits = np.asarray(jax.device_get(expected_logits))
         self.expected_output_shape = tuple(expected_output_shape)
-        self.noise = jax.numpy.asarray(noise)
+        supplied_noise = np.asarray(jax.device_get(noise))
         expected_noise_shape = self.expected_output_shape + (
             self.expected_logits.shape[-1],
         )
-        if tuple(self.noise.shape) != expected_noise_shape:
+        if tuple(supplied_noise.shape) != expected_noise_shape:
             raise ValueError(
                 "supplied categorical noise shape does not match the expected "
-                f"primitive shape: {self.noise.shape} != {expected_noise_shape}"
+                f"primitive shape: {supplied_noise.shape} != {expected_noise_shape}"
             )
-        if self.noise.dtype != self.expected_logits.dtype:
+        if supplied_noise.dtype != self.expected_logits.dtype:
             raise ValueError(
                 "supplied categorical noise dtype does not match logits: "
-                f"{self.noise.dtype} != {self.expected_logits.dtype}"
+                f"{supplied_noise.dtype} != {self.expected_logits.dtype}"
             )
+        self.noise = jax.numpy.asarray(supplied_noise)
         self.calls = 0
 
     def __call__(
@@ -1066,7 +1067,10 @@ class _SuppliedCategoricalNoise:
                 f"{logits.shape} != {self.expected_logits.shape}"
             )
         batch_shape = tuple(logits.shape[:-1])
-        if self.expected_output_shape[-len(batch_shape) :] != batch_shape:
+        if (
+            batch_shape
+            and self.expected_output_shape[-len(batch_shape) :] != batch_shape
+        ):
             raise ValueError(
                 "categorical output shape does not end in the logits batch shape"
             )
