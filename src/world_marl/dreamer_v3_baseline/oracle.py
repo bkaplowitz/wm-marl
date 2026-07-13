@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import io
 import json
@@ -10,7 +11,7 @@ import sys
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from types import MappingProxyType
+from types import MappingProxyType, ModuleType, SimpleNamespace
 from typing import Any, Mapping, Sequence
 
 import jax
@@ -43,6 +44,17 @@ _COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _CONFIG_SOURCE_SHA256 = (
     "9dff9c7062e3e33951cb54c6dd4b598aaf7e56e18e2cff39c812eaa797bcfcfc"
 )
+_DISTRIBUTIONS_SOURCE_HASHES = {
+    "embodied/jax/heads.py": (
+        "437641cde21e7f9e3f69b88ad8f6b7e7c22e54eec8c5b19eef6127afde1a9b3f"
+    ),
+    "embodied/jax/nets.py": (
+        "9a1c0c71ad7d3596572a44416e78434f777d8f4dbcbe8ca0dd6b86bb8246392c"
+    ),
+    "embodied/jax/outs.py": (
+        "7e80691f175c71be614f089023cce3a809e0d026c6d5ce89bf566d5f11eb3ed0"
+    ),
+}
 _PAPER_OVERRIDES: dict[str, Any] = {
     "agent.dec.simple.strided": True,
     "agent.enc.simple.strided": True,
@@ -119,6 +131,15 @@ CONFIG_SOURCE_SPEC = OracleSourceSpec(
     },
 )
 register_oracle_source_spec(CONFIG_SOURCE_SPEC)
+
+DISTRIBUTIONS_SOURCE_SPEC = OracleSourceSpec(
+    name="distributions",
+    revision_hashes={
+        PAPER_REVISION: _DISTRIBUTIONS_SOURCE_HASHES,
+        UPSTREAM_CURRENT_REVISION: _DISTRIBUTIONS_SOURCE_HASHES,
+    },
+)
+register_oracle_source_spec(DISTRIBUTIONS_SOURCE_SPEC)
 
 
 def official_revision(profile: DreamerProfile | str) -> str:
@@ -703,6 +724,60 @@ class OracleHarness:
             source_spec=CONFIG_SOURCE_SPEC.name,
         )
 
+    def run_distributions_case(
+        self,
+        profile: DreamerProfile | str,
+        observation_mode: ObservationMode | str,
+        *,
+        case_name: str = "distributions",
+        seed: int = 0,
+    ) -> tuple[Path, Path]:
+        resolved_profile = DreamerProfile(profile)
+        resolved_mode = ObservationMode(observation_mode)
+        request = {
+            "official_checkout": str(self.official_checkout),
+            "official_commit": official_revision(resolved_profile),
+            "observation_mode": resolved_mode.value,
+            "overrides": dict(profile_overrides(resolved_profile)),
+            "profile": resolved_profile.value,
+            "seed": seed,
+            "source_spec": DISTRIBUTIONS_SOURCE_SPEC.name,
+        }
+        command = (
+            self.python_executable,
+            str(Path(__file__).resolve()),
+            "_distributions_worker",
+        )
+        completed = subprocess.run(
+            command,
+            cwd=self.official_checkout,
+            input=_canonical_json(request).decode(),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(completed.stdout)
+        worker_pid = int(payload["worker_pid"])
+        if worker_pid <= 0 or worker_pid == os.getpid():
+            raise ValueError(
+                "oracle distributions worker did not cross a process boundary"
+            )
+        self._last_worker_pid = worker_pid
+        arrays = {
+            name: np.asarray(spec["values"], dtype=spec["dtype"])
+            for name, spec in payload["arrays"].items()
+        }
+        return self.write_fixture(
+            case_name=case_name,
+            profile=resolved_profile,
+            observation_mode=resolved_mode,
+            arrays=arrays,
+            seed=seed,
+            generator_command=command,
+            generator_request=request,
+            source_spec=DISTRIBUTIONS_SOURCE_SPEC.name,
+        )
+
 
 def _validate_config_case_arrays(
     arrays: Mapping[str, np.ndarray],
@@ -827,6 +902,507 @@ def _config_worker(request: Mapping[str, Any]) -> dict[str, Any]:
     return {"arrays": arrays, "worker_pid": os.getpid()}
 
 
+def _distributions_worker(request: Mapping[str, Any]) -> dict[str, Any]:
+    checkout = Path(request["official_checkout"]).resolve()
+    revision = str(request["official_commit"])
+    profile = DreamerProfile(request["profile"])
+    ObservationMode(request["observation_mode"])
+    if revision != official_revision(profile):
+        raise ValueError("worker revision does not match requested profile")
+    if dict(request["overrides"]) != dict(profile_overrides(profile)):
+        raise ValueError("worker override map does not match requested profile")
+    source_spec = oracle_source_spec(str(request["source_spec"]))
+    if source_spec != DISTRIBUTIONS_SOURCE_SPEC:
+        raise ValueError(
+            "distributions worker requires the registered distributions source spec"
+        )
+    sources: dict[str, bytes] = {}
+    for path, digest in source_spec.hashes_for(revision).items():
+        source = _git_show(checkout, revision, path)
+        if _sha256_bytes(source) != digest:
+            raise ValueError(f"official distribution source hash mismatch: {path}")
+        sources[path] = source
+    official_outs = _load_official_outs(sources["embodied/jax/outs.py"], revision)
+    official_symexp = _load_official_function(
+        sources["embodied/jax/nets.py"],
+        "symexp",
+        {"jnp": jax.numpy},
+        revision,
+    )
+    official_symlog = _load_official_function(
+        sources["embodied/jax/nets.py"],
+        "symlog",
+        {"jnp": jax.numpy},
+        revision,
+    )
+    bounded_normal = _load_official_method(
+        sources["embodied/jax/heads.py"],
+        "Head",
+        "bounded_normal",
+        {
+            "f32": jax.numpy.float32,
+            "jax": jax,
+            "jnp": jax.numpy,
+            "nets": SimpleNamespace(Linear=object, symexp=official_symexp),
+            "outs": official_outs,
+        },
+        revision,
+    )
+    symexp_twohot = _load_official_method(
+        sources["embodied/jax/heads.py"],
+        "Head",
+        "symexp_twohot",
+        {
+            "f32": jax.numpy.float32,
+            "jax": jax,
+            "jnp": jax.numpy,
+            "nets": SimpleNamespace(Linear=object, symexp=official_symexp),
+            "outs": official_outs,
+        },
+        revision,
+    )
+    arrays = _official_distribution_arrays(
+        official_outs,
+        official_symlog,
+        official_symexp,
+        bounded_normal,
+        symexp_twohot,
+        int(request["seed"]),
+    )
+    return {
+        "arrays": {
+            name: {
+                "dtype": array.dtype.name,
+                "values": array.tolist(),
+            }
+            for name, array in sorted(arrays.items())
+        },
+        "worker_pid": os.getpid(),
+    }
+
+
+def _load_official_outs(source: bytes, revision: str) -> ModuleType:
+    module = ModuleType("dreamerv3_official_outs")
+    code = compile(
+        source,
+        f"{revision}:embodied/jax/outs.py",
+        "exec",
+    )
+    exec(code, module.__dict__)
+    runtime_jax = module.jax
+
+    def bernoulli_compat(
+        seed: jax.Array,
+        probability: jax.Array,
+        axis: int,
+        shape: tuple[int, ...],
+    ) -> jax.Array:
+        if axis != -1:
+            raise ValueError("official Binary sample axis must be -1")
+        return runtime_jax.random.bernoulli(seed, probability, shape)
+
+    module.jax = SimpleNamespace(
+        nn=runtime_jax.nn,
+        random=SimpleNamespace(
+            bernoulli=bernoulli_compat,
+            categorical=runtime_jax.random.categorical,
+            normal=runtime_jax.random.normal,
+        ),
+        scipy=runtime_jax.scipy,
+    )
+    return module
+
+
+def _load_official_function(
+    source: bytes,
+    function_name: str,
+    namespace: Mapping[str, Any],
+    revision: str,
+) -> Any:
+    tree = ast.parse(source)
+    matches = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == function_name
+    ]
+    if len(matches) != 1:
+        raise ValueError(f"official function is not unique: {function_name}")
+    module = ast.Module(body=matches, type_ignores=[])
+    ast.fix_missing_locations(module)
+    globals_dict = dict(namespace)
+    exec(
+        compile(module, f"{revision}:official:{function_name}", "exec"),
+        globals_dict,
+    )
+    return globals_dict[function_name]
+
+
+def _load_official_method(
+    source: bytes,
+    class_name: str,
+    method_name: str,
+    namespace: Mapping[str, Any],
+    revision: str,
+) -> Any:
+    tree = ast.parse(source)
+    classes = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == class_name
+    ]
+    if len(classes) != 1:
+        raise ValueError(f"official class is not unique: {class_name}")
+    matches = [
+        node
+        for node in classes[0].body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == method_name
+    ]
+    if len(matches) != 1:
+        raise ValueError(f"official method is not unique: {class_name}.{method_name}")
+    module = ast.Module(body=matches, type_ignores=[])
+    ast.fix_missing_locations(module)
+    globals_dict = dict(namespace)
+    exec(
+        compile(
+            module,
+            f"{revision}:official:{class_name}.{method_name}",
+            "exec",
+        ),
+        globals_dict,
+    )
+    return globals_dict[method_name]
+
+
+class _OfficialHeadStub:
+    def __init__(
+        self,
+        values: Mapping[str, jax.Array],
+        *,
+        shape: tuple[int, ...],
+        bins: int = 255,
+        minstd: float = 0.1,
+        maxstd: float = 1.0,
+    ) -> None:
+        self.values = values
+        self.space = SimpleNamespace(discrete=False, shape=shape)
+        self.bins = bins
+        self.minstd = minstd
+        self.maxstd = maxstd
+        self.kw: dict[str, Any] = {}
+
+    def sub(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        value = self.values[name]
+        return lambda inputs: value
+
+
+def _official_distribution_arrays(
+    outs: ModuleType,
+    official_symlog: Any,
+    official_symexp: Any,
+    bounded_normal: Any,
+    symexp_twohot: Any,
+    seed: int,
+) -> dict[str, np.ndarray]:
+    jnp = jax.numpy
+    keys = jax.random.split(jax.random.PRNGKey(seed), 8)
+    arrays: dict[str, jax.Array] = {}
+
+    scalar_input = jnp.asarray(
+        [-1e20, -100.0, -1.0, -0.0, 0.0, 1.0, 100.0, 1e20],
+        jnp.float32,
+    )
+    scalar_symlog = official_symlog(scalar_input)
+    scalar_roundtrip = official_symexp(scalar_symlog)
+    arrays.update(
+        {
+            "scalar.input": scalar_input,
+            "scalar.roundtrip": scalar_roundtrip,
+            "scalar.symlog": scalar_symlog,
+        }
+    )
+
+    mse_mean = jnp.asarray([[-2.0, -0.5, 0.0], [0.5, 2.0, 5.0]], jnp.float32)
+    mse_target = jnp.asarray([[-1.0, 0.5, 2.0], [0.0, -2.0, 3.0]], jnp.float32)
+    mse = outs.MSE(mse_mean)
+    arrays.update(
+        {
+            "mse.grad_mean": jax.grad(
+                lambda value: outs.MSE(value).loss(mse_target).sum()
+            )(mse_mean),
+            "mse.grad_target": jax.grad(lambda value: mse.loss(value).sum())(
+                mse_target
+            ),
+            "mse.loss": mse.loss(mse_target),
+            "mse.mean": mse_mean,
+            "mse.pred": mse.pred(),
+            "mse.seed": keys[0],
+            "mse.target": mse_target,
+        }
+    )
+
+    normal_mean = jnp.asarray([[-1.0, 0.0, 1.0], [2.0, -2.0, 0.5]], jnp.float32)
+    normal_stddev = jnp.asarray([[0.2, 0.5, 1.0], [1.5, 2.0, 0.1]], jnp.float32)
+    normal_event = jnp.asarray([[-3.0, 0.25, 1.5], [0.25, 3.0, -1.0]], jnp.float32)
+    normal_other_mean = jnp.asarray([[0.0, -1.0, 2.0], [1.0, 0.0, -0.5]], jnp.float32)
+    normal_other_stddev = jnp.asarray([[1.0, 0.3, 2.0], [0.5, 1.5, 0.25]], jnp.float32)
+    normal = outs.Normal(normal_mean, normal_stddev)
+    normal_other = outs.Normal(normal_other_mean, normal_other_stddev)
+    arrays.update(
+        {
+            "normal.entropy": normal.entropy(),
+            "normal.event": normal_event,
+            "normal.grad_target": jax.grad(lambda value: normal.loss(value).sum())(
+                normal_event
+            ),
+            "normal.kl": normal.kl(normal_other),
+            "normal.logp": normal.logp(normal_event),
+            "normal.loss": normal.loss(normal_event),
+            "normal.mean": normal_mean,
+            "normal.other_mean": normal_other_mean,
+            "normal.other_stddev": normal_other_stddev,
+            "normal.pred": normal.pred(),
+            "normal.prob": normal.prob(normal_event),
+            "normal.sample": normal.sample(keys[1], shape=(2,)),
+            "normal.seed": keys[1],
+            "normal.stddev": normal_stddev,
+        }
+    )
+
+    bounded_raw_mean = jnp.asarray([[2.0, -2.0, 0.1], [3.0, -3.0, 0.0]], jnp.float32)
+    bounded_raw_stddev = jnp.asarray(
+        [[-5.0, -2.0, 0.0], [2.0, 5.0, -10.0]], jnp.float32
+    )
+    bounded_event = jnp.asarray([[1.2, -1.4, 0.0], [2.0, -2.0, 0.5]], jnp.float32)
+
+    def make_bounded(raw_mean: jax.Array, raw_stddev: jax.Array) -> Any:
+        stub = _OfficialHeadStub(
+            {"mean": raw_mean, "stddev": raw_stddev},
+            shape=(3,),
+        )
+        return bounded_normal(stub, jnp.zeros((2, 1), jnp.float32))
+
+    bounded = make_bounded(bounded_raw_mean, bounded_raw_stddev)
+    arrays.update(
+        {
+            "bounded.entropy": bounded.entropy(),
+            "bounded.event": bounded_event,
+            "bounded.grad_raw_mean": jax.grad(
+                lambda value: (
+                    make_bounded(value, bounded_raw_stddev).loss(bounded_event).sum()
+                )
+            )(bounded_raw_mean),
+            "bounded.grad_raw_stddev": jax.grad(
+                lambda value: (
+                    make_bounded(bounded_raw_mean, value).loss(bounded_event).sum()
+                )
+            )(bounded_raw_stddev),
+            "bounded.logp": bounded.logp(bounded_event),
+            "bounded.loss": bounded.loss(bounded_event),
+            "bounded.mean": bounded.mean,
+            "bounded.pred": bounded.pred(),
+            "bounded.prob": bounded.prob(bounded_event),
+            "bounded.raw_mean": bounded_raw_mean,
+            "bounded.raw_stddev": bounded_raw_stddev,
+            "bounded.sample": bounded.sample(keys[2]),
+            "bounded.seed": keys[2],
+            "bounded.stddev": bounded.stddev,
+        }
+    )
+
+    binary_logit = jnp.asarray([-100.0, -10.0, -0.0, 0.0, 10.0, 100.0], jnp.float32)
+    binary_event = jnp.asarray([1.0, 0.0, 0.0, 1.0, 1.0, 0.0], jnp.float32)
+    binary = outs.Binary(binary_logit)
+    arrays.update(
+        {
+            "binary.event": binary_event,
+            "binary.logit": binary_logit,
+            "binary.logp": binary.logp(binary_event),
+            "binary.loss": binary.loss(binary_event),
+            "binary.pred": binary.pred(),
+            "binary.prob": binary.prob(binary_event),
+            "binary.sample": binary.sample(keys[3], shape=(3,)),
+            "binary.seed": keys[3],
+        }
+    )
+
+    categorical_logits = jnp.asarray(
+        [[-100.0, 0.0, 1.0, 2.0], [10.0, -10.0, 0.0, -5.0]],
+        jnp.float32,
+    )
+    categorical_other_logits = jnp.asarray(
+        [[2.0, 1.0, 0.0, -2.0], [-3.0, 4.0, 0.5, 1.0]],
+        jnp.float32,
+    )
+    categorical_event = jnp.asarray([3, 1], jnp.int32)
+    categorical = outs.Categorical(categorical_logits, 0.01)
+    categorical_other = outs.Categorical(categorical_other_logits, 0.01)
+    arrays.update(
+        {
+            "categorical.effective_logits": categorical.logits,
+            "categorical.entropy": categorical.entropy(),
+            "categorical.event": categorical_event,
+            "categorical.kl": categorical.kl(categorical_other),
+            "categorical.logits": categorical_logits,
+            "categorical.logp": categorical.logp(categorical_event),
+            "categorical.loss": categorical.loss(categorical_event),
+            "categorical.other_logits": categorical_other_logits,
+            "categorical.pred": categorical.pred(),
+            "categorical.prob": categorical.prob(categorical_event),
+            "categorical.probs": jax.nn.softmax(categorical.logits),
+            "categorical.sample": categorical.sample(keys[4], shape=(3,)),
+            "categorical.seed": keys[4],
+        }
+    )
+
+    onehot_logits = jnp.asarray(
+        [[-3.0, 0.0, 2.0, 1.0], [5.0, -2.0, 0.5, -1.0]],
+        jnp.float32,
+    )
+    onehot_other_logits = jnp.asarray(
+        [[1.0, 2.0, -1.0, 0.0], [-2.0, 0.0, 1.0, 3.0]],
+        jnp.float32,
+    )
+    onehot_event = jax.nn.one_hot(jnp.asarray([2, 0]), 4, dtype=jnp.float32)
+    onehot_weights = jnp.asarray(
+        [[-1.0, 0.5, 2.0, -0.25], [0.1, -0.4, 1.5, 2.0]],
+        jnp.float32,
+    )
+    onehot = outs.OneHot(onehot_logits, 0.01)
+    onehot_other = outs.OneHot(onehot_other_logits, 0.01)
+    arrays.update(
+        {
+            "onehot.entropy": onehot.entropy(),
+            "onehot.event": onehot_event,
+            "onehot.grad_target": jax.grad(lambda value: onehot.loss(value).sum())(
+                onehot_event
+            ),
+            "onehot.kl": onehot.kl(onehot_other),
+            "onehot.logits": onehot_logits,
+            "onehot.logp": onehot.logp(onehot_event),
+            "onehot.loss": onehot.loss(onehot_event),
+            "onehot.other_logits": onehot_other_logits,
+            "onehot.pred": onehot.pred(),
+            "onehot.prob": onehot.prob(onehot_event),
+            "onehot.sample": onehot.sample(keys[5]),
+            "onehot.sample_grad": jax.grad(
+                lambda value: (
+                    outs.OneHot(value, 0.01).sample(keys[5]) * onehot_weights
+                ).sum()
+            )(onehot_logits),
+            "onehot.sample_weights": onehot_weights,
+            "onehot.seed": keys[5],
+        }
+    )
+
+    odd_logits = jnp.stack(
+        [
+            jnp.zeros((255,), jnp.float32),
+            jnp.linspace(-2.0, 2.0, 255, dtype=jnp.float32),
+            jnp.linspace(2.0, -2.0, 255, dtype=jnp.float32),
+            jnp.sin(jnp.linspace(-3.0, 3.0, 255, dtype=jnp.float32)),
+            jnp.zeros((255,), jnp.float32).at[-1].set(5.0),
+        ]
+    )
+    odd_target = jnp.asarray([-1e20, -1.0, 0.25, 10.0, 1e20], jnp.float32)
+
+    def make_twohot(logits: jax.Array, bins: int) -> Any:
+        stub = _OfficialHeadStub({"logits": logits}, shape=(), bins=bins)
+        return symexp_twohot(stub, jnp.zeros((*logits.shape[:-1], 1), jnp.float32))
+
+    odd = make_twohot(odd_logits, 255)
+    arrays.update(
+        {
+            "twohot_odd.bins": odd.bins,
+            "twohot_odd.grad_logits": jax.grad(
+                lambda value: make_twohot(value, 255).loss(odd_target).sum()
+            )(odd_logits),
+            "twohot_odd.grad_target": jax.grad(lambda value: odd.loss(value).sum())(
+                odd_target
+            ),
+            "twohot_odd.logits": odd_logits,
+            "twohot_odd.loss": odd.loss(odd_target),
+            "twohot_odd.pred": odd.pred(),
+            "twohot_odd.target": odd_target,
+        }
+    )
+
+    even_logits = jnp.stack(
+        [
+            jnp.zeros((8,), jnp.float32),
+            jnp.linspace(-2.0, 2.0, 8, dtype=jnp.float32),
+            jnp.linspace(2.0, -2.0, 8, dtype=jnp.float32),
+        ]
+    )
+    even_target = jnp.asarray([-1e20, 0.2, 1e20], jnp.float32)
+    even = make_twohot(even_logits, 8)
+    arrays.update(
+        {
+            "twohot_even.bins": even.bins,
+            "twohot_even.logits": even_logits,
+            "twohot_even.loss": even.loss(even_target),
+            "twohot_even.pred": even.pred(),
+            "twohot_even.seed": keys[6],
+            "twohot_even.target": even_target,
+        }
+    )
+
+    aggregate_mean = jnp.linspace(-1.0, 1.0, 12, dtype=jnp.float32).reshape(2, 2, 3)
+    aggregate_stddev = jnp.linspace(0.2, 1.3, 12, dtype=jnp.float32).reshape(2, 2, 3)
+    aggregate_event = jnp.linspace(-2.0, 2.0, 12, dtype=jnp.float32).reshape(2, 2, 3)
+    aggregate_other_mean = jnp.linspace(1.0, -1.0, 12, dtype=jnp.float32).reshape(
+        2, 2, 3
+    )
+    aggregate_other_stddev = jnp.linspace(1.5, 0.4, 12, dtype=jnp.float32).reshape(
+        2, 2, 3
+    )
+    aggregate = outs.Agg(outs.Normal(aggregate_mean, aggregate_stddev), 2, jnp.mean)
+    aggregate_other = outs.Agg(
+        outs.Normal(aggregate_other_mean, aggregate_other_stddev),
+        2,
+        jnp.mean,
+    )
+    arrays.update(
+        {
+            "aggregate.entropy": aggregate.entropy(),
+            "aggregate.event": aggregate_event,
+            "aggregate.kl": aggregate.kl(aggregate_other),
+            "aggregate.logp": aggregate.logp(aggregate_event),
+            "aggregate.loss": aggregate.loss(aggregate_event),
+            "aggregate.mean": aggregate_mean,
+            "aggregate.other_mean": aggregate_other_mean,
+            "aggregate.other_stddev": aggregate_other_stddev,
+            "aggregate.pred": aggregate.pred(),
+            "aggregate.prob": aggregate.prob(aggregate_event),
+            "aggregate.sample": aggregate.sample(keys[7]),
+            "aggregate.seed": keys[7],
+            "aggregate.stddev": aggregate_stddev,
+        }
+    )
+
+    aggregate_mse_mean = jnp.linspace(-2.0, 2.0, 12, dtype=jnp.float32).reshape(2, 2, 3)
+    aggregate_mse_target = jnp.linspace(1.0, -1.0, 12, dtype=jnp.float32).reshape(
+        2, 2, 3
+    )
+    aggregate_mse = outs.Agg(outs.MSE(aggregate_mse_mean), 2)
+    arrays.update(
+        {
+            "aggregate_mse.grad_target": jax.grad(
+                lambda value: aggregate_mse.loss(value).sum()
+            )(aggregate_mse_target),
+            "aggregate_mse.loss": aggregate_mse.loss(aggregate_mse_target),
+            "aggregate_mse.mean": aggregate_mse_mean,
+            "aggregate_mse.target": aggregate_mse_target,
+        }
+    )
+    return {
+        name: np.asarray(jax.device_get(value))
+        for name, value in sorted(arrays.items())
+    }
+
+
 def _parameter_path(path: str | Sequence[str]) -> str:
     if isinstance(path, str):
         normalized = path
@@ -916,10 +1492,14 @@ def _write_deterministic_npz(
 
 
 def _main(argv: Sequence[str]) -> int:
-    if tuple(argv) != ("_config_worker",):
+    workers = {
+        "_config_worker": _config_worker,
+        "_distributions_worker": _distributions_worker,
+    }
+    if len(argv) != 1 or argv[0] not in workers:
         raise SystemExit("oracle.py is an internal fixture worker")
     request = json.loads(sys.stdin.read())
-    sys.stdout.write(json.dumps(_config_worker(request), sort_keys=True))
+    sys.stdout.write(json.dumps(workers[argv[0]](request), sort_keys=True))
     return 0
 
 
@@ -929,6 +1509,7 @@ if __name__ == "__main__":  # pragma: no cover - subprocess boundary.
 
 __all__ = [
     "CONFIG_SOURCE_SPEC",
+    "DISTRIBUTIONS_SOURCE_SPEC",
     "ORACLE_SCHEMA_VERSION",
     "OracleHarness",
     "OracleManifest",

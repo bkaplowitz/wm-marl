@@ -21,11 +21,20 @@ from world_marl.dreamer_v3_baseline.config import (
     SlowValueConfig,
     resolve_dreamer_config,
 )
+from world_marl.dreamer_v3_baseline.distributions import (
+    AggregateOutput,
+    BinaryOutput,
+    CategoricalOutput,
+    MSEOutput,
+    NormalOutput,
+    OneHotOutput,
+    TwoHotOutput,
+    symexp,
+    symlog,
+)
 from world_marl.dreamer_v3_baseline.losses import (
     balanced_categorical_kl_loss,
     categorical_kl_loss,
-    symexp,
-    symlog,
     two_hot,
 )
 from world_marl.dreamer_v3_baseline.models import (
@@ -37,6 +46,7 @@ from world_marl.dreamer_v3_baseline.models import (
     RewardHead,
 )
 from world_marl.dreamer_v3_baseline.oracle import (
+    DISTRIBUTIONS_SOURCE_SPEC,
     OracleHarness,
     OracleManifest,
     OracleSourceSpec,
@@ -54,9 +64,13 @@ from world_marl.dreamer_v3_baseline.rssm import (
 )
 
 __all__ = [
+    "AggregateOutput",
     "ActorCriticConfig",
     "ContinueHead",
     "ContinueHeadConfig",
+    "BinaryOutput",
+    "CategoricalOutput",
+    "DISTRIBUTIONS_SOURCE_SPEC",
     "DecoderConfig",
     "DreamerDecoder",
     "DreamerEncoder",
@@ -70,10 +84,13 @@ __all__ = [
     "ImaginationConfig",
     "LossScaleConfig",
     "ModelSize",
+    "MSEOutput",
     "NetworkSize",
     "NormalizerConfig",
+    "NormalOutput",
     "ObservationMode",
     "OptimizerConfig",
+    "OneHotOutput",
     "OracleHarness",
     "OracleManifest",
     "OracleSourceSpec",
@@ -88,6 +105,7 @@ __all__ = [
     "RunConfig",
     "SlowValueConfig",
     "TensorSpec",
+    "TwoHotOutput",
     "balanced_categorical_kl_loss",
     "categorical_kl_loss",
     "categorical_straight_through",

@@ -11,8 +11,11 @@ PIDs is verified out of band and is never written to fixtures.
 Each manifest names a registered source spec. A source spec pins the exact
 official path-to-SHA256 set independently for both authority revisions, so
 fixtures can validate source provenance offline. The `config` source spec covers
-`dreamerv3/configs.yaml`; later distribution, network, RSSM, loss, optimizer,
-replay, and train-step cases register the exact source modules they execute.
+`dreamerv3/configs.yaml`. The `distributions` source spec covers the exact
+`embodied/jax/outs.py`, `embodied/jax/heads.py`, and `embodied/jax/nets.py`
+objects that produce output behavior, bounded-normal construction, scalar
+transforms, and two-hot bins. Later network, RSSM, loss, optimizer, replay, and
+train-step cases register the exact source modules they execute.
 
 The `paper` profile uses source revision
 `bfcdfc183d2c1543a3bf3cdda6edb7fae29b6a01` with in-memory overrides for
@@ -21,6 +24,7 @@ budget. The `upstream-current` profile uses revision
 `e3f02248693a79dc8b0ebd62c93683888ddaccfe` with no overrides. The official
 checkout is never edited.
 
-Ordinary tests load and validate committed fixtures. They do not launch the
-official wrapper. Fixture regeneration is an explicit developer operation and
+Ordinary parity tests load and validate committed fixtures. Provenance tests may
+replay the recorded isolated fixture worker, but they never launch the official
+training wrapper. Fixture regeneration is an explicit developer operation and
 must provide `DREAMERV3_ORACLE_CHECKOUT`.
