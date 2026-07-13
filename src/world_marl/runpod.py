@@ -199,12 +199,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--remote-out-root", default="/workspace/outputs/wm_marl")
     parser.add_argument("--local-out-root", default="runs/runpod")
     parser.add_argument("--skip-uv-sync", action="store_true")
-    parser.add_argument(
-        "--push-wandb-netrc",
-        action="store_true",
-        help="Copy the local ~/.netrc api.wandb.ai entry to the pod's ~/.netrc "
-        "over ssh stdin (the key never appears in argv or the manifest).",
-    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--prefit-train-steps",
@@ -291,6 +285,9 @@ def main() -> int:
     ensure_runpod_api_key(repo_root)
     if not ssh_key.exists():
         raise SystemExit(f"SSH key not found: {ssh_key}")
+    push_netrc = command_uses_wandb(job.command)
+    if push_netrc:
+        read_wandb_netrc_entry()
 
     pod_id: str | None = None
     manifest: dict[str, Any] = {
@@ -320,7 +317,7 @@ def main() -> int:
         ssh_info = wait_for_ssh(pod_id, ssh_key, args)
         ensure_remote_rsync(ssh_info)
         sync_repo(repo_root, args.remote_repo_dir, ssh_info)
-        if args.push_wandb_netrc:
+        if push_netrc:
             push_wandb_netrc(ssh_info)
         start_remote_job_detached(
             args.remote_repo_dir,
@@ -716,20 +713,38 @@ def ssh_script_command(info: SshInfo, script: str) -> list[str]:
     return [*ssh_base(info), f"bash -lc {shlex.quote(script)}"]
 
 
+def command_uses_wandb(command: list[str]) -> bool:
+    """True when the job command enables W&B logging (``--wandb-project``)."""
+    return any(
+        token == "--wandb-project" or token.startswith("--wandb-project=")
+        for token in command
+    )
+
+
+def read_wandb_netrc_entry() -> str:
+    """Read the local api.wandb.ai netrc entry, failing fast when absent."""
+    netrc_path = Path.home() / ".netrc"
+    if not netrc_path.exists():
+        raise SystemExit(
+            "job uses wandb but no local ~/.netrc exists; run 'wandb login' first"
+        )
+    auth = netrc.netrc(netrc_path).authenticators("api.wandb.ai")
+    if auth is None:
+        raise SystemExit(
+            "job uses wandb but ~/.netrc has no api.wandb.ai entry; "
+            "run 'wandb login' first"
+        )
+    login, _, password = auth
+    return f"machine api.wandb.ai\n  login {login}\n  password {password}\n"
+
+
 def push_wandb_netrc(info: SshInfo) -> None:
     """Append the local api.wandb.ai netrc entry to the pod's ~/.netrc.
 
     The entry travels over ssh stdin only — ``run()`` prints argv, so the key
     must never be part of the command line (or the manifest).
     """
-    netrc_path = Path.home() / ".netrc"
-    if not netrc_path.exists():
-        raise SystemExit("--push-wandb-netrc: no local ~/.netrc found")
-    auth = netrc.netrc(netrc_path).authenticators("api.wandb.ai")
-    if auth is None:
-        raise SystemExit("--push-wandb-netrc: no api.wandb.ai entry in ~/.netrc")
-    login, _, password = auth
-    entry = f"machine api.wandb.ai\n  login {login}\n  password {password}\n"
+    entry = read_wandb_netrc_entry()
     cmd = ssh_script_command(info, "umask 077; cat >> ~/.netrc")
     print("+ (writing api.wandb.ai netrc entry to pod over ssh stdin)", flush=True)
     subprocess.run(cmd, check=True, text=True, input=entry)
