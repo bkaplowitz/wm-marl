@@ -261,6 +261,15 @@ def parse_args() -> argparse.Namespace:
     online.add_argument("--online-checkpoint-interval", type=int, default=16)
     online.add_argument("--online-recent-replay-fraction", type=float, default=0.0)
     online.add_argument("--online-recent-replay-steps", type=int, default=320)
+    online.add_argument(
+        "--online-recent-replay-max-oversample",
+        type=float,
+        default=0.0,
+        help=(
+            "Cap the per-transition sampling probability ratio between recent "
+            "and older replay entries; zero disables the cap."
+        ),
+    )
 
     reporting = parser.add_argument_group("reporting")
     reporting.add_argument("--failure-return-threshold", type=float, default=100.0)
@@ -427,6 +436,11 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         )
     if not 0.0 <= args.online_recent_replay_fraction <= 1.0:
         parser.error("--online-recent-replay-fraction must be in [0, 1]")
+    if (
+        args.online_recent_replay_max_oversample != 0.0
+        and args.online_recent_replay_max_oversample < 1.0
+    ):
+        parser.error("--online-recent-replay-max-oversample must be zero or >= 1")
     recent_min_steps = max(
         args.chunk_length + max(args.model_horizon, args.open_loop_horizon),
         args.context_window + 1,
@@ -957,8 +971,41 @@ def run_one(
                 "online_recent_replay_size_per_env": (
                     online_recent_replay.size if online_recent_replay is not None else 0
                 ),
-                "online_recent_replay_fraction": (args.online_recent_replay_fraction),
             }
+            effective_recent_fraction = _effective_recent_fraction(
+                args.online_recent_replay_fraction,
+                full_replay_size=replay.size,
+                recent_replay_size=(
+                    online_recent_replay.size if online_recent_replay is not None else 0
+                ),
+                max_oversample=args.online_recent_replay_max_oversample,
+            )
+            effective_recent_oversample = _recent_oversample_ratio(
+                effective_recent_fraction,
+                full_replay_size=replay.size,
+                recent_replay_size=(
+                    online_recent_replay.size if online_recent_replay is not None else 0
+                ),
+            )
+            collection.update(
+                {
+                    "online_recent_replay_fraction": (
+                        args.online_recent_replay_fraction
+                    ),
+                    "online_recent_replay_requested_fraction": (
+                        args.online_recent_replay_fraction
+                    ),
+                    "online_recent_replay_effective_fraction": (
+                        effective_recent_fraction
+                    ),
+                    "online_recent_replay_max_oversample": (
+                        args.online_recent_replay_max_oversample
+                    ),
+                    "online_recent_replay_effective_oversample": (
+                        effective_recent_oversample
+                    ),
+                }
+            )
             logger.write_json(f"{phase}_actor_replay.json", collection)
             logger.append_metrics(
                 {
@@ -983,7 +1030,7 @@ def run_one(
                 desc=f"{phase} fit world model",
                 train_env_steps=train_env_steps,
                 recent_replay=online_recent_replay,
-                recent_fraction=args.online_recent_replay_fraction,
+                recent_fraction=effective_recent_fraction,
             )
             jax_rngs.update("world_model", model_rng)
             logger.plot_world_model_loss(
@@ -1021,7 +1068,20 @@ def run_one(
                     train_env_steps=train_env_steps,
                 ),
                 recent_replay=online_recent_replay,
-                recent_fraction=args.online_recent_replay_fraction,
+                recent_fraction=effective_recent_fraction,
+            )
+            policy_metrics.update(
+                {
+                    "policy_online_recent_replay_requested_fraction": (
+                        args.online_recent_replay_fraction
+                    ),
+                    "policy_online_recent_replay_effective_oversample": (
+                        effective_recent_oversample
+                    ),
+                    "policy_online_recent_replay_max_oversample": (
+                        args.online_recent_replay_max_oversample
+                    ),
+                }
             )
             jax_rngs.update("policy", policy_rng)
             logger.write_json(f"{phase}_policy.json", policy_metrics)
@@ -1544,6 +1604,60 @@ def _recent_batch_size(
     if recent_replay is None or recent_fraction <= 0.0:
         return 0
     return max(0, min(batch_size, int(round(batch_size * recent_fraction))))
+
+
+def _effective_recent_fraction(
+    requested_fraction: float,
+    *,
+    full_replay_size: int,
+    recent_replay_size: int,
+    max_oversample: float,
+) -> float:
+    """Bound recent replay pressure as the full replay grows.
+
+    The recent buffer is a subset of the full replay. Under mixture sampling, a
+    recent transition can therefore be drawn from either component while an
+    older transition can only be drawn from the full component. This computes
+    the largest mixture fraction whose per-transition probability ratio does
+    not exceed ``max_oversample``.
+    """
+
+    if requested_fraction <= 0.0 or recent_replay_size <= 0:
+        return 0.0
+    if max_oversample <= 0.0:
+        return float(requested_fraction)
+    if max_oversample <= 1.0:
+        return 0.0
+
+    extra_weight = max_oversample - 1.0
+    capped_fraction = (
+        extra_weight
+        * float(recent_replay_size)
+        / (float(full_replay_size) + extra_weight * float(recent_replay_size))
+    )
+    return float(min(requested_fraction, capped_fraction))
+
+
+def _recent_oversample_ratio(
+    recent_fraction: float,
+    *,
+    full_replay_size: int,
+    recent_replay_size: int,
+) -> float | None:
+    """Return recent-versus-old per-transition sampling probability."""
+
+    if recent_replay_size <= 0 or full_replay_size <= recent_replay_size:
+        return 1.0
+    if recent_fraction <= 0.0:
+        return 1.0
+    if recent_fraction >= 1.0:
+        return None
+    return float(
+        1.0
+        + recent_fraction
+        * float(full_replay_size)
+        / ((1.0 - recent_fraction) * float(recent_replay_size))
+    )
 
 
 def _sample_replay_batch(

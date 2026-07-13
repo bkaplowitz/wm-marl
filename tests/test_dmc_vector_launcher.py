@@ -48,6 +48,7 @@ def test_launcher_serializes_early_sample_efficiency_diagnostic_controls():
         {
             "online_recent_replay_fraction": 0.5,
             "online_recent_replay_steps": 320,
+            "online_recent_replay_max_oversample": 10.0,
             "curve_eval_interval_env_steps": 50_000,
             "curve_eval_episodes": 20,
             "curve_eval_seed": 9_000_000,
@@ -57,6 +58,7 @@ def test_launcher_serializes_early_sample_efficiency_diagnostic_controls():
     tokens = command.replace("\\\n", " ").split()
     assert tokens[tokens.index("--online-recent-replay-fraction") + 1] == "0.5"
     assert tokens[tokens.index("--online-recent-replay-steps") + 1] == "320"
+    assert tokens[tokens.index("--online-recent-replay-max-oversample") + 1] == "10.0"
     assert tokens[tokens.index("--curve-eval-interval-env-steps") + 1] == "50000"
     assert tokens[tokens.index("--curve-eval-episodes") + 1] == "20"
     assert tokens[tokens.index("--curve-eval-seed") + 1] == "9000000"

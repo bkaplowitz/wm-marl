@@ -240,6 +240,8 @@ def test_cli_accepts_recent_replay_and_curve_evaluation(monkeypatch):
             "0.5",
             "--online-recent-replay-steps",
             "128",
+            "--online-recent-replay-max-oversample",
+            "10",
             "--curve-eval-interval-env-steps",
             "50000",
             "--curve-eval-episodes",
@@ -253,6 +255,7 @@ def test_cli_accepts_recent_replay_and_curve_evaluation(monkeypatch):
 
     assert args.online_recent_replay_fraction == 0.5
     assert args.online_recent_replay_steps == 128
+    assert args.online_recent_replay_max_oversample == 10.0
     assert args.curve_eval_interval_env_steps == 50_000
     assert args.curve_eval_episodes == 20
     assert args.curve_eval_seed == 9_000_000
@@ -288,6 +291,38 @@ def test_recent_replay_batch_respects_requested_fraction():
 
     np.testing.assert_array_equal(np.asarray(batch.rewards[:7]), 1.0)
     np.testing.assert_array_equal(np.asarray(batch.rewards[7:]), 9.0)
+
+
+def test_recent_replay_oversample_cap_decays_fraction_with_replay_size():
+    early_fraction = train_dmc_jepa._effective_recent_fraction(
+        0.5,
+        full_replay_size=3_136,
+        recent_replay_size=320,
+        max_oversample=10.0,
+    )
+    late_fraction = train_dmc_jepa._effective_recent_fraction(
+        0.5,
+        full_replay_size=9_408,
+        recent_replay_size=320,
+        max_oversample=10.0,
+    )
+
+    assert early_fraction == pytest.approx(0.4787234043)
+    assert late_fraction == pytest.approx(0.234375)
+    assert train_dmc_jepa._recent_oversample_ratio(
+        late_fraction,
+        full_replay_size=9_408,
+        recent_replay_size=320,
+    ) == pytest.approx(10.0)
+
+
+def test_recent_replay_oversample_cap_is_optional():
+    assert train_dmc_jepa._effective_recent_fraction(
+        0.5,
+        full_replay_size=9_408,
+        recent_replay_size=320,
+        max_oversample=0.0,
+    ) == pytest.approx(0.5)
 
 
 def test_cli_rejects_partial_entropy_decay(monkeypatch):
