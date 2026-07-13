@@ -47,7 +47,7 @@ def test_cem_smoke_e2e():
             "50",
             "--cem-samples",
             "6",
-            "--cem-elites",
+            "--cem-topk",
             "2",
             "--cem-iters",
             "2",

@@ -205,6 +205,19 @@ uv run world-marl-optuna-dmc-jepa --task dmc:cartpole-balance # Optuna HPO over 
 uv run world-marl-write-dmc-vector-launcher                   # emit tmux/pod launcher scripts for sweeps
 ```
 
+### CEM-MPC single-agent arm
+
+CEM-MPC is an alternative policy optimizer to PPO, using the cross-entropy method for model-predictive control inside the learned world model. Instead of amortizing a policy network, it plans a short action sequence at each decision point using receding-horizon MPC and executes only the first action. Use `--policy-optimizer cem` with `train_single_genwm` to compare planning vs amortized-PPO learning on single-agent environments; CEM requires a learned world model and is not compatible with `--arm model-free`.
+
+```bash
+uv run python -m world_marl.scripts.train_single_genwm \
+  --env brax:reacher --arm discrete-transformer \
+  --policy-optimizer cem \
+  --cem-horizon 5 --cem-samples 64 --cem-topk 8 --cem-iters 3
+```
+
+Key CEM hyperparameters: `--cem-samples` (population per iteration), `--cem-topk` (elite fraction), `--cem-iters` (CEM iterations per solve), `--cem-horizon` (planning horizon in steps), `--cem-receding-horizon` (enable receding-horizon MPC; on by default). The CEM solver is JIT-compiled (`cem_solve`) and exposed in `world_marl.genwm` alongside `CEMConfig`, `CEMPlanner`, `make_genwm_plan_fn`, `discounted_return`, and `sample_candidates`.
+
 
 ## Tests
 

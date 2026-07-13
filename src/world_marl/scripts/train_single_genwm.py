@@ -227,10 +227,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="CEM: number of action candidates per iteration.",
     )
     parser.add_argument(
-        "--cem-elites",
+        "--cem-topk",
         type=int,
         default=30,
-        help="CEM: number of elite (top-k) candidates to keep.",
+        help="CEM: number of top-k candidates kept for the refit.",
     )
     parser.add_argument(
         "--cem-iters",
@@ -1314,7 +1314,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
             action_high_scalar = float(np.asarray(adapter.action_high).max())
             cem_config = CEMConfig(
                 num_samples=args.cem_samples,
-                topk=args.cem_elites,
+                topk=args.cem_topk,
                 num_iters=args.cem_iters,
                 horizon=args.cem_horizon,
                 receding_horizon=cem_receding,
