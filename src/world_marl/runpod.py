@@ -99,6 +99,8 @@ def default_train_args(args: argparse.Namespace) -> list[str]:
         "4",
         "--activation",
         "relu",
+        "--wandb-project",
+        "wm-marl",
     ]
 
 
