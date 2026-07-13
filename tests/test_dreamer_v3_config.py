@@ -499,6 +499,58 @@ def test_rssm_config_supports_dataclasses_replace_before_profile_rejection() -> 
         replace(config, rssm=mutated_rssm)
 
 
+@pytest.mark.parametrize(("profile", "mode"), CANONICAL_DIGESTS)
+@pytest.mark.parametrize(
+    ("mutation_name", "mutate"),
+    [
+        (
+            "float_to_int",
+            lambda config: replace(
+                config,
+                run=replace(
+                    config.run,
+                    replay_ratio=int(config.run.replay_ratio),
+                ),
+            ),
+        ),
+        (
+            "positive_to_negative_zero",
+            lambda config: replace(
+                config,
+                replay=replace(config.replay, priority_fraction=-0.0),
+            ),
+        ),
+    ],
+)
+def test_canonical_profile_validation_is_lossless_for_numeric_representation(
+    profile: DreamerProfile,
+    mode: ObservationMode,
+    mutation_name: str,
+    mutate,
+) -> None:
+    config = resolve_dreamer_config(profile, mode)
+
+    assert config.canonical_hash() == CANONICAL_DIGESTS[(profile, mode)]
+    with pytest.raises(ValueError, match="canonical authority hash"):
+        mutate(config)
+
+
+def test_legacy_rssm_supports_lossless_dataclasses_replace() -> None:
+    legacy = DreamerV3Config(
+        action_dim=4,
+        observation_shape=(8, 8, 3),
+    ).rssm
+
+    unchanged = replace(legacy)
+    updated = replace(legacy, free_nats=2.0)
+
+    assert unchanged == legacy
+    assert unchanged.stoch == 16
+    assert updated.stoch == 16
+    assert updated.free_nats == 2.0
+    updated.validate(canonical=False)
+
+
 def test_task_one_interfaces_are_exported_from_the_package_boundary() -> None:
     expected = {
         "DecoderConfig",

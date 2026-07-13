@@ -17,6 +17,22 @@ class ObservationMode(str, Enum):
     PROPRIO = "proprio"
 
 
+_CANONICAL_AUTHORITY_HASHES = {
+    (DreamerProfile.PAPER, ObservationMode.VISION): (
+        "0f7b619eeb24d87d2d20b3331cd0a4229d4e322f007af52a85f1eb9028af4ca3"
+    ),
+    (DreamerProfile.PAPER, ObservationMode.PROPRIO): (
+        "6e1b19b9d058ab579980dad3ed8d8caa16e805f0633bb623611d12216c5987c2"
+    ),
+    (DreamerProfile.UPSTREAM_CURRENT, ObservationMode.VISION): (
+        "8973a4665e54be56322a158ddceea785b19850806bfcdb65743a310fbed4b94c"
+    ),
+    (DreamerProfile.UPSTREAM_CURRENT, ObservationMode.PROPRIO): (
+        "ce029c8275701e2a692133b1d4bd1cdabe16144fc5864309d59fe9fdbae69908"
+    ),
+}
+
+
 class ModelSize(str, Enum):
     M1 = "1m"
     M12 = "12m"
@@ -98,7 +114,7 @@ class RSSMConfig:
     absolute: bool
     initializer: str
     output_scale: float
-    _legacy: bool = field(default=False, init=False, repr=False, compare=False)
+    _legacy: bool = field(default=False, repr=False, compare=False)
 
     def __init__(
         self,
@@ -122,6 +138,7 @@ class RSSMConfig:
         hidden_size: int | None = None,
         stochastic_size: int | None = None,
         discrete_classes: int | None = None,
+        _legacy: bool = False,
     ) -> None:
         aliases = (
             deterministic_size,
@@ -129,7 +146,7 @@ class RSSMConfig:
             stochastic_size,
             discrete_classes,
         )
-        legacy = any(value is not None for value in aliases)
+        legacy = _legacy or any(value is not None for value in aliases)
         if deterministic_size is not None:
             deter = deterministic_size
         if hidden_size is not None:
@@ -777,6 +794,11 @@ class DreamerV3Config:
             or self.action_mode != "continuous"
         ):
             raise ValueError("runtime interface does not match the canonical profile")
+        expected_hash = _CANONICAL_AUTHORITY_HASHES[
+            (self.profile, self.observation_mode)
+        ]
+        if self.canonical_hash() != expected_hash:
+            raise ValueError("configuration does not match canonical authority hash")
 
     @property
     def actor_critic(self) -> ActorCriticConfig:

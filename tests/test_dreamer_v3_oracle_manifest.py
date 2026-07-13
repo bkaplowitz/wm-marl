@@ -11,7 +11,9 @@ import pytest
 import world_marl.dreamer_v3_baseline.oracle as oracle_module
 from world_marl.dreamer_v3_baseline.config import (
     DreamerProfile,
+    DreamerV3Config,
     ObservationMode,
+    resolve_dreamer_config,
 )
 from world_marl.dreamer_v3_baseline.oracle import (
     ORACLE_SCHEMA_VERSION,
@@ -79,6 +81,7 @@ def test_manifest_round_trip_validates_all_provenance_hashes(
         },
         seed=7,
         generator_command=("pytest", "manifest_round_trip"),
+        source_spec="config",
     )
 
     manifest = OracleManifest.load(
@@ -137,6 +140,7 @@ def test_manifest_rejects_wrong_schema_source_config_override_and_fixture_hashes
         arrays={"value": np.asarray([1.0], dtype=np.float32)},
         seed=3,
         generator_command=("pytest", "tamper"),
+        source_spec="config",
     )
     tampered = tmp_path / f"tampered-{field}.json"
     _write_tampered_manifest(manifest_path, tampered, field, replacement)
@@ -167,6 +171,7 @@ def test_fixture_writer_is_byte_deterministic_and_sorts_tensor_names(
         arrays=arrays,
         seed=11,
         generator_command=("oracle", "deterministic"),
+        source_spec="config",
     )
     second_fixture, second_manifest = second.write_fixture(
         case_name="deterministic",
@@ -175,6 +180,7 @@ def test_fixture_writer_is_byte_deterministic_and_sorts_tensor_names(
         arrays=dict(reversed(tuple(arrays.items()))),
         seed=11,
         generator_command=("oracle", "deterministic"),
+        source_spec="config",
     )
 
     assert first_fixture.read_bytes() == second_fixture.read_bytes()
@@ -196,6 +202,7 @@ def test_manifest_rejects_offline_wrong_source_hash_and_missing_fixture(
         arrays={"value": np.asarray([1.0], dtype=np.float32)},
         seed=5,
         generator_command=("pytest", "offline_validation"),
+        source_spec="config",
     )
     tampered = tmp_path / "offline-wrong-source.manifest.json"
     _write_tampered_manifest(
@@ -211,6 +218,98 @@ def test_manifest_rejects_offline_wrong_source_hash_and_missing_fixture(
     fixture_path.rename(tmp_path / "detached-fixture.npz")
     with pytest.raises(ValueError, match="fixture.*missing"):
         OracleManifest.load(manifest_path)
+
+
+def test_manifest_rejects_supplied_config_from_a_different_authority_coordinate(
+    official_checkout: Path,
+    tmp_path: Path,
+) -> None:
+    harness = OracleHarness(official_checkout, tmp_path)
+    fixture_path, manifest_path = harness.write_fixture(
+        case_name="config_coordinate",
+        profile=DreamerProfile.PAPER,
+        observation_mode=ObservationMode.VISION,
+        arrays={"value": np.asarray([1.0], dtype=np.float32)},
+        seed=17,
+        generator_command=("pytest", "config_coordinate"),
+        source_spec="config",
+    )
+    paper_proprio = resolve_dreamer_config(
+        DreamerProfile.PAPER,
+        ObservationMode.PROPRIO,
+    )
+    wrong_mode = tmp_path / "wrong-mode.manifest.json"
+    _write_tampered_manifest(
+        manifest_path,
+        wrong_mode,
+        "profile_hash",
+        paper_proprio.canonical_hash(),
+    )
+
+    with pytest.raises(ValueError, match="observation mode"):
+        OracleManifest.load(
+            wrong_mode,
+            fixture_path=fixture_path,
+            config=paper_proprio,
+        )
+
+    current_vision = resolve_dreamer_config(
+        DreamerProfile.UPSTREAM_CURRENT,
+        ObservationMode.VISION,
+    )
+    wrong_profile = tmp_path / "wrong-profile.manifest.json"
+    _write_tampered_manifest(
+        manifest_path,
+        wrong_profile,
+        "profile_hash",
+        current_vision.canonical_hash(),
+    )
+    with pytest.raises(ValueError, match="profile"):
+        OracleManifest.load(
+            wrong_profile,
+            fixture_path=fixture_path,
+            config=current_vision,
+        )
+
+    legacy = DreamerV3Config(action_dim=4, observation_shape=(8, 8, 3))
+    with pytest.raises(ValueError, match="canonical supplied config"):
+        OracleManifest.load(
+            manifest_path,
+            fixture_path=fixture_path,
+            config=legacy,
+        )
+
+
+def test_generic_oracle_apis_require_explicit_source_authority(
+    official_checkout: Path,
+    tmp_path: Path,
+) -> None:
+    harness = OracleHarness(official_checkout, tmp_path)
+    arrays = {"value": np.asarray([1.0], dtype=np.float32)}
+
+    with pytest.raises(TypeError, match="source_spec"):
+        harness.write_fixture(
+            case_name="generic_without_source",
+            profile=DreamerProfile.PAPER,
+            observation_mode=ObservationMode.VISION,
+            arrays=arrays,
+            seed=19,
+            generator_command=("pytest", "generic_without_source"),
+        )
+
+    fixture_path = tmp_path / "direct-create.npz"
+    np.savez(fixture_path, **arrays)
+    with pytest.raises(TypeError, match="source_spec"):
+        OracleManifest.create(
+            case_name="direct_without_source",
+            profile=DreamerProfile.PAPER,
+            observation_mode=ObservationMode.VISION,
+            official_checkout=official_checkout,
+            fixture_path=fixture_path,
+            arrays=arrays,
+            seed=23,
+            generator_command=("pytest", "direct_without_source"),
+        )
 
 
 def test_case_specific_source_specs_pin_exact_files_for_future_oracles(

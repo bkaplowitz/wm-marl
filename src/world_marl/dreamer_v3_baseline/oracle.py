@@ -211,8 +211,8 @@ class OracleManifest:
         arrays: Mapping[str, np.ndarray],
         seed: int,
         generator_command: Sequence[str],
+        source_spec: str | OracleSourceSpec,
         generator_request: Mapping[str, Any] | None = None,
-        source_spec: str | OracleSourceSpec = CONFIG_SOURCE_SPEC.name,
         dtype: str | None = None,
         device: str | None = None,
     ) -> OracleManifest:
@@ -373,10 +373,22 @@ class OracleManifest:
         expected_overrides = dict(profile_overrides(self.profile))
         if dict(self.overrides) != expected_overrides:
             raise ValueError("oracle override map does not match profile")
-        expected_config = config or resolve_dreamer_config(
-            self.profile,
-            self.observation_mode,
-        )
+        if config is not None:
+            config.validate()
+            if config._legacy:
+                raise ValueError("oracle requires a canonical supplied config")
+            if config.profile is not self.profile:
+                raise ValueError("supplied config profile does not match manifest")
+            if config.observation_mode is not self.observation_mode:
+                raise ValueError(
+                    "supplied config observation mode does not match manifest"
+                )
+            expected_config = config
+        else:
+            expected_config = resolve_dreamer_config(
+                self.profile,
+                self.observation_mode,
+            )
         if self.profile_hash != expected_config.canonical_hash():
             raise ValueError("oracle profile hash does not match resolved config")
         if not _SHA256_PATTERN.fullmatch(self.profile_hash):
@@ -595,8 +607,8 @@ class OracleHarness:
         arrays: Mapping[str, np.ndarray],
         seed: int,
         generator_command: Sequence[str],
+        source_spec: str | OracleSourceSpec,
         generator_request: Mapping[str, Any] | None = None,
-        source_spec: str | OracleSourceSpec = CONFIG_SOURCE_SPEC.name,
     ) -> tuple[Path, Path]:
         if not _CASE_PATTERN.fullmatch(case_name):
             raise ValueError(f"invalid oracle case name: {case_name!r}")
