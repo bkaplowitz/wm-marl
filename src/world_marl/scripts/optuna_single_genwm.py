@@ -35,6 +35,10 @@ from world_marl.scripts.write_dmc_vector_launcher import COMMON_PARAMS, PRESETS
 
 FAILED_SCORE = -1_000_000.0
 
+MODEL_DIM_CHOICES = [128, 256]
+BLOCK_SIZE_CHOICES = [1, 2, 4]
+STEPS_PER_BLOCK_CHOICES = [2, 4, 8]
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -53,6 +57,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Seeded runs per trial; the objective averages across them.",
     )
     parser.add_argument("--sampler-seed", type=int, default=0)
+    parser.add_argument(
+        "--model-dims",
+        type=int,
+        nargs="+",
+        default=MODEL_DIM_CHOICES,
+        help="model_dim categorical choices for the search space.",
+    )
+    parser.add_argument(
+        "--block-sizes",
+        type=int,
+        nargs="+",
+        default=BLOCK_SIZE_CHOICES,
+        help="block_size categorical choices (llada2 arm only).",
+    )
+    parser.add_argument(
+        "--steps-per-blocks",
+        type=int,
+        nargs="+",
+        default=STEPS_PER_BLOCK_CHOICES,
+        help="steps_per_block categorical choices (llada2 arm only).",
+    )
     parser.add_argument(
         "--enqueue",
         action="append",
@@ -80,12 +105,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def sample_params(trial, *, arm: str) -> dict[str, Any]:
+def sample_params(
+    trial,
+    *,
+    arm: str,
+    model_dims: list[int] | None = None,
+    block_sizes: list[int] | None = None,
+    steps_per_blocks: list[int] | None = None,
+) -> dict[str, Any]:
     params: dict[str, Any] = {
         "wm_learning_rate": trial.suggest_float(
             "wm_learning_rate", 1e-4, 3e-3, log=True
         ),
-        "model_dim": trial.suggest_categorical("model_dim", [128, 256]),
+        "model_dim": trial.suggest_categorical(
+            "model_dim", model_dims or MODEL_DIM_CHOICES
+        ),
         "num_layers": trial.suggest_categorical("num_layers", [2, 3, 4]),
         "obs_bins": trial.suggest_categorical("obs_bins", [16, 32, 64]),
         "imag_horizon": trial.suggest_categorical("imag_horizon", [10, 15, 25]),
@@ -95,11 +129,13 @@ def sample_params(trial, *, arm: str) -> dict[str, Any]:
         "ent_coef": trial.suggest_float("ent_coef", 1e-3, 3e-2, log=True),
     }
     if arm == "llada2":
-        # block_size must evenly tile the obs-token sequence (obs_dim tokens);
-        # small powers of two stay safe across CartPole (4) and reacher-like dims.
-        params["block_size"] = trial.suggest_categorical("block_size", [1, 2, 4])
+        # the sampler ceil-divides the obs-token sequence into blocks, so any
+        # block_size is safe on ragged lengths (reacher's 11 obs tokens incl.).
+        params["block_size"] = trial.suggest_categorical(
+            "block_size", block_sizes or BLOCK_SIZE_CHOICES
+        )
         params["steps_per_block"] = trial.suggest_categorical(
-            "steps_per_block", [2, 4, 8]
+            "steps_per_block", steps_per_blocks or STEPS_PER_BLOCK_CHOICES
         )
     return params
 
@@ -161,7 +197,16 @@ def latest_summary(trial_dir: Path) -> dict[str, Any] | None:
 
 
 def run_trial(args: argparse.Namespace, trial) -> float:
-    params = {**base_params(args), **sample_params(trial, arm=args.arm)}
+    params = {
+        **base_params(args),
+        **sample_params(
+            trial,
+            arm=args.arm,
+            model_dims=args.model_dims,
+            block_sizes=args.block_sizes,
+            steps_per_blocks=args.steps_per_blocks,
+        ),
+    }
     trial_dir = args.out_root / f"trial_{trial.number:04d}"
     trial_dir.mkdir(parents=True, exist_ok=True)
     seed = args.seed + trial.number
