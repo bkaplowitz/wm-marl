@@ -177,6 +177,17 @@ def parse_args() -> argparse.Namespace:
         default=True,
     )
     policy.add_argument("--actor-entropy-coef", type=float, default=3e-3)
+    policy.add_argument("--actor-entropy-final-coef", type=float, default=None)
+    policy.add_argument(
+        "--actor-entropy-decay-start-env-steps",
+        type=int,
+        default=None,
+    )
+    policy.add_argument(
+        "--actor-entropy-decay-end-env-steps",
+        type=int,
+        default=None,
+    )
     policy.add_argument(
         "--actor-entropy-mode",
         choices=("gaussian", "tanh-normal"),
@@ -402,6 +413,35 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         )
     if args.actor_log_std_min >= args.actor_log_std_max:
         parser.error("--actor-log-std-min must be below --actor-log-std-max")
+    entropy_schedule = (
+        args.actor_entropy_final_coef,
+        args.actor_entropy_decay_start_env_steps,
+        args.actor_entropy_decay_end_env_steps,
+    )
+    if any(value is not None for value in entropy_schedule):
+        if any(value is None for value in entropy_schedule):
+            parser.error(
+                "entropy decay requires --actor-entropy-final-coef, "
+                "--actor-entropy-decay-start-env-steps, and "
+                "--actor-entropy-decay-end-env-steps"
+            )
+        assert args.actor_entropy_final_coef is not None
+        assert args.actor_entropy_decay_start_env_steps is not None
+        assert args.actor_entropy_decay_end_env_steps is not None
+        if args.actor_entropy_final_coef < 0.0:
+            parser.error("--actor-entropy-final-coef must be >= 0")
+        if args.actor_entropy_final_coef > args.actor_entropy_coef:
+            parser.error("--actor-entropy-final-coef must be <= --actor-entropy-coef")
+        if args.actor_entropy_decay_start_env_steps < 0:
+            parser.error("--actor-entropy-decay-start-env-steps must be >= 0")
+        if (
+            args.actor_entropy_decay_end_env_steps
+            <= args.actor_entropy_decay_start_env_steps
+        ):
+            parser.error(
+                "--actor-entropy-decay-end-env-steps must be greater than "
+                "--actor-entropy-decay-start-env-steps"
+            )
     if args.stochastic_collection and not args.stochastic_actor:
         parser.error("--stochastic-collection requires --stochastic-actor")
     if args.policy_gradient_mode == "reinforce" and not args.stochastic_actor:
@@ -804,6 +844,10 @@ def run_one(
             phase="policy",
             train_steps=args.policy_train_steps,
             reset_actor=True,
+            actor_entropy_coef=_scheduled_actor_entropy_coef(
+                args,
+                train_env_steps=train_env_steps,
+            ),
         )
         jax_rngs.update("policy", policy_rng)
         logger.write_json("policy_initial_fit.json", initial_policy_metrics)
@@ -906,6 +950,10 @@ def run_one(
                 phase=f"{phase}_policy",
                 train_steps=args.online_policy_train_steps,
                 reset_actor=False,
+                actor_entropy_coef=_scheduled_actor_entropy_coef(
+                    args,
+                    train_env_steps=train_env_steps,
+                ),
             )
             jax_rngs.update("policy", policy_rng)
             logger.write_json(f"{phase}_policy.json", policy_metrics)
@@ -1454,6 +1502,7 @@ def _train_policy(
     phase: str,
     train_steps: int,
     reset_actor: bool,
+    actor_entropy_coef: float,
 ) -> tuple[Any, jax.Array, dict[str, Any]]:
     if train_steps == 0:
         return (
@@ -1550,7 +1599,7 @@ def _train_policy(
             value_clip=args.value_clip,
             action_saturation_threshold=0.95,
             start_actions=start_actions,
-            actor_entropy_coef=args.actor_entropy_coef,
+            actor_entropy_coef=actor_entropy_coef,
             actor_entropy_mode=args.actor_entropy_mode,
             target_critic_params=(
                 state.target_critic_params
@@ -1598,7 +1647,9 @@ def _train_policy(
             "policy_return_normalization": args.policy_return_normalization,
             "policy_gradient_mode": args.policy_gradient_mode,
             "policy_stochastic_actor": args.stochastic_actor,
-            "policy_actor_entropy_coef": args.actor_entropy_coef,
+            "policy_actor_entropy_coef": actor_entropy_coef,
+            "policy_actor_entropy_initial_coef": args.actor_entropy_coef,
+            "policy_actor_entropy_final_coef": args.actor_entropy_final_coef,
             "policy_target_critic_ema_decay": args.target_critic_ema_decay,
             "policy_replay_critic_loss_coef": args.policy_replay_critic_loss_coef,
             "critic_warmup_steps": args.critic_warmup_steps,
@@ -1646,6 +1697,26 @@ def _sample_policy_starts(
     return (
         jnp.concatenate(observation_chunks, axis=0)[:batch_size],
         jnp.concatenate(action_chunks, axis=0)[:batch_size],
+    )
+
+
+def _scheduled_actor_entropy_coef(
+    args: argparse.Namespace,
+    *,
+    train_env_steps: int,
+) -> float:
+    final_coef = args.actor_entropy_final_coef
+    start = args.actor_entropy_decay_start_env_steps
+    end = args.actor_entropy_decay_end_env_steps
+    if final_coef is None or start is None or end is None:
+        return float(args.actor_entropy_coef)
+    if train_env_steps <= start:
+        return float(args.actor_entropy_coef)
+    if train_env_steps >= end:
+        return float(final_coef)
+    progress = (train_env_steps - start) / (end - start)
+    return float(
+        args.actor_entropy_coef + progress * (final_coef - args.actor_entropy_coef)
     )
 
 

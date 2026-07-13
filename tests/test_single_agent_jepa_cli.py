@@ -199,6 +199,49 @@ def test_cli_exposes_current_dreamer_stabilizers(monkeypatch):
     assert args.policy_slow_value_regularization_coef == 1.0
 
 
+def test_cli_accepts_budget_relative_entropy_decay(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _minimal_args(
+            "--actor-entropy-coef",
+            "0.003",
+            "--actor-entropy-final-coef",
+            "0.0003",
+            "--actor-entropy-decay-start-env-steps",
+            "300000",
+            "--actor-entropy-decay-end-env-steps",
+            "500000",
+        ),
+    )
+
+    args = train_dmc_jepa.parse_args()
+
+    assert train_dmc_jepa._scheduled_actor_entropy_coef(
+        args,
+        train_env_steps=299_999,
+    ) == pytest.approx(3e-3)
+    assert train_dmc_jepa._scheduled_actor_entropy_coef(
+        args,
+        train_env_steps=400_000,
+    ) == pytest.approx(1.65e-3)
+    assert train_dmc_jepa._scheduled_actor_entropy_coef(
+        args,
+        train_env_steps=500_000,
+    ) == pytest.approx(3e-4)
+
+
+def test_cli_rejects_partial_entropy_decay(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _minimal_args("--actor-entropy-final-coef", "0.0003"),
+    )
+
+    with pytest.raises(SystemExit):
+        train_dmc_jepa.parse_args()
+
+
 def test_cli_rejects_removed_checkpoint_search_flags(monkeypatch):
     monkeypatch.setattr(
         sys,

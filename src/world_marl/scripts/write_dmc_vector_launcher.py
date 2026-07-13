@@ -163,6 +163,9 @@ OVERRIDABLE_PARAMS = (
     "learning_rate",
     "actor_learning_rate",
     "actor_entropy_coef",
+    "actor_entropy_final_coef",
+    "actor_entropy_decay_start_env_steps",
+    "actor_entropy_decay_end_env_steps",
     "final_policy_eval_episodes",
     "final_policy_eval_seed",
     "wandb_project",
@@ -363,12 +366,15 @@ def parse_args() -> argparse.Namespace:
         "imag_horizon",
         "final_policy_eval_episodes",
         "final_policy_eval_seed",
+        "actor_entropy_decay_start_env_steps",
+        "actor_entropy_decay_end_env_steps",
     ):
         parser.add_argument("--" + name.replace("_", "-"), type=int, default=None)
     for name in (
         "learning_rate",
         "actor_learning_rate",
         "actor_entropy_coef",
+        "actor_entropy_final_coef",
     ):
         parser.add_argument("--" + name.replace("_", "-"), type=float, default=None)
     parser.add_argument("--wandb-project", default=None)

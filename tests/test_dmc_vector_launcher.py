@@ -26,6 +26,23 @@ def test_launcher_serializes_tracking_controls():
     assert "--wandb-videos" in command
 
 
+def test_launcher_serializes_entropy_decay_controls():
+    command = params_to_shell_args(
+        {
+            "actor_entropy_coef": 3e-3,
+            "actor_entropy_final_coef": 3e-4,
+            "actor_entropy_decay_start_env_steps": 300_000,
+            "actor_entropy_decay_end_env_steps": 500_000,
+        }
+    )
+
+    tokens = command.replace("\\\n", " ").split()
+    assert tokens[tokens.index("--actor-entropy-coef") + 1] == "0.003"
+    assert tokens[tokens.index("--actor-entropy-final-coef") + 1] == "0.0003"
+    assert tokens[tokens.index("--actor-entropy-decay-start-env-steps") + 1] == "300000"
+    assert tokens[tokens.index("--actor-entropy-decay-end-env-steps") + 1] == "500000"
+
+
 def test_launcher_syncs_tracking_extra_when_enabled(tmp_path):
     write_launcher(
         tmp_path,
