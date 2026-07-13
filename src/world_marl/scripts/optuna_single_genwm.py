@@ -35,6 +35,35 @@ from world_marl.scripts.write_dmc_vector_launcher import COMMON_PARAMS, PRESETS
 
 FAILED_SCORE = -1_000_000.0
 
+
+class FastFailureGuard:
+    """Stop the study when trials fail near-instantly back to back.
+
+    A streak of almost-immediate ``FAILED_SCORE`` trials means the environment
+    is broken (dead GPU, missing deps), not that the sampled configs are bad;
+    letting the study run on would burn the trial budget on poison scores and
+    exit 0 as if the sweep succeeded.
+    """
+
+    def __init__(self, limit: int, fast_seconds: float) -> None:
+        self.limit = limit
+        self.fast_seconds = fast_seconds
+        self.streak = 0
+        self.tripped = False
+
+    def __call__(self, study, trial) -> None:
+        runtime = trial.user_attrs.get("runtime_seconds")
+        failed_fast = (
+            trial.value == FAILED_SCORE
+            and runtime is not None
+            and runtime < self.fast_seconds
+        )
+        self.streak = self.streak + 1 if failed_fast else 0
+        if self.streak >= self.limit:
+            self.tripped = True
+            study.stop()
+
+
 MODEL_DIM_CHOICES = [128, 256]
 BLOCK_SIZE_CHOICES = [1, 2, 4]
 STEPS_PER_BLOCK_CHOICES = [2, 4, 8]
@@ -91,6 +120,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="append",
         default=[],
         help="Extra flag token appended to every trial command (repeatable).",
+    )
+    parser.add_argument(
+        "--fail-fast-limit",
+        type=int,
+        default=3,
+        help="Abort the study after this many consecutive near-instant failed "
+        "trials (environment failure, e.g. dead GPU); 0 disables the guard.",
+    )
+    parser.add_argument(
+        "--fail-fast-seconds",
+        type=float,
+        default=60.0,
+        help="A failed trial counts as near-instant below this runtime.",
     )
     parser.add_argument("--wandb-project", default=None)
     parser.add_argument("--wandb-entity", default=None)
@@ -286,7 +328,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     for raw in args.enqueue:
         study.enqueue_trial(json.loads(raw), skip_if_exists=True)
-    study.optimize(lambda trial: run_trial(args, trial), n_trials=args.n_trials)
+    guard = FastFailureGuard(args.fail_fast_limit, args.fail_fast_seconds)
+    study.optimize(
+        lambda trial: run_trial(args, trial),
+        n_trials=args.n_trials,
+        callbacks=[guard] if args.fail_fast_limit > 0 else [],
+    )
 
     frame = study.trials_dataframe(attrs=("number", "value", "params", "state"))
     frame.to_csv(args.out_root / "trials.csv", index=False)
@@ -307,6 +354,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     if best is not None:
         print(f"best trial {best.number}: value={best.value} params={best.params}")
+    if guard.tripped:
+        print(
+            f"study stopped: {guard.limit} consecutive trials failed in under "
+            f"{guard.fast_seconds:.0f}s -- environment failure, not bad configs",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
     return 0
 
 
