@@ -9,10 +9,11 @@ import re
 import subprocess
 import sys
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType, ModuleType, SimpleNamespace
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 import jax
 import numpy as np
@@ -991,7 +992,20 @@ def _load_official_outs(source: bytes, revision: str) -> ModuleType:
     exec(code, module.__dict__)
     runtime_jax = module.jax
 
-    def bernoulli_compat(
+    module.jax = SimpleNamespace(
+        nn=runtime_jax.nn,
+        random=_OfficialRandomFacade(runtime_jax.random),
+        scipy=runtime_jax.scipy,
+    )
+    return module
+
+
+class _OfficialRandomFacade:
+    def __init__(self, runtime_random: Any) -> None:
+        self._runtime_random = runtime_random
+
+    def bernoulli(
+        self,
         seed: jax.Array,
         probability: jax.Array,
         axis: int,
@@ -999,18 +1013,117 @@ def _load_official_outs(source: bytes, revision: str) -> ModuleType:
     ) -> jax.Array:
         if axis != -1:
             raise ValueError("official Binary sample axis must be -1")
-        return runtime_jax.random.bernoulli(seed, probability, shape)
+        return self._runtime_random.bernoulli(seed, probability, shape)
 
-    module.jax = SimpleNamespace(
-        nn=runtime_jax.nn,
-        random=SimpleNamespace(
-            bernoulli=bernoulli_compat,
-            categorical=runtime_jax.random.categorical,
-            normal=runtime_jax.random.normal,
-        ),
-        scipy=runtime_jax.scipy,
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._runtime_random, name)
+
+
+class _SuppliedCategoricalNoise:
+    def __init__(
+        self,
+        *,
+        expected_logits: np.ndarray | jax.Array,
+        expected_output_shape: Sequence[int],
+        noise: np.ndarray | jax.Array,
+    ) -> None:
+        self.expected_logits = np.asarray(jax.device_get(expected_logits))
+        self.expected_output_shape = tuple(expected_output_shape)
+        self.noise = jax.numpy.asarray(noise)
+        expected_noise_shape = self.expected_output_shape + (
+            self.expected_logits.shape[-1],
+        )
+        if tuple(self.noise.shape) != expected_noise_shape:
+            raise ValueError(
+                "supplied categorical noise shape does not match the expected "
+                f"primitive shape: {self.noise.shape} != {expected_noise_shape}"
+            )
+        if self.noise.dtype != self.expected_logits.dtype:
+            raise ValueError(
+                "supplied categorical noise dtype does not match logits: "
+                f"{self.noise.dtype} != {self.expected_logits.dtype}"
+            )
+        self.calls = 0
+
+    def __call__(
+        self,
+        seed: jax.Array,
+        logits: jax.Array,
+        axis: int = -1,
+        shape: Sequence[int] | None = None,
+    ) -> jax.Array:
+        del seed
+        if axis != -1:
+            raise ValueError("official Categorical sample axis must be -1")
+        if shape is None or tuple(shape) != self.expected_output_shape:
+            raise ValueError(
+                "categorical requested output shape does not match supplied case: "
+                f"{shape} != {self.expected_output_shape}"
+            )
+        if tuple(logits.shape) != self.expected_logits.shape:
+            raise ValueError(
+                "categorical logits shape does not match supplied case: "
+                f"{logits.shape} != {self.expected_logits.shape}"
+            )
+        batch_shape = tuple(logits.shape[:-1])
+        if self.expected_output_shape[-len(batch_shape) :] != batch_shape:
+            raise ValueError(
+                "categorical output shape does not end in the logits batch shape"
+            )
+        expected_noise_shape = self.expected_output_shape + (logits.shape[-1],)
+        if tuple(self.noise.shape) != expected_noise_shape:
+            raise ValueError(
+                "supplied categorical noise shape changed after construction"
+            )
+        self._assert_logits(logits)
+        shape_prefix = len(self.expected_output_shape) - len(batch_shape)
+        expanded_logits = jax.lax.expand_dims(logits, tuple(range(shape_prefix)))
+        self.calls += 1
+        return jax.numpy.argmax(self.noise + expanded_logits, axis=axis)
+
+    def _assert_logits(self, logits: jax.Array) -> None:
+        expected = self.expected_logits
+
+        def assert_equal(value: np.ndarray) -> None:
+            if not np.array_equal(value, expected):
+                raise ValueError(
+                    "categorical logits do not match the authoritative supplied-noise "
+                    "case"
+                )
+
+        if isinstance(logits, jax.core.Tracer):
+            jax.debug.callback(assert_equal, logits)
+        else:
+            assert_equal(np.asarray(jax.device_get(logits)))
+
+
+@contextmanager
+def _supplied_categorical_noise_scope(
+    random_namespace: Any,
+    *,
+    expected_logits: np.ndarray | jax.Array,
+    expected_output_shape: Sequence[int],
+    noise: np.ndarray | jax.Array,
+) -> Iterator[None]:
+    injected = _SuppliedCategoricalNoise(
+        expected_logits=expected_logits,
+        expected_output_shape=expected_output_shape,
+        noise=noise,
     )
-    return module
+    missing = object()
+    original = vars(random_namespace).get("categorical", missing)
+    setattr(random_namespace, "categorical", injected)
+    try:
+        yield
+        if injected.calls != 1:
+            raise ValueError(
+                "supplied categorical noise case must invoke the primitive exactly once"
+            )
+    finally:
+        if original is missing:
+            delattr(random_namespace, "categorical")
+        else:
+            setattr(random_namespace, "categorical", original)
 
 
 def _load_official_function(
@@ -1239,6 +1352,21 @@ def _official_distribution_arrays(
     categorical_event = jnp.asarray([3, 1], jnp.int32)
     categorical = outs.Categorical(categorical_logits, 0.01)
     categorical_other = outs.Categorical(categorical_other_logits, 0.01)
+    categorical_supplied_noise = jnp.asarray(
+        [
+            [[8.0, 0.0, 0.0, 0.0], [0.0, 7.5, 0.0, 0.0]],
+            [[0.0, 4.0, 0.0, 0.0], [0.0, 0.0, 7.0, 0.0]],
+            [[0.0, 0.0, 3.0, 0.0], [0.0, 0.0, 0.0, 7.0]],
+        ],
+        jnp.float32,
+    )
+    with _supplied_categorical_noise_scope(
+        outs.jax.random,
+        expected_logits=categorical.logits,
+        expected_output_shape=(3, 2),
+        noise=categorical_supplied_noise,
+    ):
+        categorical_supplied_sample = categorical.sample(keys[4], shape=(3,))
     arrays.update(
         {
             "categorical.effective_logits": categorical.logits,
@@ -1254,6 +1382,8 @@ def _official_distribution_arrays(
             "categorical.probs": jax.nn.softmax(categorical.logits),
             "categorical.sample": categorical.sample(keys[4], shape=(3,)),
             "categorical.seed": keys[4],
+            "categorical.supplied_noise": categorical_supplied_noise,
+            "categorical.supplied_sample": categorical_supplied_sample,
         }
     )
 
@@ -1272,8 +1402,35 @@ def _official_distribution_arrays(
     )
     onehot = outs.OneHot(onehot_logits, 0.01)
     onehot_other = outs.OneHot(onehot_other_logits, 0.01)
+    onehot_supplied_noise = jnp.asarray(
+        [
+            [[5.0, 0.0, 0.0, 0.0], [0.0, 8.0, 0.0, 0.0]],
+            [[0.0, 4.0, 0.0, 0.0], [0.0, 0.0, 6.0, 0.0]],
+        ],
+        jnp.float32,
+    )
+    with _supplied_categorical_noise_scope(
+        outs.jax.random,
+        expected_logits=onehot.dist.logits,
+        expected_output_shape=(2, 2),
+        noise=onehot_supplied_noise,
+    ):
+        onehot_supplied_sample = onehot.sample(keys[5], shape=(2,))
+
+    def supplied_onehot_objective(value: jax.Array) -> jax.Array:
+        candidate = outs.OneHot(value, 0.01)
+        with _supplied_categorical_noise_scope(
+            outs.jax.random,
+            expected_logits=onehot.dist.logits,
+            expected_output_shape=(2, 2),
+            noise=onehot_supplied_noise,
+        ):
+            sample = candidate.sample(keys[5], shape=(2,))
+        return (sample * onehot_weights).sum()
+
     arrays.update(
         {
+            "onehot.effective_logits": onehot.dist.logits,
             "onehot.entropy": onehot.entropy(),
             "onehot.event": onehot_event,
             "onehot.grad_target": jax.grad(lambda value: onehot.loss(value).sum())(
@@ -1294,6 +1451,11 @@ def _official_distribution_arrays(
             )(onehot_logits),
             "onehot.sample_weights": onehot_weights,
             "onehot.seed": keys[5],
+            "onehot.supplied_noise": onehot_supplied_noise,
+            "onehot.supplied_sample": onehot_supplied_sample,
+            "onehot.supplied_sample_grad": jax.grad(supplied_onehot_objective)(
+                onehot_logits
+            ),
         }
     )
 

@@ -17,6 +17,13 @@ objects that produce output behavior, bounded-normal construction, scalar
 transforms, and two-hot bins. Later network, RSSM, loss, optimizer, replay, and
 train-step cases register the exact source modules they execute.
 
+Distribution fixtures persist fixed Gumbel tensors together with the exact
+official categorical indices, hard one-hot samples, and one-hot
+straight-through gradients they produce. Fixture generation and native parity
+tests call the public `sample(seed, shape)` methods while temporarily replacing
+only the categorical random primitive; every other random primitive delegates
+to JAX, including the separately validated Bernoulli compatibility path.
+
 The `paper` profile uses source revision
 `bfcdfc183d2c1543a3bf3cdda6edb7fae29b6a01` with in-memory overrides for
 stride convolutions, LaProp beta2 `0.99`, and the `1,000,000`-transition DMC

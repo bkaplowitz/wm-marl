@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 import world_marl.dreamer_v3_baseline as dreamer_v3
+import world_marl.dreamer_v3_baseline.oracle as dreamer_oracle
 from world_marl.dreamer_v3_baseline.config import (
     DreamerProfile,
     ObservationMode,
@@ -114,6 +115,31 @@ def test_distribution_oracle_command_and_stdin_replay_exact_official_arrays(
             arrays[name],
             np.asarray(spec["values"], dtype=spec["dtype"]),
         )
+
+
+def test_distribution_oracles_persist_supplied_categorical_noise_cases(
+    official_case,
+) -> None:
+    _, arrays = official_case
+    required = {
+        "categorical.supplied_noise",
+        "categorical.supplied_sample",
+        "onehot.effective_logits",
+        "onehot.supplied_noise",
+        "onehot.supplied_sample",
+        "onehot.supplied_sample_grad",
+    }
+
+    assert required <= set(arrays)
+    assert arrays["categorical.supplied_noise"].dtype == np.float32
+    assert arrays["categorical.supplied_noise"].shape == (3, 2, 4)
+    assert arrays["categorical.supplied_sample"].dtype == np.int32
+    assert arrays["categorical.supplied_sample"].shape == (3, 2)
+    assert arrays["onehot.supplied_noise"].dtype == np.float32
+    assert arrays["onehot.supplied_noise"].shape == (2, 2, 4)
+    assert arrays["onehot.supplied_sample"].dtype == np.float32
+    assert arrays["onehot.supplied_sample"].shape == (2, 2, 4)
+    assert arrays["onehot.supplied_sample_grad"].shape == (2, 4)
 
 
 def test_distribution_oracle_writer_is_byte_deterministic(
@@ -303,6 +329,23 @@ def test_categorical_unimix_and_every_public_method_match_official(
     )
 
 
+def test_categorical_sample_matches_official_with_supplied_gumbel_noise(
+    official_case,
+) -> None:
+    _, arrays = official_case
+    output = CategoricalOutput(arrays["categorical.logits"], unimix=0.01)
+
+    with dreamer_oracle._supplied_categorical_noise_scope(
+        jax.random,
+        expected_logits=arrays["categorical.effective_logits"],
+        expected_output_shape=(3, 2),
+        noise=arrays["categorical.supplied_noise"],
+    ):
+        sample = output.sample(jnp.asarray(arrays["categorical.seed"]), shape=(3,))
+
+    np.testing.assert_array_equal(sample, arrays["categorical.supplied_sample"])
+
+
 def test_onehot_is_hard_forward_straight_through_backward_and_matches_oracle(
     official_case,
 ) -> None:
@@ -342,6 +385,50 @@ def test_onehot_is_hard_forward_straight_through_backward_and_matches_oracle(
         arrays["onehot.grad_target"],
     )
     np.testing.assert_array_equal(arrays["onehot.grad_target"], 0.0)
+
+
+def test_onehot_sample_and_straight_through_gradient_match_official_with_supplied_noise(
+    official_case,
+) -> None:
+    _, arrays = official_case
+    logits = jnp.asarray(arrays["onehot.logits"])
+    seed = jnp.asarray(arrays["onehot.seed"])
+    weights = jnp.asarray(arrays["onehot.sample_weights"])
+    output = OneHotOutput(logits, unimix=0.01)
+    scope = dreamer_oracle._supplied_categorical_noise_scope
+
+    with scope(
+        jax.random,
+        expected_logits=arrays["onehot.effective_logits"],
+        expected_output_shape=(2, 2),
+        noise=arrays["onehot.supplied_noise"],
+    ):
+        sample = output.sample(seed, shape=(2,))
+
+    np.testing.assert_array_equal(sample, arrays["onehot.supplied_sample"])
+    np.testing.assert_array_equal(np.asarray(sample).sum(-1), 1.0)
+    np.testing.assert_array_equal(
+        np.logical_or(np.asarray(sample) == 0.0, np.asarray(sample) == 1.0),
+        True,
+    )
+
+    def objective(value):
+        with scope(
+            jax.random,
+            expected_logits=arrays["onehot.effective_logits"],
+            expected_output_shape=(2, 2),
+            noise=arrays["onehot.supplied_noise"],
+        ):
+            supplied_sample = OneHotOutput(value, unimix=0.01).sample(
+                seed,
+                shape=(2,),
+            )
+        return (supplied_sample * weights).sum()
+
+    _assert_f32(
+        jax.grad(objective)(logits),
+        arrays["onehot.supplied_sample_grad"],
+    )
 
 
 def test_twohot_odd_bins_clamping_interpolation_order_and_gradients_match_oracle(
