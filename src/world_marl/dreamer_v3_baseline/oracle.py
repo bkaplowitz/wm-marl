@@ -779,6 +779,24 @@ class OracleHarness:
             source_spec=DISTRIBUTIONS_SOURCE_SPEC.name,
         )
 
+    def run_networks_case(
+        self,
+        profile: DreamerProfile | str,
+        observation_mode: ObservationMode | str,
+        *,
+        case_name: str = "networks",
+        seed: int = 0,
+    ) -> tuple[Path, Path]:
+        from world_marl.dreamer_v3_baseline.network_oracle import run_networks_case
+
+        return run_networks_case(
+            self,
+            profile,
+            observation_mode,
+            case_name=case_name,
+            seed=seed,
+        )
+
 
 def _validate_config_case_arrays(
     arrays: Mapping[str, np.ndarray],
