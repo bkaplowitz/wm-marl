@@ -1,3 +1,5 @@
+"""Train and evaluate the public-source Genie2 latent-diffusion alternative."""
+
 from __future__ import annotations
 
 import argparse
@@ -5,24 +7,23 @@ import math
 from pathlib import Path
 from typing import Any
 
+import imageio.v3 as iio
+import jax
 import jax.numpy as jnp
-import matplotlib.image as mpimg
 import numpy as np
-from flax.training.train_state import TrainState
 
-from world_marl.genie2_continuous_jax.action_bridge import fit_linear_action_bridge
 from world_marl.genie2_continuous_jax.config import Genie2ContinuousConfig
 from world_marl.genie2_continuous_jax.policy import (
     latent_policy_action,
     train_genie2_latent_policy,
+    update_observation_history,
 )
 from world_marl.genie2_continuous_jax.training import (
-    Genie2WorldModel,
-    train_genie2_world_model,
-)
-from world_marl.genie2_continuous_jax.validation import (
-    finite_metric_check,
-    loss_decreased,
+    create_genie2_train_state,
+    decode_genie2_latents,
+    encode_genie2_observations,
+    metrics_to_host,
+    scan_genie2_training_phases,
 )
 from world_marl.world_model_foundation.collect import (
     collect_world_model_sequence,
@@ -30,6 +31,8 @@ from world_marl.world_model_foundation.collect import (
     write_json_artifact,
     write_jsonl_metrics,
 )
+from world_marl.world_model_foundation.metrics import scanned_episode_metrics
+from world_marl.world_model_foundation.replay import sequence_batch_to_jax
 from world_marl.world_model_foundation.sources import world_model_sources
 
 
@@ -40,91 +43,60 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--out-dir", type=Path, default=Path("runs/genie2_continuous_jax")
     )
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--train-steps", type=int, default=10)
+    parser.add_argument("--model-size", choices=("jasmine", "debug"), default="jasmine")
+    parser.add_argument("--train-steps", type=int, default=None)
+    parser.add_argument("--tokenizer-steps", type=int, default=10)
+    parser.add_argument("--dynamics-steps", type=int, default=10)
+    parser.add_argument("--reward-continue-steps", type=int, default=10)
     parser.add_argument("--policy-train-steps", type=int, default=10)
+    parser.add_argument(
+        "--policy-objective",
+        choices=("reinforce", "candidate-distill"),
+        default="reinforce",
+    )
+    parser.add_argument("--num-policy-candidates", type=int, default=64)
+    parser.add_argument("--candidate-min-gap", type=float, default=0.0)
     parser.add_argument("--imagination-horizon", type=int, default=5)
     parser.add_argument("--collect-steps", type=int, default=None)
-    parser.add_argument("--time-steps", type=int, default=6)
+    parser.add_argument("--time-steps", type=int, default=16)
     parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--train-batch-size", type=int, default=None)
+    parser.add_argument("--sequence-length", type=int, default=16)
     parser.add_argument("--num-envs", type=int, default=4)
     parser.add_argument("--max-cycles", type=int, default=1000)
-    parser.add_argument("--image-size", type=int, default=8)
+    parser.add_argument("--image-size", type=int, default=64)
     parser.add_argument("--action-dim", type=int, default=4)
-    parser.add_argument("--learning-rate", type=float, default=1e-3)
+    parser.add_argument("--learning-rate", type=float, default=None)
     parser.add_argument("--brax-backend", default=None)
     parser.add_argument("--dmc-workers", type=int, default=1)
     parser.add_argument("--dmc-camera-id", type=int, default=0)
     parser.add_argument("--eval-episodes", type=int, default=1)
     parser.add_argument("--allow-fail", action="store_true")
-    return parser.parse_args(argv)
-
-
-def _config_payload(
-    args: argparse.Namespace,
-    config: Genie2ContinuousConfig,
-    *,
-    observation_shape: tuple[int, ...],
-    action_mode: str,
-    action_dim: int,
-) -> dict[str, Any]:
-    return {
-        "env": args.env,
-        "seed": args.seed,
-        "train_steps": args.train_steps,
-        "policy_train_steps": args.policy_train_steps,
-        "imagination_horizon": args.imagination_horizon,
-        "collect_steps": _collect_steps(args),
-        "batch_size": args.batch_size,
-        "num_envs": args.num_envs,
-        "max_cycles": args.max_cycles,
-        "image_size": args.image_size,
-        "dmc_camera_id": args.dmc_camera_id,
-        "action_dim": action_dim,
-        "action_mode": action_mode,
-        "observation_shape": observation_shape,
-        "representation": config.representation,
-        "latent_dim": config.autoencoder.latent_dim,
-        "latent_action_dim": config.lam.latent_action_dim,
-        "lam_kl_scale": config.lam.kl_scale,
-        "dynamics_objective": config.dynamics.objective,
-        "dynamics_sampling_steps": config.dynamics.sampling_steps,
-        "policy_source": "latent_policy_bridge",
-    }
-
-
-def _split_metrics(metrics: list[dict[str, float]], key: str) -> list[dict[str, float]]:
-    return [{"step": row["step"], key: row[key]} for row in metrics]
+    args = parser.parse_args(argv)
+    if args.train_steps is not None:
+        args.tokenizer_steps = args.train_steps
+        args.dynamics_steps = args.train_steps
+        args.reward_continue_steps = args.train_steps
+    for name in (
+        "tokenizer_steps",
+        "dynamics_steps",
+        "reward_continue_steps",
+        "policy_train_steps",
+    ):
+        if getattr(args, name) <= 0:
+            parser.error(f"--{name.replace('_', '-')} must be positive")
+    if args.num_policy_candidates < 2:
+        parser.error("--num-policy-candidates must be at least 2")
+    if args.candidate_min_gap < 0.0:
+        parser.error("--candidate-min-gap must be non-negative")
+    return args
 
 
 def _collect_steps(args: argparse.Namespace) -> int:
-    return args.time_steps if args.collect_steps is None else args.collect_steps
-
-
-def _write_png(path: Path, image: np.ndarray) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    mpimg.imsave(path, np.clip(image, 0.0, 1.0))
-
-
-def _to_rgb_panel(array: np.ndarray) -> np.ndarray:
-    values = np.asarray(array, dtype=np.float32)
-    if values.ndim == 1:
-        values = values[None, :, None]
-    elif values.ndim == 2:
-        values = values[..., None]
-    elif values.ndim == 3 and values.shape[-1] not in {1, 3, 4}:
-        values = values.reshape((1, -1, 1))
-    elif values.ndim != 3:
-        values = values.reshape((1, -1, 1))
-
-    values = values[..., :3]
-    if values.shape[-1] == 1:
-        values = np.repeat(values, 3, axis=-1)
-    min_value = float(np.min(values))
-    max_value = float(np.max(values))
-    if min_value < 0.0 or max_value > 1.0:
-        scale = max(max_value - min_value, 1e-6)
-        values = (values - min_value) / scale
-    return np.clip(values, 0.0, 1.0)
+    requested = (
+        args.collect_steps if args.collect_steps is not None else args.time_steps
+    )
+    return max(int(requested), int(args.sequence_length))
 
 
 def _make_batch(args: argparse.Namespace):
@@ -151,64 +123,32 @@ def _make_batch(args: argparse.Namespace):
     )
 
 
-def _infer_latent_actions(state: Any, batch: Any) -> np.ndarray:
-    outputs = state.apply_fn(
-        state.params,
-        jnp.asarray(batch.observations, dtype=jnp.float32),
-        jnp.asarray(batch.rewards, dtype=jnp.float32),
-        jnp.asarray(batch.continues, dtype=jnp.float32),
-    )
-    return np.asarray(outputs["latent_actions"], dtype=np.float32)
+def _to_rgb_panel(array: np.ndarray) -> np.ndarray:
+    values = np.asarray(array, dtype=np.float32)
+    if values.ndim == 3 and values.shape[-1] in {1, 3, 4}:
+        values = values[..., :3]
+        if values.shape[-1] == 1:
+            values = np.repeat(values, 3, axis=-1)
+    else:
+        values = values.reshape(1, -1)
+        values = np.repeat(values[..., None], 3, axis=-1)
+    minimum, maximum = float(values.min()), float(values.max())
+    if maximum > minimum:
+        values = (values - minimum) / (maximum - minimum)
+    return np.asarray(np.clip(values * 255.0, 0.0, 255.0), dtype=np.uint8)
 
 
-def _bridge_real_actions(
-    batch_actions: np.ndarray,
-    *,
-    action_mode: str,
-    action_dim: int,
-) -> np.ndarray:
-    actions = np.asarray(batch_actions[:-1])
-    if action_mode == "discrete":
-        return actions.reshape((-1, 1)).astype(np.float32)
-    return actions.reshape((-1, action_dim)).astype(np.float32)
+def _write_png(path: Path, image: np.ndarray) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    iio.imwrite(path, image)
 
 
-def _bridge_policy_actions(
-    bridge,
-    latent_actions: np.ndarray,
-    *,
-    action_mode: str,
-    action_dim: int,
-    action_low: np.ndarray | None,
-    action_high: np.ndarray | None,
-) -> np.ndarray:
-    real_actions = bridge.predict(np.asarray(latent_actions, dtype=np.float32))
-    if action_mode == "discrete":
-        return np.clip(np.rint(real_actions[:, :1]), 0, action_dim - 1).astype(np.int32)
-
-    if action_low is not None and action_high is not None:
-        real_actions = np.clip(real_actions, action_low, action_high)
-    return real_actions.reshape((-1, action_dim)).astype(np.float32)
-
-
-def _squeeze_single_agent_axis(array: Any, *, num_envs: int) -> np.ndarray:
-    values = np.asarray(array)
-    if values.ndim >= 2 and values.shape[:2] == (num_envs, 1):
-        return values[:, 0, ...]
-    return values
-
-
-def _evaluate_bridged_real_env(
+def _evaluate_real_env(
     args: argparse.Namespace,
-    bridge,
-    world_model_state: TrainState,
-    actor_state: TrainState,
+    batch,
+    world_state,
+    actor_state,
     config: Genie2ContinuousConfig,
-    *,
-    observation_shape: tuple[int, ...],
-    action_mode: str,
-    action_dim: int,
-    batch: Any,
 ) -> list[dict[str, float | str]]:
     if args.env.startswith("synthetic:"):
         return [
@@ -216,10 +156,10 @@ def _evaluate_bridged_real_env(
                 "episode": 0,
                 "return": float(np.mean(np.sum(batch.rewards, axis=0))),
                 "length": float(batch.time_steps),
-                "policy_source": "latent_policy_bridge",
+                "policy_source": "direct_action_policy",
+                "evaluation_execution": "synthetic",
             }
         ]
-
     target_episodes = max(args.eval_episodes, 1)
     evaluation_num_envs = math.gcd(args.num_envs, target_episodes)
     adapter = make_single_agent_adapter(
@@ -233,254 +173,283 @@ def _evaluate_bridged_real_env(
         dmc_camera_id=args.dmc_camera_id,
     )
     try:
-        rows: list[dict[str, float | str]] = []
-        model = Genie2WorldModel(observation_shape=observation_shape, config=config)
-        action_low = getattr(adapter, "action_low", None)
-        action_high = getattr(adapter, "action_high", None)
-        if action_low is not None:
-            action_low = np.asarray(action_low, dtype=np.float32).reshape((action_dim,))
-        if action_high is not None:
-            action_high = np.asarray(action_high, dtype=np.float32).reshape(
-                (action_dim,)
+        scan_rollout = getattr(adapter, "scan_recurrent_rollout", None)
+        if scan_rollout is None:
+            raise RuntimeError(
+                f"{args.env} must expose scan_recurrent_rollout for Genie2 evaluation"
             )
-        observations = _squeeze_single_agent_axis(
-            adapter.reset(),
-            num_envs=adapter.num_envs,
-        ).reshape((adapter.num_envs, *observation_shape))
-        while len(rows) < target_episodes:
-            latents = model.apply(
-                world_model_state.params,
-                jnp.asarray(observations, dtype=jnp.float32),
-                method=model.encode,
+        observations = np.asarray(adapter.reset(), dtype=np.float32).reshape(
+            (adapter.num_envs, *config.observation_shape)
+        )
+
+        evaluation_context = args.sequence_length if config.is_image_observation else 1
+        initial_history = jnp.broadcast_to(
+            jnp.asarray(observations)[None],
+            (evaluation_context, *observations.shape),
+        )
+
+        def policy_step(policy_state, carry, flat_observations, is_first):
+            model_state, policy_train_state = policy_state
+            observation_history, policy_key = carry
+            policy_key, encode_key = jax.random.split(policy_key)
+            current_observations = flat_observations.reshape(
+                (adapter.num_envs, *config.observation_shape)
             )
-            latent_actions = latent_policy_action(actor_state, latents)
-            policy_action = _bridge_policy_actions(
-                bridge,
-                np.asarray(latent_actions, dtype=np.float32),
-                action_mode=action_mode,
-                action_dim=action_dim,
-                action_low=action_low,
-                action_high=action_high,
+            observation_history = update_observation_history(
+                observation_history,
+                current_observations,
+                is_first,
             )
-            step = adapter.step(policy_action)
-            for episode_return, episode_length in zip(
-                step.completed_returns,
-                step.completed_lengths,
-                strict=True,
-            ):
-                rows.append(
-                    {
-                        "episode": len(rows),
-                        "return": float(episode_return[0]),
-                        "length": float(episode_length),
-                        "policy_source": "latent_policy_bridge",
-                    }
-                )
-            observations = _squeeze_single_agent_axis(
-                step.observations,
-                num_envs=adapter.num_envs,
-            ).reshape((adapter.num_envs, *observation_shape))
-        return rows
+            latents = encode_genie2_observations(
+                model_state,
+                observation_history,
+                config,
+                encode_key,
+            )
+            pooled = jnp.mean(latents[:, -1], axis=1)
+            actions = latent_policy_action(policy_train_state, pooled, config)
+            return (observation_history, policy_key), actions
+
+        evaluation_steps = math.ceil(target_episodes / adapter.num_envs) * (
+            args.max_cycles + 1
+        )
+        ys, _, _ = scan_rollout(
+            policy_step,
+            (world_state, actor_state),
+            (initial_history, jax.random.PRNGKey(args.seed + 30_000)),
+            evaluation_steps,
+            observations=observations,
+        )
+        _, _, rewards, _, dones = ys
+        return scanned_episode_metrics(
+            rewards,
+            dones,
+            target_episodes=target_episodes,
+            policy_source="direct_action_policy",
+            arrival_aligned=True,
+        )
     finally:
         close = getattr(adapter, "close", None)
         if close is not None:
             close()
 
 
-def _run_accounting(
+def _accounting(
     args: argparse.Namespace,
-    batch: Any,
+    batch,
+    config: Genie2ContinuousConfig,
     real_env_metrics: list[dict[str, float | str]],
-    *,
-    bridge_replay_mse: float,
 ) -> dict[str, Any]:
-    environment_backend = str(batch.metadata.get("environment_backend", "unknown"))
+    backend = str(batch.metadata.get("environment_backend", "unknown"))
     evaluation_transitions = 0
-    if environment_backend not in {"synthetic", "unknown"}:
+    if backend not in {"synthetic", "unknown"}:
         evaluation_transitions = int(
             sum(float(row["length"]) for row in real_env_metrics)
+        )
+    candidate_action_evaluations = 0
+    imagined_transitions = 0
+    if args.policy_objective == "candidate-distill":
+        candidate_action_evaluations = (
+            args.policy_train_steps
+            * config.latent_policy.batch_size
+            * args.num_policy_candidates
+        )
+        imagined_transitions = candidate_action_evaluations * args.imagination_horizon
+    else:
+        imagined_transitions = (
+            args.policy_train_steps
+            * args.imagination_horizon
+            * config.latent_policy.batch_size
         )
     return {
         "seed": args.seed,
         "evaluation_seed": args.seed + 20_000,
-        "environment_backend": environment_backend,
+        "environment_backend": backend,
+        "physics_backend": str(batch.metadata.get("physics_backend", "unknown")),
         "observation_mode": str(batch.metadata.get("observation_mode", "unknown")),
+        "collection_execution": str(
+            batch.metadata.get("collection_execution", "unknown")
+        ),
+        "training_execution": "nested_jax_scan",
         "real_env_transitions": int(batch.metadata.get("real_env_transitions", 0)),
         "evaluation_env_transitions": evaluation_transitions,
         "evaluation_episodes": len(real_env_metrics),
-        "model_updates": args.train_steps,
-        "policy_updates": args.policy_train_steps,
-        "imagined_transitions": (
-            args.policy_train_steps * args.imagination_horizon * batch.batch_size
+        "evaluation_execution": str(real_env_metrics[0]["evaluation_execution"]),
+        "tokenizer_updates": args.tokenizer_steps,
+        "dynamics_updates": args.dynamics_steps,
+        "reward_continue_updates": args.reward_continue_steps,
+        "model_updates": (
+            args.tokenizer_steps + args.dynamics_steps + args.reward_continue_steps
         ),
-        "bridge_replay_mse": bridge_replay_mse,
-        "bridge_calibration_samples": int(batch.time_steps * batch.batch_size),
-        "bridge_source": "action_labeled_adapter_replay",
+        "policy_updates": args.policy_train_steps,
+        "policy_imagination_batch_size": config.latent_policy.batch_size,
+        "policy_imagination_horizon": args.imagination_horizon,
+        "imagined_transitions": imagined_transitions,
+        "candidate_action_evaluations": candidate_action_evaluations,
     }
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    config = Genie2ContinuousConfig()
     batch = _make_batch(args)
-    observation_shape = batch.observation_shape
     action_mode = str(batch.metadata.get("action_mode", "discrete"))
     action_dim = int(batch.metadata.get("action_dim", args.action_dim))
-    state, metrics = train_genie2_world_model(
-        batch=batch,
-        observation_shape=observation_shape,
+    config_factory = (
+        Genie2ContinuousConfig.debug
+        if args.model_size == "debug"
+        else Genie2ContinuousConfig
+    )
+    config = config_factory(
+        action_dim=action_dim,
+        action_mode=action_mode,
+        action_low=(
+            None
+            if batch.metadata.get("action_low") is None
+            else tuple(float(value) for value in batch.metadata["action_low"])
+        ),
+        action_high=(
+            None
+            if batch.metadata.get("action_high") is None
+            else tuple(float(value) for value in batch.metadata["action_high"])
+        ),
+        observation_shape=batch.observation_shape,
+    )
+    replay = sequence_batch_to_jax(batch)
+    train_batch_size = args.train_batch_size or min(batch.batch_size, 4)
+    sequence_length = min(
+        args.sequence_length, batch.time_steps, config.dynamics.max_context
+    )
+    state = create_genie2_train_state(
+        jax.random.PRNGKey(args.seed),
         config=config,
-        train_steps=args.train_steps,
         learning_rate=args.learning_rate,
-        seed=args.seed,
     )
-    finite_metric_check(metrics[-1])
-    latent_actions = _infer_latent_actions(state, batch)
-    real_actions = _bridge_real_actions(
-        batch.actions,
-        action_mode=action_mode,
-        action_dim=action_dim,
-    )
-    bridge = fit_linear_action_bridge(latent_actions, real_actions)
-    bridge_replay_mse = float(
-        np.mean(np.square(bridge.predict(latent_actions) - real_actions))
-    )
-    actor_state, critic_state, policy_metrics, imagined_rollout = (
-        train_genie2_latent_policy(
-            world_model_state=state,
-            batch=batch,
-            observation_shape=observation_shape,
-            config=config,
-            train_steps=args.policy_train_steps,
-            learning_rate=args.learning_rate,
-            imagination_horizon=args.imagination_horizon,
-            seed=args.seed + 1,
-        )
-    )
-    del critic_state
-    finite_metric_check(policy_metrics[-1])
-    real_env_metrics = _evaluate_bridged_real_env(
-        args,
-        bridge,
+    state, metric_arrays, validation_arrays = jax.jit(
+        scan_genie2_training_phases,
+        static_argnames=(
+            "config",
+            "tokenizer_steps",
+            "dynamics_steps",
+            "reward_continue_steps",
+            "sequence_length",
+            "batch_size",
+        ),
+    )(
         state,
-        actor_state,
-        config,
-        observation_shape=observation_shape,
-        action_mode=action_mode,
-        action_dim=action_dim,
+        replay,
+        jax.random.PRNGKey(args.seed + 1),
+        config=config,
+        tokenizer_steps=args.tokenizer_steps,
+        dynamics_steps=args.dynamics_steps,
+        reward_continue_steps=args.reward_continue_steps,
+        sequence_length=sequence_length,
+        batch_size=train_batch_size,
+    )
+    metric_arrays, validation_arrays = jax.device_get(
+        (metric_arrays, validation_arrays)
+    )
+    phase_metrics = metrics_to_host(metric_arrays)
+    validation_metrics = {
+        stage: {name: float(value) for name, value in values.items()}
+        for stage, values in validation_arrays.items()
+    }
+    actor_state, _, policy_metrics, imagined_rollout = train_genie2_latent_policy(
+        world_model_state=state,
         batch=batch,
+        observation_shape=batch.observation_shape,
+        config=config,
+        train_steps=args.policy_train_steps,
+        learning_rate=args.learning_rate or 1e-4,
+        imagination_horizon=args.imagination_horizon,
+        seed=args.seed + 2,
+        objective=args.policy_objective,
+        num_candidates=args.num_policy_candidates,
+        candidate_min_gap=args.candidate_min_gap,
     )
+    real_env_metrics = _evaluate_real_env(args, batch, state, actor_state, config)
     real_env_return = float(np.mean([row["return"] for row in real_env_metrics]))
-    accounting = _run_accounting(
-        args,
-        batch,
-        real_env_metrics,
-        bridge_replay_mse=bridge_replay_mse,
+    gate_passed = all(
+        values["final_loss"] < values["initial_loss"]
+        for values in validation_metrics.values()
     )
-    gate_passed = loss_decreased(metrics)
     status = "ok" if gate_passed else "learning_gate_failed"
+    accounting = _accounting(args, batch, config, real_env_metrics)
 
     out_dir = args.out_dir
-    write_json_artifact(
-        out_dir / "config.json",
-        _config_payload(
-            args,
-            config,
-            observation_shape=observation_shape,
-            action_mode=action_mode,
-            action_dim=action_dim,
-        ),
-    )
+    config_payload = {
+        "model": "genie2_continuous_jax",
+        "model_size": args.model_size,
+        "conditioning_mode": config.conditioning_mode,
+        "representation": config.representation,
+        "action_mode": config.action_mode,
+        "action_dim": config.action_dim,
+        "observation_shape": config.observation_shape,
+        "sequence_length": sequence_length,
+        "train_batch_size": train_batch_size,
+        "policy_objective": args.policy_objective,
+        "num_policy_candidates": args.num_policy_candidates,
+        "candidate_min_gap": args.candidate_min_gap,
+    }
+    write_json_artifact(out_dir / "config.json", config_payload)
     write_json_artifact(out_dir / "sources.json", world_model_sources())
+    write_jsonl_metrics(out_dir / "tokenizer_metrics.jsonl", phase_metrics["tokenizer"])
     write_jsonl_metrics(
-        out_dir / "autoencoder_metrics.jsonl",
-        _split_metrics(metrics, "reconstruction_loss"),
+        out_dir / "autoencoder_metrics.jsonl", phase_metrics["tokenizer"]
     )
-    write_jsonl_metrics(
-        out_dir / "lam_metrics.jsonl",
-        [
-            {
-                "step": row["step"],
-                "lam_kl_loss": row["lam_kl_loss"],
-                "lam_reconstruction_loss": row["lam_reconstruction_loss"],
-            }
-            for row in metrics
-        ],
-    )
-    write_jsonl_metrics(
-        out_dir / "dynamics_metrics.jsonl",
-        _split_metrics(metrics, "dynamics_loss"),
-    )
+    write_jsonl_metrics(out_dir / "dynamics_metrics.jsonl", phase_metrics["dynamics"])
     write_jsonl_metrics(
         out_dir / "reward_continue_metrics.jsonl",
-        [
-            {
-                "step": row["step"],
-                "reward_loss": row["reward_loss"],
-                "continue_loss": row["continue_loss"],
-            }
-            for row in metrics
-        ],
+        phase_metrics["reward_continue"],
     )
     write_jsonl_metrics(out_dir / "policy_metrics.jsonl", policy_metrics)
-    write_json_artifact(
-        out_dir / "latent_action_usage.json",
-        {
-            "latent_action_dim": config.lam.latent_action_dim,
-            "num_samples": int(latent_actions.shape[0]),
-            "mean_abs": float(np.mean(np.abs(latent_actions))),
-            "std": float(np.std(latent_actions)),
-        },
-    )
-    write_json_artifact(
-        out_dir / "latent_action_bridge.json",
-        {
-            "latent_action_dim": bridge.latent_action_dim,
-            "real_action_dim": bridge.real_action_dim,
-            "action_mode": action_mode,
-            "source": "action_labeled_adapter_replay",
-            "calibration_samples": int(latent_actions.shape[0]),
-            "replay_mse": bridge_replay_mse,
-        },
-    )
     write_jsonl_metrics(out_dir / "real_env_metrics.jsonl", real_env_metrics)
-    model = Genie2WorldModel(observation_shape=observation_shape, config=config)
-    rollout = np.asarray(
-        model.apply(
-            state.params,
-            imagined_rollout.latents[:, 0],
-            method=model.decode,
-        )
+    write_json_artifact(out_dir / "validation_metrics.json", validation_metrics)
+    write_json_artifact(
+        out_dir / "conditioning.json",
+        {
+            "mode": "real_action",
+            "source": "public_genie2_disclosure",
+            "lam_enabled": False,
+            "bridge_required": False,
+        },
     )
+    decoded_rollout = decode_genie2_latents(
+        state,
+        jnp.swapaxes(imagined_rollout.latents, 0, 1),
+        config,
+    )
+    rollout_panels = np.asarray(decoded_rollout[0])
     _write_png(
         out_dir / "open_loop_rollout.png",
-        np.concatenate([_to_rgb_panel(item) for item in rollout], axis=1),
+        np.concatenate([_to_rgb_panel(frame) for frame in rollout_panels], axis=1),
     )
-    _write_png(out_dir / "latent_action_grid.png", _to_rgb_panel(latent_actions[:32]))
-    write_json_artifact(
-        out_dir / "outcome.json",
-        {
-            "status": status,
-            "initial_loss": metrics[0]["loss"],
-            "final_loss": metrics[-1]["loss"],
-            "real_env_bridged_return": real_env_return,
-            "policy_source": "latent_policy_bridge",
-            **accounting,
-        },
+    action_panel = np.asarray(imagined_rollout.model_actions).reshape(
+        (imagined_rollout.model_actions.shape[0], -1)
     )
+    _write_png(out_dir / "action_grid.png", _to_rgb_panel(action_panel))
+    outcome = {
+        "status": status,
+        "final_tokenizer_loss": phase_metrics["tokenizer"][-1]["tokenizer_loss"],
+        "final_dynamics_loss": phase_metrics["dynamics"][-1]["dynamics_loss"],
+        "validation_losses": validation_metrics,
+        "real_env_return": real_env_return,
+        "policy_source": "direct_action_policy",
+        "policy_objective": args.policy_objective,
+        "conditioning_mode": config.conditioning_mode,
+        "representation": config.representation,
+        "action_mode": config.action_mode,
+        "action_dim": config.action_dim,
+        "observation_shape": config.observation_shape,
+        **accounting,
+    }
+    write_json_artifact(out_dir / "outcome.json", outcome)
     write_json_artifact(
         out_dir / "summary.json",
         {
-            "status": status,
+            **outcome,
             "model": "genie2_continuous_jax",
             "env": args.env,
-            "action_mode": action_mode,
-            "observation_shape": observation_shape,
-            "final_loss": metrics[-1]["loss"],
-            "real_env_bridged_return": real_env_return,
-            "policy_source": "latent_policy_bridge",
             "learning_gate_passed": gate_passed,
-            **accounting,
         },
     )
     return 0 if gate_passed or args.allow_fail else 1
