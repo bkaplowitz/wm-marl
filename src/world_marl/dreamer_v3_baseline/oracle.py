@@ -10,10 +10,10 @@ import subprocess
 import sys
 import zipfile
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType, ModuleType, SimpleNamespace
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -64,12 +64,22 @@ _PAPER_OVERRIDES: dict[str, Any] = {
     "run.steps": 1_000_000,
 }
 
+GeneratorProvenanceValidator = Callable[
+    ["OracleManifest", Mapping[str, Any], Path | None],
+    None,
+]
+
 
 @dataclass(frozen=True)
 class OracleSourceSpec:
     name: str
     revision_hashes: Mapping[str, Mapping[str, str]]
     execution_dtypes: tuple[str, ...] = ()
+    generator_validation_required: bool = False
+    generator_validator: GeneratorProvenanceValidator | None = field(
+        default=None,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         if not _CASE_PATTERN.fullmatch(self.name):
@@ -103,6 +113,12 @@ class OracleSourceSpec:
         if len(set(dtypes)) != len(dtypes):
             raise ValueError("oracle source execution dtypes must be unique")
         object.__setattr__(self, "execution_dtypes", dtypes)
+        if self.generator_validation_required and self.generator_validator is None:
+            raise ValueError("oracle source requires a generator validator")
+        if self.generator_validator is not None and not callable(
+            self.generator_validator
+        ):
+            raise TypeError("oracle source generator validator must be callable")
 
     def hashes_for(self, revision: str) -> Mapping[str, str]:
         try:
@@ -121,6 +137,11 @@ _ORACLE_SOURCE_SPECS: dict[str, OracleSourceSpec] = {}
 
 
 def register_oracle_source_spec(source_spec: OracleSourceSpec) -> None:
+    if (
+        source_spec.generator_validation_required
+        and source_spec.generator_validator is None
+    ):
+        raise ValueError("oracle source requires a generator validator")
     existing = _ORACLE_SOURCE_SPECS.get(source_spec.name)
     if existing is not None and existing != source_spec:
         raise ValueError(f"oracle source spec already registered: {source_spec.name}")
@@ -450,8 +471,11 @@ class OracleManifest:
                 raise ValueError(
                     "multi-dtype oracle source requires an explicit generator request"
                 )
+        request: dict[str, Any] | None = None
         if self.generator_request is not None:
             request = json.loads(self.generator_request)
+            if not isinstance(request, dict):
+                raise ValueError("oracle generator request must be a JSON object")
             if source_spec.execution_dtypes and "compute_dtype" not in request:
                 raise ValueError(
                     "multi-dtype oracle source requires an explicit generator "
@@ -469,6 +493,23 @@ class OracleManifest:
                 f"oracle device {self.device!r} does not match runtime "
                 f"{expected_device!r}"
             )
+        if not self.generator_command:
+            raise ValueError("oracle generator command must be recorded")
+        if self.seed < 0:
+            raise ValueError("oracle seed must be nonnegative")
+        validator = source_spec.generator_validator
+        if source_spec.generator_validation_required and validator is None:
+            raise ValueError("oracle source generator validator is unavailable")
+        if validator is not None:
+            if request is None:
+                raise ValueError("oracle source generator validator requires a request")
+            validator(
+                self,
+                request,
+                Path(official_checkout).resolve()
+                if official_checkout is not None
+                else None,
+            )
         if official_checkout is not None:
             checkout = Path(official_checkout).resolve()
             for path, recorded_hash in self.official_file_hashes.items():
@@ -477,10 +518,6 @@ class OracleManifest:
                 )
                 if recorded_hash != expected_hash:
                     raise ValueError(f"oracle source file hash mismatch: {path}")
-        if not self.generator_command:
-            raise ValueError("oracle generator command must be recorded")
-        if self.seed < 0:
-            raise ValueError("oracle seed must be nonnegative")
         if not _SHA256_PATTERN.fullmatch(self.fixture_sha256):
             raise ValueError("oracle fixture hash is malformed")
         if fixture_path is not None:

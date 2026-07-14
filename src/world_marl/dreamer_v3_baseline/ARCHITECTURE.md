@@ -579,10 +579,38 @@ schema/config/profile mismatch. Resume continues same run, never warm-start.
 
 ## 10. Oracle classes
 
+### OracleSourceSpec
+
+Pins the exact official file hashes for both authority revisions and the
+allowed execution dtypes for one oracle family. A source may atomically attach
+a pure generator-provenance validator and mark it required. Construction and
+registration reject a required source without its callable, so import order
+cannot downgrade a source-specific manifest to generic validation. The
+callback receives the already parsed manifest/request and the resolved
+supplied checkout coordinate; it performs no process launch or source read.
+
 ### OracleManifest
 
 Official commit/file hashes, profile hash, JAX/dtype/device, seed, tensor schema,
-generator command. Invalid manifest invalidates fixture.
+generator command and canonical generator request. Invalid manifest invalidates
+fixture. Validation first resolves the named `OracleSourceSpec`, completes the
+generic authority/config/dtype/device checks, parses the request as one JSON
+object, and requires a nonempty command and nonnegative seed. It then invokes
+the source validator before any supplied-checkout Git read, and only afterward
+checks official object bytes and fixture bytes/schema.
+
+The replay source validator requires the exact request key set and binds
+case name `replay`, seed 7, profile, observation mode, revision, overrides,
+source name, and float32 execution dtype to the manifest. Cases, row schema,
+debug UUID mode, Elements coordinates and helper hashes, NumPy version, local
+shim hashes, and isolated-worker mode must equal the source-owned contracts.
+The command must be exactly the current interpreter, this source tree's
+`replay_oracle.py`, and `_worker`; request paths must be absolute, and
+interpreter and request paths are resolved and compared. A supplied official
+checkout must resolve to the recorded request coordinate. The isolated worker
+independently repeats the exact key,
+case-name, seed, runtime, path, case, and row-schema checks before reading or
+executing official source.
 
 ### ParameterTranslator
 

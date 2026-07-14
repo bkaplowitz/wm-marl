@@ -4,11 +4,13 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from typing import Any, Callable
 
 import numpy as np
 import pytest
 
 import world_marl.dreamer_v3_baseline.oracle as oracle_module
+import world_marl.dreamer_v3_baseline.replay_oracle as replay_oracle_module
 from world_marl.dreamer_v3_baseline.config import (
     DreamerProfile,
     DreamerV3Config,
@@ -39,6 +41,34 @@ RSSM_SOURCE_HASHES = {
     ),
 }
 
+REPLAY_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "dreamer_v3"
+REPLAY_MANIFEST = REPLAY_FIXTURE_DIR / "paper-proprio-replay.manifest.json"
+REPLAY_FIXTURE = REPLAY_FIXTURE_DIR / "paper-proprio-replay.npz"
+REPLAY_OFFICIAL_CHECKOUT = Path(
+    os.environ.get(
+        "DREAMERV3_ORACLE_CHECKOUT",
+        "/private/tmp/danijar-dreamerv3-20260713",
+    )
+)
+REPLAY_REQUEST_KEYS = {
+    "case_name",
+    "cases",
+    "compute_dtype",
+    "elements_dist_info",
+    "elements_package_dir",
+    "observation_mode",
+    "official_checkout",
+    "official_commit",
+    "overrides",
+    "profile",
+    "python_executable",
+    "row_schema",
+    "runtime",
+    "seed",
+    "source_spec",
+    "uuid_mode",
+}
+
 
 @pytest.fixture(scope="module")
 def official_checkout() -> Path:
@@ -64,6 +94,317 @@ def _write_tampered_manifest(
     destination.write_text(
         json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
     )
+
+
+def _write_tampered_replay_request(
+    tmp_path: Path,
+    *,
+    request_mutation: Callable[[dict[str, Any]], None] | None = None,
+    manifest_mutation: Callable[[dict[str, Any]], None] | None = None,
+) -> Path:
+    payload = json.loads(REPLAY_MANIFEST.read_text())
+    request = json.loads(payload["generator_request"])
+    request.setdefault("case_name", payload["case_name"])
+    request.setdefault("seed", payload["seed"])
+    if request_mutation is not None:
+        request_mutation(request)
+    payload["generator_request"] = json.dumps(
+        request, sort_keys=True, separators=(",", ":")
+    )
+    if manifest_mutation is not None:
+        manifest_mutation(payload)
+    destination = tmp_path / "tampered-replay.manifest.json"
+    destination.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+    )
+    return destination
+
+
+def _load_tampered_replay(path: Path) -> OracleManifest:
+    return OracleManifest.load(path, fixture_path=REPLAY_FIXTURE)
+
+
+def test_replay_manifest_rejects_an_extra_generator_argument(tmp_path: Path) -> None:
+    fixture_dir = Path(__file__).parent / "fixtures" / "dreamer_v3"
+    source = fixture_dir / "paper-proprio-replay.manifest.json"
+    payload = json.loads(source.read_text())
+    payload["generator_command"].append("--untrusted")
+    tampered = tmp_path / source.name
+    tampered.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+    )
+
+    with pytest.raises(ValueError, match="generator command"):
+        OracleManifest.load(
+            tampered,
+            fixture_path=fixture_dir / "paper-proprio-replay.npz",
+        )
+
+
+@pytest.mark.parametrize("profile", ("paper", "upstream-current"))
+def test_replay_manifest_binds_the_exact_generator_request(profile: str) -> None:
+    stem = f"{profile}-proprio-replay"
+    manifest = OracleManifest.load(
+        REPLAY_FIXTURE_DIR / f"{stem}.manifest.json",
+        fixture_path=REPLAY_FIXTURE_DIR / f"{stem}.npz",
+    )
+    request = json.loads(manifest.generator_request)
+
+    assert set(request) == REPLAY_REQUEST_KEYS
+    assert request["case_name"] == manifest.case_name
+    assert request["seed"] == manifest.seed
+
+
+def test_replay_manifest_rejects_an_extra_request_key(tmp_path: Path) -> None:
+    def mutate(request: dict[str, Any]) -> None:
+        request["untrusted"] = True
+
+    path = _write_tampered_replay_request(tmp_path, request_mutation=mutate)
+
+    with pytest.raises(ValueError, match="request keys"):
+        _load_tampered_replay(path)
+
+
+def test_replay_manifest_rejects_a_missing_request_key(tmp_path: Path) -> None:
+    def mutate(request: dict[str, Any]) -> None:
+        del request["uuid_mode"]
+
+    path = _write_tampered_replay_request(tmp_path, request_mutation=mutate)
+
+    with pytest.raises(ValueError, match="request keys"):
+        _load_tampered_replay(path)
+
+
+@pytest.mark.parametrize(
+    ("command_index", "replacement"),
+    (
+        (1, str(Path(__file__).resolve())),
+        (2, "--worker"),
+    ),
+)
+def test_replay_manifest_rejects_a_forged_worker_command(
+    tmp_path: Path,
+    command_index: int,
+    replacement: str,
+) -> None:
+    def mutate(payload: dict[str, Any]) -> None:
+        payload["generator_command"][command_index] = replacement
+
+    path = _write_tampered_replay_request(tmp_path, manifest_mutation=mutate)
+
+    with pytest.raises(ValueError, match="generator command"):
+        _load_tampered_replay(path)
+
+
+def test_replay_manifest_rejects_a_consistently_forged_interpreter(
+    tmp_path: Path,
+) -> None:
+    def mutate_request(request: dict[str, Any]) -> None:
+        request["python_executable"] = "/bin/false"
+
+    def mutate_manifest(payload: dict[str, Any]) -> None:
+        payload["generator_command"][0] = "/bin/false"
+
+    path = _write_tampered_replay_request(
+        tmp_path,
+        request_mutation=mutate_request,
+        manifest_mutation=mutate_manifest,
+    )
+
+    with pytest.raises(ValueError, match="generator command"):
+        _load_tampered_replay(path)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    (
+        ("python_executable", 7),
+        ("official_checkout", 7),
+        ("official_checkout", "."),
+    ),
+)
+def test_replay_manifest_rejects_noncanonical_path_coordinates(
+    tmp_path: Path,
+    key: str,
+    value: Any,
+) -> None:
+    def mutate(request: dict[str, Any]) -> None:
+        request[key] = value
+
+    path = _write_tampered_replay_request(tmp_path, request_mutation=mutate)
+
+    with pytest.raises(ValueError, match="coordinate"):
+        _load_tampered_replay(path)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    (
+        ("case_name", "forged"),
+        ("seed", 8),
+        ("profile", "upstream-current"),
+        ("observation_mode", "vision"),
+        ("official_commit", "0" * 40),
+        ("overrides", {}),
+        ("source_spec", "config"),
+    ),
+)
+def test_replay_manifest_rejects_request_manifest_coordinate_mismatch(
+    tmp_path: Path,
+    key: str,
+    value: Any,
+) -> None:
+    def mutate(request: dict[str, Any]) -> None:
+        request[key] = value
+
+    path = _write_tampered_replay_request(tmp_path, request_mutation=mutate)
+
+    with pytest.raises(ValueError, match="manifest coordinate"):
+        _load_tampered_replay(path)
+
+
+def test_replay_manifest_rejects_request_dtype_mismatch(tmp_path: Path) -> None:
+    def mutate(request: dict[str, Any]) -> None:
+        request["compute_dtype"] = "float64"
+
+    path = _write_tampered_replay_request(tmp_path, request_mutation=mutate)
+
+    with pytest.raises(ValueError, match="dtype"):
+        _load_tampered_replay(path)
+
+
+def test_replay_manifest_rejects_case_contract_tampering(tmp_path: Path) -> None:
+    def mutate(request: dict[str, Any]) -> None:
+        request["cases"]["primary"]["steps"] += 1
+
+    path = _write_tampered_replay_request(tmp_path, request_mutation=mutate)
+
+    with pytest.raises(ValueError, match="case contract"):
+        _load_tampered_replay(path)
+
+
+def test_replay_manifest_rejects_row_schema_tampering(tmp_path: Path) -> None:
+    def mutate(request: dict[str, Any]) -> None:
+        request["row_schema"]["reward"]["dtype"] = "float64"
+
+    path = _write_tampered_replay_request(tmp_path, request_mutation=mutate)
+
+    with pytest.raises(ValueError, match="row schema"):
+        _load_tampered_replay(path)
+
+
+@pytest.mark.parametrize(
+    ("section", "key", "value"),
+    (
+        ("runtime", "worker_mode", "in-process"),
+        ("shim_hashes", "UUID", "0" * 64),
+        ("elements_helper_hashes", "elements/uuid.py", "0" * 64),
+    ),
+)
+def test_replay_manifest_rejects_runtime_contract_tampering(
+    tmp_path: Path,
+    section: str,
+    key: str,
+    value: str,
+) -> None:
+    def mutate(request: dict[str, Any]) -> None:
+        target = request["runtime"]
+        if section != "runtime":
+            target = target[section]
+        target[key] = value
+
+    path = _write_tampered_replay_request(tmp_path, request_mutation=mutate)
+
+    with pytest.raises(ValueError, match="runtime contract"):
+        _load_tampered_replay(path)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    (
+        ("elements_package_dir", "/tmp/untrusted-elements"),
+        ("elements_dist_info", "/tmp/untrusted-elements.dist-info"),
+        ("uuid_mode", "random"),
+    ),
+)
+def test_replay_manifest_rejects_elements_and_uuid_coordinate_tampering(
+    tmp_path: Path,
+    key: str,
+    value: str,
+) -> None:
+    def mutate(request: dict[str, Any]) -> None:
+        request[key] = value
+
+    path = _write_tampered_replay_request(tmp_path, request_mutation=mutate)
+
+    with pytest.raises(ValueError, match="runtime coordinate"):
+        _load_tampered_replay(path)
+
+
+def test_replay_manifest_rejects_checkout_before_git_subprocess(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def mutate(request: dict[str, Any]) -> None:
+        request["official_checkout"] = str(tmp_path / "forged-checkout")
+
+    def reject_subprocess(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("checkout provenance reached a subprocess")
+
+    path = _write_tampered_replay_request(tmp_path, request_mutation=mutate)
+    monkeypatch.setattr(oracle_module.subprocess, "run", reject_subprocess)
+
+    with pytest.raises(ValueError, match="official checkout"):
+        OracleManifest.load(
+            path,
+            official_checkout=REPLAY_OFFICIAL_CHECKOUT,
+            fixture_path=REPLAY_FIXTURE,
+        )
+
+
+def test_required_oracle_source_validator_cannot_be_omitted() -> None:
+    with pytest.raises(ValueError, match="generator validator"):
+        oracle_module.OracleSourceSpec(
+            name="test_required_validator",
+            revision_hashes=replay_oracle_module.REPLAY_SOURCE_SPEC.revision_hashes,
+            execution_dtypes=("float32",),
+            generator_validation_required=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "key", "value"),
+    (
+        ("extra", "untrusted", True),
+        ("missing", "case_name", None),
+        ("replace", "case_name", "forged"),
+        ("replace", "seed", 8),
+        ("replace", "official_checkout", "."),
+    ),
+)
+def test_replay_worker_rejects_nonexact_source_request(
+    mutation: str,
+    key: str,
+    value: Any,
+) -> None:
+    manifest = OracleManifest.load(REPLAY_MANIFEST, fixture_path=REPLAY_FIXTURE)
+    request = json.loads(manifest.generator_request)
+    if mutation == "missing":
+        del request[key]
+    else:
+        request[key] = value
+
+    completed = subprocess.run(
+        manifest.generator_command,
+        cwd=request["official_checkout"],
+        input=json.dumps(request, sort_keys=True, separators=(",", ":")),
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "replay worker source request" in completed.stderr
 
 
 def test_manifest_round_trip_validates_all_provenance_hashes(

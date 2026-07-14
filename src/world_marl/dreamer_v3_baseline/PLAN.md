@@ -267,8 +267,20 @@ Restore also enforces
 `sampled_sequences == batch_size * sample_calls == online_samples +
 uniform_samples`, with the latter equality read as a separate identity, and
 accepts the all-zero metrics state after reset. Every rejection is
-transactional. Task 5 is accepted only after the focused corruption/control
-matrix, the complete replay file, accepted Dreamer regression matrix, oracle
+transactional.
+
+Replay fixture provenance is source-dispatched and fail closed. The registered
+replay source requires its validator; public manifest load rejects before any
+checkout Git subprocess unless request keys, case name/seed, profile/mode,
+revision/overrides, source/dtype, case contract, row schema, runtime and shim
+hashes, Elements/debug-UUID coordinates, and the exact three-element worker
+command all match. The isolated worker repeats the exact key, replay/7,
+path/runtime, case, and row-schema contract so direct invocation cannot bypass
+manifest validation. Both profile manifests must regenerate byte-identically;
+their NPZ payload hashes remain unchanged.
+
+Task 5 is accepted only after the focused corruption/control matrix, the
+complete replay file, accepted Dreamer regression matrix, oracle
 provenance/regeneration checks, fixture hash check, and JEPA-scope diff all pass.
 
 **Commit:** feat(dreamer): add online latent replay
