@@ -87,6 +87,10 @@ class GymnaxVectorAdapter:
         self._step = jax.jit(
             jax.vmap(self.env.step, in_axes=(0, 0, 0, None)),
         )
+        raw_step = getattr(self.env, "step_env", self.env.step)
+        self._record_step = jax.jit(
+            jax.vmap(raw_step, in_axes=(0, 0, 0, None)),
+        )
 
         self._keys = jax.random.split(jax.random.PRNGKey(seed), num_envs)
         self._state = None
@@ -96,6 +100,8 @@ class GymnaxVectorAdapter:
         # the compile is paid once and reused across PPO updates (train_state flows
         # as a traced arg, so changing params does not retrigger a recompile).
         self._rollout_scan_jit: dict[tuple[int, int], Callable] = {}
+        self._recurrent_rollout_scan_jit: dict[tuple[int, int], Callable] = {}
+        self._online_rollout_scan_jit: dict[tuple[int, int], Callable] = {}
 
     def reset(self) -> np.ndarray:
         split_keys = self._split(self._keys)
@@ -275,6 +281,285 @@ class GymnaxVectorAdapter:
 
         return run
 
+    def scan_recurrent_rollout(
+        self,
+        policy_step: Callable,
+        policy_state: Any,
+        policy_carry: Any,
+        num_steps: int,
+        *,
+        observations: np.ndarray,
+    ) -> tuple[tuple[jax.Array, ...], jax.Array, Any]:
+        cache_key = (id(policy_step), num_steps)
+        run = self._recurrent_rollout_scan_jit.get(cache_key)
+        if run is None:
+            run = self._build_recurrent_rollout_scan(policy_step, num_steps)
+            self._recurrent_rollout_scan_jit[cache_key] = run
+
+        obs_flat0 = jnp.asarray(observations, dtype=jnp.float32).reshape(
+            (self.num_envs, -1)
+        )
+        ys, last_obs, final_state, final_keys, final_policy_carry = run(
+            policy_state,
+            policy_carry,
+            self._state,
+            self._keys,
+            obs_flat0,
+        )
+        self._state = final_state
+        self._keys = final_keys
+        return ys, last_obs, final_policy_carry
+
+    def _build_recurrent_rollout_scan(
+        self,
+        policy_step: Callable,
+        num_steps: int,
+    ) -> Callable:
+        num_envs = self.num_envs
+        env_params = self.env_params
+
+        @jax.jit
+        def run(
+            policy_state,
+            policy_carry,
+            init_state,
+            init_keys,
+            init_obs_flat,
+        ):
+            def step(carry, _):
+                (
+                    state,
+                    keys,
+                    obs_flat,
+                    reward,
+                    terminal,
+                    policy_carry,
+                    is_first,
+                ) = carry
+                policy_carry, actions = policy_step(
+                    policy_state,
+                    policy_carry,
+                    obs_flat,
+                    is_first,
+                )
+                actions = actions.astype(jnp.int32).reshape((num_envs,))
+                actions = jnp.where(terminal, jnp.zeros_like(actions), actions)
+                split = jax.vmap(lambda value: jax.random.split(value, 3))(keys)
+                obs_step, state_step, reward_step, done_step, _ = self._record_step(
+                    split[:, 1],
+                    state,
+                    actions,
+                    env_params,
+                )
+                done_step = done_step.reshape((num_envs,)).astype(bool)
+                if self.auto_reset:
+                    obs_reset, state_reset = self._reset(split[:, 2], env_params)
+                    state_n = jax.tree.map(
+                        lambda reset, stepped: jnp.where(
+                            terminal.reshape((num_envs,) + (1,) * (reset.ndim - 1)),
+                            reset,
+                            stepped,
+                        ),
+                        state_reset,
+                        state_step,
+                    )
+                    obs_n = jnp.where(
+                        terminal.reshape((num_envs,) + (1,) * (obs_reset.ndim - 1)),
+                        obs_reset,
+                        obs_step,
+                    )
+                    reward_n = jnp.where(terminal, 0.0, reward_step)
+                    terminal_n = jnp.where(terminal, False, done_step)
+                    is_first_n = terminal
+                else:
+                    obs_n = obs_step
+                    state_n = state_step
+                    reward_n = reward_step
+                    terminal_n = done_step
+                    is_first_n = jnp.zeros_like(terminal)
+                obs_flat_n = obs_n.reshape((num_envs, -1)).astype(jnp.float32)
+                outputs = (
+                    obs_flat,
+                    actions,
+                    reward.reshape((num_envs,)).astype(jnp.float32),
+                    terminal,
+                    terminal,
+                )
+                carry = (
+                    state_n,
+                    split[:, 0],
+                    obs_flat_n,
+                    reward_n.reshape((num_envs,)).astype(jnp.float32),
+                    terminal_n,
+                    policy_carry,
+                    is_first_n,
+                )
+                return carry, outputs
+
+            initial = (
+                init_state,
+                init_keys,
+                init_obs_flat,
+                jnp.zeros((num_envs,), dtype=jnp.float32),
+                jnp.zeros((num_envs,), dtype=bool),
+                policy_carry,
+                jnp.ones((num_envs,), dtype=bool),
+            )
+            final, ys = jax.lax.scan(step, initial, None, length=num_steps)
+            (
+                final_state,
+                final_keys,
+                last_obs,
+                _,
+                _,
+                final_policy_carry,
+                _,
+            ) = final
+            return ys, last_obs, final_state, final_keys, final_policy_carry
+
+        return run
+
+    def scan_online_rollout(
+        self,
+        learner_step: Callable,
+        learner_carry: Any,
+        num_steps: int,
+        *,
+        observations: np.ndarray,
+    ) -> tuple[tuple[jax.Array, ...], jax.Array, Any]:
+        cache_key = (id(learner_step), num_steps)
+        run = self._online_rollout_scan_jit.get(cache_key)
+        if run is None:
+            run = self._build_online_rollout_scan(learner_step, num_steps)
+            self._online_rollout_scan_jit[cache_key] = run
+
+        obs_flat0 = jnp.asarray(observations, dtype=jnp.float32).reshape(
+            (self.num_envs, -1)
+        )
+        ys, last_obs, final_state, final_keys, final_learner_carry = run(
+            learner_carry,
+            self._state,
+            self._keys,
+            obs_flat0,
+        )
+        self._state = final_state
+        self._keys = final_keys
+        return ys, last_obs, final_learner_carry
+
+    def _build_online_rollout_scan(
+        self,
+        learner_step: Callable,
+        num_steps: int,
+    ) -> Callable:
+        num_envs = self.num_envs
+        env_params = self.env_params
+
+        @jax.jit
+        def run(learner_carry, init_state, init_keys, init_obs_flat):
+            def step(carry, _):
+                (
+                    state,
+                    keys,
+                    obs_flat,
+                    reward,
+                    terminal,
+                    learner_carry,
+                    is_first,
+                ) = carry
+                learner_carry, actions, learner_metrics = learner_step(
+                    learner_carry,
+                    obs_flat,
+                    reward,
+                    terminal,
+                    terminal,
+                    is_first,
+                )
+                actions = actions.astype(jnp.int32).reshape((num_envs,))
+                actions = jnp.where(terminal, jnp.zeros_like(actions), actions)
+                split = jax.vmap(lambda value: jax.random.split(value, 3))(keys)
+                obs_step, state_step, reward_step, done_step, _ = self._record_step(
+                    split[:, 1],
+                    state,
+                    actions,
+                    env_params,
+                )
+                done_step = done_step.reshape((num_envs,)).astype(bool)
+                if self.auto_reset:
+                    obs_reset, state_reset = self._reset(split[:, 2], env_params)
+                    state_n = jax.tree.map(
+                        lambda reset, stepped: jnp.where(
+                            terminal.reshape((num_envs,) + (1,) * (reset.ndim - 1)),
+                            reset,
+                            stepped,
+                        ),
+                        state_reset,
+                        state_step,
+                    )
+                    obs_n = jnp.where(
+                        terminal.reshape((num_envs,) + (1,) * (obs_reset.ndim - 1)),
+                        obs_reset,
+                        obs_step,
+                    )
+                    reward_n = jnp.where(terminal, 0.0, reward_step)
+                    terminal_n = jnp.where(terminal, False, done_step)
+                    is_first_n = terminal
+                else:
+                    obs_n = obs_step
+                    state_n = state_step
+                    reward_n = reward_step
+                    terminal_n = done_step
+                    is_first_n = jnp.zeros_like(terminal)
+                obs_flat_n = obs_n.reshape((num_envs, -1)).astype(jnp.float32)
+                outputs = (
+                    obs_flat,
+                    actions,
+                    reward.reshape((num_envs,)).astype(jnp.float32),
+                    terminal,
+                    terminal,
+                    is_first,
+                    learner_metrics,
+                )
+                return (
+                    state_n,
+                    split[:, 0],
+                    obs_flat_n,
+                    reward_n.reshape((num_envs,)).astype(jnp.float32),
+                    terminal_n,
+                    learner_carry,
+                    is_first_n,
+                ), outputs
+
+            initial = (
+                init_state,
+                init_keys,
+                init_obs_flat,
+                jnp.zeros((num_envs,), dtype=jnp.float32),
+                jnp.zeros((num_envs,), dtype=bool),
+                learner_carry,
+                jnp.ones((num_envs,), dtype=bool),
+            )
+            final, ys = jax.lax.scan(step, initial, None, length=num_steps)
+            final_state, final_keys, last_obs, _, _, final_learner_carry, _ = final
+            return ys, last_obs, final_state, final_keys, final_learner_carry
+
+        return run
+
+    def scan_random_sequence(
+        self,
+        num_steps: int,
+        *,
+        key: jax.Array,
+        observations: np.ndarray,
+    ) -> tuple[jax.Array, ...]:
+        ys, _, _ = self.scan_recurrent_rollout(
+            _uniform_random_policy,
+            self.action_dim,
+            key,
+            num_steps,
+            observations=observations,
+        )
+        return ys
+
     def sample_actions(self, rng: np.random.Generator) -> np.ndarray:
         return rng.integers(
             low=0,
@@ -313,3 +598,21 @@ def _with_max_cycles(env_params: Any, max_cycles: int) -> Any:
     ):
         return dataclasses.replace(env_params, max_steps_in_episode=max_cycles)
     return env_params
+
+
+def _uniform_random_policy(
+    action_dim: int,
+    key: jax.Array,
+    observations: jax.Array,
+    is_first: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    del is_first
+    key, action_key = jax.random.split(key)
+    actions = jax.random.randint(
+        action_key,
+        (observations.shape[0],),
+        minval=0,
+        maxval=action_dim,
+        dtype=jnp.int32,
+    )
+    return key, actions
