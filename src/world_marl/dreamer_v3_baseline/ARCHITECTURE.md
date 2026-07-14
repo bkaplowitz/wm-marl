@@ -367,9 +367,13 @@ Chunk id plus offset identity for exact latent writeback.
 
 ### ReplayBatch
 
-[B,T,...] transitions and [B,T] step ids. Validates shapes and linked-storage
-chronology but deliberately permits natural episode boundaries inside a
-sequence. Sampling copies the data, forces the first returned row's is_first to
+[B,T,...] transitions and [B,T] step ids. Every uint8 step id is decoded as a
+`ReplayKey`. Within one chunk offsets must increase by exactly one. A chunk
+transition must reset the offset to zero, advance to a strictly larger chunk
+id, and never return to a previously visited chunk. Duplicate and reversed ids
+are rejected. These storage checks deliberately permit natural episode
+boundaries inside a sequence. Sampling copies the data, forces the first
+returned row's is_first to
 true, and sets `is_last[t] |= is_first[t+1]` so abandoned/reset boundaries are
 visible without changing is_terminal. RSSM scans reset at each is_first.
 
@@ -379,7 +383,9 @@ Fixed-capacity transition and latent storage. `append` first validates the
 complete exact transition-plus-latent row, including the policy-produced
 float32 latent shapes, and only then allocates or mutates storage; a rejected
 row cannot leave zero-filled arrays or advance length. The accepted row stores
-the policy's initial latent entries exactly. A full chunk is sealed to exactly
+the policy's initial latent entries exactly. `seal` rejects a partial chunk
+before setting its successor, sealed flag, or array writeability. A full chunk
+is sealed to exactly
 one successor and its transition prefix becomes read-only, while latent context
 remains replaceable by key. Restore accepts only full sealed chunks and nonfull
 open chunks, both at the configured aggregate chunk size.
@@ -448,7 +454,16 @@ streams. Restore rebinds blocked samplers to the restored stream for their own
 mode without allowing cross-mode reuse.
 
 `add` validates and normalizes a complete row before mutation, requires the
-exact active writer, preflights every needed id, appends the transition and
+exact active writer, and runs a mutation-local preflight before changing a
+chunk, pending suffix, item, counter, or selector. The preflight checks exact
+top-level container types, scans only the bounded writer map to reject Python
+equality aliases, inspects only the active writer's history boundary and
+bounded pending suffix, reserves every needed id, and constructs an O(1)
+FIFO/item/selector swap-pop plan plus the successor ref-decrement chain for an
+impending eviction. It never calls exhaustive public validation or scans
+capacity, chunks, selector contents, or the writer's lifetime history on every
+environment row. The mutation phase consumes that already validated plan,
+appends the transition and
 policy latent entries, updates pending/item references, seals and allocates a
 successor when full, emits the valid start, applies the online phase, and only
 then advances writer and aggregate counters. New chunk allocation verifies its
@@ -472,11 +487,14 @@ Each writer's nonempty item-key projection, read in global item-id order, is
 the exact step-one suffix of every emitted valid start and ends at
 `row_count-R`; a writer may have an empty projection after global capacity
 eviction, and no global ordering is imposed across writers. Eviction validates
-the complete FIFO/items and selector key/index bijection plus every recursively
-triggered reference decrement before any selector, FIFO, item, chunk, or
-refcount mutation begins. Public validation applies the same exact selector
-list/dictionary types, Python-integer key/index types, uniqueness, bijection,
-and selector/items agreement without mutating state.
+the exact FIFO/item containers, head item, selector target/index and swap-pop
+tail, and every recursively triggered reference decrement before any selector,
+FIFO, item, chunk, or refcount mutation begins. Public validation is the
+deliberately exhaustive O(capacity+chunks) path: it checks every exact selector
+list/dictionary type, Python-integer key/index, uniqueness, bijection, complete
+FIFO/item order, and selector/items agreement without mutating state. Restore
+also rejects non-exact byte identities, including NumPy byte scalars, for chunk
+ids, refs keys, writer cursors/history, pending keys, and item keys.
 
 Stale online keys remain valid only when their id was allocated by that writer,
 their offset and logical row exist, and their nonempty per-writer projection is
@@ -586,9 +604,12 @@ allowed execution dtypes for one oracle family. A source may attach a pure
 generator-provenance validator and a live invocation resolver. Each callback
 has a stable contract id, and each may be marked required. Construction and
 registration independently reject a required source without its callable.
-Registry equality compares hashes, dtypes, required flags, and callback ids,
-not Python callable identity: re-importing a module refreshes equal callbacks,
-while a changed id or contract fails closed. Reloading `oracle.py` rehydrates
+Registry equality compares hashes, dtypes, required flags, callback ids, and
+each callback's stable module-plus-qualified-name identity. Registration also
+resolves that identity from the live module and requires the exact bound object,
+so a forged callback cannot copy the ids or spoof `__module__`/`__qualname__`.
+Re-importing a module refreshes equal callbacks, while a changed id, logical
+identity, or bound object fails closed. Reloading `oracle.py` rehydrates
 every preserved entry into the new `OracleSourceSpec` class while retaining
 its callbacks and ids. An object created before reload is accepted by creation
 APIs only when its name and complete structural signature equal the current
@@ -616,7 +637,11 @@ validation, so a manually constructed or subsequently replaced manifest cannot
 bypass generic authority/config/device/command checks. It then dispatches the
 registered source resolver. Sources without a resolver retain their recorded
 command/request behavior; a source that requires resolution fails if its
-resolver is unavailable.
+resolver is unavailable. Resolver results are reconstructed as the current
+`OracleInvocation` class after structural field validation, so reloading
+`oracle.py` before `replay_oracle.py` cannot leak a stale dataclass instance;
+malformed callback results fail closed without rewriting resolver provenance
+errors.
 
 The replay source validator requires the exact request key set and binds
 case name `replay`, seed 7, profile, observation mode, revision, overrides,
@@ -627,16 +652,22 @@ The persisted command is the location-independent descriptor
 `[python:current, module:world_marl.dreamer_v3_baseline.replay_oracle,
 _worker]`. The persisted request contains no checkout, interpreter, Elements
 package, or distribution path. Instead it records raw SHA256 digests for the
-complete local generator closure: `replay_oracle.py`, `oracle.py`, and
-`config.py`. `replay_oracle_contract.py` stores the frozen descriptor, runtime,
-shim, and closure contracts outside that closure, avoiding a self-hash cycle.
+complete local generator closure: `replay_oracle.py`, `oracle.py`, `config.py`,
+and `replay_oracle_contract.py`. The first three use raw-byte SHA256.
+`replay_oracle_contract.py` uses a normalized raw-byte self-hash: exactly one
+dedicated 64-hex self-digest literal is replaced by 64 ASCII zeros before
+hashing, while every other byte, including comments and the other file digests,
+remains covered. This breaks the self-hash cycle without excluding executable
+contract input.
 Public load compares only persisted data to these literals: it never reads live
 source, calls `inspect.getsource`, or inspects the current interpreter.
 
-The replay resolver rechecks all three live raw file digests, all shim digests,
+The replay resolver rechecks all four live file digests, all shim digests,
 the frozen Python/NumPy identity, and the pinned Elements version/helper files.
-It resolves the current absolute interpreter and worker, plus the supplied
-official checkout and current Elements paths, into an exact one-shot envelope
+It accepts only the exact absolute `sys.executable` spelling, not another
+symlink to the same target, and resolves the worker plus the supplied official
+checkout and explicitly supplied Elements package and dist-info paths into an
+exact one-shot envelope
 with keys `request` and `execution`. `execution` contains only
 `official_checkout`, `python_executable`, `elements_package_dir`, and
 `elements_dist_info`; these coordinates are never saved. The isolated worker
@@ -644,7 +675,7 @@ requires that exact envelope and independently repeats stable-request, live
 closure, interpreter, Elements, official-source, case, and row-schema checks
 before executing official source. Copying the package therefore preserves
 manifest validity while resolving the copied worker, and any byte change in
-any of the three local generator files prevents resolution and execution.
+any of the four local generator files prevents resolution and execution.
 
 ### ParameterTranslator
 

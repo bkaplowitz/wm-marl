@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import os
 import subprocess
@@ -39,6 +40,19 @@ OFFICIAL_CHECKOUT = Path(
         "/private/tmp/danijar-dreamerv3-20260713",
     )
 )
+ELEMENTS_PACKAGE_DIR = Path(
+    os.environ.get(
+        "DREAMERV3_ELEMENTS_PACKAGE_DIR",
+        "/private/tmp/dreamerv3-upstream-venv/lib/python3.11/site-packages/elements",
+    )
+)
+ELEMENTS_DIST_INFO = Path(
+    os.environ.get(
+        "DREAMERV3_ELEMENTS_DIST_INFO",
+        "/private/tmp/dreamerv3-upstream-venv/lib/python3.11/site-packages/"
+        "elements-3.22.0.dist-info",
+    )
+)
 SOURCE_HASHES = {
     "dreamerv3/configs.yaml": (
         "9dff9c7062e3e33951cb54c6dd4b598aaf7e56e18e2cff39c812eaa797bcfcfc"
@@ -69,6 +83,15 @@ def _official_arrays(
 def _selector_rng_bytes(selector: UniformSelector) -> np.ndarray:
     payload = json.dumps(selector.state_dict()["rng_state"], sort_keys=True).encode()
     return np.frombuffer(payload, np.uint8).copy()
+
+
+def _replay_execution_coordinates() -> dict[str, Path]:
+    return {
+        "elements_dist_info": ELEMENTS_DIST_INFO,
+        "elements_package_dir": ELEMENTS_PACKAGE_DIR,
+        "official_checkout": OFFICIAL_CHECKOUT,
+        "python_executable": Path(sys.executable),
+    }
 
 
 ReplayKey = replay_module.ReplayKey
@@ -188,6 +211,22 @@ def _add_rows(
 
 def _decode(ids: np.ndarray) -> list[ReplayKey]:
     return [ReplayKey.from_step_id(value) for value in ids.reshape(-1, 20)]
+
+
+def _valid_step_ids(batch: int, length: int) -> np.ndarray:
+    return np.stack(
+        [
+            np.stack(
+                [
+                    ReplayKey(
+                        (batch_index + 1).to_bytes(16, "big"), offset
+                    ).to_step_id()
+                    for offset in range(length)
+                ]
+            )
+            for batch_index in range(batch)
+        ]
+    )
 
 
 def _resolve_keys(
@@ -336,8 +375,18 @@ def test_replay_fixture_regeneration_is_byte_deterministic(
         pytest.skip("explicit DreamerV3 oracle checkout is unavailable")
     first = OracleHarness(OFFICIAL_CHECKOUT, tmp_path / "first")
     second = OracleHarness(OFFICIAL_CHECKOUT, tmp_path / "second")
-    first_npz, first_manifest = run_replay_case(first, profile)
-    second_npz, second_manifest = run_replay_case(second, profile)
+    first_npz, first_manifest = run_replay_case(
+        first,
+        profile,
+        elements_package_dir=ELEMENTS_PACKAGE_DIR,
+        elements_dist_info=ELEMENTS_DIST_INFO,
+    )
+    second_npz, second_manifest = run_replay_case(
+        second,
+        profile,
+        elements_package_dir=ELEMENTS_PACKAGE_DIR,
+        elements_dist_info=ELEMENTS_DIST_INFO,
+    )
     committed_stem = f"{profile.value}-proprio-replay"
     assert first_npz.read_bytes() == second_npz.read_bytes()
     assert first_manifest.read_bytes() == second_manifest.read_bytes()
@@ -357,7 +406,7 @@ def test_recorded_replay_worker_replays_all_arrays_and_attestations(profile) -> 
     manifest_path = FIXTURE_DIR / f"{stem}.manifest.json"
     manifest = OracleManifest.load(manifest_path, fixture_path=fixture_path)
     invocation = manifest.resolve_generator_invocation(
-        official_checkout=OFFICIAL_CHECKOUT
+        **_replay_execution_coordinates()
     )
     envelope = json.loads(invocation.generator_request)
     request = envelope["request"]
@@ -494,7 +543,7 @@ def test_replay_oracle_worker_never_imports_native_replay(profile) -> None:
         fixture_path=FIXTURE_DIR / f"{stem}.npz",
     )
     invocation = manifest.resolve_generator_invocation(
-        official_checkout=OFFICIAL_CHECKOUT
+        **_replay_execution_coordinates()
     )
     command = (
         invocation.command[0],
@@ -539,7 +588,7 @@ def test_replay_oracle_worker_rejects_injected_native_modules(
         fixture_path=FIXTURE_DIR / "paper-proprio-replay.npz",
     )
     invocation = manifest.resolve_generator_invocation(
-        official_checkout=OFFICIAL_CHECKOUT
+        **_replay_execution_coordinates()
     )
     oracle_path = Path(invocation.command[1]).resolve()
     lines = [
@@ -622,12 +671,12 @@ def test_replay_batch_validates_copies_slices_and_as_dict() -> None:
         "value": np.arange(10, dtype=np.int32).reshape(2, 5),
         "is_first": np.zeros((2, 5), bool),
     }
-    step_ids = np.zeros((2, 5, 20), np.uint8)
+    step_ids = _valid_step_ids(2, 5)
     batch = ReplayBatch(data, step_ids)
     data["value"][:] = -1
     step_ids[:] = 9
     np.testing.assert_array_equal(batch.data["value"], np.arange(10).reshape(2, 5))
-    assert not np.any(batch.step_ids)
+    np.testing.assert_array_equal(batch.step_ids, _valid_step_ids(2, 5))
     sliced = batch[:, 1:4]
     assert sliced.step_ids.shape == (2, 3, 20)
     payload = batch.as_dict()
@@ -636,6 +685,46 @@ def test_replay_batch_validates_copies_slices_and_as_dict() -> None:
     assert batch.data["value"][0, 0] == 0
     with pytest.raises(ValueError):
         ReplayBatch({"x": np.zeros((2, 4))}, np.zeros((2, 5, 20), np.uint8))
+
+
+@pytest.mark.parametrize(
+    "keys",
+    (
+        [ReplayKey((1).to_bytes(16, "big"), 0)] * 2,
+        [
+            ReplayKey((1).to_bytes(16, "big"), 1),
+            ReplayKey((1).to_bytes(16, "big"), 0),
+        ],
+        [
+            ReplayKey((1).to_bytes(16, "big"), 0),
+            ReplayKey((2).to_bytes(16, "big"), 1),
+        ],
+        [
+            ReplayKey((2).to_bytes(16, "big"), 0),
+            ReplayKey((1).to_bytes(16, "big"), 0),
+        ],
+        [
+            ReplayKey((1).to_bytes(16, "big"), 0),
+            ReplayKey((2).to_bytes(16, "big"), 0),
+            ReplayKey((1).to_bytes(16, "big"), 1),
+        ],
+    ),
+    ids=(
+        "duplicate",
+        "reversed-offset",
+        "cross-chunk-nonzero-offset",
+        "reversed-chunk",
+        "recurrent-chunk",
+    ),
+)
+def test_replay_batch_rejects_nonchronological_step_ids(
+    keys: list[ReplayKey],
+) -> None:
+    step_ids = np.stack([np.stack([key.to_step_id() for key in keys])])
+    data = {"value": np.zeros((1, len(keys)), np.int32)}
+
+    with pytest.raises(ValueError, match="chronolog"):
+        ReplayBatch(data, step_ids)
 
 
 def test_row_schema_coercion_chronology_and_no_key_drift() -> None:
@@ -789,11 +878,12 @@ def test_chunk_fixed_storage_seal_copy_read_and_latent_only_update() -> None:
     partial.append(_row(0))
     with pytest.raises((TypeError, ValueError)):
         partial.seal(b"short")
+    partial_before = partial.state_dict()
+    with pytest.raises((RuntimeError, ValueError), match="full"):
+        partial.seal((10).to_bytes(16, "big"))
+    _assert_tree_equal(partial.state_dict(), partial_before)
+    partial.append(_row(1, first=False))
     partial.seal((10).to_bytes(16, "big"))
-    partial_sealed = partial.state_dict()
-    with pytest.raises((RuntimeError, ValueError)):
-        partial.append(_row(1, first=False))
-    _assert_tree_equal(partial.state_dict(), partial_sealed)
     restored = ReplayChunk.from_state_dict(
         chunk.state_dict(), _transition_spaces(), _latent_spaces()
     )
@@ -3261,6 +3351,127 @@ def test_third_repair_evict_preflight_is_transactional(corruption: str) -> None:
     with pytest.raises((KeyError, TypeError, ValueError, RuntimeError)):
         replay._evict_item()
     _assert_tree_equal(replay.state_dict(), before)
+
+
+class _RaisingPopList(list):
+    def pop(self, index: int = -1):
+        raise AssertionError(f"mutating pop reached at index {index}")
+
+
+def test_live_fifo_requires_an_exact_builtin_list_before_eviction_mutation() -> None:
+    replay = _replay(
+        capacity=2,
+        chunk_size=4,
+        sequence_length=1,
+        context=0,
+        online=False,
+    )
+    _add_rows(replay, 2)
+    replay.fifo = _RaisingPopList(replay.fifo)
+    fifo = replay.fifo
+    selector_before = replay.selector.state_dict()
+    items_before = dict(replay.items)
+    refs_before = dict(replay.refs)
+
+    with pytest.raises((TypeError, ValueError, RuntimeError), match="FIFO"):
+        replay.validate()
+    with pytest.raises((TypeError, ValueError, RuntimeError), match="FIFO"):
+        replay._evict_item()
+
+    assert replay.fifo is fifo
+    assert replay.selector.state_dict() == selector_before
+    assert replay.items == items_before
+    assert replay.refs == refs_before
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ("bool_fifo", "numpy_fifo", "items_alias", "selector_indices"),
+)
+def test_add_preflights_live_capacity_state_before_writer_mutation(
+    corruption: str,
+) -> None:
+    replay = _replay(
+        capacity=1,
+        chunk_size=4,
+        sequence_length=1,
+        context=0,
+        online=False,
+    )
+    replay.add(_row(0))
+    if corruption == "bool_fifo":
+        replay.fifo[0] = True
+    elif corruption == "numpy_fifo":
+        replay.fifo[0] = np.int64(replay.fifo[0])
+    elif corruption == "items_alias":
+        replay.items = {np.int64(0): replay.items[0]}
+    else:
+        replay.selector.indices = {0: np.int64(0)}
+    before = replay.state_dict()
+    writer_before = replay.writers[0].state_dict()
+
+    with pytest.raises((TypeError, ValueError, RuntimeError)):
+        replay.add(_row(1, first=False))
+
+    _assert_tree_equal(replay.state_dict(), before)
+    _assert_tree_equal(replay.writers[0].state_dict(), writer_before)
+
+
+def test_add_never_calls_exhaustive_replay_validators(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    replay = _replay(
+        capacity=1,
+        chunk_size=4,
+        sequence_length=1,
+        context=0,
+        online=False,
+    )
+    replay.add(_row(0))
+
+    def forbidden(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("exhaustive replay validation reached from add")
+
+    monkeypatch.setattr(replay, "validate", forbidden)
+    monkeypatch.setattr(replay, "_validate_mutation_containers", forbidden)
+    monkeypatch.setattr(replay, "_validate_item_map", forbidden)
+    monkeypatch.setattr(replay, "_validate_selector_map", forbidden)
+
+    key = replay.add(_row(1, first=False))
+
+    assert key.offset == 1
+    assert replay.writers[0].row_count == 2
+    assert list(replay.items) == [1]
+
+
+def test_add_preflight_never_scans_lifetime_chunk_history() -> None:
+    source = inspect.getsource(DreamerReplay._preflight_active_writer)
+
+    assert "for chunk_id in writer.chunk_history" not in source
+    assert "writer.chunk_history[-1]" in source
+
+
+def test_restore_rejects_numpy_bytes_current_chunk_id_without_mutation() -> None:
+    replay = _replay(chunk_size=3, sequence_length=1, context=0, online=False)
+    _add_rows(replay, 4)
+    broken = copy.deepcopy(replay.state_dict())
+    current = broken["writers"][0]["current_chunk_id"]
+    assert type(current) is bytes
+    broken["writers"][0]["current_chunk_id"] = np.bytes_(current)
+
+    _assert_restore_rejected_without_mutation(replay, broken)
+
+
+def test_restore_rejects_numpy_bytes_ref_key_without_mutation() -> None:
+    replay = _replay(chunk_size=3, sequence_length=1, context=0, online=False)
+    _add_rows(replay, 4)
+    broken = copy.deepcopy(replay.state_dict())
+    old = next(iter(broken["refs"]))
+    value = broken["refs"].pop(old)
+    broken["refs"][np.bytes_(old)] = value
+
+    _assert_restore_rejected_without_mutation(replay, broken)
 
 
 def test_evict_preflight_rejects_selector_container_before_any_mutation() -> None:

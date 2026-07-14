@@ -243,10 +243,18 @@ exact Python-integer keys; eviction and public validation reject bool and NumPy
 integer aliases before equality or membership. Outer writer identities and
 selector ids/indices likewise require exact Python integers.
 Eviction preflights the complete FIFO/item/selector/ref-decrement operation
-before its first mutation. Public validation shares the exact live selector
-container, Python-integer key/index, uniqueness, bijection, and item-agreement
-checks without mutation. A valid idle writer whose predecessor was evicted must
-restore and continue bit-exactly.
+before its first mutation. The per-row add path is mutation-local: it may scan
+the bounded writer map to reject equality aliases, but it must not call public
+validation or scan capacity, chunks, selector contents, or lifetime chunk
+history. It plans the FIFO head, selector target/swap-pop tail, and successor
+ref-decrement chain before append and consumes that plan after emission. Public
+validation retains the exhaustive exact live selector container,
+Python-integer key/index, uniqueness, bijection, complete FIFO/item agreement,
+and refcount checks without mutation. A valid idle writer whose predecessor was
+evicted must restore and continue bit-exactly. `ReplayBatch` independently
+rejects duplicate, reversed, nonzero cross-chunk, and recurrent chunk step ids;
+`ReplayChunk.seal` accepts only a full chunk. Restore rejects every non-exact
+byte identity, including NumPy byte scalars, before aliasing dictionary lookup.
 
 For online replay, each writer's nonempty persisted queue projection is the
 exact `raw_length`-spaced suffix of phase `1 % raw_length` through the latest
@@ -271,14 +279,18 @@ transactional.
 
 Replay fixture provenance is source-dispatched and fail closed. The registered
 replay source requires both its validator and invocation resolver under stable
-callback contract ids. Public manifest load is source-free: it accepts only the
+callback contract ids plus module-qualified callback identities that resolve to
+the exact bound objects. Public manifest load is source-free: it accepts only the
 portable three-element command descriptor and stable request, which binds
-replay/7, manifest coordinates, cases, row schema, runtime/shim semantics, and
-raw hashes for `replay_oracle.py`, `oracle.py`, and `config.py`; it persists no
-machine paths. Invocation resolution first repeats generic manifest validation,
+replay/7, manifest coordinates, cases, row schema, runtime/shim semantics, raw
+hashes for `replay_oracle.py`, `oracle.py`, and `config.py`, and the normalized
+raw-byte self-hash for `replay_oracle_contract.py`; it persists no machine
+paths. Invocation resolution first repeats generic manifest validation,
 then re-attests the complete live generator closure, shims, interpreter,
 NumPy, and Elements files before producing the current absolute command and a
-one-shot execution envelope. The worker requires that envelope and repeats all
+one-shot execution envelope. Elements package and dist-info coordinates are
+mandatory caller inputs, and interpreter aliases are rejected. Resolver output
+is coerced into the current `OracleInvocation` class after reload. The worker requires that envelope and repeats all
 live and official-source checks. Registry reloads rehydrate old-class entries,
 refresh equal callbacks by structural id, and reject conflicts. Relocation,
 comment-only source tampering, persisted hash/runtime tampering, direct worker

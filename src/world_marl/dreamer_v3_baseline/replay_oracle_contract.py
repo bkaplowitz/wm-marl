@@ -7,15 +7,22 @@ REPLAY_COMMAND_DESCRIPTOR = (
     "_worker",
 )
 
+REPLAY_CONTRACT_SELF_SHA256 = (
+    "fb2b6cf6152a5123cafbc9d0d5ff6cb077ad3e298e748cbe5d32a478e4f19a8f"
+)
+
 REPLAY_GENERATOR_FILE_HASHES = {
     "world_marl/dreamer_v3_baseline/config.py": (
         "c2cc207718776bc975f5740d92f8e79c7c3ae103940b199a6abf80b5a21d5615"
     ),
     "world_marl/dreamer_v3_baseline/oracle.py": (
-        "dd8a5433119bf73a20bdd646a87d72f842e019b8a16f3f2a719564d984db16d9"
+        "d02a618a4ea36f05b96b2ca4271c091788731dd7002ed3cf534f59b0bdeb602c"
     ),
     "world_marl/dreamer_v3_baseline/replay_oracle.py": (
-        "c24a3a09342f16e02c573c37a789193342b8abba8cf4d2e0b467ca1398c42dfb"
+        "2d6ac3d951623db086f91123770da1f1e64702ab3477a6d9af5eadff5622be4a"
+    ),
+    "world_marl/dreamer_v3_baseline/replay_oracle_contract.py": (
+        REPLAY_CONTRACT_SELF_SHA256
     ),
 }
 
@@ -54,6 +61,7 @@ REPLAY_RUNTIME_CONTRACT = {
 
 __all__ = [
     "REPLAY_COMMAND_DESCRIPTOR",
+    "REPLAY_CONTRACT_SELF_SHA256",
     "REPLAY_GENERATOR_FILE_HASHES",
     "REPLAY_RUNTIME_CONTRACT",
 ]

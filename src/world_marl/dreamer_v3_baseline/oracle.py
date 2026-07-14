@@ -226,9 +226,41 @@ def _oracle_source_spec_signature(source_spec: OracleSourceSpec) -> tuple[Any, .
         source_spec.execution_dtypes,
         source_spec.generator_validation_required,
         source_spec.generator_validator_id,
+        _callback_logical_identity(source_spec.generator_validator),
         source_spec.generator_resolution_required,
         source_spec.generator_resolver_id,
+        _callback_logical_identity(source_spec.generator_resolver),
     )
+
+
+def _callback_logical_identity(callback: Callable[..., Any] | None) -> Any:
+    if callback is None:
+        return None
+    module_name = getattr(callback, "__module__", None)
+    qualified_name = getattr(callback, "__qualname__", None)
+    if type(module_name) is not str or type(qualified_name) is not str:
+        raise ValueError("oracle source callback has no stable logical identity")
+    return module_name, qualified_name
+
+
+def _validate_bound_callback(callback: Callable[..., Any] | None) -> None:
+    identity = _callback_logical_identity(callback)
+    if identity is None:
+        return
+    module_name, qualified_name = identity
+    module = sys.modules.get(module_name)
+    if module is None or "<locals>" in qualified_name.split("."):
+        raise ValueError("oracle source callback is not a bound module object")
+    bound: Any = module
+    try:
+        for component in qualified_name.split("."):
+            bound = getattr(bound, component)
+    except AttributeError as error:
+        raise ValueError(
+            "oracle source callback is not a bound module object"
+        ) from error
+    if bound is not callback:
+        raise ValueError("oracle source callback does not match its bound object")
 
 
 def register_oracle_source_spec(source_spec: OracleSourceSpec) -> None:
@@ -242,6 +274,8 @@ def register_oracle_source_spec(source_spec: OracleSourceSpec) -> None:
         and source_spec.generator_resolver is None
     ):
         raise ValueError("oracle source requires a generator resolver")
+    _validate_bound_callback(source_spec.generator_validator)
+    _validate_bound_callback(source_spec.generator_resolver)
     existing = _ORACLE_SOURCE_SPECS.get(source_spec.name)
     if existing is not None and _oracle_source_spec_signature(
         existing
@@ -669,7 +703,17 @@ class OracleManifest:
             }
         )
         if resolver is not None:
-            return resolver(self, coordinates)
+            resolved = resolver(self, coordinates)
+            try:
+                return OracleInvocation(
+                    command=resolved.command,
+                    cwd=resolved.cwd,
+                    generator_request=resolved.generator_request,
+                )
+            except (AttributeError, TypeError, ValueError) as error:
+                raise ValueError(
+                    "oracle resolver returned an invalid invocation"
+                ) from error
         if self.generator_request is None:
             raise ValueError("oracle generator invocation requires a request")
         return OracleInvocation(

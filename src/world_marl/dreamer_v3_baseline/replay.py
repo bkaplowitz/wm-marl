@@ -126,6 +126,25 @@ class ReplayBatch:
         ids = np.asarray(step_ids)
         if ids.dtype != np.uint8 or ids.ndim != 3 or ids.shape[-1] != 20:
             raise ValueError("ReplayBatch step_ids must be uint8[B,S,20]")
+        for sequence in ids:
+            keys = [ReplayKey.from_step_id(value) for value in sequence]
+            seen_chunks: set[bytes] = set()
+            previous: ReplayKey | None = None
+            for key in keys:
+                if previous is None:
+                    seen_chunks.add(key.chunk_id)
+                elif key.chunk_id == previous.chunk_id:
+                    if key.offset != previous.offset + 1:
+                        raise ValueError("ReplayBatch step ids are not chronological")
+                else:
+                    if (
+                        key.offset != 0
+                        or key.chunk_id <= previous.chunk_id
+                        or key.chunk_id in seen_chunks
+                    ):
+                        raise ValueError("ReplayBatch step ids are not chronological")
+                    seen_chunks.add(key.chunk_id)
+                previous = key
         copied = {}
         for name, value in sorted(data.items()):
             array = np.asarray(value)
@@ -215,6 +234,8 @@ class ReplayChunk:
         ReplayKey(successor_id, 0)
         if self.sealed:
             raise RuntimeError("replay chunk is already sealed")
+        if self.length != self.size:
+            raise RuntimeError("only a full replay chunk can be sealed")
         if successor_id == self.chunk_id:
             raise ValueError("replay chunk cannot link to itself")
         self.successor_id = successor_id
@@ -623,7 +644,12 @@ class ReplayWriter:
         ):
             raise ValueError("writer chunk history must be strictly increasing")
         result.chunk_history = list(history)
-        result.current_chunk_id = state["current_chunk_id"]
+        current_chunk_id = state["current_chunk_id"]
+        if current_chunk_id is not None and (
+            type(current_chunk_id) is not bytes or len(current_chunk_id) != 16
+        ):
+            raise ValueError("invalid writer current chunk id")
+        result.current_chunk_id = current_chunk_id
         result.pending = deque(
             ReplayKey.from_state_dict(value) for value in state["pending"]
         )
@@ -900,6 +926,186 @@ class DreamerReplay:
         )
         return result
 
+    def _preflight_item_mutation_containers(self) -> None:
+        if type(self.items) is not dict:
+            raise TypeError("replay items must be a dictionary")
+        if type(self.fifo) is not list:
+            raise TypeError("replay FIFO must be a list")
+        if type(self.selector) is not UniformSelector:
+            raise TypeError("replay selector must be a UniformSelector")
+        if (
+            type(self.selector.keys) is not list
+            or type(self.selector.indices) is not dict
+        ):
+            raise TypeError("replay selector containers must be exact builtins")
+        sizes = {
+            len(self.items),
+            len(self.fifo),
+            len(self.selector.keys),
+            len(self.selector.indices),
+        }
+        if len(sizes) != 1 or len(self.items) > self.config.capacity:
+            raise RuntimeError("replay item containers disagree")
+        if type(self.next_item_id) is not int or self.next_item_id < 0:
+            raise TypeError("replay next item id must be a Python integer")
+        if not self.items:
+            if self.fifo or self.selector.keys or self.selector.indices:
+                raise RuntimeError("empty replay item containers disagree")
+        else:
+            first_id = next(iter(self.items))
+            last_id = next(reversed(self.items))
+            if (
+                type(first_id) is not int
+                or type(last_id) is not int
+                or type(self.items[first_id]) is not ReplayKey
+                or type(self.items[last_id]) is not ReplayKey
+                or type(self.fifo[0]) is not int
+                or type(self.fifo[-1]) is not int
+                or self.fifo[0] != first_id
+                or self.fifo[-1] != last_id
+                or self.next_item_id != last_id + 1
+            ):
+                raise RuntimeError("replay item boundary state is inconsistent")
+        if (
+            self.next_item_id in self.items
+            or self.next_item_id in self.selector.indices
+        ):
+            raise RuntimeError("replay next item id is already allocated")
+        if self.selector.keys:
+            final_id = self.selector.keys[-1]
+            if (
+                type(final_id) is not int
+                or type(self.selector.indices.get(final_id)) is not int
+                or self.selector.indices[final_id] != len(self.selector.keys) - 1
+                or final_id not in self.items
+            ):
+                raise RuntimeError("replay selector tail is inconsistent")
+
+    def _preflight_active_writer(self, writer: ReplayWriter) -> None:
+        if type(self.writers) is not dict:
+            raise TypeError("replay writers must be a dictionary")
+        for worker_id, candidate in self.writers.items():
+            if (
+                type(worker_id) is not int
+                or type(candidate) is not ReplayWriter
+                or candidate.worker_id != worker_id
+                or candidate.replay is not self
+            ):
+                raise TypeError("replay writers must use canonical ids and values")
+        if self.writers.get(writer.worker_id) is not writer:
+            raise RuntimeError("replay writer is not active")
+        if (
+            type(writer.pending) is not deque
+            or any(type(key) is not ReplayKey for key in writer.pending)
+            or type(writer.chunk_history) is not list
+            or type(writer.row_count) is not int
+            or writer.row_count < 0
+            or type(writer.emitted_count) is not int
+            or writer.emitted_count < 0
+            or type(writer.has_rows) is not bool
+            or type(writer.last_is_last) is not bool
+        ):
+            raise TypeError("replay writer mutation state is not canonical")
+        if writer.chunk_history:
+            last_chunk_id = writer.chunk_history[-1]
+            if (
+                type(last_chunk_id) is not bytes
+                or len(last_chunk_id) != 16
+                or writer.current_chunk_id != last_chunk_id
+            ):
+                raise RuntimeError("replay writer history boundary is inconsistent")
+        elif writer.current_chunk_id is not None:
+            raise RuntimeError("replay writer history boundary is inconsistent")
+
+    def _preflight_active_chunk(self, writer: ReplayWriter) -> None:
+        if type(self.chunks) is not dict or type(self.refs) is not dict:
+            raise TypeError("replay chunk and ref containers must be dictionaries")
+        current = writer.current_chunk_id
+        if current is None:
+            if writer.chunk_history:
+                raise RuntimeError("replay writer without a cursor has chunk history")
+            return
+        if type(current) is not bytes or len(current) != 16:
+            raise TypeError("replay writer current chunk id is not canonical")
+        chunk = self.chunks.get(current)
+        reference_count = self.refs.get(current)
+        if (
+            type(chunk) is not ReplayChunk
+            or chunk.chunk_id != current
+            or chunk.owner_id != writer.worker_id
+            or chunk.sealed
+            or type(chunk.length) is not int
+            or not 0 <= chunk.length < chunk.size
+            or chunk.size != self.config.chunk_size
+            or type(reference_count) is not int
+            or reference_count <= 0
+        ):
+            raise RuntimeError("replay writer active chunk is inconsistent")
+        if (
+            type(chunk.transition_data) is not dict
+            or type(chunk.latent_data) is not dict
+        ):
+            raise TypeError("replay chunk tensor containers must be dictionaries")
+        if chunk.length == 0 and (chunk.transition_data or chunk.latent_data):
+            raise RuntimeError("empty replay chunk has allocated tensors")
+        if chunk.length:
+            for spaces, tensors in (
+                (chunk.transition_spaces, chunk.transition_data),
+                (chunk.latent_spaces, chunk.latent_data),
+            ):
+                if set(tensors) != set(spaces):
+                    raise RuntimeError("replay chunk tensor schema is inconsistent")
+                for name, space in spaces.items():
+                    value = tensors[name]
+                    if (
+                        type(value) is not np.ndarray
+                        or value.dtype != np.dtype(space.dtype)
+                        or value.shape != (chunk.size, *space.shape)
+                        or not value.flags.writeable
+                    ):
+                        raise RuntimeError(
+                            "replay chunk tensor storage is inconsistent"
+                        )
+
+    def _preflight_add(
+        self,
+        writer: ReplayWriter,
+        *,
+        will_emit: bool,
+    ) -> tuple[int, ReplayKey] | None:
+        self._preflight_active_writer(writer)
+        self._preflight_active_chunk(writer)
+        self._preflight_item_mutation_containers()
+        if (
+            type(self.online_queue) is not OnlineQueue
+            or type(self.online_queue.keys) is not list
+        ):
+            raise TypeError("replay online queue containers are not canonical")
+        if (
+            type(self._metrics) is not dict
+            or set(self._metrics) != set(_METRIC_KEYS)
+            or any(
+                type(value) is not int or value < 0 for value in self._metrics.values()
+            )
+        ):
+            raise TypeError("replay metrics are not canonical")
+        required_ids = 0
+        if writer.current_chunk_id is None:
+            required_ids = 2 if self.config.chunk_size == 1 else 1
+        else:
+            chunk = self.chunks[writer.current_chunk_id]
+            if chunk.length + 1 == chunk.size:
+                required_ids = 1
+        if required_ids:
+            self._preflight_chunk_ids(required_ids)
+            for number in range(self.next_chunk_id, self.next_chunk_id + required_ids):
+                chunk_id = number.to_bytes(16, "big")
+                if chunk_id in self.chunks or chunk_id in self.refs:
+                    raise RuntimeError("replay next chunk id is already allocated")
+        if will_emit and len(self.items) >= self.config.capacity:
+            return self._preflight_evict_item(containers_validated=True)
+        return None
+
     def add(self, row: Mapping[str, Any], *, worker: int = 0) -> ReplayKey:
         if type(worker) is not int:
             raise TypeError("worker id must be an integer")
@@ -932,6 +1138,8 @@ class DreamerReplay:
                 raise ValueError("is_terminal requires is_last")
             if writer.has_rows and writer.last_is_last and not is_first:
                 raise ValueError("a row after is_last must be is_first")
+            will_emit = len(writer.pending) + 1 >= self.raw_length
+            eviction_plan = self._preflight_add(writer, will_emit=will_emit)
             if writer.current_chunk_id is None:
                 required_ids = 2 if self.config.chunk_size == 1 else 1
                 self._preflight_chunk_ids(required_ids)
@@ -951,7 +1159,7 @@ class DreamerReplay:
             if len(writer.pending) >= self.raw_length:
                 emitted = writer.pending.popleft()
                 writer.emitted_count += 1
-                self._insert_item(emitted)
+                self._insert_item(emitted, eviction_plan=eviction_plan)
             if (
                 emitted is not None
                 and self.config.online
@@ -964,9 +1172,15 @@ class DreamerReplay:
             self._metrics["inserted_rows"] += 1
             return key
 
-    def _insert_item(self, key: ReplayKey) -> None:
+    def _insert_item(
+        self,
+        key: ReplayKey,
+        *,
+        eviction_plan: tuple[int, ReplayKey] | None = None,
+    ) -> None:
         while len(self.items) >= self.config.capacity:
-            self._evict_item()
+            self._evict_item(eviction_plan)
+            eviction_plan = None
         item_id = self.next_item_id
         self.next_item_id += 1
         self.items[item_id] = key
@@ -982,6 +1196,53 @@ class DreamerReplay:
             raise TypeError("replay item ids must be Python integers")
         if any(type(key) is not ReplayKey for key in self.items.values()):
             raise TypeError("replay item values must be ReplayKey values")
+
+    def _validate_mutation_containers(self) -> None:
+        if type(self.chunks) is not dict or type(self.refs) is not dict:
+            raise TypeError("replay chunk and ref containers must be dictionaries")
+        if type(self.writers) is not dict:
+            raise TypeError("replay writers must be a dictionary")
+        self._validate_item_map()
+        if type(self.fifo) is not list:
+            raise TypeError("replay FIFO must be a list")
+        if any(type(item_id) is not int for item_id in self.fifo):
+            raise TypeError("replay FIFO item ids must be Python integers")
+        if type(self.selector) is not UniformSelector:
+            raise TypeError("replay selector must be a UniformSelector")
+        if type(self.online_queue) is not OnlineQueue:
+            raise TypeError("replay online queue must be an OnlineQueue")
+        if type(self.online_queue.keys) is not list or any(
+            type(key) is not ReplayKey for key in self.online_queue.keys
+        ):
+            raise TypeError("replay online queue keys must be ReplayKey values")
+        if any(
+            type(chunk_id) is not bytes
+            or len(chunk_id) != 16
+            or type(chunk) is not ReplayChunk
+            or chunk.chunk_id != chunk_id
+            for chunk_id, chunk in self.chunks.items()
+        ):
+            raise TypeError("replay chunks must use canonical chunk ids and values")
+        if set(self.refs) != set(self.chunks) or any(
+            type(chunk_id) is not bytes
+            or len(chunk_id) != 16
+            or type(count) is not int
+            or count <= 0
+            for chunk_id, count in self.refs.items()
+        ):
+            raise TypeError("replay refs must use canonical chunk ids and counts")
+        if any(
+            type(worker_id) is not int
+            or type(writer) is not ReplayWriter
+            or writer.worker_id != worker_id
+            or writer.replay is not self
+            for worker_id, writer in self.writers.items()
+        ):
+            raise TypeError("replay writers must use canonical ids and values")
+        if type(self.next_item_id) is not int or self.next_item_id < 0:
+            raise TypeError("replay next item id must be a Python integer")
+        if type(self.next_chunk_id) is not int or not 0 < self.next_chunk_id <= 2**128:
+            raise TypeError("replay next chunk id must be a Python integer")
 
     def _validate_selector_map(self) -> None:
         selector_keys = self.selector.keys
@@ -1001,18 +1262,40 @@ class DreamerReplay:
         ):
             raise RuntimeError("replay selector state is inconsistent")
 
-    def _evict_item(self) -> None:
-        self._validate_item_map()
+    def _preflight_evict_item(
+        self,
+        *,
+        containers_validated: bool = False,
+    ) -> tuple[int, ReplayKey]:
+        if not containers_validated:
+            self._preflight_item_mutation_containers()
+            if type(self.chunks) is not dict or type(self.refs) is not dict:
+                raise TypeError("replay chunk and ref containers must be dictionaries")
         if not self.fifo:
             raise RuntimeError("replay FIFO is empty during capacity eviction")
-        if any(type(candidate) is not int for candidate in self.fifo):
-            raise TypeError("replay FIFO item ids must be integers")
-        if self.fifo != list(self.items):
-            raise RuntimeError("replay FIFO/items disagree during eviction")
-        self._validate_selector_map()
         item_id = self.fifo[0]
+        if type(item_id) is not int:
+            raise TypeError("replay FIFO item ids must be Python integers")
         key = self.items[item_id]
+        index = self.selector.indices.get(item_id)
+        final_id = self.selector.keys[-1]
+        if (
+            type(key) is not ReplayKey
+            or type(index) is not int
+            or not 0 <= index < len(self.selector.keys)
+            or self.selector.keys[index] != item_id
+            or type(final_id) is not int
+            or self.selector.indices.get(final_id) != len(self.selector.keys) - 1
+        ):
+            raise RuntimeError("replay eviction selector plan is inconsistent")
         self._preflight_ref_decrement(key.chunk_id)
+        return item_id, key
+
+    def _evict_item(
+        self,
+        plan: tuple[int, ReplayKey] | None = None,
+    ) -> None:
+        item_id, key = plan if plan is not None else self._preflight_evict_item()
         self.selector.delete(item_id)
         self.fifo.pop(0)
         self.items.pop(item_id)
@@ -1026,7 +1309,13 @@ class DreamerReplay:
             seen.add(chunk_id)
             reference_count = self.refs.get(chunk_id)
             chunk = self.chunks.get(chunk_id)
-            if reference_count is None or reference_count <= 0 or chunk is None:
+            if (
+                type(chunk_id) is not bytes
+                or len(chunk_id) != 16
+                or type(reference_count) is not int
+                or reference_count <= 0
+                or type(chunk) is not ReplayChunk
+            ):
                 raise RuntimeError("invalid replay reference decrement")
             if reference_count > 1 or chunk.successor_id is None:
                 return
@@ -1353,8 +1642,16 @@ class DreamerReplay:
                     raise ValueError("replay chunk successor is missing")
             candidate._validate_acyclic_links()
             refs = state["refs"]
-            if set(refs) != set(candidate.chunks) or any(
-                type(value) is not int or value <= 0 for value in refs.values()
+            if (
+                type(refs) is not dict
+                or set(refs) != set(candidate.chunks)
+                or any(
+                    type(chunk_id) is not bytes
+                    or len(chunk_id) != 16
+                    or type(value) is not int
+                    or value <= 0
+                    for chunk_id, value in refs.items()
+                )
             ):
                 raise ValueError("invalid replay refcount state")
             candidate.refs = dict(refs)
@@ -1756,12 +2053,12 @@ class DreamerReplay:
 
     def validate(self) -> None:
         with self._lock:
-            self._validate_item_map()
+            self._validate_mutation_containers()
+            if self.fifo != list(self.items):
+                raise ValueError("replay FIFO/items disagreement")
             self._validate_selector_map()
             self._validate_acyclic_links()
             self._validate_restored_state()
-            if self.fifo != list(self.items):
-                raise ValueError("replay FIFO/items disagreement")
 
 
 __all__ = [

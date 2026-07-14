@@ -7,6 +7,7 @@ import io
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import textwrap
@@ -100,13 +101,6 @@ _ELEMENTS_VERSION = str(REPLAY_RUNTIME_CONTRACT["elements_version"])
 _ELEMENTS_MODE = str(REPLAY_RUNTIME_CONTRACT["elements_mode"])
 _NUMPY_VERSION = str(REPLAY_RUNTIME_CONTRACT["numpy_version"])
 _WORKER_MODE = str(REPLAY_RUNTIME_CONTRACT["worker_mode"])
-_ELEMENTS_PACKAGE_DIR = Path(
-    "/private/tmp/dreamerv3-upstream-venv/lib/python3.11/site-packages/elements"
-)
-_ELEMENTS_DIST_INFO = Path(
-    "/private/tmp/dreamerv3-upstream-venv/lib/python3.11/site-packages/"
-    "elements-3.22.0.dist-info"
-)
 _ELEMENTS_HELPER_HASHES = dict(REPLAY_RUNTIME_CONTRACT["elements_helper_hashes"])
 _NATIVE_MODULE_NAMES = frozenset(
     {
@@ -140,6 +134,10 @@ _EXECUTION_KEYS = frozenset(
     }
 )
 _GENERATOR_PACKAGE_PREFIX = "world_marl/dreamer_v3_baseline/"
+_GENERATOR_CONTRACT_PATH = "world_marl/dreamer_v3_baseline/replay_oracle_contract.py"
+_CONTRACT_SELF_DIGEST_PATTERN = re.compile(
+    rb'(?m)^(REPLAY_CONTRACT_SELF_SHA256 = \(\n    ")[0-9a-f]{64}("\n\)$)'
+)
 
 
 def _native_module_violations() -> list[str]:
@@ -304,14 +302,27 @@ def _runtime_contract() -> dict[str, Any]:
 
 def _live_generator_file_hashes() -> dict[str, str]:
     package_dir = Path(__file__).resolve().parent
-    return {
-        relative_path: hashlib.sha256(
-            (
-                package_dir / relative_path.removeprefix(_GENERATOR_PACKAGE_PREFIX)
-            ).read_bytes()
-        ).hexdigest()
-        for relative_path in sorted(REPLAY_GENERATOR_FILE_HASHES)
-    }
+    result = {}
+    for relative_path in sorted(REPLAY_GENERATOR_FILE_HASHES):
+        source = (
+            package_dir / relative_path.removeprefix(_GENERATOR_PACKAGE_PREFIX)
+        ).read_bytes()
+        if relative_path == _GENERATOR_CONTRACT_PATH:
+            source = _normalized_contract_source(source)
+        result[relative_path] = hashlib.sha256(source).hexdigest()
+    return result
+
+
+def _normalized_contract_source(source: bytes) -> bytes:
+    matches = tuple(_CONTRACT_SELF_DIGEST_PATTERN.finditer(source))
+    if len(matches) != 1:
+        raise ValueError(
+            "replay generator contract must contain exactly one self digest"
+        )
+    match = matches[0]
+    start, stop = match.span()
+    normalized = match.group(1) + b"0" * 64 + match.group(2)
+    return source[:start] + normalized + source[stop:]
 
 
 def _validate_live_generator_contract(request: Mapping[str, Any]) -> None:
@@ -392,6 +403,7 @@ def _request_path(
     key: str,
     *,
     boundary: str,
+    resolve: bool = True,
 ) -> Path:
     value = request[key]
     if type(value) is not str:
@@ -400,7 +412,7 @@ def _request_path(
     if not path.is_absolute():
         raise ValueError(f"{boundary} path coordinate changed: {key}")
     try:
-        return path.resolve()
+        return path.resolve() if resolve else path.absolute()
     except (OSError, RuntimeError, ValueError) as error:
         raise ValueError(f"{boundary} path coordinate changed: {key}") from error
 
@@ -510,15 +522,15 @@ def _build_replay_invocation(
     )
     if python.resolve() != Path(sys.executable).resolve():
         raise ValueError("replay generator interpreter provenance changed")
+    if python != Path(sys.executable).absolute():
+        raise ValueError("replay generator interpreter provenance changed")
     package_dir = _execution_path(
         coordinates,
         "elements_package_dir",
-        default=_ELEMENTS_PACKAGE_DIR,
     )
     dist_info = _execution_path(
         coordinates,
         "elements_dist_info",
-        default=_ELEMENTS_DIST_INFO,
     )
     elements_version, elements_hashes = _installed_elements_provenance(
         package_dir, dist_info
@@ -561,10 +573,10 @@ REPLAY_SOURCE_SPEC = OracleSourceSpec(
     },
     execution_dtypes=("float32",),
     generator_validation_required=True,
-    generator_validator_id="replay-generator-validator-v2",
+    generator_validator_id="replay-generator-validator-v3",
     generator_validator=_validate_replay_generator_provenance,
     generator_resolution_required=True,
-    generator_resolver_id="replay-generator-resolver-v1",
+    generator_resolver_id="replay-generator-resolver-v2",
     generator_resolver=_resolve_replay_generator_invocation,
 )
 register_oracle_source_spec(REPLAY_SOURCE_SPEC)
@@ -953,8 +965,9 @@ def _worker(envelope: Mapping[str, Any]) -> dict[str, Any]:
         execution,
         "python_executable",
         boundary="replay worker execution",
+        resolve=False,
     )
-    if request_python != Path(sys.executable).resolve():
+    if request_python != Path(sys.executable).absolute():
         raise ValueError("replay worker interpreter provenance changed")
     if not _same_contract(request["cases"], _case_contract(request["seed"])):
         raise ValueError("replay worker source cases are not authorized")
@@ -1022,6 +1035,8 @@ def run_replay_case(
     profile: DreamerProfile | str,
     observation_mode: ObservationMode | str = ObservationMode.PROPRIO,
     *,
+    elements_package_dir: str | Path,
+    elements_dist_info: str | Path,
     case_name: str = "replay",
     seed: int = 7,
 ) -> tuple[Path, Path]:
@@ -1035,8 +1050,8 @@ def run_replay_case(
     invocation = _build_replay_invocation(
         request,
         {
-            "elements_dist_info": None,
-            "elements_package_dir": None,
+            "elements_dist_info": elements_dist_info,
+            "elements_package_dir": elements_package_dir,
             "official_checkout": harness.official_checkout,
             "python_executable": harness.python_executable,
         },

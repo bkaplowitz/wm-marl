@@ -53,6 +53,19 @@ REPLAY_OFFICIAL_CHECKOUT = Path(
         "/private/tmp/danijar-dreamerv3-20260713",
     )
 )
+REPLAY_ELEMENTS_PACKAGE_DIR = Path(
+    os.environ.get(
+        "DREAMERV3_ELEMENTS_PACKAGE_DIR",
+        "/private/tmp/dreamerv3-upstream-venv/lib/python3.11/site-packages/elements",
+    )
+)
+REPLAY_ELEMENTS_DIST_INFO = Path(
+    os.environ.get(
+        "DREAMERV3_ELEMENTS_DIST_INFO",
+        "/private/tmp/dreamerv3-upstream-venv/lib/python3.11/site-packages/"
+        "elements-3.22.0.dist-info",
+    )
+)
 REPLAY_REQUEST_KEYS = {
     "case_name",
     "cases",
@@ -77,7 +90,17 @@ REPLAY_GENERATOR_FILES = {
     "world_marl/dreamer_v3_baseline/config.py",
     "world_marl/dreamer_v3_baseline/oracle.py",
     "world_marl/dreamer_v3_baseline/replay_oracle.py",
+    "world_marl/dreamer_v3_baseline/replay_oracle_contract.py",
 }
+
+
+def _replay_execution_coordinates() -> dict[str, Path]:
+    return {
+        "elements_dist_info": REPLAY_ELEMENTS_DIST_INFO,
+        "elements_package_dir": REPLAY_ELEMENTS_PACKAGE_DIR,
+        "official_checkout": REPLAY_OFFICIAL_CHECKOUT,
+        "python_executable": Path(sys.executable),
+    }
 
 
 @pytest.fixture(scope="module")
@@ -228,7 +251,7 @@ def test_replay_invocation_resolver_builds_one_shot_absolute_envelope() -> None:
     manifest = OracleManifest.load(REPLAY_MANIFEST, fixture_path=REPLAY_FIXTURE)
 
     invocation = manifest.resolve_generator_invocation(
-        official_checkout=REPLAY_OFFICIAL_CHECKOUT
+        **_replay_execution_coordinates()
     )
     envelope = json.loads(invocation.generator_request)
 
@@ -246,6 +269,47 @@ def test_replay_invocation_resolver_builds_one_shot_absolute_envelope() -> None:
     assert all(Path(path).is_absolute() for path in envelope["execution"].values())
 
 
+def test_replay_resolution_requires_explicit_elements_coordinates() -> None:
+    manifest = OracleManifest.load(REPLAY_MANIFEST, fixture_path=REPLAY_FIXTURE)
+
+    with pytest.raises(ValueError, match="elements_package_dir"):
+        manifest.resolve_generator_invocation(
+            official_checkout=REPLAY_OFFICIAL_CHECKOUT,
+            python_executable=sys.executable,
+        )
+
+
+def test_replay_oracle_source_has_no_machine_specific_elements_default() -> None:
+    source = Path(replay_oracle_module.__file__).read_text()
+
+    assert "/private/tmp" not in source
+
+
+def test_run_replay_case_requires_explicit_elements_coordinates() -> None:
+    signature = replay_oracle_module.inspect.signature(
+        replay_oracle_module.run_replay_case
+    )
+
+    for name in ("elements_package_dir", "elements_dist_info"):
+        parameter = signature.parameters[name]
+        assert parameter.kind is parameter.KEYWORD_ONLY
+        assert parameter.default is parameter.empty
+
+
+def test_replay_resolution_rejects_an_interpreter_symlink(tmp_path: Path) -> None:
+    alias = tmp_path / "python-alias"
+    alias.symlink_to(Path(sys.executable))
+    manifest = OracleManifest.load(REPLAY_MANIFEST, fixture_path=REPLAY_FIXTURE)
+
+    with pytest.raises(ValueError, match="interpreter provenance"):
+        manifest.resolve_generator_invocation(
+            official_checkout=REPLAY_OFFICIAL_CHECKOUT,
+            python_executable=alias,
+            elements_package_dir=REPLAY_ELEMENTS_PACKAGE_DIR,
+            elements_dist_info=REPLAY_ELEMENTS_DIST_INFO,
+        )
+
+
 def test_replay_invocation_resolves_and_executes_from_a_copied_package(
     tmp_path: Path,
 ) -> None:
@@ -260,7 +324,12 @@ def test_replay_invocation_resolves_and_executes_from_a_copied_package(
             "import json, pathlib, subprocess, sys",
             "from world_marl.dreamer_v3_baseline.oracle import OracleManifest",
             f"manifest = OracleManifest.load({str(bundle / 'fixtures' / REPLAY_MANIFEST.name)!r}, fixture_path={str(bundle / 'fixtures' / REPLAY_FIXTURE.name)!r})",
-            f"invocation = manifest.resolve_generator_invocation(official_checkout={str(REPLAY_OFFICIAL_CHECKOUT)!r})",
+            "invocation = manifest.resolve_generator_invocation(",
+            f"    official_checkout={str(REPLAY_OFFICIAL_CHECKOUT)!r},",
+            f"    python_executable={sys.executable!r},",
+            f"    elements_package_dir={str(REPLAY_ELEMENTS_PACKAGE_DIR)!r},",
+            f"    elements_dist_info={str(REPLAY_ELEMENTS_DIST_INFO)!r},",
+            ")",
             f"assert pathlib.Path(invocation.command[1]).resolve() == pathlib.Path({str(copied_worker)!r})",
             "assert pathlib.Path(invocation.command[0]).resolve() == pathlib.Path(sys.executable).resolve()",
             "payload = json.loads(subprocess.run(invocation.command, cwd=invocation.cwd, input=invocation.generator_request, check=True, capture_output=True, text=True).stdout)",
@@ -279,6 +348,7 @@ def test_replay_invocation_resolves_and_executes_from_a_copied_package(
         "world_marl/dreamer_v3_baseline/replay_oracle.py",
         "world_marl/dreamer_v3_baseline/oracle.py",
         "world_marl/dreamer_v3_baseline/config.py",
+        "world_marl/dreamer_v3_baseline/replay_oracle_contract.py",
     ),
 )
 def test_replay_invocation_rejects_any_local_generator_file_tamper(
@@ -293,7 +363,12 @@ def test_replay_invocation_rejects_any_local_generator_file_tamper(
             "from world_marl.dreamer_v3_baseline.oracle import OracleManifest",
             f"manifest = OracleManifest.load({str(bundle / 'fixtures' / REPLAY_MANIFEST.name)!r}, fixture_path={str(bundle / 'fixtures' / REPLAY_FIXTURE.name)!r})",
             "try:",
-            f"    manifest.resolve_generator_invocation(official_checkout={str(REPLAY_OFFICIAL_CHECKOUT)!r})",
+            "    manifest.resolve_generator_invocation(",
+            f"        official_checkout={str(REPLAY_OFFICIAL_CHECKOUT)!r},",
+            f"        python_executable={sys.executable!r},",
+            f"        elements_package_dir={str(REPLAY_ELEMENTS_PACKAGE_DIR)!r},",
+            f"        elements_dist_info={str(REPLAY_ELEMENTS_DIST_INFO)!r},",
+            "    )",
             "except ValueError as error:",
             "    assert 'generator content' in str(error)",
             "else:",
@@ -302,6 +377,89 @@ def test_replay_invocation_rejects_any_local_generator_file_tamper(
     )
 
     completed = _run_copied_bundle(bundle, script)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("callback_field", "callback_name"),
+    (
+        ("generator_validator", "_validate_replay_generator_provenance"),
+        ("generator_resolver", "_resolve_replay_generator_invocation"),
+    ),
+)
+def test_registry_rejects_forged_callbacks_with_copied_contract_ids(
+    callback_field: str,
+    callback_name: str,
+) -> None:
+    original = oracle_module.oracle_source_spec("replay")
+
+    if callback_field == "generator_validator":
+
+        def forged(*args, **kwargs):
+            del args, kwargs
+
+    else:
+
+        def forged(*args, **kwargs):
+            del args, kwargs
+            return oracle_module.OracleInvocation(
+                command=("/bin/echo",),
+                cwd=Path("/"),
+                generator_request="{}",
+            )
+
+    forged.__module__ = replay_oracle_module.__name__
+    forged.__qualname__ = callback_name
+    forged_spec = replace(original, **{callback_field: forged})
+    try:
+        with pytest.raises(ValueError, match="callback"):
+            oracle_module.register_oracle_source_spec(forged_spec)
+        assert oracle_module.oracle_source_spec("replay") is original
+    finally:
+        oracle_module._ORACLE_SOURCE_SPECS["replay"] = original
+
+
+def test_resolver_rejects_a_malformed_callback_result() -> None:
+    manifest = OracleManifest.load(REPLAY_MANIFEST, fixture_path=REPLAY_FIXTURE)
+    original = oracle_module.oracle_source_spec("replay")
+    malformed = replace(original, generator_resolver=lambda *args: object())
+    oracle_module._ORACLE_SOURCE_SPECS["replay"] = malformed
+    try:
+        with pytest.raises((TypeError, ValueError), match="invocation"):
+            manifest.resolve_generator_invocation(**_replay_execution_coordinates())
+    finally:
+        oracle_module._ORACLE_SOURCE_SPECS["replay"] = original
+
+
+def test_oracle_reload_coerces_stale_resolver_invocation_to_current_class() -> None:
+    if not (REPLAY_OFFICIAL_CHECKOUT / ".git").exists():
+        pytest.skip("explicit DreamerV3 oracle checkout is unavailable")
+    script = "\n".join(
+        (
+            "import importlib, json, subprocess",
+            "import world_marl.dreamer_v3_baseline.oracle as oracle",
+            "import world_marl.dreamer_v3_baseline.replay_oracle as replay",
+            "oracle = importlib.reload(oracle)",
+            f"manifest = oracle.OracleManifest.load({str(REPLAY_MANIFEST)!r}, fixture_path={str(REPLAY_FIXTURE)!r})",
+            "invocation = manifest.resolve_generator_invocation(",
+            f"    official_checkout={str(REPLAY_OFFICIAL_CHECKOUT)!r},",
+            f"    python_executable={sys.executable!r},",
+            f"    elements_package_dir={str(REPLAY_ELEMENTS_PACKAGE_DIR)!r},",
+            f"    elements_dist_info={str(REPLAY_ELEMENTS_DIST_INFO)!r},",
+            ")",
+            "assert isinstance(invocation, oracle.OracleInvocation)",
+            "payload = json.loads(subprocess.run(invocation.command, cwd=invocation.cwd, input=invocation.generator_request, check=True, capture_output=True, text=True).stdout)",
+            "assert len(payload['arrays']) == 48",
+        )
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+    )
 
     assert completed.returncode == 0, completed.stderr
 
@@ -326,7 +484,11 @@ def test_oracle_source_registry_survives_replay_and_oracle_reloads() -> None:
             "assert isinstance(oracle.oracle_source_spec('replay'), oracle.OracleSourceSpec)",
             "with tempfile.TemporaryDirectory() as directory:",
             f"    harness = oracle.OracleHarness({str(REPLAY_OFFICIAL_CHECKOUT)!r}, directory)",
-            "    fixture, manifest_path = replay.run_replay_case(harness, 'paper')",
+            "    fixture, manifest_path = replay.run_replay_case(",
+            "        harness, 'paper',",
+            f"        elements_package_dir={str(REPLAY_ELEMENTS_PACKAGE_DIR)!r},",
+            f"        elements_dist_info={str(REPLAY_ELEMENTS_DIST_INFO)!r},",
+            "    )",
             f"    oracle.OracleManifest.load(manifest_path, official_checkout={str(REPLAY_OFFICIAL_CHECKOUT)!r}, fixture_path=fixture)",
             "replay = importlib.reload(replay)",
             "assert oracle.oracle_source_spec('replay') is replay.REPLAY_SOURCE_SPEC",
@@ -642,7 +804,7 @@ def test_replay_worker_rejects_nonexact_source_request(
 ) -> None:
     manifest = OracleManifest.load(REPLAY_MANIFEST, fixture_path=REPLAY_FIXTURE)
     invocation = manifest.resolve_generator_invocation(
-        official_checkout=REPLAY_OFFICIAL_CHECKOUT
+        **_replay_execution_coordinates()
     )
     envelope = json.loads(invocation.generator_request)
     request = envelope["request"]

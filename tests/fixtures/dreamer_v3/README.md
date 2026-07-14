@@ -35,19 +35,33 @@ literal descriptor `python:current`,
 `module:world_marl.dreamer_v3_baseline.replay_oracle`, `_worker`; their request
 contains no checkout, interpreter, Elements package, or distribution path. The
 request instead pins CPython/NumPy/Elements semantics and raw SHA256 digests for
-the complete local generator closure: `replay_oracle.py`, `oracle.py`, and
-`config.py`. Ordinary manifest loading compares only persisted data with the
+`replay_oracle.py`, `oracle.py`, and `config.py`. It also pins
+`replay_oracle_contract.py` with a normalized raw-byte self-hash that replaces
+exactly its one dedicated 64-hex self-digest literal with 64 ASCII zeros; every
+other byte, including comments, remains covered. Ordinary manifest loading compares only persisted data with the
 frozen contract and therefore performs no live source inspection.
 
 Executing a replay recipe requires `resolve_generator_invocation()`. Resolution
-rechecks the three live generator files, deterministic shims, current
-interpreter, NumPy, and pinned Elements helper files, then creates an unsaved
+rechecks all four live generator files, deterministic shims, the exact absolute
+current interpreter spelling, NumPy, and pinned Elements helper files, then creates an unsaved
 one-shot envelope containing the current absolute checkout, interpreter,
 Elements package, and Elements distribution coordinates. The isolated worker
 requires that exact envelope and repeats the live checks before reading official
 Git objects. A copied source tree therefore resolves its copied worker without
 changing the manifest, while any byte change to the generator closure fails
 before execution.
+
+Elements locations are never inferred from a machine-specific default. Every
+resolution, direct worker test, and regeneration command must provide absolute
+coordinates. Tests read the following environment variables, with local test
+defaults only when those variables are unset:
+
+```sh
+DREAMERV3_ORACLE_CHECKOUT=/absolute/path/to/dreamerv3 \
+DREAMERV3_ELEMENTS_PACKAGE_DIR=/absolute/path/to/site-packages/elements \
+DREAMERV3_ELEMENTS_DIST_INFO=/absolute/path/to/site-packages/elements-3.22.0.dist-info \
+uv run pytest tests/test_dreamer_v3_replay.py -k 'fixture_regeneration or recorded_replay_worker'
+```
 
 This provenance seal is a continuing handoff requirement. Every later task
 that changes `config.py`, `oracle.py`, `replay_oracle.py`, or
