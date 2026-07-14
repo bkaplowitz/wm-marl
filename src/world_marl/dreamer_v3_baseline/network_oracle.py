@@ -539,6 +539,12 @@ def _official_network_arrays(
         "z_vector": _input_grid((2, 2, 1), -10.0, 10.0),
     }
     reset = jnp.zeros((2, 2), bool)
+    observation_metadata = {
+        "is_first": reset,
+        "is_last": jnp.asarray([[False, False], [False, True]]),
+        "is_terminal": jnp.asarray([[False, False], [True, False]]),
+        "reward": _input_grid((2, 2), -1.0, 1.0),
+    }
     encoder_kwargs = dict(
         units=6,
         norm="rms",
@@ -564,16 +570,42 @@ def _official_network_arrays(
         ),
     ):
         selected_obs = {key: observations[key] for key in selected_spaces}
+        source_obs = (
+            {**selected_obs, **observation_metadata}
+            if prefix == "encoder"
+            else selected_obs
+        )
         encoder_context = context()
         encoder = _bind(
             rssm.Encoder(selected_spaces, **encoder_kwargs), encoder_context
         )
         with _activate(encoder_context):
-            _, _, encoder_output = encoder({}, selected_obs, reset, False)
-        for key, value in selected_obs.items():
+            _, _, encoder_output = encoder({}, source_obs, reset, False)
+        for key, value in source_obs.items():
             if prefix == "encoder":
                 arrays[f"encoder.input.{key}"] = _host(value)
         _collect_case(arrays, prefix, encoder_context, encoder_output)
+        if prefix == "encoder":
+            with _activate(encoder_context):
+                _, _, subset_output = encoder({}, selected_obs, reset, False)
+            arrays["encoder.subset_output"] = _host(subset_output)
+            for missing_key in selected_spaces:
+                missing_obs = {
+                    key: value
+                    for key, value in source_obs.items()
+                    if key != missing_key
+                }
+                try:
+                    with _activate(encoder_context):
+                        encoder({}, missing_obs, reset, False)
+                except KeyError:
+                    arrays[f"encoder.missing.{missing_key}.rejected"] = np.asarray(
+                        1, np.uint8
+                    )
+                else:
+                    raise AssertionError(
+                        f"official encoder accepted missing key: {missing_key}"
+                    )
 
     invalid_image_context = context()
     invalid_image_encoder = _bind(
@@ -604,6 +636,7 @@ def _official_network_arrays(
     }
     features = {
         "deter": _input_grid((2, 2, 16), -1.0, 1.5),
+        "logit": _input_grid((2, 2, 2, 3), -2.0, 2.5),
         "stoch": _input_grid((2, 2, 2, 3), -0.75, 1.25),
     }
     decoder_kwargs = dict(
@@ -626,16 +659,40 @@ def _official_network_arrays(
     with _activate(decoder_context):
         _, _, decoder_outputs = decoder({}, features, reset, False)
     arrays["decoder.deter"] = _host(features["deter"])
+    arrays["decoder.logit"] = _host(features["logit"])
     arrays["decoder.stoch"] = _host(features["stoch"])
-    image_target = jnp.asarray(image_values[..., :1], jnp.float32) / 255
-    arrays["decoder.target.a_image"] = _host(image_target)
-    arrays["decoder.loss.a_image"] = _host(
-        decoder_outputs["a_image"].loss(image_target)
-    )
+    decoder_targets = {
+        "a_image": jnp.asarray(image_values[..., :1], jnp.float32) / 255,
+        "m_cont": _input_grid((2, 2, 2), -1.5, 2.0),
+        "z_disc": jnp.asarray([[[0], [1]], [[2], [0]]], jnp.int32),
+        "z_image": jnp.asarray(image_values[..., 1:], jnp.float32) / 255,
+    }
     for key, output in decoder_outputs.items():
+        arrays[f"decoder.target.{key}"] = _host(decoder_targets[key])
+        arrays[f"decoder.loss.{key}"] = _host(output.loss(decoder_targets[key]))
         arrays[f"decoder.pred.{key}"] = _host(output.pred())
     for path, value in sorted(decoder_context.parameters.items()):
         arrays[f"decoder.param.{path.replace('/', '__')}"] = _host(value)
+
+    subset_features = {key: features[key] for key in ("deter", "stoch")}
+    with _activate(decoder_context):
+        _, _, decoder_subset_outputs = decoder({}, subset_features, reset, False)
+    for key, output in decoder_subset_outputs.items():
+        arrays[f"decoder.subset.loss.{key}"] = _host(output.loss(decoder_targets[key]))
+        arrays[f"decoder.subset.pred.{key}"] = _host(output.pred())
+    for missing_key in ("deter", "stoch"):
+        missing_features = {
+            key: value for key, value in features.items() if key != missing_key
+        }
+        try:
+            with _activate(decoder_context):
+                decoder({}, missing_features, reset, False)
+        except KeyError:
+            arrays[f"decoder.missing.{missing_key}.rejected"] = np.asarray(1, np.uint8)
+        else:
+            raise AssertionError(
+                f"official decoder accepted missing feature: {missing_key}"
+            )
 
     vector_decoder_spaces = {key: decoder_spaces[key] for key in ("m_cont", "z_disc")}
     vector_decoder_context = context()

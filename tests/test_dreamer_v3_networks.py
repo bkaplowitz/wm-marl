@@ -658,6 +658,63 @@ def test_dictencoder_sorted_key_partition_symlog_and_mixed_forward_parity(
     _assert_source_equal(module.apply(params, reordered), output)
 
 
+def test_dictencoder_accepts_full_official_agent_observation_superset(
+    official_case,
+) -> None:
+    manifest, arrays = official_case
+    model_keys = tuple(_encoder_spaces())
+    metadata_keys = ("is_first", "is_last", "is_terminal", "reward")
+    observations = {
+        key: jnp.asarray(arrays[f"encoder.input.{key}"])
+        for key in (*model_keys, *metadata_keys)
+    }
+    module = DictEncoder(
+        _encoder_spaces(),
+        _encoder_config(manifest.profile),
+        compute_dtype=_compute_dtype(manifest.dtype),
+    )
+    initialized = module.init(jax.random.PRNGKey(0), observations)
+    params = _translate_case(arrays, "encoder", initialized)
+
+    output = module.apply(params, observations)
+
+    _assert_source_equal(output, arrays["encoder.output"])
+    _assert_source_equal(output, arrays["encoder.subset_output"])
+    for key in model_keys:
+        assert arrays[f"encoder.missing.{key}.rejected"].item() == 1
+
+
+def test_dictencoder_superset_still_rejects_missing_and_invalid_required_values(
+    official_case,
+) -> None:
+    manifest, arrays = official_case
+    spaces = _encoder_spaces()
+    observations = {key: jnp.asarray(arrays[f"encoder.input.{key}"]) for key in spaces}
+    observations["is_first"] = jnp.asarray(arrays["encoder.input.is_first"])
+    module = DictEncoder(
+        spaces,
+        _encoder_config(manifest.profile),
+        compute_dtype=_compute_dtype(manifest.dtype),
+    )
+
+    for missing_key in spaces:
+        missing = {
+            key: value for key, value in observations.items() if key != missing_key
+        }
+        with pytest.raises(ValueError, match="required observation keys"):
+            module.init(jax.random.PRNGKey(0), missing)
+
+    wrong_vector = dict(observations)
+    wrong_vector["m_vector"] = wrong_vector["m_vector"][..., :1]
+    with pytest.raises(ValueError, match="vector shape mismatch"):
+        module.init(jax.random.PRNGKey(0), wrong_vector)
+
+    wrong_image = dict(observations)
+    wrong_image["a_image"] = wrong_image["a_image"].astype(jnp.float32)
+    with pytest.raises(TypeError, match="uint8"):
+        module.init(jax.random.PRNGKey(0), wrong_image)
+
+
 def test_dictencoder_uses_distinct_paper_stride_and_current_maxpool_branches(
     official_case,
 ) -> None:
@@ -885,6 +942,59 @@ def test_dictdecoder_output_families_targets_and_no_batch_reduction(
         outputs["a_image"].loss(image_target),
         arrays["decoder.loss.a_image"],
     )
+
+
+def test_dictdecoder_accepts_full_official_rssm_feature_superset(
+    official_case,
+) -> None:
+    manifest, arrays = official_case
+    features = {
+        key: jnp.asarray(arrays[f"decoder.{key}"])
+        for key in ("deter", "stoch", "logit")
+    }
+    module = DictDecoder(
+        _decoder_spaces(),
+        _decoder_config(manifest.profile),
+        compute_dtype=_compute_dtype(manifest.dtype),
+    )
+    initialized = module.init(jax.random.PRNGKey(0), features)
+    params = _translate_case(arrays, "decoder", initialized)
+
+    outputs = module.apply(params, features)
+
+    for key, output in outputs.items():
+        target = jnp.asarray(arrays[f"decoder.target.{key}"])
+        _assert_source_equal(output.pred(), arrays[f"decoder.pred.{key}"])
+        _assert_source_equal(output.pred(), arrays[f"decoder.subset.pred.{key}"])
+        _assert_source_equal(output.loss(target), arrays[f"decoder.loss.{key}"])
+        _assert_source_equal(output.loss(target), arrays[f"decoder.subset.loss.{key}"])
+    for key in ("deter", "stoch"):
+        assert arrays[f"decoder.missing.{key}.rejected"].item() == 1
+
+
+def test_dictdecoder_superset_still_rejects_missing_and_invalid_required_values(
+    official_case,
+) -> None:
+    manifest, arrays = official_case
+    features = {
+        key: jnp.asarray(arrays[f"decoder.{key}"])
+        for key in ("deter", "stoch", "logit")
+    }
+    module = DictDecoder(
+        _decoder_spaces(),
+        _decoder_config(manifest.profile),
+        compute_dtype=_compute_dtype(manifest.dtype),
+    )
+
+    for missing_key in ("deter", "stoch"):
+        missing = {key: value for key, value in features.items() if key != missing_key}
+        with pytest.raises(ValueError, match="required features"):
+            module.init(jax.random.PRNGKey(0), missing)
+
+    invalid = dict(features)
+    invalid["deter"] = invalid["deter"].astype(jnp.int32)
+    with pytest.raises(TypeError, match="floating dtypes"):
+        module.init(jax.random.PRNGKey(0), invalid)
 
 
 def test_dictdecoder_profile_image_branch_matches_exact_resolution(

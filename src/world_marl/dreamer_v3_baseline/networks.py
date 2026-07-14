@@ -526,9 +526,10 @@ class DictEncoder(nn.Module):
 
     @nn.compact
     def __call__(self, observations: Mapping[str, Array]) -> Array:
-        if set(observations) != set(self.spaces):
+        missing_keys = set(self.spaces).difference(observations)
+        if missing_keys:
             raise ValueError(
-                "DictEncoder observation keys do not match declared spaces"
+                f"DictEncoder missing required observation keys: {sorted(missing_keys)}"
             )
         vector_keys = sorted(
             key for key, space in self.spaces.items() if not space.image
@@ -768,8 +769,11 @@ class DictDecoder(nn.Module):
 
     @nn.compact
     def __call__(self, features: Mapping[str, Array]) -> dict[str, Any]:
-        if set(features) != {"deter", "stoch"}:
-            raise ValueError("DictDecoder features must contain deter and stoch")
+        missing_keys = {"deter", "stoch"}.difference(features)
+        if missing_keys:
+            raise ValueError(
+                f"DictDecoder missing required features: {sorted(missing_keys)}"
+            )
         deter = jnp.asarray(features["deter"])
         stoch = jnp.asarray(features["stoch"])
         if not jnp.issubdtype(deter.dtype, jnp.floating) or not jnp.issubdtype(

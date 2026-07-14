@@ -46,6 +46,10 @@ symlog-MSE, symexp-twohot, and bounded-normal families, including invalid
 family/space pairings, nonuniform discrete classes, and entropy metadata. The
 decoder cases include nonlexicographic two-image declaration order with unequal
 channel counts and per-key prediction and loss tensors.
+Dictionary selection cases execute Encoder with the full Agent observation
+mapping, including metadata, and Decoder with the full RSSM feature mapping,
+including `logit`; they also record required-only outputs and missing-key
+failures to prove the official modules ignore unrelated entries.
 
 The `paper` profile uses source revision
 `bfcdfc183d2c1543a3bf3cdda6edb7fae29b6a01` with in-memory overrides for
