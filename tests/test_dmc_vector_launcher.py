@@ -144,9 +144,19 @@ def test_200k_preset_preserves_the_current_model_with_a_fixed_budget():
 
 
 def test_launcher_can_disable_value_clipping():
-    command = params_to_shell_args({"value_clip": 0.0})
+    command = params_to_shell_args(
+        {
+            "value_clip": 0.0,
+            "policy_normalized_advantage_clip": 5.0,
+        }
+    )
 
-    assert command.replace("\\\n", " ").split() == ["--value-clip", "0.0"]
+    assert command.replace("\\\n", " ").split() == [
+        "--value-clip",
+        "0.0",
+        "--policy-normalized-advantage-clip",
+        "5.0",
+    ]
 
 
 def test_500k_preset_locks_current_architecture_and_control_stack():
@@ -169,6 +179,7 @@ def test_500k_preset_locks_current_architecture_and_control_stack():
     assert params["actor_entropy_mode"] == "tanh-normal"
     assert params["actor_entropy_coef"] == 3e-3
     assert params["value_clip"] == 100.0
+    assert params["policy_normalized_advantage_clip"] == 0.0
     assert params["target_critic_ema_decay"] == 0.98
     assert params["policy_replay_critic_loss_coef"] == 0.3
     assert params["policy_slow_value_regularization_coef"] == 1.0

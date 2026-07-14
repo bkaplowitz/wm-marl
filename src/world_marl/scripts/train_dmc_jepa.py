@@ -230,6 +230,15 @@ def parse_args() -> argparse.Namespace:
         default=100.0,
         help="Symmetric value-target clip; set to 0 to disable clipping.",
     )
+    policy.add_argument(
+        "--policy-normalized-advantage-clip",
+        type=float,
+        default=0.0,
+        help=(
+            "Symmetric clip applied after actor advantage normalization; "
+            "set to 0 to disable. This does not clip critic targets."
+        ),
+    )
     policy.add_argument("--value-output-scale", type=float, default=0.0)
     policy.add_argument(
         "--value-prediction-mode",
@@ -543,6 +552,10 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("slow-value regularization requires a target critic")
     if args.value_clip < 0.0:
         parser.error("--value-clip must be >= 0 (0 disables clipping)")
+    if args.policy_normalized_advantage_clip < 0.0:
+        parser.error(
+            "--policy-normalized-advantage-clip must be >= 0 (0 disables clipping)"
+        )
     if args.optimizer_epsilon <= 0.0:
         parser.error("--optimizer-epsilon must be > 0")
     if args.twohot_bins < 3 or args.twohot_min >= args.twohot_max:
@@ -1993,6 +2006,7 @@ def _train_policy(
             policy_gradient_mode=args.policy_gradient_mode,
             return_normalization_ema_decay=args.policy_return_ema_decay,
             value_clip=args.value_clip,
+            normalized_advantage_clip=args.policy_normalized_advantage_clip,
             action_saturation_threshold=0.95,
             start_actions=start_actions,
             actor_entropy_coef=actor_entropy_coef,

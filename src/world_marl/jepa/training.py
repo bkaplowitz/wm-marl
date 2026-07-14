@@ -534,6 +534,7 @@ def continuous_policy_train_step(
     policy_gradient_mode: PolicyGradientMode = "dynamics",
     return_normalization_ema_decay: float = 0.99,
     value_clip: float = 100.0,
+    normalized_advantage_clip: float = 0.0,
     action_saturation_threshold: float = 0.95,
     start_actions: jax.Array | None = None,
     actor_entropy_coef: float = 0.0,
@@ -606,15 +607,21 @@ def continuous_policy_train_step(
             return_range,
         )
         if policy_return_normalization == "ema-percentile":
-            actor_objective_scores = actor_scores / jax.lax.stop_gradient(
+            normalized_actor_scores = actor_scores / jax.lax.stop_gradient(
                 next_return_range_ema
             )
         else:
-            actor_objective_scores = normalize_weighted_values(
+            normalized_actor_scores = normalize_weighted_values(
                 actor_scores,
                 weights,
                 mode=policy_return_normalization,
             )
+        actor_objective_scores, advantage_clip_fraction, advantage_clip_enabled = (
+            winsorize_normalized_advantages(
+                normalized_actor_scores,
+                normalized_advantage_clip,
+            )
+        )
         if policy_gradient_mode == "reinforce":
             policy_terms = rollout["action_log_prob"] * jax.lax.stop_gradient(
                 actor_objective_scores
@@ -646,6 +653,7 @@ def continuous_policy_train_step(
             actor_returns,
             clipped_returns,
             actor_scores,
+            normalized_actor_scores,
             actor_objective_scores,
             actor_loss,
         )
@@ -692,6 +700,33 @@ def continuous_policy_train_step(
             "policy/advantage_positive_fraction": weighted_mean(
                 (actor_scores > 0.0).astype(actor_scores.dtype),
                 weights,
+            ),
+            "policy/normalized_advantage_mean": weighted_mean(
+                normalized_actor_scores,
+                weights,
+            ),
+            "policy/normalized_advantage_std": weighted_std(
+                normalized_actor_scores,
+                weights,
+            ),
+            "policy/normalized_advantage_abs_p95": jnp.percentile(
+                jnp.abs(normalized_actor_scores).reshape((-1,)),
+                95.0,
+            ),
+            "policy/normalized_advantage_abs_p99": jnp.percentile(
+                jnp.abs(normalized_actor_scores).reshape((-1,)),
+                99.0,
+            ),
+            "policy/bounded_advantage_abs_max": jnp.max(
+                jnp.abs(actor_objective_scores)
+            ),
+            "policy/normalized_advantage_clip": jnp.asarray(
+                normalized_advantage_clip,
+                dtype=actor_loss.dtype,
+            ),
+            "policy/normalized_advantage_clip_fraction": advantage_clip_fraction,
+            "policy/normalized_advantage_clip_enabled": (
+                advantage_clip_enabled.astype(actor_loss.dtype)
             ),
             "policy/actor_uses_value_baseline": jnp.asarray(
                 float(policy_actor_baseline == "value"),
@@ -740,6 +775,8 @@ def continuous_policy_train_step(
             critic_targets,
             critic_weights,
             next_return_range_ema,
+            rollout["action_means"],
+            rollout["action_log_stds"],
         )
 
     (actor_loss, actor_aux), actor_grads = jax.value_and_grad(
@@ -753,6 +790,8 @@ def continuous_policy_train_step(
         critic_targets,
         critic_weights,
         next_return_range_ema,
+        old_action_means,
+        old_action_log_stds,
     ) = actor_aux
     metrics = {
         **metrics,
@@ -763,6 +802,28 @@ def continuous_policy_train_step(
         ),
     }
     state = state.apply_actor_gradients(actor_grads)
+    new_action_means, new_action_log_stds, _ = actor_value_stats_from_latent(
+        state.apply_fn,
+        state.params,
+        jax.lax.stop_gradient(critic_latents),
+    )
+    update_kl = diagonal_gaussian_kl(
+        jax.lax.stop_gradient(old_action_means),
+        jax.lax.stop_gradient(old_action_log_stds),
+        new_action_means,
+        new_action_log_stds,
+    )
+    metrics = {
+        **metrics,
+        "policy/update_full_distribution_kl_mean": jnp.mean(update_kl),
+        "policy/update_full_distribution_kl_p95": jnp.percentile(update_kl, 95.0),
+        "policy/update_full_distribution_kl_per_action_dim": (
+            jnp.mean(update_kl) / config.action_dim
+        ),
+        "policy/update_bounded_mean_abs_delta": jnp.mean(
+            jnp.abs(jnp.tanh(new_action_means) - jnp.tanh(old_action_means))
+        ),
+    }
     state = state.replace(
         return_range_ema=jax.lax.stop_gradient(next_return_range_ema),
         return_range_initialized=jnp.asarray(True),
@@ -1163,6 +1224,7 @@ def continuous_imagine_rollout(
         ), {
             "latents": current_z,
             "actions": actions,
+            "action_means": action_means,
             "normalized_actions": normalized_actions,
             "normalized_action_means": normalized_action_means,
             "action_log_stds": action_log_stds,
@@ -1632,6 +1694,41 @@ def survival_weights(continues: jax.Array, *, gamma: float) -> jax.Array:
 
 def weighted_mean(values: jax.Array, weights: jax.Array) -> jax.Array:
     return jnp.sum(values * weights) / (jnp.sum(weights) + 1e-6)
+
+
+def winsorize_normalized_advantages(
+    values: jax.Array,
+    clip: float,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Bound dimensionless policy weights without truncating value targets."""
+    clip_limit = jnp.asarray(clip, dtype=values.dtype)
+    clip_enabled = clip_limit > 0.0
+    bounded = jnp.where(
+        clip_enabled,
+        jnp.clip(values, -clip_limit, clip_limit),
+        values,
+    )
+    clip_fraction = jnp.mean(
+        jnp.logical_and(clip_enabled, jnp.abs(values) > clip_limit).astype(values.dtype)
+    )
+    return bounded, clip_fraction, clip_enabled
+
+
+def diagonal_gaussian_kl(
+    old_means: jax.Array,
+    old_log_stds: jax.Array,
+    new_means: jax.Array,
+    new_log_stds: jax.Array,
+) -> jax.Array:
+    """KL(old || new), equal to KL for the corresponding tanh-Normals."""
+    variance_ratio = jnp.exp(2.0 * (old_log_stds - new_log_stds))
+    squared_mean_delta = jnp.square(old_means - new_means) * jnp.exp(
+        -2.0 * new_log_stds
+    )
+    per_dimension = (
+        new_log_stds - old_log_stds + 0.5 * (variance_ratio + squared_mean_delta - 1.0)
+    )
+    return jnp.sum(per_dimension, axis=-1)
 
 
 def clip_value_targets(

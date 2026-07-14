@@ -15,6 +15,7 @@ from world_marl.jepa.training import (
     continuous_critic_warmup_step,
     continuous_policy_train_step,
     create_jepa_train_state,
+    diagonal_gaussian_kl,
     evaluate_open_loop,
     lambda_returns,
     latent_collapse_metrics,
@@ -26,6 +27,7 @@ from world_marl.jepa.training import (
     tanh_normal_entropy_sample,
     train_model_step,
     transition_start_validity,
+    winsorize_normalized_advantages,
 )
 from world_marl.scripts.train_dmc_jepa import (
     _run_passed as dmc_run_passed,
@@ -541,6 +543,7 @@ def test_dreamer_style_policy_update_is_finite_and_keeps_world_model_frozen():
         real_critic_all_steps=True,
         slow_value_regularization_coef=1.0,
         value_clip=0.0,
+        normalized_advantage_clip=5.0,
     )
 
     assert jnp.isfinite(metrics["policy/total_loss"])
@@ -551,6 +554,10 @@ def test_dreamer_style_policy_update_is_finite_and_keeps_world_model_frozen():
         np.asarray(metrics["policy/clipped_imagined_return"]),
     )
     assert jnp.isfinite(metrics["policy/advantage_std"])
+    assert metrics["policy/normalized_advantage_clip_enabled"] == 1.0
+    assert metrics["policy/bounded_advantage_abs_max"] <= 5.0
+    assert jnp.isfinite(metrics["policy/update_full_distribution_kl_mean"])
+    assert metrics["policy/update_full_distribution_kl_mean"] >= 0.0
     assert 0.0 <= metrics["policy/advantage_positive_fraction"] <= 1.0
     assert metrics["policy/gradient_mode_reinforce"] == 1.0
     assert metrics["policy/action_entropy_tanh_normal"] == 1.0
@@ -579,6 +586,39 @@ def test_dreamer_style_policy_update_is_finite_and_keeps_world_model_frozen():
             strict=True,
         ):
             np.testing.assert_allclose(np.asarray(left), np.asarray(right))
+
+
+def test_normalized_advantage_winsorization_preserves_ordinary_values():
+    values = jnp.asarray([-9.0, -2.0, 0.0, 3.0, 8.0], dtype=jnp.float32)
+
+    bounded, clip_fraction, enabled = winsorize_normalized_advantages(values, 5.0)
+    disabled, disabled_fraction, disabled_enabled = winsorize_normalized_advantages(
+        values,
+        0.0,
+    )
+
+    np.testing.assert_allclose(bounded, [-5.0, -2.0, 0.0, 3.0, 5.0])
+    assert clip_fraction == pytest.approx(0.4)
+    assert bool(enabled)
+    np.testing.assert_allclose(disabled, values)
+    assert disabled_fraction == 0.0
+    assert not bool(disabled_enabled)
+
+
+def test_diagonal_gaussian_kl_detects_mean_and_scale_updates():
+    means = jnp.zeros((2, 3), dtype=jnp.float32)
+    log_stds = jnp.zeros_like(means)
+
+    same = diagonal_gaussian_kl(means, log_stds, means, log_stds)
+    changed = diagonal_gaussian_kl(
+        means,
+        log_stds,
+        means + 0.25,
+        log_stds - 0.1,
+    )
+
+    np.testing.assert_allclose(same, 0.0, atol=1e-7)
+    assert jnp.all(changed > 0.0)
 
 
 def test_continuous_critic_warmup_updates_value_only():
