@@ -9,6 +9,7 @@ dependencies = [
   "dmlab2d==1.0.0",
   "flax",
   "gymnax==0.0.9",
+  "imageio>=2.37.3",
   "jax==0.4.36",
   "jaxlib==0.4.36",
   "jaxmarl[algs]==0.1.0",
@@ -27,15 +28,26 @@ requires-python = ">=3.11,<3.12"
 version = "0.1.0"
 
 [project.optional-dependencies]
-brax = ["brax==0.10.3", "imageio>=2.31", "imageio-ffmpeg>=0.4.9"]
+brax = [
+    "brax==0.10.3",
+    "imageio>=2.31",
+    "imageio-ffmpeg>=0.4.9",
+    "mujoco-mjx>=3.1.3",
+]
 cuda12 = ["jax[cuda12]==0.4.36"]
 dev = ["pre-commit>=4.6", "pytest>=8", "ruff==0.15.18"]
-dmc = ["dm-control>=1.0"]
+dmc = [
+    "dm-control>=1.0",
+    "playground==0.0.1",
+]
 hpo = ["optuna>=3.6"]
 
 [project.scripts]
 world-marl-benchmark-policy = "world_marl.scripts.benchmark_policy:main"
+world-marl-benchmark-dmc-pixels = "world_marl.scripts.benchmark_dmc_pixels:main"
+world-marl-frontier-wm-quality = "world_marl.scripts.frontier_world_model_quality:main"
 world-marl-compare-single-wm = "world_marl.scripts.compare_single_wm:main"
+world-marl-compare-visual-wm = "world_marl.scripts.compare_visual_wm:main"
 world-marl-optuna-dmc-jepa = "world_marl.scripts.optuna_dmc_jepa:main"
 world-marl-optuna-single-genwm = "world_marl.scripts.optuna_single_genwm:main"
 world-marl-plot-brax-diagnostics = "world_marl.scripts.plot_brax_diagnostics:main"
@@ -45,8 +57,10 @@ world-marl-plot-wm-losses = "world_marl.scripts.plot_wm_losses:main"
 world-marl-plot-wm-runtime = "world_marl.scripts.plot_wm_runtime:main"
 world-marl-render-brax-policy = "world_marl.scripts.render_brax_policy:main"
 world-marl-train-brax-ppo = "world_marl.scripts.train_brax_ppo:main"
+world-marl-train-dreamer-v3-baseline = "world_marl.scripts.train_dreamer_v3_baseline:main"
 world-marl-train-dmc-jepa = "world_marl.scripts.train_dmc_jepa:main"
 world-marl-train-e2e = "world_marl.scripts.train_e2e:main"
+world-marl-train-genie2-continuous-jax = "world_marl.scripts.train_genie2_continuous_jax:main"
 world-marl-train-single-genwm = "world_marl.scripts.train_single_genwm:main"
 world-marl-verify-install = "world_marl.scripts.verify_install:main"
 world-marl-write-dmc-vector-launcher = "world_marl.scripts.write_dmc_vector_launcher:main"

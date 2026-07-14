@@ -138,6 +138,7 @@ def parse_args() -> argparse.Namespace:
             "compare-world-models",
             "benchmark-policy",
             "compare-single-wm",
+            "frontier-world-model-quality",
             "optuna-single-genwm",
         ),
         default="compare-world-models",
@@ -249,6 +250,13 @@ def utc_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+def required_sync_extras(args: argparse.Namespace) -> list[str]:
+    extras = list(args.sync_extra)
+    if args.job == "frontier-world-model-quality" and "dmc" not in extras:
+        extras.append("dmc")
+    return extras
+
+
 def write_manifest(local_out_dir: Path, manifest: dict[str, Any]) -> Path:
     local_out_dir.mkdir(parents=True, exist_ok=True)
     path = local_out_dir / "manifest.json"
@@ -260,6 +268,7 @@ def write_manifest(local_out_dir: Path, manifest: dict[str, Any]) -> Path:
 
 def main() -> int:
     args = parse_args()
+    sync_extras = required_sync_extras(args)
     repo_root = Path(args.repo_root).expanduser().resolve()
     ssh_key = Path(args.ssh_key).expanduser().resolve()
     run_id = utc_stamp()
@@ -276,7 +285,7 @@ def main() -> int:
             ssh_key=ssh_key,
             remote_repo_dir=args.remote_repo_dir,
             skip_uv_sync=args.skip_uv_sync,
-            sync_extras=args.sync_extra,
+            sync_extras=sync_extras,
         )
         return 0
 
@@ -324,7 +333,7 @@ def main() -> int:
             job.command,
             ssh_info,
             args.skip_uv_sync,
-            args.sync_extra,
+            sync_extras,
             job.remote_out_dir,
         )
         detached_running = True
@@ -472,6 +481,21 @@ def build_job_spec(args: argparse.Namespace, run_id: str) -> JobSpec:
                 "uv",
                 "run",
                 "world-marl-compare-single-wm",
+                *job_args,
+            ],
+        )
+    if args.job == "frontier-world-model-quality":
+        job_args = [*args.job_args, "--out-dir", remote_out_dir]
+        return JobSpec(
+            remote_out_dir=remote_out_dir,
+            local_out_dir=local_out_dir,
+            command=[
+                "env",
+                f"XLA_FLAGS={DEFAULT_XLA_FLAGS}",
+                "MUJOCO_GL=egl",
+                "uv",
+                "run",
+                "world-marl-frontier-wm-quality",
                 *job_args,
             ],
         )
@@ -751,10 +775,11 @@ def push_wandb_netrc(info: SshInfo) -> None:
 
 
 def ensure_remote_rsync(info: SshInfo) -> None:
-    """Ensure the remote rsync is installed on a Runpod pod."""
+    """Ensure remote transfer and headless EGL runtime packages are installed."""
     script = (
-        "command -v rsync >/dev/null 2>&1 || "
-        "(apt-get update && apt-get install -y rsync)"
+        "if ! command -v rsync >/dev/null 2>&1 || "
+        "! test -e /usr/lib/x86_64-linux-gnu/libEGL.so.1; then "
+        "apt-get update && apt-get install -y rsync libegl1; fi"
     )
     run([*ssh_base(info), script])
 
@@ -815,6 +840,16 @@ def remote_job_script(
             f" --extra {extra}" for extra in ("dev", "cuda12", *sync_extras)
         )
         commands.append(f"uv sync --python 3.11{extras}")
+    if "dmc" in sync_extras:
+        commands.extend(
+            [
+                'PLAYGROUND_SITE=$(uv run python -c "import sysconfig; '
+                "print(sysconfig.get_path('purelib'))\")",
+                'MENAGERIE_DIR="$PLAYGROUND_SITE/mujoco_playground/'
+                'external_deps/mujoco_menagerie"',
+                'mkdir -p "$MENAGERIE_DIR"',
+            ]
+        )
     commands.extend(
         [
             "uv run world-marl-verify-install",

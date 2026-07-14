@@ -7,6 +7,7 @@ import pytest
 from flax import struct
 
 from world_marl.envs.brax_adapter import BraxVectorAdapter, brax_env_name
+from world_marl.world_model_foundation.collect import collect_adapter_sequence
 
 
 @struct.dataclass
@@ -60,6 +61,13 @@ def _constant_gaav(train_state, action_key, obs_flat):
     return actions, zeros, zeros, zeros
 
 
+def _recurrent_constant_policy(policy_state, carry, obs_flat, is_first):
+    del policy_state, obs_flat
+    carry = jnp.where(is_first[:, None], 0, carry) + 1
+    actions = jnp.full((carry.shape[0], 2), 0.25, dtype=jnp.float32)
+    return carry, actions
+
+
 def test_brax_env_name_parses_name():
     assert brax_env_name("brax:reacher") == "reacher"
     with pytest.raises(ValueError, match="brax:<env_name>"):
@@ -73,6 +81,7 @@ def test_brax_adapter_reset_step_and_completion():
         max_cycles=5,
         seed=10,
         env_factory=_FakeBraxEnv,
+        backend="mjx",
     )
     try:
         observations = adapter.reset()
@@ -83,6 +92,11 @@ def test_brax_adapter_reset_step_and_completion():
         assert adapter.num_agents == 1
         assert adapter.action_dim == 2
         assert adapter.observation_shape == (3,)
+        assert adapter.environment_metadata == {
+            "environment_backend": "brax",
+            "physics_backend": "mjx",
+            "observation_mode": "vector",
+        }
         assert observations.shape == (2, 1, 3)
         assert actions.shape == (2, 1, 2)
         assert first.observations.shape == (2, 1, 3)
@@ -191,5 +205,85 @@ def test_brax_scan_rollout_truncates_at_max_cycles():
             expected,
             expected,
         ]
+    finally:
+        adapter.close()
+
+
+def test_brax_recurrent_scan_and_random_collection_stay_on_device():
+    adapter = BraxVectorAdapter(
+        "fake", num_envs=2, max_cycles=3, seed=10, env_factory=_NoDoneFakeBraxEnv
+    )
+    try:
+        observations = adapter.reset()
+        ys, _last_obs, final_policy_carry = adapter.scan_recurrent_rollout(
+            _recurrent_constant_policy,
+            None,
+            jnp.zeros((2, 1), dtype=jnp.int32),
+            4,
+            observations=observations,
+        )
+        scanned_obs, actions, rewards, terminals, lasts = ys
+
+        assert np.asarray(actions).shape == (4, 2, 2)
+        assert np.asarray(rewards).shape == (4, 2)
+        assert np.asarray(terminals, dtype=np.float32).T.tolist() == [
+            [0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0],
+        ]
+        assert np.asarray(lasts, dtype=np.float32).T.tolist() == [
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+        assert np.asarray(final_policy_carry).tolist() == [[4], [4]]
+        assert np.asarray(rewards)[0].tolist() == [0.0, 0.0]
+        assert bool(
+            np.allclose(np.asarray(scanned_obs)[1:, :, -1], np.asarray(rewards)[1:])
+        )
+        assert bool(np.all(np.asarray(actions)[-1] == 0.0))
+
+        batch = collect_adapter_sequence(adapter, time_steps=4, seed=4)
+        assert batch.metadata["collection_execution"] == "jax_scan"
+        assert bool(np.all(batch.is_first[0]))
+        assert not bool(np.any(batch.is_terminal[3]))
+        assert bool(np.all(batch.is_last[3]))
+        assert bool(np.all(batch.continues[3] == 1.0))
+    finally:
+        adapter.close()
+
+
+def test_brax_online_scan_passes_arrivals_through_learner_carry():
+    adapter = BraxVectorAdapter(
+        "fake", num_envs=2, max_cycles=3, seed=12, env_factory=_NoDoneFakeBraxEnv
+    )
+    try:
+        observations = adapter.reset()
+
+        def learner_step(carry, obs, reward, is_terminal, is_last, is_first):
+            del obs, is_terminal
+            count = carry + 1
+            actions = jnp.ones((2, 2), dtype=jnp.float32)
+            metrics = {
+                "count": count,
+                "reward_sum": reward.sum(),
+                "first_count": is_first.sum(),
+                "last_count": is_last.sum(),
+            }
+            return count, actions, metrics
+
+        ys, _last_obs, final_carry = adapter.scan_online_rollout(
+            learner_step,
+            jnp.zeros((), dtype=jnp.int32),
+            4,
+            observations=observations,
+        )
+        obs, actions, rewards, terminals, lasts, firsts, metrics = ys
+
+        assert obs.shape == (4, 2, int(np.prod(adapter.observation_shape)))
+        assert actions.shape == (4, 2, 2)
+        assert rewards.shape == terminals.shape == lasts.shape == firsts.shape
+        assert int(final_carry) == 4
+        assert np.asarray(metrics["count"]).tolist() == [1, 2, 3, 4]
+        assert np.asarray(metrics["first_count"]).tolist() == [2, 0, 0, 0]
+        assert np.asarray(metrics["last_count"]).tolist() == [0, 0, 0, 2]
     finally:
         adapter.close()

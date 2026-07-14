@@ -139,6 +139,59 @@ def test_benchmark_policy_puts_own_flags_before_train_args(tmp_path):
     assert "--out-dir" not in job.command[separator + 1 :]
 
 
+def test_frontier_quality_job_uses_managed_output_directory(tmp_path):
+    args = _compare_args(
+        tmp_path,
+        job="frontier-world-model-quality",
+        job_args=["--seed", "3"],
+    )
+
+    job = runpod.build_job_spec(args, "20260710T120000Z")
+
+    assert job.command[:4] == [
+        "env",
+        "XLA_FLAGS=--xla_gpu_enable_triton_gemm=false",
+        "MUJOCO_GL=egl",
+        "uv",
+    ]
+    assert job.command[4:6] == ["run", "world-marl-frontier-wm-quality"]
+    assert job.command[-4:] == [
+        "--seed",
+        "3",
+        "--out-dir",
+        "/workspace/outputs/wm_marl/frontier-world-model-quality/20260710T120000Z",
+    ]
+
+
+def test_frontier_quality_job_installs_dmc_extra_without_duplicates() -> None:
+    args = argparse.Namespace(
+        job="frontier-world-model-quality",
+        sync_extra=["brax", "dmc"],
+    )
+
+    assert runpod.required_sync_extras(args) == ["brax", "dmc"]
+
+    args.sync_extra = []
+    assert runpod.required_sync_extras(args) == ["dmc"]
+
+
+def test_remote_job_script_skips_unused_menagerie_download_for_dmc_extra() -> None:
+    script = runpod.remote_job_script(
+        "/root/wm-marl",
+        ["uv", "run", "world-marl-frontier-wm-quality"],
+        skip_uv_sync=False,
+        sync_extras=["dmc"],
+    )
+
+    assert "sysconfig.get_path('purelib')" in script
+    assert "mujoco_playground/external_deps/mujoco_menagerie" in script
+    assert 'mkdir -p "$MENAGERIE_DIR"' in script
+    assert "git clone" not in script
+    assert script.index('mkdir -p "$MENAGERIE_DIR"') < script.index(
+        "uv run world-marl-verify-install"
+    )
+
+
 def test_loads_runpod_api_key_from_dotenv_when_missing(tmp_path, monkeypatch):
     monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
     (tmp_path / ".env").write_text(
@@ -275,6 +328,7 @@ def test_ensure_remote_rsync_installs_via_ssh(tmp_path, monkeypatch):
     assert calls, "expected an ssh call"
     remote_script = calls[0][-1]
     assert "rsync" in remote_script
+    assert "libegl1" in remote_script
     assert "apt-get install" in remote_script
 
 
