@@ -219,7 +219,7 @@ L_WM = L_latent
      + 1.0 * L_continue_BCE.
 ```
 
-SIGReg applies 1,024 random one-dimensional projections and 17 integration
+SIGReg applies 256 random one-dimensional projections and 17 integration
 knots to the encoded replay latents. It encourages the projected latent
 distribution to match an isotropic Gaussian and prevents a low-rank or
 collapsed representation without requiring negative examples.
