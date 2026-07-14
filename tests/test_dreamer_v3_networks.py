@@ -38,6 +38,7 @@ from world_marl.dreamer_v3_baseline.networks import (
 )
 from world_marl.dreamer_v3_baseline.oracle import (
     CONFIG_SOURCE_SPEC,
+    DISTRIBUTIONS_SOURCE_SPEC,
     OracleHarness,
     OracleManifest,
     ParameterTranslator,
@@ -165,23 +166,81 @@ def test_network_manifests_record_the_dtype_the_worker_actually_executed(
     )
 
 
-def test_non_network_source_specs_remain_canonical_dtype_only(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "source_spec",
+    (CONFIG_SOURCE_SPEC, DISTRIBUTIONS_SOURCE_SPEC),
+    ids=lambda source_spec: source_spec.name,
+)
+def test_canonical_source_specs_reject_request_only_noncanonical_dtype(
+    tmp_path: Path,
+    source_spec,
+) -> None:
     if not (OFFICIAL_CHECKOUT / ".git").exists():
         pytest.skip("explicit DreamerV3 oracle checkout is unavailable")
     harness = OracleHarness(OFFICIAL_CHECKOUT, tmp_path)
 
-    with pytest.raises(ValueError, match="does not allow execution dtype"):
+    with pytest.raises(ValueError, match="executed generator request"):
         harness.write_fixture(
-            case_name="config-float32",
+            case_name=f"{source_spec.name}-request-float32",
             profile=DreamerProfile.PAPER,
             observation_mode=ObservationMode.VISION,
             arrays={"marker": np.asarray(1, np.uint8)},
             seed=0,
             generator_command=("oracle",),
             generator_request={"compute_dtype": "float32"},
-            source_spec=CONFIG_SOURCE_SPEC,
-            dtype="float32",
+            source_spec=source_spec,
         )
+
+
+@pytest.mark.parametrize(
+    "source_spec",
+    (CONFIG_SOURCE_SPEC, DISTRIBUTIONS_SOURCE_SPEC),
+    ids=lambda source_spec: source_spec.name,
+)
+def test_canonical_source_specs_accept_matching_canonical_request_dtype(
+    tmp_path: Path,
+    source_spec,
+) -> None:
+    if not (OFFICIAL_CHECKOUT / ".git").exists():
+        pytest.skip("explicit DreamerV3 oracle checkout is unavailable")
+    harness = OracleHarness(OFFICIAL_CHECKOUT, tmp_path)
+
+    fixture_path, manifest_path = harness.write_fixture(
+        case_name=f"{source_spec.name}-request-bfloat16",
+        profile=DreamerProfile.PAPER,
+        observation_mode=ObservationMode.VISION,
+        arrays={"marker": np.asarray(1, np.uint8)},
+        seed=0,
+        generator_command=("oracle",),
+        generator_request={"compute_dtype": "bfloat16"},
+        source_spec=source_spec,
+    )
+
+    manifest = OracleManifest.load(manifest_path, fixture_path=fixture_path)
+    assert manifest.dtype == "bfloat16"
+
+
+def test_config_manifest_rejects_generator_request_dtype_tampering(
+    tmp_path: Path,
+) -> None:
+    if not (OFFICIAL_CHECKOUT / ".git").exists():
+        pytest.skip("explicit DreamerV3 oracle checkout is unavailable")
+    harness = OracleHarness(OFFICIAL_CHECKOUT, tmp_path)
+    fixture_path, manifest_path = harness.write_fixture(
+        case_name="config-request-tamper",
+        profile=DreamerProfile.PAPER,
+        observation_mode=ObservationMode.VISION,
+        arrays={"marker": np.asarray(1, np.uint8)},
+        seed=0,
+        generator_command=("oracle",),
+        generator_request={"compute_dtype": "bfloat16"},
+        source_spec=CONFIG_SOURCE_SPEC,
+    )
+    manifest = OracleManifest.load(manifest_path, fixture_path=fixture_path)
+    tampered = replace(manifest, generator_request={"compute_dtype": "float32"})
+
+    with pytest.raises(ValueError, match="executed generator request"):
+        tampered.validate(fixture_path=fixture_path)
 
 
 def test_network_manifest_rejects_generator_dtype_tampering(official_case) -> None:
@@ -194,6 +253,32 @@ def test_network_manifest_rejects_generator_dtype_tampering(official_case) -> No
 
     with pytest.raises(ValueError, match="executed generator request"):
         tampered.validate(fixture_path=fixture_path)
+
+
+def test_network_manifest_requires_generator_compute_dtype(official_case) -> None:
+    manifest, _ = official_case
+    request = json.loads(manifest.generator_request)
+    request.pop("compute_dtype")
+    incomplete = replace(manifest, generator_request=request)
+    suffix = "" if manifest.dtype == "bfloat16" else "-float32"
+    fixture_path = FIXTURE_DIR / f"{manifest.profile.value}-vision-networks{suffix}.npz"
+
+    with pytest.raises(ValueError, match="explicit generator compute dtype"):
+        incomplete.validate(fixture_path=fixture_path)
+
+
+def test_network_manifest_normalizes_matching_generator_dtype_alias(
+    official_case,
+) -> None:
+    manifest, _ = official_case
+    if manifest.dtype != "float32":
+        pytest.skip("dtype alias control applies to the float32 override fixtures")
+    request = json.loads(manifest.generator_request)
+    request["compute_dtype"] = "<f4"
+    aliased = replace(manifest, generator_request=request)
+    fixture_path = FIXTURE_DIR / f"{manifest.profile.value}-vision-networks-float32.npz"
+
+    aliased.validate(fixture_path=fixture_path)
 
 
 def test_network_oracles_pin_exact_three_file_authority(official_case) -> None:
@@ -528,9 +613,9 @@ def test_blockgru_stops_action_scale_gradient_and_zeros_reset_inputs(
 
 def _encoder_spaces() -> dict[str, TensorSpace]:
     return {
-        "a_image": TensorSpace((32, 32, 1), "uint8"),
-        "m_vector": TensorSpace((2,), "float32"),
-        "z_image": TensorSpace((32, 32, 2), "uint8"),
+        "a_image": TensorSpace((32, 32, 1), "float32"),
+        "m_vector": TensorSpace((2,), "float16"),
+        "z_image": TensorSpace((32, 32, 2), "float32"),
         "z_vector": TensorSpace((1,), "float32"),
     }
 
@@ -679,9 +764,7 @@ def test_dictencoder_and_blockgru_default_composites_emit_bfloat16() -> None:
     assert blockgru.apply(variables, deter, stoch, action).dtype == jnp.bfloat16
 
 
-def test_dictionary_partition_is_rank_based_and_validates_declared_and_runtime_dtypes() -> (
-    None
-):
+def test_dictionary_partition_is_rank_based_and_casts_vector_runtime_dtypes() -> None:
     encoder_config = EncoderConfig(layers=1, units=4, multipliers=(1,))
     decoder_config = DecoderConfig(
         layers=1,
@@ -691,51 +774,66 @@ def test_dictionary_partition_is_rank_based_and_validates_declared_and_runtime_d
         kernel=3,
         bias_space=2,
     )
-    rank_three_float = TensorSpace((4, 4, 1), "float32")
+    rank_three_float = TensorSpace((8, 8, 1), "float32")
 
-    with pytest.raises(TypeError, match="rank-three image.*uint8"):
-        DictEncoder({"bad": rank_three_float}, encoder_config).init(
-            jax.random.PRNGKey(40),
-            {"bad": jnp.zeros((1, 4, 4, 1), jnp.float32)},
-        )
-    with pytest.raises(TypeError, match="rank-three image.*uint8"):
-        DictDecoder({"bad": rank_three_float}, decoder_config).init(
-            jax.random.PRNGKey(41),
-            {
-                "deter": jnp.zeros((1, 4), jnp.float32),
-                "stoch": jnp.zeros((1, 1, 2), jnp.float32),
-            },
-        )
+    image_encoder = DictEncoder(
+        {"image": rank_three_float},
+        encoder_config,
+        compute_dtype=jnp.float32,
+    )
+    image_observations = {"image": jnp.zeros((1, 8, 8, 1), jnp.uint8)}
+    image_variables = image_encoder.init(jax.random.PRNGKey(40), image_observations)
+    assert image_encoder.apply(image_variables, image_observations).ndim == 2
 
     vector_encoder = DictEncoder(
         {"vector": TensorSpace((2,), "float32")},
         encoder_config,
         compute_dtype=jnp.float32,
     )
-    with pytest.raises(TypeError, match="declared dtype"):
-        vector_encoder.init(
-            jax.random.PRNGKey(42),
-            {"vector": jnp.zeros((1, 2), jnp.float16)},
-        )
+    vector_observations = {"vector": jnp.zeros((1, 2), jnp.float16)}
+    vector_variables = vector_encoder.init(jax.random.PRNGKey(42), vector_observations)
+    assert (
+        vector_encoder.apply(vector_variables, vector_observations).dtype == jnp.float32
+    )
 
     discrete_encoder = DictEncoder(
         {"vector": TensorSpace((2,), "int32", classes=3)},
         encoder_config,
         compute_dtype=jnp.float32,
     )
-    with pytest.raises(TypeError, match="declared dtype"):
-        discrete_encoder.init(
-            jax.random.PRNGKey(43),
-            {"vector": jnp.zeros((1, 2), jnp.int16)},
-        )
+    discrete_observations = {"vector": jnp.zeros((1, 2), jnp.int16)}
+    discrete_variables = discrete_encoder.init(
+        jax.random.PRNGKey(43), discrete_observations
+    )
+    assert (
+        discrete_encoder.apply(discrete_variables, discrete_observations).dtype
+        == jnp.float32
+    )
+
+    decoder = DictDecoder(
+        {"image": rank_three_float},
+        decoder_config,
+        compute_dtype=jnp.float32,
+    )
+    features = {
+        "deter": jnp.zeros((1, 4), jnp.float32),
+        "stoch": jnp.zeros((1, 1, 2), jnp.float32),
+    }
+    decoder_variables = decoder.init(jax.random.PRNGKey(41), features)
+    assert decoder.apply(decoder_variables, features)["image"].pred().shape == (
+        1,
+        8,
+        8,
+        1,
+    )
 
 
 def _decoder_spaces() -> dict[str, TensorSpace]:
     return {
-        "a_image": TensorSpace((32, 32, 1), "uint8"),
+        "a_image": TensorSpace((32, 32, 1), "float32"),
         "m_cont": TensorSpace((2,), "float32"),
         "z_disc": TensorSpace((1,), "int32", classes=3),
-        "z_image": TensorSpace((32, 32, 2), "uint8"),
+        "z_image": TensorSpace((32, 32, 2), "float32"),
     }
 
 
@@ -797,7 +895,7 @@ def test_dictdecoder_profile_image_branch_matches_exact_resolution(
         "deter": jnp.asarray(arrays["decoder.deter"]),
         "stoch": jnp.asarray(arrays["decoder.stoch"]),
     }
-    spaces = {"image": TensorSpace((32, 32, 3), "uint8")}
+    spaces = {"image": TensorSpace((32, 32, 3), "float32")}
     module = DictDecoder(
         spaces,
         _decoder_config(manifest.profile),

@@ -525,9 +525,9 @@ def _official_network_arrays(
     _collect_case(arrays, "blockgru", blockgru_context, blockgru_output)
 
     spaces = {
-        "a_image": _Space(jnp.uint8, (32, 32, 1)),
-        "m_vector": _Space(jnp.float32, (2,)),
-        "z_image": _Space(jnp.uint8, (32, 32, 2)),
+        "a_image": _Space(jnp.float32, (32, 32, 1)),
+        "m_vector": _Space(jnp.float16, (2,)),
+        "z_image": _Space(jnp.float32, (32, 32, 2)),
         "z_vector": _Space(jnp.float32, (1,)),
     }
     image_values = np.arange(2 * 2 * 32 * 32 * 3, dtype=np.uint32)
@@ -597,10 +597,10 @@ def _official_network_arrays(
         raise AssertionError("official rank-three float encoder case was not rejected")
 
     decoder_spaces = {
-        "a_image": _Space(jnp.uint8, (32, 32, 1)),
+        "a_image": _Space(jnp.float32, (32, 32, 1)),
         "m_cont": _Space(jnp.float32, (2,)),
         "z_disc": _Space(jnp.int32, (1,), classes=3),
-        "z_image": _Space(jnp.uint8, (32, 32, 2)),
+        "z_image": _Space(jnp.float32, (32, 32, 2)),
     }
     features = {
         "deter": _input_grid((2, 2, 16), -1.0, 1.5),
@@ -652,7 +652,7 @@ def _official_network_arrays(
 
     image_decoder_context = context()
     image_decoder = _bind(
-        rssm.Decoder({"image": _Space(jnp.uint8, (32, 32, 3))}, **decoder_kwargs),
+        rssm.Decoder({"image": _Space(jnp.float32, (32, 32, 3))}, **decoder_kwargs),
         image_decoder_context,
     )
     with _activate(image_decoder_context):

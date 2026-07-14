@@ -450,8 +450,16 @@ class OracleManifest:
                 raise ValueError(
                     "multi-dtype oracle source requires an explicit generator request"
                 )
+        if self.generator_request is not None:
             request = json.loads(self.generator_request)
-            if request.get("compute_dtype") != self.dtype:
+            if source_spec.execution_dtypes and "compute_dtype" not in request:
+                raise ValueError(
+                    "multi-dtype oracle source requires an explicit generator "
+                    "compute dtype"
+                )
+            if "compute_dtype" in request and (
+                jnp.dtype(request["compute_dtype"]).name != jnp.dtype(self.dtype).name
+            ):
                 raise ValueError(
                     "oracle dtype does not match the executed generator request"
                 )

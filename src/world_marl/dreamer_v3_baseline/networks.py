@@ -42,10 +42,6 @@ def _require_compute_dtype(value: Array, compute_dtype: Any, name: str) -> None:
         )
 
 
-def _space_dtype(space: TensorSpace) -> np.dtype:
-    return np.dtype(space.dtype)
-
-
 def _uniform_classes(space: TensorSpace, family: str) -> int:
     if not space.discrete:
         raise ValueError(f"{family} head requires a discrete TensorSpace")
@@ -527,16 +523,6 @@ class DictEncoder(nn.Module):
             )
         if any(len(space.shape) > 3 for space in self.spaces.values()):
             raise ValueError("DictEncoder supports observation ranks up to three")
-        invalid_images = [
-            key
-            for key, space in self.spaces.items()
-            if len(space.shape) == 3 and _space_dtype(space) != np.dtype(np.uint8)
-        ]
-        if invalid_images:
-            raise TypeError(
-                "DictEncoder rank-three image spaces must declare uint8: "
-                + ", ".join(invalid_images)
-            )
 
     @nn.compact
     def __call__(self, observations: Mapping[str, Array]) -> Array:
@@ -555,11 +541,6 @@ class DictEncoder(nn.Module):
             for key in vector_keys:
                 space = self.spaces[key]
                 value = observations[key]
-                if np.dtype(value.dtype) != _space_dtype(space):
-                    raise TypeError(
-                        f"DictEncoder {key!r} runtime dtype {value.dtype} does not "
-                        f"match declared dtype {space.dtype}"
-                    )
                 current_leading = value.shape[: value.ndim - len(space.shape)]
                 leading_shape = leading_shape or current_leading
                 if (
@@ -602,11 +583,6 @@ class DictEncoder(nn.Module):
             for key in image_keys:
                 space = self.spaces[key]
                 value = observations[key]
-                if np.dtype(value.dtype) != _space_dtype(space):
-                    raise TypeError(
-                        f"DictEncoder image {key!r} runtime dtype {value.dtype} does "
-                        f"not match declared dtype {space.dtype}"
-                    )
                 if value.dtype != jnp.uint8:
                     raise TypeError(f"DictEncoder image {key!r} must use uint8")
                 current_leading = value.shape[: value.ndim - len(space.shape)]
@@ -789,16 +765,6 @@ class DictDecoder(nn.Module):
             )
         if any(len(space.shape) > 3 for space in self.spaces.values()):
             raise ValueError("DictDecoder supports observation ranks up to three")
-        invalid_images = [
-            key
-            for key, space in self.spaces.items()
-            if len(space.shape) == 3 and _space_dtype(space) != np.dtype(np.uint8)
-        ]
-        if invalid_images:
-            raise TypeError(
-                "DictDecoder rank-three image spaces must declare uint8: "
-                + ", ".join(invalid_images)
-            )
 
     @nn.compact
     def __call__(self, features: Mapping[str, Array]) -> dict[str, Any]:
