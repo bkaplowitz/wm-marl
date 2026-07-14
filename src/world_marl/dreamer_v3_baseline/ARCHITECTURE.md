@@ -464,14 +464,19 @@ chunk geometry/ownership, per-writer chronology and cadence, item-key
 uniqueness, refcounts, selector types/order, FIFO counters, and the exact sample
 metric identities all agree. Raw persisted chunk size and length are checked
 against the configured bounds before chunk construction or NumPy allocation.
-The FIFO is a list of exact Python integers and equals retained item-id order.
+The live item map is an exact dictionary from exact Python integers to exact
+`ReplayKey` values; both eviction preflight and public validation reject
+Python-equal aliases before equality or membership checks. The FIFO is a list
+of exact Python integers and equals retained item-id order.
 Each writer's nonempty item-key projection, read in global item-id order, is
 the exact step-one suffix of every emitted valid start and ends at
 `row_count-R`; a writer may have an empty projection after global capacity
 eviction, and no global ordering is imposed across writers. Eviction validates
 the complete FIFO/items and selector key/index bijection plus every recursively
 triggered reference decrement before any selector, FIFO, item, chunk, or
-refcount mutation begins.
+refcount mutation begins. Public validation applies the same exact selector
+list/dictionary types, Python-integer key/index types, uniqueness, bijection,
+and selector/items agreement without mutating state.
 
 Stale online keys remain valid only when their id was allocated by that writer,
 their offset and logical row exist, and their nonempty per-writer projection is

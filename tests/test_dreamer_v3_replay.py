@@ -3278,6 +3278,55 @@ def test_evict_preflight_rejects_selector_container_before_any_mutation() -> Non
     assert replay.selector.indices == indices_before
 
 
+@pytest.mark.parametrize("corruption", ["duplicate", "wrong_indices"])
+def test_validate_rejects_selector_bijection_without_mutation(
+    corruption: str,
+) -> None:
+    replay = _replay(
+        capacity=2,
+        chunk_size=4,
+        sequence_length=1,
+        context=0,
+        online=False,
+    )
+    _add_rows(replay, 2)
+    if corruption == "duplicate":
+        replay.selector.keys[1] = replay.selector.keys[0]
+    else:
+        replay.selector.indices = {0: 1, 1: 0}
+    before = replay.state_dict()
+    with pytest.raises((TypeError, ValueError, RuntimeError)):
+        replay.validate()
+    _assert_tree_equal(replay.state_dict(), before)
+
+
+@pytest.mark.parametrize(
+    "item_id_alias",
+    [False, np.int64(0)],
+    ids=["bool", "numpy-int"],
+)
+def test_item_key_alias_is_rejected_without_mutation(item_id_alias) -> None:
+    replay = _replay(
+        capacity=2,
+        chunk_size=4,
+        sequence_length=1,
+        context=0,
+        online=False,
+    )
+    _add_rows(replay, 2)
+    replay.items = {
+        item_id_alias: replay.items[0],
+        1: replay.items[1],
+    }
+    before = replay.state_dict()
+    with pytest.raises((TypeError, ValueError, RuntimeError)):
+        replay.validate()
+    _assert_tree_equal(replay.state_dict(), before)
+    with pytest.raises((TypeError, ValueError, RuntimeError)):
+        replay._evict_item()
+    _assert_tree_equal(replay.state_dict(), before)
+
+
 def test_third_repair_canonical_fifo_restore_continues_exactly() -> None:
     replay = _replay(
         capacity=2,

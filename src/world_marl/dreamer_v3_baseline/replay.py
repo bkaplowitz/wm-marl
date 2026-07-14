@@ -975,14 +975,15 @@ class DreamerReplay:
         self._metrics["inserted_items"] += 1
         self._condition.notify_all()
 
-    def _evict_item(self) -> None:
-        if not self.fifo:
-            raise RuntimeError("replay FIFO is empty during capacity eviction")
-        if any(type(candidate) is not int for candidate in self.fifo):
-            raise TypeError("replay FIFO item ids must be integers")
-        if self.fifo != list(self.items):
-            raise RuntimeError("replay FIFO/items disagree during eviction")
-        item_id = self.fifo[0]
+    def _validate_item_map(self) -> None:
+        if type(self.items) is not dict:
+            raise TypeError("replay items must be a dictionary")
+        if any(type(item_id) is not int for item_id in self.items):
+            raise TypeError("replay item ids must be Python integers")
+        if any(type(key) is not ReplayKey for key in self.items.values()):
+            raise TypeError("replay item values must be ReplayKey values")
+
+    def _validate_selector_map(self) -> None:
         selector_keys = self.selector.keys
         selector_indices = self.selector.indices
         if (
@@ -998,7 +999,18 @@ class DreamerReplay:
             != {candidate: index for index, candidate in enumerate(selector_keys)}
             or set(selector_keys) != set(self.items)
         ):
-            raise RuntimeError("replay selector is inconsistent during eviction")
+            raise RuntimeError("replay selector state is inconsistent")
+
+    def _evict_item(self) -> None:
+        self._validate_item_map()
+        if not self.fifo:
+            raise RuntimeError("replay FIFO is empty during capacity eviction")
+        if any(type(candidate) is not int for candidate in self.fifo):
+            raise TypeError("replay FIFO item ids must be integers")
+        if self.fifo != list(self.items):
+            raise RuntimeError("replay FIFO/items disagree during eviction")
+        self._validate_selector_map()
+        item_id = self.fifo[0]
         key = self.items[item_id]
         self._preflight_ref_decrement(key.chunk_id)
         self.selector.delete(item_id)
@@ -1744,12 +1756,12 @@ class DreamerReplay:
 
     def validate(self) -> None:
         with self._lock:
+            self._validate_item_map()
+            self._validate_selector_map()
             self._validate_acyclic_links()
             self._validate_restored_state()
             if self.fifo != list(self.items):
                 raise ValueError("replay FIFO/items disagreement")
-            if set(self.selector.keys) != set(self.items):
-                raise ValueError("replay selector/items disagreement")
 
 
 __all__ = [

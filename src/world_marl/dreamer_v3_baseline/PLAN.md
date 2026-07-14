@@ -238,10 +238,15 @@ item and queue starts. In global item-id order, every writer's nonempty retained
 item projection is the exact step-one suffix of its emitted starts ending at
 `row_count - raw_length`; empty projections after global eviction are valid and
 cross-writer interleaving is unconstrained. FIFO state is a canonical list of
-exact Python integers, as are outer writer identities and selector ids/indices.
+exact Python integers. The live item map is exactly `dict[int, ReplayKey]` with
+exact Python-integer keys; eviction and public validation reject bool and NumPy
+integer aliases before equality or membership. Outer writer identities and
+selector ids/indices likewise require exact Python integers.
 Eviction preflights the complete FIFO/item/selector/ref-decrement operation
-before its first mutation. A valid idle writer whose predecessor was evicted
-must restore and continue bit-exactly.
+before its first mutation. Public validation shares the exact live selector
+container, Python-integer key/index, uniqueness, bijection, and item-agreement
+checks without mutation. A valid idle writer whose predecessor was evicted must
+restore and continue bit-exactly.
 
 For online replay, each writer's nonempty persisted queue projection is the
 exact `raw_length`-spaced suffix of phase `1 % raw_length` through the latest
