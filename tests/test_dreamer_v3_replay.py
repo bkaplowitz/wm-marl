@@ -109,6 +109,8 @@ def _row(
 ) -> dict[str, object]:
     return {
         "action": float(index),
+        "dyn/deter": np.asarray([index + 1000, index + 1001], np.float32),
+        "dyn/stoch": np.asarray([[index + 2000, index + 2001]], np.float32),
         "is_first": index == 0 if first is None else first,
         "is_last": False if last is None else last,
         "is_terminal": terminal,
@@ -252,6 +254,10 @@ def test_replay_fixture_manifest_source_and_exact_official_arrays(profile) -> No
     assert dict(manifest.overrides) == dict(profile_overrides(profile))
     assert request["official_commit"] == official_revision(profile)
     assert request["cases"]["primary"]["raw_length"] == 5
+    assert request["cases"]["primary"]["collection_latent_bases"] == {
+        "dyn/deter": 1000,
+        "dyn/stoch": 2000,
+    }
     assert request["cases"]["primary"]["latent_update_bases"] == {
         "dyn/deter": 100,
         "dyn/stoch": 200,
@@ -260,6 +266,7 @@ def test_replay_fixture_manifest_source_and_exact_official_arrays(profile) -> No
         "batch": 1,
         "capacity": 3,
         "chunk_size": 3,
+        "collection_latent_bases": {"dyn/deter": 1000, "dyn/stoch": 2000},
         "first_steps": [0, 4, 8],
         "last_steps": [3, 7],
         "online": True,
@@ -407,13 +414,140 @@ def test_recorded_replay_worker_replays_all_arrays_and_attestations(profile) -> 
         name: f"{official_revision(profile)}:{path}"
         for name, path in expected_origins.items()
     }
+    assert payload["source_attestation"]["native_module_violations"] == []
     with np.load(fixture_path, allow_pickle=False) as expected:
-        assert len(expected.files) == len(payload["arrays"]) == 44
+        expected_names = {
+            "capacity.chunk_ids",
+            "capacity.fifo",
+            "capacity.intermediate6",
+            "capacity.intermediate8",
+            "capacity.item_ids",
+            "capacity.queue_chunks",
+            "capacity.queue_offsets",
+            "capacity.refs",
+            "capacity.rng_after_online",
+            "capacity.rng_before_online",
+            "capacity.selector_draws",
+            "capacity.selector_keys",
+            "capacity.start_chunks",
+            "capacity.start_offsets",
+            "capacity.train_values",
+            "collection.deter",
+            "collection.stoch",
+            "consecutive0.consec",
+            "consecutive0.first",
+            "consecutive0.last",
+            "consecutive0.stepid",
+            "consecutive0.values",
+            "consecutive1.consec",
+            "consecutive1.first",
+            "consecutive1.last",
+            "consecutive1.stepid",
+            "consecutive1.values",
+            "raw.item_ids",
+            "raw.online_chunks",
+            "raw.online_offsets",
+            "raw.report_deter",
+            "raw.report_first",
+            "raw.report_last",
+            "raw.report_stepid",
+            "raw.report_stoch",
+            "raw.report_terminal",
+            "raw.report_values",
+            "raw.start_chunks",
+            "raw.start_offsets",
+            "raw.train_values",
+            "source_config.batch_length",
+            "source_config.chunk_size",
+            "source_config.context",
+            "source_config.online",
+            "source_config.uniform",
+            "writeback.deter",
+            "writeback.logical_values",
+            "writeback.stoch",
+        }
+        assert set(expected.files) == set(payload["arrays"]) == expected_names
+        assert len(expected.files) == len(payload["arrays"]) == 48
         assert expected.files == sorted(payload["arrays"])
         for name in expected.files:
             spec = payload["arrays"][name]
             actual = np.asarray(spec["values"], dtype=spec["dtype"])
             np.testing.assert_array_equal(actual, expected[name], err_msg=name)
+
+
+@pytest.mark.parametrize("profile", tuple(DreamerProfile))
+def test_replay_oracle_worker_never_imports_native_replay(profile) -> None:
+    stem = f"{profile.value}-proprio-replay"
+    manifest = OracleManifest.load(
+        FIXTURE_DIR / f"{stem}.manifest.json",
+        fixture_path=FIXTURE_DIR / f"{stem}.npz",
+    )
+    command = (
+        manifest.generator_command[0],
+        "-X",
+        "importtime",
+        *manifest.generator_command[1:],
+    )
+    completed = subprocess.run(
+        command,
+        cwd=OFFICIAL_CHECKOUT,
+        input=manifest.generator_request,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    imported = [
+        line.rsplit("|", 1)[-1].strip()
+        for line in completed.stderr.splitlines()
+        if line.startswith("import time:")
+    ]
+    assert "world_marl.dreamer_v3_baseline.replay" not in imported
+    assert "world_marl.dreamer_v3_baseline.replay_oracle" not in imported
+
+
+@pytest.mark.parametrize(
+    ("module_name", "module_path"),
+    [
+        ("world_marl.dreamer_v3_baseline.replay", None),
+        ("world_marl.dreamer_v3_baseline.replay_oracle", None),
+        (
+            "untrusted_replay_alias",
+            Path(replay_module.__file__).resolve(),
+        ),
+    ],
+)
+def test_replay_oracle_worker_rejects_injected_native_modules(
+    module_name: str,
+    module_path: Path | None,
+) -> None:
+    manifest = OracleManifest.load(
+        FIXTURE_DIR / "paper-proprio-replay.manifest.json",
+        fixture_path=FIXTURE_DIR / "paper-proprio-replay.npz",
+    )
+    oracle_path = Path(manifest.generator_command[1]).resolve()
+    lines = [
+        "import runpy, sys",
+        "from types import ModuleType",
+        f"module = ModuleType({module_name!r})",
+    ]
+    if module_path is not None:
+        lines.append(f"module.__file__ = {str(module_path)!r}")
+    lines.extend(
+        [
+            f"sys.modules[{module_name!r}] = module",
+            f"sys.argv = [{str(oracle_path)!r}, '_worker']",
+            f"runpy.run_path({str(oracle_path)!r}, run_name='__main__')",
+        ]
+    )
+    completed = subprocess.run(
+        [manifest.generator_command[0], "-c", "\n".join(lines)],
+        cwd=OFFICIAL_CHECKOUT,
+        input=manifest.generator_request,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode != 0
+    assert "forbidden native replay modules loaded" in completed.stderr
 
 
 def test_replay_key_exact_encoding_order_and_fresh_copy() -> None:
@@ -496,6 +630,15 @@ def test_row_schema_coercion_chronology_and_no_key_drift() -> None:
     batch = replay.sample_raw("report", timeout=0.1)
     assert batch.data["obs"].dtype == np.uint8
     assert batch.data["action"].dtype == np.float32
+    sampled_index = int(batch.data["value"][0, 0])
+    np.testing.assert_array_equal(
+        batch.data["dyn/deter"][0, 0],
+        [sampled_index + 1000, sampled_index + 1001],
+    )
+    np.testing.assert_array_equal(
+        batch.data["dyn/stoch"][0, 0],
+        [[sampled_index + 2000, sampled_index + 2001]],
+    )
     with pytest.raises(ValueError, match="first"):
         _replay().add(_row(0, first=False))
     with pytest.raises(ValueError, match="terminal"):
@@ -516,10 +659,14 @@ def test_row_schema_coercion_chronology_and_no_key_drift() -> None:
     _assert_tree_equal(nonempty.state_dict(), before_nonempty)
     for mutate in (
         lambda row: row.pop("reward"),
+        lambda row: row.pop("dyn/deter"),
         lambda row: row.update(extra=1),
+        lambda row: row.update(**{"dyn/extra": np.zeros((), np.float32)}),
         lambda row: row.update(stepid=np.zeros(20, np.uint8)),
         lambda row: row.update(consec=np.zeros((), np.int32)),
         lambda row: row.update(obs=[1, 2, 3]),
+        lambda row: row.update(**{"dyn/deter": np.zeros((1,), np.float32)}),
+        lambda row: row.update(**{"dyn/stoch": np.zeros((1, 2), np.float64)}),
         lambda row: row.update(is_terminal=[False]),
         lambda row: row.update(reward="not-a-number"),
     ):
@@ -529,6 +676,31 @@ def test_row_schema_coercion_chronology_and_no_key_drift() -> None:
         before = target.state_dict()
         with pytest.raises((TypeError, ValueError)):
             target.add(row)
+        _assert_tree_equal(target.state_dict(), before)
+
+
+def test_writer_identity_and_exact_worker_ids_are_enforced_without_mutation() -> None:
+    replay = _replay(sequence_length=1, context=0, online=False)
+    detached = ReplayWriter(0, replay)
+    before = replay.state_dict()
+    with pytest.raises(RuntimeError, match="active"):
+        detached.add(_row(0))
+    _assert_tree_equal(replay.state_dict(), before)
+
+    replay.add(_row(0), worker=0)
+    stale = replay.writers[0]
+    replay.load_state_dict(replay.state_dict())
+    before = replay.state_dict()
+    with pytest.raises(RuntimeError, match="active"):
+        stale.add(_row(1, first=False))
+    _assert_tree_equal(replay.state_dict(), before)
+
+    for worker in (True, False, 1.0, np.int64(1)):
+        target = _replay(sequence_length=1, context=0, online=False)
+        target.add(_row(0), worker=int(worker))
+        before = target.state_dict()
+        with pytest.raises(TypeError, match="worker"):
+            target.add(_row(1, first=False), worker=worker)
         _assert_tree_equal(target.state_dict(), before)
 
 
@@ -549,6 +721,8 @@ def test_chunk_fixed_storage_seal_copy_read_and_latent_only_update() -> None:
     first = chunk.append(_row(0))
     assert all(value.shape[0] == 2 for value in chunk.transition_data.values())
     assert all(value.shape[0] == 2 for value in chunk.latent_data.values())
+    np.testing.assert_array_equal(chunk.latent_data["dyn/deter"][0], [1000, 1001])
+    np.testing.assert_array_equal(chunk.latent_data["dyn/stoch"][0], [[2000, 2001]])
     second = chunk.append(_row(1, first=False))
     assert first == ReplayKey(chunk_id, 0)
     assert second == ReplayKey(chunk_id, 1)
@@ -610,6 +784,39 @@ def test_chunk_fixed_storage_seal_copy_read_and_latent_only_update() -> None:
     assert not restored.transition_data["value"].flags.writeable
 
 
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda row: row.update(**{"dyn/deter": np.zeros((1,), np.float32)}),
+        lambda row: row.update(**{"dyn/stoch": np.zeros((1, 2), np.float64)}),
+    ],
+)
+@pytest.mark.parametrize("populated", [False, True], ids=["fresh", "partial"])
+def test_chunk_latent_append_validation_is_transactional(
+    mutate,
+    populated: bool,
+) -> None:
+    chunk = ReplayChunk(
+        (17).to_bytes(16, "big"),
+        3,
+        _transition_spaces(),
+        _latent_spaces(),
+    )
+    if populated:
+        chunk.append(_row(0))
+    before = chunk.state_dict()
+    transition_allocated = bool(chunk.transition_data)
+    latent_allocated = bool(chunk.latent_data)
+    row = _row(1, first=False)
+    mutate(row)
+    with pytest.raises((TypeError, ValueError)):
+        chunk.append(row)
+    assert chunk.length == int(populated)
+    assert bool(chunk.transition_data) is transition_allocated
+    assert bool(chunk.latent_data) is latent_allocated
+    _assert_tree_equal(chunk.state_dict(), before)
+
+
 def test_interleaved_workers_keep_independent_streams_links_and_resets() -> None:
     replay = _replay(sequence_length=2, context=0, online=False, chunk_size=2)
     histories = {10: [], 20: []}
@@ -662,6 +869,47 @@ def test_exact_valid_starts_cross_chunks_and_episode_boundaries() -> None:
         resolved = _resolve_keys(replay, start, 5)
         assert resolved[0] == start and len(resolved) == 5
     assert ReplayKey((3).to_bytes(16, "big"), 1) not in replay.items.values()
+
+
+def test_policy_collection_latents_match_exact_official_storage_and_restore() -> None:
+    official = _official_arrays()
+    replay = _replay(sequence_length=4, context=1, online=False)
+    _add_rows(replay, 11)
+    ordered = [replay.chunks[key] for key in sorted(replay.chunks)]
+    stored_deter = np.concatenate(
+        [chunk.read(0, chunk.length)["dyn/deter"] for chunk in ordered]
+    )
+    stored_stoch = np.concatenate(
+        [chunk.read(0, chunk.length)["dyn/stoch"] for chunk in ordered]
+    )
+    np.testing.assert_array_equal(stored_deter, official["collection.deter"])
+    np.testing.assert_array_equal(stored_stoch, official["collection.stoch"])
+    assert np.any(stored_deter) and np.any(stored_stoch)
+
+    sampled = replay.sample_raw("report", timeout=0.1)
+    np.testing.assert_array_equal(
+        sampled.data["dyn/deter"], official["raw.report_deter"]
+    )
+    np.testing.assert_array_equal(
+        sampled.data["dyn/stoch"], official["raw.report_stoch"]
+    )
+
+    restored = _replay(sequence_length=4, context=1, online=False)
+    restored.load_state_dict(replay.state_dict())
+    _assert_tree_equal(restored.state_dict(), replay.state_dict())
+    restored_chunks = [restored.chunks[key] for key in sorted(restored.chunks)]
+    np.testing.assert_array_equal(
+        np.concatenate(
+            [chunk.read(0, chunk.length)["dyn/deter"] for chunk in restored_chunks]
+        ),
+        official["collection.deter"],
+    )
+    np.testing.assert_array_equal(
+        np.concatenate(
+            [chunk.read(0, chunk.length)["dyn/stoch"] for chunk in restored_chunks]
+        ),
+        official["collection.stoch"],
+    )
 
 
 def test_exact_online_phase_fifo_per_worker_and_nonconsuming_report() -> None:
@@ -855,6 +1103,37 @@ def test_online_queue_round_trip_preserves_stale_order() -> None:
     assert restored.keys == keys[1:]
 
 
+def test_restore_rejects_live_unresolvable_online_keys_but_accepts_evicted_stale() -> (
+    None
+):
+    replay = _replay(capacity=3, sequence_length=3, context=1, online=True)
+    _add_rows(replay, 10, natural_last=True)
+    before = replay.state_dict()
+    assert before["online_queue"]["keys"][0]["chunk_id"] not in replay.chunks
+
+    restored = _replay(capacity=3, sequence_length=3, context=1, online=True)
+    restored.load_state_dict(before)
+    _assert_tree_equal(restored.state_dict(), before)
+
+    live_index = next(
+        index
+        for index, value in enumerate(before["online_queue"]["keys"])
+        if value["chunk_id"] in replay.chunks
+    )
+    for corrupt in (
+        lambda key: key.update(offset=999),
+        lambda key: key.update(
+            chunk_id=replay.writers[0].current_chunk_id,
+            offset=replay.writers[0].current_offset - 1,
+        ),
+    ):
+        broken = copy.deepcopy(before)
+        corrupt(broken["online_queue"]["keys"][live_index])
+        with pytest.raises((TypeError, ValueError)):
+            replay.load_state_dict(broken)
+        _assert_tree_equal(replay.state_dict(), before)
+
+
 def test_raw_batch_annotation_copy_terminal_and_stepid_chronology() -> None:
     official = _official_arrays()
     replay = _replay(sequence_length=4, context=1, online=True)
@@ -962,6 +1241,22 @@ def test_consecutive_exact_slices_overlap_fetch_and_complete_state_round_trip() 
     ):
         with pytest.raises(ValueError):
             ConsecutiveStream(source, **kwargs)
+    for kwargs in (
+        {"sequence_length": True, "consecutive": 2, "context": 1},
+        {"sequence_length": 2.0, "consecutive": 2, "context": 1},
+        {"sequence_length": np.int64(2), "consecutive": 2, "context": 1},
+        {"sequence_length": 2.5, "consecutive": 2, "context": 1},
+        {"sequence_length": 2, "consecutive": False, "context": 1},
+        {"sequence_length": 2, "consecutive": 2.0, "context": 1},
+        {"sequence_length": 2, "consecutive": np.int64(2), "context": 1},
+        {"sequence_length": 2, "consecutive": 2.5, "context": 1},
+        {"sequence_length": 2, "consecutive": 2, "context": True},
+        {"sequence_length": 2, "consecutive": 2, "context": 1.0},
+        {"sequence_length": 2, "consecutive": 2, "context": np.int64(1)},
+        {"sequence_length": 2, "consecutive": 2, "context": 1.5},
+    ):
+        with pytest.raises(TypeError):
+            ConsecutiveStream(source, **kwargs)
 
     aggregate = _replay(
         sequence_length=2,
@@ -994,6 +1289,8 @@ def test_latent_writeback_same_cross_chunk_post_context_and_atomic_validation() 
     ids_before = ids.copy()
     deter_before = deter.copy()
     stoch_before = stoch.copy()
+    context_deter = report.data["dyn/deter"][0, 0].copy()
+    context_stoch = report.data["dyn/stoch"][0, 0].copy()
     assert (
         replay.update_context(
             ids,
@@ -1005,7 +1302,12 @@ def test_latent_writeback_same_cross_chunk_post_context_and_atomic_validation() 
     np.testing.assert_array_equal(deter, deter_before)
     np.testing.assert_array_equal(stoch, stoch_before)
     keys = _decode(report.step_ids)
-    np.testing.assert_array_equal(_stored_leaf(replay, keys[0], "dyn/deter"), [0, 0])
+    np.testing.assert_array_equal(
+        _stored_leaf(replay, keys[0], "dyn/deter"), context_deter
+    )
+    np.testing.assert_array_equal(
+        _stored_leaf(replay, keys[0], "dyn/stoch"), context_stoch
+    )
     for index, key in enumerate(keys[1:]):
         np.testing.assert_array_equal(
             _stored_leaf(replay, key, "dyn/deter"), deter[0, index]
@@ -1133,8 +1435,9 @@ def _complete_resume_scenario() -> DreamerReplay:
     assert len(replay.online_queue) == 2
     assert replay.online_queue.keys[0].chunk_id not in replay.chunks
     assert replay.online_queue.keys[1].chunk_id in replay.chunks
-    assert replay.consecutive_stream.index == 1
-    assert replay.consecutive_stream.current is not None
+    stream = replay.consecutive_streams["report"]
+    assert stream.index == 1
+    assert stream.current is not None
     assert any(
         np.any(chunk.read(0, chunk.length)["dyn/deter"])
         for chunk in replay.chunks.values()
@@ -1291,13 +1594,13 @@ def test_restore_rejects_malformed_consecutive_current_without_mutation() -> Non
         wrong_batch_size,
     ):
         broken = copy.deepcopy(before)
-        corrupt(broken["consecutive"]["current"])
+        corrupt(broken["consecutive"]["report"]["current"])
         with pytest.raises((TypeError, ValueError)):
             replay.load_state_dict(broken)
         _assert_tree_equal(replay.state_dict(), before)
 
     broken = copy.deepcopy(before)
-    broken["consecutive"]["index"] = 0
+    broken["consecutive"]["report"]["index"] = 0
     with pytest.raises((TypeError, ValueError)):
         replay.load_state_dict(broken)
     _assert_tree_equal(replay.state_dict(), before)
@@ -1346,7 +1649,7 @@ def test_restore_rebinds_blocked_sample_to_live_consecutive_stream() -> None:
     _add_rows(source, 3)
     first_source = source.sample("report", timeout=0.1)
     np.testing.assert_array_equal(first_source.data["consec"], [[0]])
-    assert source.consecutive_stream.index == 1
+    assert source.consecutive_streams["report"].index == 1
     saved = source.state_dict()
     serial = _replay(
         sequence_length=1,
@@ -1388,7 +1691,7 @@ def test_restore_rebinds_blocked_sample_to_live_consecutive_stream() -> None:
     assert not errors
     assert outcome and outcome[0].step_ids.shape == (1, 1, 20)
     _assert_tree_equal(outcome[0].as_dict(), expected.as_dict())
-    assert target.consecutive_stream.index == 2
+    assert target.consecutive_streams["report"].index == 2
     _assert_tree_equal(target.state_dict(), serial.state_dict())
     second = target.sample("report", timeout=0.1)
     serial_second = serial.sample("report", timeout=0.1)
@@ -1452,6 +1755,176 @@ def test_restore_rejects_corrupt_writer_cadence_and_chronology_without_mutation(
     _assert_tree_equal(replay.state_dict(), before)
 
 
+@pytest.mark.parametrize("populated", [False, True], ids=["empty", "nonempty"])
+def test_restore_rejects_exact_next_item_id_gap_without_mutation(
+    populated: bool,
+) -> None:
+    replay = _replay(sequence_length=1, context=0, online=False)
+    if populated:
+        _add_rows(replay, 4)
+    before = replay.state_dict()
+    broken = copy.deepcopy(before)
+    broken["next_item_id"] += 1
+    with pytest.raises(ValueError, match="next replay item"):
+        replay.load_state_dict(broken)
+    _assert_tree_equal(replay.state_dict(), before)
+
+
+def test_restore_preserves_exact_item_counter_after_capacity_eviction() -> None:
+    replay = _replay(
+        capacity=1,
+        sequence_length=1,
+        context=0,
+        online=False,
+    )
+    _add_rows(replay, 6)
+    state = replay.state_dict()
+    assert state["fifo"] == [5]
+    assert state["next_item_id"] == 6
+    assert sum(value["emitted_count"] for value in state["writers"].values()) == 6
+    restored = _replay(
+        capacity=1,
+        sequence_length=1,
+        context=0,
+        online=False,
+    )
+    restored.load_state_dict(state)
+    restored.add(_row(6, first=False))
+    assert restored.fifo == [6]
+    assert restored.next_item_id == 7
+
+
+def test_restore_rejects_coordinated_writer_counter_drift_without_mutation() -> None:
+    replay = _complete_resume_scenario()
+    before = replay.state_dict()
+    broken = copy.deepcopy(before)
+    writer = next(iter(broken["writers"].values()))
+    writer["row_count"] += replay.config.chunk_size
+    writer["emitted_count"] += replay.config.chunk_size
+    with pytest.raises(ValueError, match="emitted"):
+        replay.load_state_dict(broken)
+    _assert_tree_equal(replay.state_dict(), before)
+
+
+def test_restore_rejects_coherent_negative_item_id_without_mutation() -> None:
+    replay = _complete_resume_scenario()
+    before = replay.state_dict()
+    broken = copy.deepcopy(before)
+    old = broken["items"][0]["item_id"]
+    broken["items"][0]["item_id"] = -1
+    broken["fifo"][broken["fifo"].index(old)] = -1
+    key_index = broken["selector"]["keys"].index(old)
+    broken["selector"]["keys"][key_index] = -1
+    broken["selector"]["indices"] = {
+        key: index for index, key in enumerate(broken["selector"]["keys"])
+    }
+    with pytest.raises(ValueError, match="item id"):
+        replay.load_state_dict(broken)
+    _assert_tree_equal(replay.state_dict(), before)
+
+
+def test_restore_rejects_noncontiguous_retained_item_suffix_without_mutation() -> None:
+    replay = _replay(
+        capacity=2,
+        sequence_length=1,
+        context=0,
+        online=False,
+    )
+    _add_rows(replay, 6)
+    before = replay.state_dict()
+    assert [item["item_id"] for item in before["items"]] == [4, 5]
+    broken = copy.deepcopy(before)
+    broken["items"][0]["item_id"] = 3
+    broken["fifo"][0] = 3
+    broken["selector"]["keys"][broken["selector"]["keys"].index(4)] = 3
+    broken["selector"]["indices"] = {
+        key: index for index, key in enumerate(broken["selector"]["keys"])
+    }
+    with pytest.raises(ValueError, match="item"):
+        replay.load_state_dict(broken)
+    _assert_tree_equal(replay.state_dict(), before)
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "root_missing_first",
+        "terminal_without_last",
+        "tail_terminal_without_last",
+        "current_tail_after_last",
+        "within",
+        "cross",
+    ],
+)
+def test_restore_rejects_corrupt_retained_transition_chronology_without_mutation(
+    corruption: str,
+) -> None:
+    replay = _replay(
+        capacity=20,
+        chunk_size=3,
+        sequence_length=2,
+        context=0,
+        online=False,
+    )
+    _add_rows(replay, 5)
+    before = replay.state_dict()
+    broken = copy.deepcopy(before)
+    nonempty = [chunk for chunk in broken["chunks"] if chunk["length"]]
+    if corruption == "root_missing_first":
+        nonempty[0]["transition"]["is_first"][0] = False
+    elif corruption == "terminal_without_last":
+        nonempty[0]["transition"]["is_terminal"][0] = True
+        nonempty[0]["transition"]["is_last"][0] = False
+    elif corruption == "tail_terminal_without_last":
+        nonempty[-1]["transition"]["is_terminal"][-1] = True
+        nonempty[-1]["transition"]["is_last"][-1] = False
+    elif corruption == "current_tail_after_last":
+        nonempty[-1]["transition"]["is_last"][-2] = True
+        nonempty[-1]["transition"]["is_first"][-1] = False
+    elif corruption == "within":
+        nonempty[0]["transition"]["is_last"][0] = True
+        nonempty[0]["transition"]["is_first"][1] = False
+    else:
+        predecessor = next(
+            chunk for chunk in nonempty if chunk["successor"] is not None
+        )
+        successor = next(
+            chunk for chunk in nonempty if chunk["chunk_id"] == predecessor["successor"]
+        )
+        predecessor["transition"]["is_last"][-1] = True
+        successor["transition"]["is_first"][0] = False
+    with pytest.raises(ValueError, match="chronology"):
+        replay.load_state_dict(broken)
+    _assert_tree_equal(replay.state_dict(), before)
+
+
+def test_restore_accepts_evicted_prefix_whose_retained_root_is_not_first() -> None:
+    replay = _complete_resume_scenario()
+    state = replay.state_dict()
+    successor_ids = {
+        chunk["successor"]
+        for chunk in state["chunks"]
+        if chunk["successor"] is not None
+    }
+    root = next(
+        chunk
+        for chunk in state["chunks"]
+        if chunk["chunk_id"] not in successor_ids and chunk["length"]
+    )
+    assert bool(root["transition"]["is_first"][0]) is False
+    restored = _replay(
+        capacity=3,
+        chunk_size=3,
+        sequence_length=2,
+        context=1,
+        consecutive=2,
+        online=True,
+        seed=7,
+    )
+    restored.load_state_dict(state)
+    _assert_tree_equal(restored.state_dict(), state)
+
+
 @pytest.mark.parametrize(
     "corrupt",
     [
@@ -1471,7 +1944,7 @@ def test_restore_rejects_corrupt_writer_cadence_and_chronology_without_mutation(
         lambda state: state["chunks"][0].update(
             successor=state["chunks"][0]["chunk_id"]
         ),
-        lambda state: state["consecutive"].update(current=None, index=1),
+        lambda state: state["consecutive"]["report"].update(current=None, index=1),
         lambda state: state["chunks"].append(copy.deepcopy(state["chunks"][0])),
         lambda state: state["chunks"].pop(),
         lambda state: state.update(next_chunk_id=1),
@@ -1581,14 +2054,14 @@ def test_blocking_sample_calls_are_serialized_without_blocking_add() -> None:
     replay.add(_row(1, first=False))
     train.join(2)
     report.join(2)
-    assert waiter_count == 1
+    assert waiter_count == 2
     assert not train.is_alive() and not report.is_alive()
     assert not errors
     assert set(results) == {"train", "report"}
     assert results["train"].step_ids.shape == (1, 1, 20)
     assert results["report"].step_ids.shape == (1, 1, 20)
     np.testing.assert_array_equal(results["train"].data["consec"], [[0]])
-    np.testing.assert_array_equal(results["report"].data["consec"], [[1]])
+    np.testing.assert_array_equal(results["report"].data["consec"], [[0]])
     assert replay.stats()["sample_calls"] == 1
 
 
@@ -1618,7 +2091,7 @@ def test_sample_timeout_budget_includes_stream_lock_wait() -> None:
 
     def finite_sample() -> None:
         try:
-            replay.sample("eval", timeout=0.05)
+            replay.sample("report", timeout=0.05)
         except BaseException as error:  # pragma: no cover - asserted below.
             second_errors.append(error)
 
@@ -1636,6 +2109,106 @@ def test_sample_timeout_budget_includes_stream_lock_wait() -> None:
     assert len(second_errors) == 1
     assert isinstance(second_errors[0], TimeoutError)
     assert first_results and first_results[0].step_ids.shape == (1, 1, 20)
+
+
+@pytest.mark.parametrize("nontrain_mode", ["report", "eval"])
+def test_nontrain_stream_cannot_supply_train_slice_or_bypass_online_accounting(
+    nontrain_mode: str,
+) -> None:
+    replay = _replay(
+        sequence_length=1,
+        context=0,
+        consecutive=2,
+        online=True,
+    )
+    _add_rows(replay, 5)
+    queue_before = replay.online_queue.state_dict()
+    stats_before = replay.stats()
+
+    nontrain0 = replay.sample(nontrain_mode, timeout=0.1)
+    np.testing.assert_array_equal(nontrain0.data["consec"], [[0]])
+    np.testing.assert_array_equal(nontrain0.data["value"], [[3]])
+    assert replay.online_queue.state_dict() == queue_before
+    assert replay.stats() == stats_before
+
+    train0 = replay.sample("train", timeout=0.1)
+    np.testing.assert_array_equal(train0.data["consec"], [[0]])
+    np.testing.assert_array_equal(train0.data["value"], [[1]])
+    assert len(replay.online_queue) == len(queue_before["keys"]) - 1
+    stats = replay.stats()
+    assert stats["sample_calls"] == 1
+    assert stats["sampled_sequences"] == 1
+    assert stats["online_samples"] == 1
+    assert stats["uniform_samples"] == 0
+
+    queue_after = replay.online_queue.state_dict()
+    nontrain1 = replay.sample(nontrain_mode, timeout=0.1)
+    train1 = replay.sample("train", timeout=0.1)
+    np.testing.assert_array_equal(nontrain1.data["consec"], [[1]])
+    np.testing.assert_array_equal(train1.data["consec"], [[1]])
+    np.testing.assert_array_equal(nontrain1.data["value"], [[4]])
+    np.testing.assert_array_equal(train1.data["value"], [[2]])
+    assert replay.online_queue.state_dict() == queue_after
+    assert replay.stats() == stats
+
+
+@pytest.mark.parametrize("nontrain_mode", ["report", "eval"])
+def test_train_stream_retained_slice_survives_interleaved_nontrain_mode(
+    nontrain_mode: str,
+) -> None:
+    replay = _replay(
+        sequence_length=1,
+        context=0,
+        consecutive=2,
+        online=True,
+    )
+    _add_rows(replay, 5)
+    train0 = replay.sample("train", timeout=0.1)
+    np.testing.assert_array_equal(train0.data["consec"], [[0]])
+    np.testing.assert_array_equal(train0.data["value"], [[1]])
+    queue_after_train = replay.online_queue.state_dict()
+    stats_after_train = replay.stats()
+
+    nontrain0 = replay.sample(nontrain_mode, timeout=0.1)
+    np.testing.assert_array_equal(nontrain0.data["consec"], [[0]])
+    np.testing.assert_array_equal(nontrain0.data["value"], [[3]])
+    assert replay.online_queue.state_dict() == queue_after_train
+    assert replay.stats() == stats_after_train
+
+    train1 = replay.sample("train", timeout=0.1)
+    np.testing.assert_array_equal(train1.data["consec"], [[1]])
+    np.testing.assert_array_equal(train1.data["value"], [[2]])
+    assert replay.online_queue.state_dict() == queue_after_train
+    assert replay.stats() == stats_after_train
+
+
+def test_all_mode_consecutive_streams_resume_exactly_and_independently() -> None:
+    replay = _replay(
+        sequence_length=1,
+        context=0,
+        consecutive=2,
+        online=True,
+    )
+    _add_rows(replay, 6)
+    for mode in ("train", "report", "eval"):
+        batch = replay.sample(mode, timeout=0.1)
+        np.testing.assert_array_equal(batch.data["consec"], [[0]])
+        assert replay.consecutive_streams[mode].index == 1
+    state = replay.state_dict()
+
+    restored = _replay(
+        sequence_length=1,
+        context=0,
+        consecutive=2,
+        online=True,
+    )
+    restored.load_state_dict(state)
+    for mode in ("eval", "train", "report"):
+        expected = replay.sample(mode, timeout=0.1)
+        actual = restored.sample(mode, timeout=0.1)
+        np.testing.assert_array_equal(actual.data["consec"], [[1]])
+        _assert_tree_equal(actual.as_dict(), expected.as_dict())
+    _assert_tree_equal(restored.state_dict(), replay.state_dict())
 
 
 def test_concurrent_add_sample_update_snapshot_preserves_invariants() -> None:

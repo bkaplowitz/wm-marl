@@ -15,6 +15,7 @@ from .networks import TensorSpace
 
 
 _RESERVED_KEYS = frozenset({"consec", "stepid"})
+_REPLAY_MODES = ("train", "report", "eval")
 _REQUIRED_TRANSITIONS = {
     "is_first": ((), "bool"),
     "is_last": ((), "bool"),
@@ -58,6 +59,17 @@ def _coerce_value(value: Any, space: TensorSpace, name: str) -> np.ndarray:
         raise TypeError(f"{name} cannot be converted to {space.dtype}") from error
     if result.shape != space.shape:
         raise ValueError(f"{name} shape {result.shape} != {space.shape}")
+    return result
+
+
+def _validate_latent_value(
+    value: Any,
+    space: TensorSpace,
+    name: str,
+) -> np.ndarray:
+    result = np.asarray(value)
+    if result.dtype != np.dtype(space.dtype) or result.shape != space.shape:
+        raise ValueError(f"{name} has wrong latent dtype or shape")
     return result
 
 
@@ -178,15 +190,24 @@ class ReplayChunk:
             raise RuntimeError("cannot append to a sealed replay chunk")
         if self.length >= self.size:
             raise RuntimeError("cannot append to a full replay chunk")
-        _require_exact_keys(row, set(self.transition_spaces), "replay row")
+        names = set(self.transition_spaces) | set(self.latent_spaces)
+        _require_exact_keys(row, names, "replay row")
         converted = {
             name: _coerce_value(row[name], space, name)
             for name, space in self.transition_spaces.items()
         }
+        converted.update(
+            {
+                name: _validate_latent_value(row[name], space, name)
+                for name, space in self.latent_spaces.items()
+            }
+        )
         self._allocate()
         index = self.length
-        for name, value in converted.items():
-            self.transition_data[name][index] = value
+        for name in self.transition_spaces:
+            self.transition_data[name][index] = converted[name]
+        for name in self.latent_spaces:
+            self.latent_data[name][index] = converted[name]
         self.length += 1
         return ReplayKey(self.chunk_id, index)
 
@@ -439,12 +460,16 @@ class ConsecutiveStream:
         consecutive: int,
         context: int,
     ) -> None:
+        if any(
+            type(value) is not int for value in (sequence_length, consecutive, context)
+        ):
+            raise TypeError("consecutive replay dimensions must be integers")
         if sequence_length <= 0 or consecutive <= 0 or context < 0:
             raise ValueError("invalid consecutive replay dimensions")
         self.source = source
-        self.sequence_length = int(sequence_length)
-        self.consecutive = int(consecutive)
-        self.context = int(context)
+        self.sequence_length = sequence_length
+        self.consecutive = consecutive
+        self.context = context
         self.raw_length = context + sequence_length * consecutive
         self.index = 0
         self.current: ReplayBatch | None = None
@@ -534,7 +559,10 @@ class ReplayWriter:
         return self.replay.chunks[self.current_chunk_id].length
 
     def add(self, row: Mapping[str, Any]) -> ReplayKey:
-        return self.replay._add_for_writer(self, row)
+        with self.replay._lock:
+            if self.replay.writers.get(self.worker_id) is not self:
+                raise RuntimeError("replay writer is not active")
+            return self.replay._add_for_writer(self, row)
 
     def state_dict(self) -> dict[str, Any]:
         return {
@@ -622,7 +650,7 @@ class DreamerReplay:
         self.seed = seed
         self._lock = threading.RLock()
         self._condition = threading.Condition(self._lock)
-        self._sample_lock = threading.Lock()
+        self._sample_locks = {mode: threading.Lock() for mode in _REPLAY_MODES}
         self._restore_epoch = 0
         self.chunks: dict[bytes, ReplayChunk] = {}
         self.refs: dict[bytes, int] = {}
@@ -633,9 +661,13 @@ class DreamerReplay:
         self.next_chunk_id = 1
         self.online_queue = OnlineQueue()
         self.selector = UniformSelector(seed)
-        self._stream_mode = "train"
-        self._stream_timeout: float | None = None
-        self.consecutive_stream = self._make_stream()
+        self._stream_timeouts: dict[str, float | None] = {
+            mode: None for mode in _REPLAY_MODES
+        }
+        self.consecutive_streams = {
+            mode: self._make_stream(mode) for mode in _REPLAY_MODES
+        }
+        self.consecutive_stream = self.consecutive_streams["train"]
         self._metrics = {name: 0 for name in _METRIC_KEYS}
 
     def _validate_spaces(self) -> None:
@@ -655,11 +687,18 @@ class DreamerReplay:
             if space.dtype != "float32":
                 raise ValueError(f"latent replay space {name!r} must be float32")
 
-    def _make_stream(self, state: Mapping[str, Any] | None = None) -> ConsecutiveStream:
+    def _make_stream(
+        self,
+        mode: str,
+        state: Mapping[str, Any] | None = None,
+    ) -> ConsecutiveStream:
+        if mode not in _REPLAY_MODES:
+            raise ValueError("replay mode must be train, report, or eval")
+
         def source() -> ReplayBatch:
             return self._sample_raw(
-                self._stream_mode,
-                timeout=self._stream_timeout,
+                mode,
+                timeout=self._stream_timeouts[mode],
                 expected_epoch=self._restore_epoch,
             )
 
@@ -741,13 +780,23 @@ class DreamerReplay:
     def _normalize_row(self, row: Mapping[str, Any]) -> dict[str, np.ndarray]:
         if not isinstance(row, Mapping):
             raise TypeError("replay row must be a mapping")
-        _require_exact_keys(row, set(self.transition_spaces), "replay row")
-        return {
+        names = set(self.transition_spaces) | set(self.latent_spaces)
+        _require_exact_keys(row, names, "replay row")
+        result = {
             name: _coerce_value(row[name], space, name)
             for name, space in self.transition_spaces.items()
         }
+        result.update(
+            {
+                name: _validate_latent_value(row[name], space, name)
+                for name, space in self.latent_spaces.items()
+            }
+        )
+        return result
 
     def add(self, row: Mapping[str, Any], *, worker: int = 0) -> ReplayKey:
+        if type(worker) is not int:
+            raise TypeError("worker id must be an integer")
         with self._lock:
             writer = self.writers.get(worker)
             created = writer is None
@@ -871,7 +920,7 @@ class DreamerReplay:
         timeout: float | None,
         expected_epoch: int | None,
     ) -> ReplayBatch:
-        if mode not in {"train", "report", "eval"}:
+        if mode not in _REPLAY_MODES:
             raise ValueError("replay mode must be train, report, or eval")
         if timeout is not None and timeout < 0:
             raise ValueError("replay timeout cannot be negative")
@@ -932,16 +981,17 @@ class DreamerReplay:
         *,
         timeout: float | None = None,
     ) -> ReplayBatch:
-        if mode not in {"train", "report", "eval"}:
+        if mode not in _REPLAY_MODES:
             raise ValueError("replay mode must be train, report, or eval")
         if timeout is not None and timeout < 0:
             raise ValueError("replay timeout cannot be negative")
         deadline = None if timeout is None else time.monotonic() + timeout
+        sample_lock = self._sample_locks[mode]
         if timeout is None:
-            self._sample_lock.acquire()
+            sample_lock.acquire()
             acquired = True
         else:
-            acquired = self._sample_lock.acquire(timeout=timeout)
+            acquired = sample_lock.acquire(timeout=timeout)
         if not acquired:
             raise TimeoutError("timed out waiting for consecutive replay stream")
         try:
@@ -950,14 +1000,13 @@ class DreamerReplay:
                     None if deadline is None else max(0.0, deadline - time.monotonic())
                 )
                 with self._lock:
-                    self._stream_mode = mode
-                    self._stream_timeout = remaining
+                    self._stream_timeouts[mode] = remaining
                     try:
-                        return next(self.consecutive_stream)
+                        return next(self.consecutive_streams[mode])
                     except _ReplayRestored:
                         continue
         finally:
-            self._sample_lock.release()
+            sample_lock.release()
 
     def update_context(
         self,
@@ -1052,7 +1101,10 @@ class DreamerReplay:
                     self.chunks[key].state_dict() for key in sorted(self.chunks)
                 ],
                 "config": asdict(self.config),
-                "consecutive": self.consecutive_stream.state_dict(),
+                "consecutive": {
+                    mode: self.consecutive_streams[mode].state_dict()
+                    for mode in _REPLAY_MODES
+                },
                 "dimensions": self._dimensions(),
                 "fifo": list(self.fifo),
                 "items": [
@@ -1159,21 +1211,44 @@ class DreamerReplay:
                 _require_exact_keys(item_state, {"item_id", "key"}, "item state")
                 item_id = item_state["item_id"]
                 key = ReplayKey.from_state_dict(item_state["key"])
-                if type(item_id) is not int or item_id in candidate.items:
+                if (
+                    type(item_id) is not int
+                    or item_id < 0
+                    or item_id in candidate.items
+                ):
                     raise ValueError("duplicate or invalid replay item id")
                 candidate.items[item_id] = key
             candidate.fifo = list(state["fifo"])
             if candidate.fifo != list(candidate.items):
                 raise ValueError("replay FIFO/items disagreement")
             candidate.next_item_id = state["next_item_id"]
-            if type(candidate.next_item_id) is not int or candidate.next_item_id <= max(
-                candidate.items, default=-1
+            expected_next_item_id = max(candidate.items) + 1 if candidate.items else 0
+            if (
+                type(candidate.next_item_id) is not int
+                or candidate.next_item_id != expected_next_item_id
             ):
                 raise ValueError("invalid next replay item id")
+            expected_item_ids = list(
+                range(
+                    candidate.next_item_id - len(candidate.items),
+                    candidate.next_item_id,
+                )
+            )
+            if list(candidate.items) != expected_item_ids:
+                raise ValueError("replay item ids are not a contiguous retained suffix")
             candidate.selector = UniformSelector.from_state_dict(state["selector"])
             if set(candidate.selector.keys) != set(candidate.items):
                 raise ValueError("selector/items disagreement")
             candidate.online_queue = OnlineQueue.from_state_dict(state["online_queue"])
+            for key in candidate.online_queue.keys:
+                if key.chunk_id not in candidate.chunks:
+                    continue
+                try:
+                    candidate._resolve(key, candidate.raw_length)
+                except KeyError as error:
+                    raise ValueError(
+                        "online queue key is not a resolvable replay sequence"
+                    ) from error
             metrics = state["metrics"]
             _require_exact_keys(metrics, set(_METRIC_KEYS), "replay metrics")
             if any(type(value) is not int or value < 0 for value in metrics.values()):
@@ -1182,7 +1257,18 @@ class DreamerReplay:
             candidate._validate_restored_state()
             for writer in candidate.writers.values():
                 del writer._restored_offset
-            stream = candidate._make_stream(state["consecutive"])
+            consecutive_state = state["consecutive"]
+            if not isinstance(consecutive_state, Mapping):
+                raise TypeError("replay consecutive state must be a mapping")
+            _require_exact_keys(
+                consecutive_state,
+                set(_REPLAY_MODES),
+                "replay consecutive state",
+            )
+            streams = {
+                mode: candidate._make_stream(mode, consecutive_state[mode])
+                for mode in _REPLAY_MODES
+            }
             self.chunks = candidate.chunks
             self.refs = candidate.refs
             self.writers = candidate.writers
@@ -1195,7 +1281,12 @@ class DreamerReplay:
             self.online_queue = candidate.online_queue
             self.selector = candidate.selector
             self._metrics = candidate._metrics
-            self.consecutive_stream = self._make_stream(stream.state_dict())
+            self._stream_timeouts = {mode: None for mode in _REPLAY_MODES}
+            self.consecutive_streams = {
+                mode: self._make_stream(mode, streams[mode].state_dict())
+                for mode in _REPLAY_MODES
+            }
+            self.consecutive_stream = self.consecutive_streams["train"]
             self._restore_epoch += 1
             self._condition.notify_all()
 
@@ -1218,6 +1309,41 @@ class DreamerReplay:
                 seen.add(current)
                 current = self.chunks[current].successor_id
 
+    def _validate_retained_chronology(self) -> None:
+        predecessor_counts = {chunk_id: 0 for chunk_id in self.chunks}
+        for chunk in self.chunks.values():
+            if chunk.successor_id is not None:
+                predecessor_counts[chunk.successor_id] += 1
+        roots = [
+            chunk_id for chunk_id, count in predecessor_counts.items() if count == 0
+        ]
+        chunk_numbers = [int.from_bytes(value, "big") for value in self.chunks]
+        complete_chunk_history = len(chunk_numbers) == self.next_chunk_id - 1 and (
+            self.next_chunk_id == 1
+            or (
+                min(chunk_numbers) == 1 and max(chunk_numbers) == self.next_chunk_id - 1
+            )
+        )
+        for root in roots:
+            previous_is_last = False
+            first_retained_row = True
+            chunk_id: bytes | None = root
+            while chunk_id is not None:
+                chunk = self.chunks[chunk_id]
+                for offset in range(chunk.length):
+                    is_first = bool(chunk.transition_data["is_first"][offset])
+                    is_last = bool(chunk.transition_data["is_last"][offset])
+                    is_terminal = bool(chunk.transition_data["is_terminal"][offset])
+                    if is_terminal and not is_last:
+                        raise ValueError("invalid retained replay chronology")
+                    if first_retained_row and complete_chunk_history and not is_first:
+                        raise ValueError("invalid retained replay chronology")
+                    if previous_is_last and not is_first:
+                        raise ValueError("invalid retained replay chronology")
+                    first_retained_row = False
+                    previous_is_last = is_last
+                chunk_id = chunk.successor_id
+
     def _recomputed_refs(self) -> dict[bytes, int]:
         refs = {chunk_id: 0 for chunk_id in self.chunks}
         for chunk in self.chunks.values():
@@ -1237,6 +1363,7 @@ class DreamerReplay:
         return refs
 
     def _validate_restored_state(self) -> None:
+        self._validate_retained_chronology()
         writer_ids = set(self.writers)
         if any(chunk.owner_id not in writer_ids for chunk in self.chunks.values()):
             raise ValueError("replay chunk has no owning writer")
@@ -1311,6 +1438,10 @@ class DreamerReplay:
                 actual_last = bool(tail_chunk.transition_data["is_last"][tail.offset])
                 if writer.last_is_last != actual_last:
                     raise ValueError("invalid writer episode chronology state")
+        if sum(writer.emitted_count for writer in self.writers.values()) != (
+            self.next_item_id
+        ):
+            raise ValueError("writer emitted counts disagree with next item id")
         if len(self.items) > self.config.capacity:
             raise ValueError("restored replay exceeds capacity")
         for key in self.items.values():

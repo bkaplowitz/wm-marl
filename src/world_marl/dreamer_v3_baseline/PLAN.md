@@ -217,14 +217,17 @@ both profiles are Critical failures. Float32 parity tolerance is 1e-5.
    online-first fill, uniform valid starts including sequences crossing natural
    episode boundaries, forced leading is_first and next-is_first is_last
    annotation, capacity eviction, exact context-prefix/consecutive slicing,
-   exact writeback, and complete save/restore.
+   independent persistent train/report/eval streams and locks with no retained
+   cross-mode slices, exact writeback, and complete save/restore.
 2. Implement writer/chunk, then queue, selector, aggregate replay, persistence.
 3. Add deterministic selection fixture and seeded statistical uniformity test.
 
 **Acceptance**
 
-State restore includes writers, queue, selector RNG, eviction order, and latent
-context—not merely transition arrays.
+State restore includes writers, queue, selector RNG, eviction order, latent
+context, and each mode's current consecutive batch/index—not merely transition
+arrays. Train, report, and eval streams resume independently; only train may
+drain the online queue.
 
 **Commit:** feat(dreamer): add online latent replay
 

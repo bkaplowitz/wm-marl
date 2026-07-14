@@ -398,29 +398,34 @@ priority/recency.
 
 ### ConsecutiveStream
 
-Stateful wrapper around replay sampling. The raw replay sequence has exactly
-`context + sequence_length * consecutive` transitions. For consecutive index
-`i`, it returns the slice starting at `i * sequence_length` and ending after
-`context + sequence_length` transitions, annotates every time step with
+Stateful wrapper around one replay sampling mode. The raw replay sequence has
+exactly `context + sequence_length * consecutive` transitions. For consecutive
+index `i`, it returns the slice starting at `i * sequence_length` and ending
+after `context + sequence_length` transitions, annotates every time step with
 `consec=i`, and only fetches a new raw replay sequence after all consecutive
-slices are consumed. Save/restore includes the current index and wrapped source
-state. The canonical profiles use one consecutive slice, but this class is
-still mandatory because replay-context restoration keys off
+slices are consumed. Each instance retains its own current raw batch and index;
+save/restore includes both. The canonical profiles use one consecutive slice,
+but this class is still mandatory because replay-context restoration keys off
 `consec[:, 0] == 0`.
 
 ### DreamerReplay
 
-Owns chunks, writers, queue, selector, consecutive stream, eviction/context.
-add routes transitions; sample drains online then uniformly fills the raw
-sequence consumed by ConsecutiveStream; update_context writes inferred
+Owns chunks, writers, queue, selector, eviction/context, and one persistent
+ConsecutiveStream plus serialization lock for each of train, report, and eval.
+`sample(mode)` advances only that mode's stream. The train stream drains online
+then uniformly fills its raw sequence; report and eval sample uniformly and
+cannot consume the online queue. A retained raw batch or later consecutive slice
+can never cross from one mode to another. `update_context` writes inferred
 encoder/dynamics/decoder entries to the exact sequence beginning identified by
 the first step id. Agent replay-context application may replace the context
 prefix only for the first consecutive slice; each component's truncate method
 consumes whatever stored prefix entries its official counterpart consumes and
 falls back to the incoming carry exactly as its counterpart does. Later slices
 perform the ordinary continuation scan. save/restore preserves every chunk
-link/reference, current writer, stream, queue, selector RNG, FIFO item,
-consecutive index, and latent entry.
+link/reference, current writer, queue, selector RNG, FIFO item, latent entry,
+and the independent current raw batch and consecutive index for all three mode
+streams. Restore rebinds blocked samplers to the restored stream for their own
+mode without allowing cross-mode reuse.
 
 ## 9. Environment, driver, artifacts, checkpoints
 

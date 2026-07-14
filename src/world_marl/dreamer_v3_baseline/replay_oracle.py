@@ -37,7 +37,16 @@ if __package__:
         register_oracle_source_spec,
     )
 else:  # pragma: no cover - exercised by the isolated worker.
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    package_dir = Path(__file__).resolve().parent
+    world_marl_dir = package_dir.parent
+    world_marl = sys.modules.setdefault("world_marl", ModuleType("world_marl"))
+    world_marl.__path__ = [str(world_marl_dir)]
+    dreamer_package = sys.modules.setdefault(
+        "world_marl.dreamer_v3_baseline",
+        ModuleType("world_marl.dreamer_v3_baseline"),
+    )
+    dreamer_package.__path__ = [str(package_dir)]
+    world_marl.dreamer_v3_baseline = dreamer_package
     from world_marl.dreamer_v3_baseline.config import (
         DreamerProfile,
         ObservationMode,
@@ -106,6 +115,40 @@ _ELEMENTS_HELPER_HASHES = {
         "e8829a81c80058e4f130a5821acd9db62de5f72fbb02ad4b10262ccfa3006d6a"
     ),
 }
+_NATIVE_MODULE_NAMES = frozenset(
+    {
+        "world_marl.dreamer_v3_baseline.replay",
+        "world_marl.dreamer_v3_baseline.replay_oracle",
+    }
+)
+
+
+def _native_module_violations() -> list[str]:
+    replay_path = Path(__file__).resolve().with_name("replay.py")
+    oracle_path = Path(__file__).resolve()
+    violations = set()
+    for name, module in tuple(sys.modules.items()):
+        if name in _NATIVE_MODULE_NAMES:
+            violations.add(name)
+        filename = getattr(module, "__file__", None)
+        if not filename:
+            continue
+        try:
+            module_path = Path(filename).resolve()
+        except (OSError, RuntimeError, TypeError, ValueError):
+            continue
+        if module_path == replay_path or (
+            module_path == oracle_path and name != "__main__"
+        ):
+            violations.add(f"{name}:{module_path.name}")
+    return sorted(violations)
+
+
+def _require_isolated_worker_modules() -> list[str]:
+    violations = _native_module_violations()
+    if violations:
+        raise ValueError(f"forbidden native replay modules loaded: {violations}")
+    return violations
 
 
 def _installed_elements_provenance(
@@ -242,6 +285,7 @@ def _case_contract(seed: int) -> dict[str, Any]:
             "batch": 1,
             "capacity": 3,
             "chunk_size": 3,
+            "collection_latent_bases": {"dyn/deter": 1000, "dyn/stoch": 2000},
             "first_steps": [0, 4, 8],
             "last_steps": [3, 7],
             "online": True,
@@ -256,6 +300,7 @@ def _case_contract(seed: int) -> dict[str, Any]:
             "batch": 1,
             "capacity": 20,
             "chunk_size": 3,
+            "collection_latent_bases": {"dyn/deter": 1000, "dyn/stoch": 2000},
             "consecutive": 2,
             "context": 1,
             "first_steps": [0, 4, 8],
@@ -426,10 +471,11 @@ def _row(
         if name in flags:
             value = flags[name]
         elif name.startswith(("dyn/", "enc/", "dec/")):
-            value = 0
+            base = case["collection_latent_bases"][name]
+            value = base + index + np.arange(np.prod(shape)).reshape(shape)
         else:
             value = index
-        result[name] = np.full(shape, value, dtype)
+        result[name] = np.asarray(value, dtype=dtype).reshape(shape)
     return result
 
 
@@ -463,6 +509,16 @@ def _official_arrays(
     )
     for index in range(primary["steps"]):
         replay.add(_row(index, primary, row_schema))
+
+    collection_chunks = sorted(
+        replay.chunks.values(), key=lambda chunk: int(chunk.uuid)
+    )
+    collection_deter = np.concatenate(
+        [chunk.data["dyn/deter"][: chunk.length] for chunk in collection_chunks]
+    )
+    collection_stoch = np.concatenate(
+        [chunk.data["dyn/stoch"][: chunk.length] for chunk in collection_chunks]
+    )
 
     item_ids = np.asarray(list(replay.items), np.int64)
     start_chunks, start_offsets = _key_arrays(list(replay.items.values()))
@@ -553,6 +609,8 @@ def _official_arrays(
         "capacity.start_chunks": capacity_start_chunks,
         "capacity.start_offsets": capacity_start_offsets,
         "capacity.train_values": capacity_train["value"],
+        "collection.deter": collection_deter,
+        "collection.stoch": collection_stoch,
         "consecutive0.consec": consecutive0["consec"],
         "consecutive0.first": consecutive0["is_first"],
         "consecutive0.last": consecutive0["is_last"],
@@ -567,8 +625,10 @@ def _official_arrays(
         "raw.online_chunks": online_chunks,
         "raw.online_offsets": online_offsets,
         "raw.report_first": report["is_first"],
+        "raw.report_deter": report["dyn/deter"],
         "raw.report_last": report["is_last"],
         "raw.report_stepid": report["stepid"],
+        "raw.report_stoch": report["dyn/stoch"],
         "raw.report_terminal": report["is_terminal"],
         "raw.report_values": report["value"],
         "raw.start_chunks": start_chunks,
@@ -588,6 +648,7 @@ def _official_arrays(
 
 
 def _worker(request: Mapping[str, Any]) -> dict[str, Any]:
+    _require_isolated_worker_modules()
     checkout = Path(request["official_checkout"]).resolve()
     revision = str(request["official_commit"])
     profile = DreamerProfile(request["profile"])
@@ -654,6 +715,7 @@ def _worker(request: Mapping[str, Any]) -> dict[str, Any]:
     attestation = _source_attestation(
         revision, elements, Chunk, Uniform, Replay, Consec
     )
+    attestation["native_module_violations"] = _require_isolated_worker_modules()
     arrays = _official_arrays(
         Replay,
         Consec,
@@ -749,6 +811,8 @@ def run_replay_case(
     if payload["runtime"] != request["runtime"]:
         raise ValueError("replay worker runtime attestation changed")
     attestation = payload["source_attestation"]
+    if attestation.get("native_module_violations") != []:
+        raise ValueError("replay worker native module attestation changed")
     if attestation["classes"] != ["Chunk", "Consec", "Replay", "Uniform"]:
         raise ValueError("replay worker source class attestation changed")
     expected_bindings = {
