@@ -40,6 +40,12 @@ def world_model_sources() -> dict[str, dict[str, Any]]:
             "pixels_wrapper_url": "https://github.com/google-deepmind/dm_control/blob/main/dm_control/suite/wrappers/pixels.py",
             "observation_mode": "official_pixel_wrapper",
         },
+        "mujoco_playground": {
+            "repo_url": "https://github.com/google-deepmind/mujoco_playground",
+            "role": "JAX-native DMC-style control adapter",
+            "physics_backend": "mjx",
+            "observation_mode": "vector",
+        },
     }
 
 

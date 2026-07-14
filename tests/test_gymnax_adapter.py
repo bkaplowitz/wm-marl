@@ -15,6 +15,7 @@ from world_marl.scripts.train_e2e import (
     create_algorithm_train_state,
 )
 from world_marl.training import collect_mappo_rollout, collect_rollout
+from world_marl.world_model_foundation.collect import collect_adapter_sequence
 
 
 def _args(algorithm: str = "ippo") -> Namespace:
@@ -154,6 +155,83 @@ def test_gymnax_scan_rollout_matches_host_step_loop():
     finally:
         scan_adapter.close()
         host_adapter.close()
+
+
+def test_gymnax_recurrent_scan_and_random_collection_stay_on_device():
+    adapter = GymnaxVectorAdapter("CartPole-v1", num_envs=2, max_cycles=3, seed=11)
+    try:
+        observations = adapter.reset()
+
+        def policy_step(policy_state, carry, obs_flat, is_first):
+            del policy_state, obs_flat, is_first
+            actions = jnp.zeros((2,), dtype=jnp.int32)
+            return carry + 1, actions
+
+        ys, _last_obs, final_policy_carry = adapter.scan_recurrent_rollout(
+            policy_step,
+            None,
+            jnp.zeros((), dtype=jnp.int32),
+            4,
+            observations=observations,
+        )
+        _obs, actions, rewards, terminals, lasts = ys
+        assert actions.shape == (4, 2)
+        assert rewards.shape == (4, 2)
+        assert terminals.shape == (4, 2)
+        assert lasts.shape == (4, 2)
+        assert np.asarray(rewards, dtype=np.float32).T.tolist() == [
+            [0.0, 1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0, 1.0],
+        ]
+        assert np.asarray(terminals, dtype=bool).T.tolist() == [
+            [False, False, False, True],
+            [False, False, False, True],
+        ]
+        assert np.array_equal(np.asarray(terminals), np.asarray(lasts))
+        assert bool(np.all(np.asarray(actions)[-1] == 0))
+        assert int(final_policy_carry) == 4
+
+        batch = collect_adapter_sequence(adapter, time_steps=4, seed=12)
+        assert batch.metadata["collection_execution"] == "jax_scan"
+        assert batch.actions.shape == (4, 2)
+    finally:
+        adapter.close()
+
+
+def test_gymnax_online_scan_passes_arrivals_through_learner_carry():
+    adapter = GymnaxVectorAdapter("CartPole-v1", num_envs=2, max_cycles=3, seed=13)
+    try:
+        observations = adapter.reset()
+
+        def learner_step(carry, obs, reward, is_terminal, is_last, is_first):
+            del obs, is_terminal
+            count = carry + 1
+            actions = jnp.zeros((2,), dtype=jnp.int32)
+            metrics = {
+                "count": count,
+                "reward_sum": reward.sum(),
+                "first_count": is_first.sum(),
+                "last_count": is_last.sum(),
+            }
+            return count, actions, metrics
+
+        ys, _last_obs, final_carry = adapter.scan_online_rollout(
+            learner_step,
+            jnp.zeros((), dtype=jnp.int32),
+            4,
+            observations=observations,
+        )
+        obs, actions, rewards, terminals, lasts, firsts, metrics = ys
+
+        assert obs.shape == (4, 2, int(np.prod(adapter.observation_shape)))
+        assert actions.shape == (4, 2)
+        assert rewards.shape == terminals.shape == lasts.shape == firsts.shape
+        assert int(final_carry) == 4
+        assert np.asarray(metrics["count"]).tolist() == [1, 2, 3, 4]
+        assert np.asarray(metrics["first_count"]).tolist() == [2, 0, 0, 0]
+        assert np.asarray(metrics["last_count"]).tolist() == [0, 0, 0, 2]
+    finally:
+        adapter.close()
 
 
 @pytest.mark.parametrize("algorithm", ["ippo", "mappo"])

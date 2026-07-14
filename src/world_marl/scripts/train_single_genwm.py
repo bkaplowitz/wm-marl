@@ -34,7 +34,9 @@ comparison harness can glob both layouts.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -63,8 +65,10 @@ from world_marl.genwm import (
     make_genie_encode,
     ppo_update,
 )
+from world_marl.checkpointing import save_checkpoint
 from world_marl.genwm.imagination import ImaginedBatch
 from world_marl.jepa.training import load_frozen_encoder
+from world_marl.logging import RunLogger
 from world_marl.world_model_training import _replay_scan_episode_bookkeeping
 
 MODEL_FREE_ARM = "model-free"
@@ -194,6 +198,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--allow-fail",
         action="store_true",
         help="Exit 0 even when the improvement gate fails.",
+    )
+    parser.add_argument(
+        "--log-every",
+        type=int,
+        default=10,
+        help="Record metrics every N train steps/updates in every phase.",
     )
     parser.add_argument("--quiet", action="store_true")
     # Weights & Biases (disabled unless --wandb-project is set).
@@ -476,6 +486,91 @@ def _resolve_genie(args: argparse.Namespace, adapter) -> GenieTokenizer | None:
     )
 
 
+_WANDB_PHASE_AXES = {
+    "genie": "step",
+    "fit": "step",
+    "policy": "samples",
+    "model_free": "samples",
+}
+
+
+def _wandb_phase_namespace(phase: str) -> str:
+    """W&B section for a trainer phase label (``run N [online i] <phase>``)."""
+    if "model-free" in phase:
+        return "model_free"
+    if "genie" in phase:
+        return "genie"
+    if "fit" in phase:
+        return "fit"
+    return "policy"
+
+
+class _WandbPhaseMetrics:
+    """Mirrors phase metrics to W&B on per-namespace cumulative x axes.
+
+    Keys land as ``<namespace>/<metric>`` and every ``log`` call carries the
+    namespace's step metric (declared in ``_configure_wandb_metrics``) so
+    charts pick it as x automatically. x accumulates across the offline and
+    online phases instead of resetting with each phase's local counter, and
+    policy/model-free x is in transitions consumed (``samples_per_step`` per
+    update), matching the plot_wm_losses axes.
+    """
+
+    def __init__(self, wandb_run: Any) -> None:
+        self.wandb_run = wandb_run
+        self._segments: dict[str, tuple[str, int, int]] = {}
+
+    def log(
+        self,
+        phase: str,
+        step: int,
+        total: int,
+        metrics: dict[str, Any],
+        *,
+        samples_per_step: int = 1,
+    ) -> None:
+        namespace = _wandb_phase_namespace(phase)
+        previous_phase, offset, span = self._segments.get(namespace, ("", 0, 0))
+        if phase != previous_phase:
+            offset += span
+        self._segments[namespace] = (phase, offset, int(total) * samples_per_step)
+        row = {f"{namespace}/{name}": value for name, value in metrics.items()}
+        row[f"{namespace}/{_WANDB_PHASE_AXES[namespace]}"] = (
+            offset + int(step) * samples_per_step
+        )
+        self.wandb_run.log(row)
+
+
+def _configure_wandb_metrics(run: Any) -> None:
+    """Declare per-namespace x axes so W&B charts each phase natively."""
+    run.define_metric("eval/real_env_steps", hidden=True)
+    run.define_metric("eval/return", step_metric="eval/real_env_steps")
+    for namespace, axis in _WANDB_PHASE_AXES.items():
+        run.define_metric(f"{namespace}/{axis}", hidden=True)
+        run.define_metric(f"{namespace}/*", step_metric=f"{namespace}/{axis}")
+    run.define_metric("fit/wm_loss", summary="min")
+    run.define_metric("policy/total_loss", summary="min")
+    run.define_metric("model_free/total_loss", summary="min")
+
+
+def _log_metrics(
+    logger: RunLogger | None,
+    phase: str,
+    step: int,
+    total: int,
+    metrics: dict[str, Any],
+    *,
+    wandb_metrics: _WandbPhaseMetrics | None = None,
+    samples_per_step: int = 1,
+) -> None:
+    if logger is not None:
+        logger.append_metrics({"phase": phase, "step": step, "total": total, **metrics})
+    if wandb_metrics is not None:
+        wandb_metrics.log(
+            phase, step, total, metrics, samples_per_step=samples_per_step
+        )
+
+
 def _train_genie(
     genie_state,
     data: dict[str, np.ndarray],
@@ -486,6 +581,8 @@ def _train_genie(
     log_every: int,
     quiet: bool,
     label: str,
+    metrics_logger: RunLogger | None = None,
+    wandb_metrics: _WandbPhaseMetrics | None = None,
 ):
     """Fit the VQ-VAE by reconstruction on raw replay observations."""
     samples = np.concatenate([data["observations"], data["next_observations"]])
@@ -497,6 +594,14 @@ def _train_genie(
         )
         if step_index % log_every == 0 or step_index == steps - 1:
             metrics = {name: float(value) for name, value in step_metrics.items()}
+            _log_metrics(
+                metrics_logger,
+                label,
+                step_index + 1,
+                steps,
+                metrics,
+                wandb_metrics=wandb_metrics,
+            )
             if not quiet:
                 print(
                     f"[{label}] step {step_index + 1}/{steps} "
@@ -672,6 +777,8 @@ def _fit_models(
     log_every: int,
     quiet: bool,
     label: str,
+    metrics_logger: RunLogger | None = None,
+    wandb_metrics: _WandbPhaseMetrics | None = None,
 ):
     """Interleave world-model and reward/continue-head updates on replay data.
 
@@ -711,6 +818,14 @@ def _fit_models(
         if step_index % log_every == 0 or step_index == steps - 1:
             wm_loss = float(loss)
             head_metrics = {name: float(value) for name, value in metrics.items()}
+            _log_metrics(
+                metrics_logger,
+                label,
+                step_index + 1,
+                steps,
+                {"wm_loss": wm_loss, **head_metrics},
+                wandb_metrics=wandb_metrics,
+            )
             if not quiet:
                 print(
                     f"[{label}] step {step_index + 1}/{steps} "
@@ -739,6 +854,8 @@ def _train_policy(
     log_every: int,
     quiet: bool,
     label: str,
+    metrics_logger: RunLogger | None = None,
+    wandb_metrics: _WandbPhaseMetrics | None = None,
 ):
     metrics: dict[str, Any] = {}
     for step_index in range(steps):
@@ -763,6 +880,15 @@ def _train_policy(
         )
         if step_index % log_every == 0 or step_index == steps - 1:
             metrics = {name: float(value) for name, value in step_metrics.items()}
+            _log_metrics(
+                metrics_logger,
+                label,
+                step_index + 1,
+                steps,
+                metrics,
+                wandb_metrics=wandb_metrics,
+                samples_per_step=batch_size * horizon,
+            )
             if not quiet:
                 print(
                     f"[{label}] step {step_index + 1}/{steps} "
@@ -791,7 +917,8 @@ def _train_policy_real(
     log_every: int,
     quiet: bool,
     label: str,
-    wandb_run=None,
+    metrics_logger: RunLogger | None = None,
+    wandb_metrics: _WandbPhaseMetrics | None = None,
 ):
     """PPO on real on-policy rollouts (the model-free arm's phase trainer).
 
@@ -827,8 +954,15 @@ def _train_policy_real(
         observations = np.asarray(last_obs_flat, dtype=np.float32)
         if update_index % log_every == 0 or update_index == num_updates - 1:
             metrics = {name: float(value) for name, value in step_metrics.items()}
-            if wandb_run is not None:
-                wandb_run.log({f"ppo/{name}": value for name, value in metrics.items()})
+            _log_metrics(
+                metrics_logger,
+                label,
+                update_index + 1,
+                num_updates,
+                metrics,
+                wandb_metrics=wandb_metrics,
+                samples_per_step=rollout_steps * int(adapter.num_envs),
+            )
             if not quiet:
                 print(
                     f"[{label}] update {update_index + 1}/{num_updates} "
@@ -857,11 +991,65 @@ def _init_wandb(args: argparse.Namespace, *, run_index: int):
         group=args.wandb_group or f"{env_slug}-{args.arm}",
         name=f"{env_slug}-{args.arm}-run{run_index:02d}",
         config=config,
-        reinit=True,
+        reinit="finish_previous",
     )
-    run.define_metric("eval/real_env_steps")
-    run.define_metric("eval/return", step_metric="eval/real_env_steps")
+    _configure_wandb_metrics(run)
     return run
+
+
+def _save_policy_checkpoint(
+    run_dir: Path,
+    policy_state,
+    *,
+    args: argparse.Namespace,
+    config: GenWMConfig,
+    ppo_config: PPOConfig,
+    genie_module: GenieTokenizer | None,
+    genie_state,
+    action_mode: str,
+    obs_dim: int,
+    action_dim: int,
+    seed: int,
+) -> None:
+    """Persist the final policy so ``render_brax_policy`` can replay it."""
+    checkpoint_dir = run_dir / "policy_checkpoint"
+    genie_kwargs = None
+    if genie_module is not None:
+        genie_kwargs = {
+            "obs_dim": genie_module.obs_dim,
+            "codebook_size": genie_module.codebook_size,
+            "code_dim": genie_module.code_dim,
+            "model_dim": genie_module.model_dim,
+            "num_heads": genie_module.num_heads,
+            "num_layers": genie_module.num_layers,
+            "mlp_ratio": genie_module.mlp_ratio,
+        }
+    save_checkpoint(
+        checkpoint_dir,
+        policy_state,
+        metadata={
+            "algorithm": "single_genwm_policy",
+            "arm": args.arm,
+            "env": args.env,
+            "action_mode": action_mode,
+            "obs_dim": obs_dim,
+            "action_dim": action_dim,
+            "seed": seed,
+            "genwm_config": dataclasses.asdict(config),
+            "ppo_config": dataclasses.asdict(ppo_config),
+            "tokenizer": args.tokenizer,
+            "latent_encoder": args.latent_encoder,
+            "genie": genie_kwargs,
+        },
+    )
+    if genie_state is not None and genie_kwargs is not None:
+        save_checkpoint(checkpoint_dir / "genie", genie_state, metadata=genie_kwargs)
+    if args.latent_encoder is not None:
+        encoder_dir = checkpoint_dir / "latent_encoder"
+        encoder_dir.mkdir(parents=True, exist_ok=True)
+        source = Path(args.latent_encoder)
+        for name in ("checkpoint.msgpack", "metadata.json"):
+            shutil.copy2(source / name, encoder_dir / name)
 
 
 def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
@@ -871,6 +1059,8 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
     adapter = _make_adapter(args, seed=seed)
     num_envs = int(adapter.num_envs)
     wandb_run = _init_wandb(args, run_index=run_index)
+    wandb_metrics = _WandbPhaseMetrics(wandb_run) if wandb_run is not None else None
+    metrics_logger = RunLogger(run_dir)
     eval_points: list[dict[str, Any]] = []
 
     def record_eval(tag: str, steps_per_env: int, value: float) -> None:
@@ -1010,9 +1200,11 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                     steps=args.genie_train_steps,
                     batch_size=args.batch_size,
                     rng=rng,
-                    log_every=max(1, args.genie_train_steps // 10),
+                    log_every=args.log_every,
                     quiet=args.quiet,
                     label=f"run {run_index} genie",
+                    metrics_logger=metrics_logger,
+                    wandb_metrics=wandb_metrics,
                 )
                 obs_tokenizer = CodebookTokenizer(
                     codebook=genie_state.params["codebook"]
@@ -1040,9 +1232,11 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                 steps=args.train_steps,
                 batch_size=args.batch_size,
                 rng=rng,
-                log_every=max(1, args.train_steps // 10),
+                log_every=args.log_every,
                 quiet=args.quiet,
                 label=f"run {run_index} fit",
+                metrics_logger=metrics_logger,
+                wandb_metrics=wandb_metrics,
             )
             key, policy_fit_key = jax.random.split(key)
             policy_state, ppo_metrics = _train_policy(
@@ -1059,9 +1253,11 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                 batch_size=args.policy_batch_size,
                 horizon=args.imag_horizon,
                 rng=rng,
-                log_every=max(1, args.policy_train_steps // 10),
+                log_every=args.log_every,
                 quiet=args.quiet,
                 label=f"run {run_index} policy",
+                metrics_logger=metrics_logger,
+                wandb_metrics=wandb_metrics,
             )
         else:
             assert action_fns is not None
@@ -1074,10 +1270,11 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                 ppo_config,
                 steps_per_env=args.collect_steps,
                 rollout_steps=args.mf_rollout_steps,
-                log_every=max(1, args.collect_steps // args.mf_rollout_steps // 10),
+                log_every=args.log_every,
                 quiet=args.quiet,
                 label=f"run {run_index} model-free",
-                wandb_run=wandb_run,
+                metrics_logger=metrics_logger,
+                wandb_metrics=wandb_metrics,
             )
 
         key, offline_eval_key = jax.random.split(key)
@@ -1120,9 +1317,11 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                         steps=args.genie_online_train_steps,
                         batch_size=args.batch_size,
                         rng=rng,
-                        log_every=max(1, args.genie_online_train_steps // 5),
+                        log_every=args.log_every,
                         quiet=args.quiet,
                         label=f"run {run_index} online {iteration} genie",
+                        metrics_logger=metrics_logger,
+                        wandb_metrics=wandb_metrics,
                     )
                     obs_tokenizer = CodebookTokenizer(
                         codebook=genie_state.params["codebook"]
@@ -1144,9 +1343,11 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                     steps=args.online_train_steps,
                     batch_size=args.batch_size,
                     rng=rng,
-                    log_every=max(1, args.online_train_steps // 5),
+                    log_every=args.log_every,
                     quiet=args.quiet,
                     label=f"run {run_index} online {iteration} fit",
+                    metrics_logger=metrics_logger,
+                    wandb_metrics=wandb_metrics,
                 )
                 policy_state, ppo_metrics = _train_policy(
                     policy_state,
@@ -1162,9 +1363,11 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                     batch_size=args.policy_batch_size,
                     horizon=args.imag_horizon,
                     rng=rng,
-                    log_every=max(1, args.online_policy_train_steps // 5),
+                    log_every=args.log_every,
                     quiet=args.quiet,
                     label=f"run {run_index} online {iteration} policy",
+                    metrics_logger=metrics_logger,
+                    wandb_metrics=wandb_metrics,
                 )
             else:
                 policy_state, ppo_metrics = _train_policy_real(
@@ -1175,12 +1378,11 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                     ppo_config,
                     steps_per_env=args.online_collect_steps,
                     rollout_steps=args.mf_rollout_steps,
-                    log_every=max(
-                        1, args.online_collect_steps // args.mf_rollout_steps // 5
-                    ),
+                    log_every=args.log_every,
                     quiet=args.quiet,
                     label=f"run {run_index} model-free online {iteration}",
-                    wandb_run=wandb_run,
+                    metrics_logger=metrics_logger,
+                    wandb_metrics=wandb_metrics,
                 )
             key, iter_eval_key = jax.random.split(key)
             iteration_return = _eval_return(
@@ -1218,6 +1420,19 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
             action_mode=action_mode,
         )
         record_eval("final", total_steps_per_env, trained_return)
+        _save_policy_checkpoint(
+            run_dir,
+            policy_state,
+            args=args,
+            config=config,
+            ppo_config=ppo_config,
+            genie_module=genie_module,
+            genie_state=genie_state,
+            action_mode=action_mode,
+            obs_dim=obs_dim,
+            action_dim=int(adapter.action_dim),
+            seed=seed,
+        )
         if wandb_run is not None:
             wandb_run.summary.update(
                 {

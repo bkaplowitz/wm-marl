@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 
 from world_marl.envs.meltingpot_adapter import VectorStep
@@ -142,6 +144,87 @@ class PixelPointMassAdapter:
             high=self.action_high,
             size=(self.num_envs, self.action_dim),
         ).astype(np.float32)[:, None, :]
+
+    def scan_random_sequence(
+        self,
+        time_steps: int,
+        *,
+        key: jax.Array,
+        observations: np.ndarray,
+    ) -> tuple[jax.Array, ...]:
+        del observations
+        if time_steps <= 0:
+            raise ValueError("time_steps must be positive")
+        target = jnp.asarray(self._target, dtype=jnp.float32)
+        grid_x = jnp.asarray(self._grid_x, dtype=jnp.float32)
+        grid_y = jnp.asarray(self._grid_y, dtype=jnp.float32)
+
+        def render(positions: jax.Array) -> jax.Array:
+            dx = grid_x[None] - positions[:, 0, None, None]
+            dy = grid_y[None] - positions[:, 1, None, None]
+            agent = jnp.exp(-18.0 * (dx * dx + dy * dy))
+            target_dx = grid_x - target[0]
+            target_dy = grid_y - target[1]
+            target_blob = jnp.exp(
+                -18.0 * (target_dx * target_dx + target_dy * target_dy)
+            )
+            target_batch = jnp.broadcast_to(target_blob, agent.shape)
+            blue = 0.15 + 0.35 * jnp.maximum(agent, target_batch)
+            return jnp.clip(jnp.stack([agent, target_batch, blue], axis=-1), 0.0, 1.0)
+
+        def step(carry, _):
+            positions, lengths, reward, terminal, last, step_key = carry
+            step_key, action_key, reset_key = jax.random.split(step_key, 3)
+            actions = jax.random.uniform(
+                action_key,
+                (self.num_envs, self.action_dim),
+                minval=-1.0,
+                maxval=1.0,
+            )
+            actions = jnp.where(last[:, None], 0.0, actions)
+            stepped_positions = jnp.clip(positions + 0.18 * actions, -1.0, 1.0)
+            stepped_lengths = lengths + 1
+            distance = jnp.linalg.norm(stepped_positions - target[None], axis=-1)
+            stepped_reward = 1.0 - distance
+            stepped_terminal = distance < 0.12
+            stepped_last = jnp.logical_or(
+                stepped_terminal, stepped_lengths >= self.max_cycles
+            )
+            reset_positions = jax.random.uniform(
+                reset_key,
+                (self.num_envs, 2),
+                minval=-0.75,
+                maxval=-0.25,
+            )
+            next_positions = jnp.where(
+                last[:, None],
+                reset_positions,
+                stepped_positions,
+            )
+            next_lengths = jnp.where(last, 0, stepped_lengths)
+            next_reward = jnp.where(last, 0.0, stepped_reward)
+            next_terminal = jnp.where(last, False, stepped_terminal)
+            next_last = jnp.where(last, False, stepped_last)
+            outputs = (render(positions), actions, reward, terminal, last)
+            return (
+                next_positions,
+                next_lengths,
+                next_reward,
+                next_terminal,
+                next_last,
+                step_key,
+            ), outputs
+
+        initial = (
+            jnp.asarray(self._positions, dtype=jnp.float32),
+            jnp.asarray(self._episode_lengths, dtype=jnp.int32),
+            jnp.zeros((self.num_envs,), dtype=jnp.float32),
+            jnp.zeros((self.num_envs,), dtype=bool),
+            jnp.zeros((self.num_envs,), dtype=bool),
+            key,
+        )
+        _, outputs = jax.lax.scan(step, initial, None, length=time_steps)
+        return outputs
 
     def close(self) -> None:
         return None

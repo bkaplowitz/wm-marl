@@ -1,5 +1,15 @@
 """Representation-space SIGReg/JEPA world-model components."""
 
+from world_marl.jepa.decoder import (
+    DecoderConfig,
+    ObservationDecoder,
+    create_decoder_train_state,
+    decode_open_loop_rollout,
+    decoder_reconstruction_mse,
+    encode_observations,
+    select_display_trajectories,
+    train_decoder_step,
+)
 from world_marl.jepa.models import JepaConfig, JepaWorldModel
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
@@ -14,6 +24,7 @@ from world_marl.jepa.training import (
     evaluate_open_loop,
     lambda_returns,
     latent_collapse_metrics,
+    open_loop_predicted_latents,
     reset_policy_heads,
     reward_only_returns,
     select_continuous_actions,
@@ -23,25 +34,34 @@ from world_marl.jepa.training import (
 )
 
 __all__ = [
+    "DecoderConfig",
     "JepaConfig",
     "JepaTrainState",
     "JepaWorldModel",
+    "ObservationDecoder",
     "ReplayBatch",
     "SequenceReplayBuffer",
     "actor_value_from_latent",
     "actor_value_stats_from_latent",
     "continuous_candidate_distill_step",
     "continuous_policy_train_step",
+    "create_decoder_train_state",
     "create_jepa_train_state",
     "critic_warmup_step",
+    "decode_open_loop_rollout",
+    "decoder_reconstruction_mse",
     "discrete_policy_train_step",
+    "encode_observations",
     "evaluate_open_loop",
     "lambda_returns",
     "latent_collapse_metrics",
+    "open_loop_predicted_latents",
     "reset_policy_heads",
     "reward_only_returns",
     "select_continuous_actions",
     "select_discrete_actions",
+    "select_display_trajectories",
     "sigreg_loss",
+    "train_decoder_step",
     "train_model_step",
 ]

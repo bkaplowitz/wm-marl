@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 
+from world_marl.world_model_foundation.preprocess import normalize_observations
 from world_marl.world_model_foundation.replay import (
     WorldModelSequenceBatch,
     synthetic_observation_batch,
@@ -49,14 +50,13 @@ def make_single_agent_adapter(
             num_workers=dmc_workers,
         )
     if env_name.startswith("dmc:"):
-        from world_marl.envs.dmc_adapter import DMCVectorAdapter, dmc_env_name
+        from world_marl.envs.playground_dmc_adapter import PlaygroundDMCAdapter
 
-        return DMCVectorAdapter(
-            dmc_env_name(env_name),
+        return PlaygroundDMCAdapter(
+            env_name.split(":", 1)[1],
             num_envs=num_envs,
             max_cycles=max_cycles,
             seed=seed,
-            num_workers=dmc_workers,
         )
     if env_name.startswith("brax:"):
         from world_marl.envs.brax_adapter import BraxVectorAdapter, brax_env_name
@@ -161,51 +161,66 @@ def collect_adapter_sequence(
     if time_steps <= 0:
         raise ValueError("time_steps must be positive")
 
-    rng = np.random.default_rng(seed)
     action_mode = adapter_action_mode(adapter)
     num_envs = int(getattr(adapter, "num_envs"))
     observation_shape = tuple(int(dim) for dim in getattr(adapter, "observation_shape"))
     action_shape = tuple(int(dim) for dim in getattr(adapter, "action_shape", ()))
     action_dim = int(getattr(adapter, "action_dim"))
 
-    observations = np.empty(
-        (time_steps, num_envs, *observation_shape), dtype=np.float32
-    )
-    if action_mode == "discrete":
-        actions = np.empty((time_steps, num_envs), dtype=np.int32)
-    else:
-        actions = np.empty((time_steps, num_envs, action_dim), dtype=np.float32)
-    rewards = np.empty((time_steps, num_envs), dtype=np.float32)
-    continues = np.empty((time_steps, num_envs), dtype=np.float32)
-    is_first = np.zeros((time_steps, num_envs), dtype=bool)
-    is_terminal = np.zeros((time_steps, num_envs), dtype=bool)
-    is_first[0, :] = True
-
     current_obs = _squeeze_single_agent_axis(adapter.reset(), num_envs=num_envs)
-    for step_index in range(time_steps):
-        observations[step_index] = current_obs.reshape((num_envs, *observation_shape))
-        sampled_actions = _sample_adapter_actions(adapter, rng, action_mode=action_mode)
-        actions[step_index] = _store_actions(
-            sampled_actions,
-            num_envs=num_envs,
-            action_dim=action_dim,
-            action_mode=action_mode,
+    scan_random_sequence = getattr(adapter, "scan_random_sequence", None)
+    if scan_random_sequence is None:
+        raise RuntimeError(
+            f"adapter {getattr(adapter, 'substrate', 'unknown')!r} must implement "
+            "scan_random_sequence; host-loop collection is not supported"
         )
-        step = adapter.step(sampled_actions)
-        step_rewards = _squeeze_single_agent_axis(step.rewards, num_envs=num_envs)
-        step_dones = _squeeze_single_agent_axis(step.dones, num_envs=num_envs)
-        rewards[step_index] = step_rewards.reshape((num_envs,)).astype(np.float32)
-        terminal = step_dones.reshape((num_envs,)).astype(np.float32) > 0.5
-        is_terminal[step_index] = terminal
-        continues[step_index] = 1.0 - terminal.astype(np.float32)
-        current_obs = _squeeze_single_agent_axis(step.observations, num_envs=num_envs)
+    import jax
+
+    scanned = scan_random_sequence(
+        time_steps,
+        key=jax.random.PRNGKey(seed),
+        observations=current_obs,
+    )
+    observations, actions, rewards, is_terminal, is_last = jax.device_get(scanned)
+    observations = np.asarray(observations).reshape(
+        (time_steps, num_envs, *observation_shape)
+    )
+    action_dtype = np.int32 if action_mode == "discrete" else np.float32
+    action_suffix = () if action_mode == "discrete" else (action_dim,)
+    actions = np.asarray(actions, dtype=action_dtype).reshape(
+        (time_steps, num_envs, *action_suffix)
+    )
+    rewards = np.asarray(rewards, dtype=np.float32).reshape((time_steps, num_envs))
+    is_terminal = np.asarray(is_terminal, dtype=bool).reshape((time_steps, num_envs))
+    is_last = np.asarray(is_last, dtype=bool).reshape((time_steps, num_envs))
+    if np.any(is_terminal & ~is_last):
+        raise ValueError("terminal records must also be last records")
+    continues = 1.0 - is_terminal.astype(np.float32)
+    is_first = np.zeros((time_steps, num_envs), dtype=bool)
+    is_first[0] = True
+    is_first[1:] = is_last[:-1]
+    collection_execution = "jax_scan"
+
+    if len(observation_shape) == 3:
+        if observations.dtype == np.uint8:
+            observations = normalize_observations(observations)
+        else:
+            observations = np.asarray(observations, dtype=np.float32)
+            if not np.all(np.isfinite(observations)):
+                raise ValueError("pixel observations must be finite")
+            if np.any(observations < 0.0) or np.any(observations > 1.0):
+                raise ValueError(
+                    "floating-point pixel observations must already be in [0, 1]"
+                )
+    else:
+        observations = np.asarray(observations, dtype=np.float32)
 
     environment_name = env_name or getattr(adapter, "substrate", "adapter")
     environment_metadata = dict(getattr(adapter, "environment_metadata", {}))
     namespace = environment_name.split(":", 1)[0]
     inferred_backends = {
         "brax": "brax",
-        "dmc": "dm_control",
+        "dmc": "mujoco_playground",
         "dmc-pixels": "dm_control",
         "gymnax": "gymnax",
         "pixels": "synthetic",
@@ -231,9 +246,20 @@ def collect_adapter_sequence(
         ),
         "action_shape": action_shape,
         "action_dim": action_dim,
+        "action_low": (
+            np.asarray(getattr(adapter, "action_low"), dtype=np.float32).tolist()
+            if getattr(adapter, "action_low", None) is not None
+            else None
+        ),
+        "action_high": (
+            np.asarray(getattr(adapter, "action_high"), dtype=np.float32).tolist()
+            if getattr(adapter, "action_high", None) is not None
+            else None
+        ),
         "num_envs": num_envs,
         "environment_transitions": time_steps * num_envs,
         "real_env_transitions": time_steps * num_envs if is_real_environment else 0,
+        "collection_execution": collection_execution,
     }
     metadata.update(environment_metadata)
 
@@ -244,51 +270,9 @@ def collect_adapter_sequence(
         continues=continues,
         is_first=is_first,
         is_terminal=is_terminal,
+        is_last=is_last,
         metadata=metadata,
     )
-
-
-def _sample_adapter_actions(
-    adapter: Any,
-    rng: np.random.Generator,
-    *,
-    action_mode: ActionMode,
-) -> np.ndarray:
-    sample_actions = getattr(adapter, "sample_actions", None)
-    if sample_actions is not None:
-        return np.asarray(sample_actions(rng))
-
-    num_envs = int(getattr(adapter, "num_envs"))
-    action_dim = int(getattr(adapter, "action_dim"))
-    if action_mode == "discrete":
-        return rng.integers(
-            low=0,
-            high=action_dim,
-            size=(num_envs, 1),
-            dtype=np.int32,
-        )
-
-    low = np.asarray(getattr(adapter, "action_low", -1.0), dtype=np.float32).reshape(
-        (action_dim,)
-    )
-    high = np.asarray(getattr(adapter, "action_high", 1.0), dtype=np.float32).reshape(
-        (action_dim,)
-    )
-    return rng.uniform(low=low, high=high, size=(num_envs, action_dim)).astype(
-        np.float32
-    )
-
-
-def _store_actions(
-    actions: np.ndarray,
-    *,
-    num_envs: int,
-    action_dim: int,
-    action_mode: ActionMode,
-) -> np.ndarray:
-    if action_mode == "discrete":
-        return np.asarray(actions, dtype=np.int32).reshape((num_envs,))
-    return np.asarray(actions, dtype=np.float32).reshape((num_envs, action_dim))
 
 
 def _squeeze_single_agent_axis(array: Any, *, num_envs: int) -> np.ndarray:
@@ -330,6 +314,7 @@ def synthetic_sequence_collector(
         continues=batch.continues,
         is_first=batch.is_first,
         is_terminal=batch.is_terminal,
+        is_last=batch.is_last,
         metadata=metadata,
     )
 

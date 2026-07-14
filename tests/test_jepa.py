@@ -5,6 +5,15 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from world_marl.jepa.decoder import (
+    DecoderConfig,
+    create_decoder_train_state,
+    decode_open_loop_rollout,
+    decoder_reconstruction_mse,
+    encode_observations,
+    select_display_trajectories,
+    train_decoder_step,
+)
 from world_marl.jepa.models import (
     JepaConfig,
     JepaWorldModel,
@@ -35,9 +44,17 @@ from world_marl.jepa.validation import (
     candidate_refit_gate_report,
     merge_online_policy_baseline,
     online_history_metrics,
+    policy_selection_report,
+    real_step_accounting,
     run_passed as dmc_run_passed,
     sample_online_candidate_batch,
     summarize as summarize_dmc_jepa,
+)
+from world_marl.scripts.compare_single_wm import _flag_tokens
+from world_marl.scripts.write_dmc_vector_launcher import (
+    COMMON_PARAMS,
+    PRESETS,
+    params_to_shell_args,
 )
 
 
@@ -1076,6 +1093,25 @@ def test_online_candidate_batch_mixes_anchor_and_recent_replay():
     assert np.all(np.asarray(batch.observations[2:]) >= 100.0)
 
 
+def test_real_step_accounting_tolerates_disabled_candidate_refit():
+    accounting = real_step_accounting(
+        initial_train_replay_env_steps=100,
+        initial_validation_env_steps=10,
+        initial_policy_outcome={"policy_total_eval_env_steps": 5},
+        online_history=[
+            {
+                "actor_replay": {"env_steps": 20},
+                "recent_policy_validation": None,
+                "candidate_policy": {},
+            }
+        ],
+    )
+
+    assert accounting["real_online_validation_env_steps"] == 0
+    assert accounting["real_train_replay_env_steps"] == 120
+    assert accounting["real_total_env_steps"] == 135
+
+
 def test_candidate_refit_gate_requires_recent_improvement_and_anchor_preservation():
     accepted = candidate_refit_gate_report(
         {"model/open_loop_loss": 0.40, "model/jepa_loss": 0.10},
@@ -1414,8 +1450,11 @@ def test_online_policy_outcome_keeps_original_baseline_for_summary():
     assert merged["policy_pre_online_trained_mean"] == 40.0
     assert merged["policy_online_total_improvement_vs_pre_online"] == 20.0
     assert merged["policy_improvement"] == 50.0
-    assert merged["policy_primary_improvement"] == 10.0
-    assert merged["policy_primary_improvement_key"] == "policy_online_phase_improvement"
+    assert merged["policy_primary_improvement"] == 20.0
+    assert (
+        merged["policy_primary_improvement_key"]
+        == "policy_online_total_improvement_vs_pre_online"
+    )
     assert merged["policy_trained_minus_random"] == 59.0
     assert merged["policy_passed"]
 
@@ -1443,7 +1482,7 @@ def test_online_policy_regression_fails_even_when_total_return_improves():
     merged = merge_online_policy_baseline(final, initial)
 
     assert merged["policy_improvement"] == 30.0
-    assert merged["policy_primary_improvement"] == -10.0
+    assert merged["policy_primary_improvement"] == -5.0
     assert merged["policy_online_total_improvement_vs_pre_online"] == -5.0
     assert not merged["policy_passed"]
 
@@ -1470,12 +1509,55 @@ def test_online_policy_fails_when_phase_improves_but_loses_pre_online_actor():
 
     merged = merge_online_policy_baseline(final, initial)
 
-    assert merged["policy_primary_improvement"] == 20.0
+    assert merged["policy_primary_improvement"] == -30.0
+    assert merged["policy_online_phase_improvement"] == 20.0
     assert merged["policy_online_total_improvement_vs_pre_online"] == -30.0
     assert not merged["policy_passed"]
 
 
-def test_dmc_jepa_summary_uses_online_phase_as_primary_policy_signal():
+def test_online_policy_converged_run_passes_on_cumulative_improvement():
+    initial = {
+        "policy_initial_mean": -405.8,
+        "policy_random_mean": -827.7,
+        "policy_trained_mean": -67.26,
+        "policy_confirmation_initial_mean": -400.0,
+        "policy_confirmation_random_mean": -820.0,
+        "policy_confirmation_trained_mean": -37.16,
+    }
+    final = {
+        "policy_initial_mean": -33.58,
+        "policy_random_mean": -827.7,
+        "policy_trained_mean": -33.58,
+        "policy_improvement": 0.0,
+        "policy_trained_minus_random": 794.12,
+        "policy_confirmation_enabled": True,
+        "policy_confirmation_improvement": 0.0,
+        "policy_confirmation_trained_mean": -33.58,
+        "policy_final_metrics": {
+            "policy/action_saturation_fraction": 0.1,
+        },
+        "critic_final_metrics": {
+            "critic/finite_fraction": 1.0,
+        },
+    }
+
+    merged = merge_online_policy_baseline(final, initial)
+
+    assert merged["policy_online_phase_improvement"] == 0.0
+    assert merged["policy_primary_improvement"] == pytest.approx(33.68)
+    assert (
+        merged["policy_primary_improvement_key"]
+        == "policy_online_total_improvement_vs_pre_online"
+    )
+    assert merged[
+        "policy_online_total_confirmation_improvement_vs_pre_online"
+    ] == pytest.approx(3.58)
+    assert merged["policy_primary_confirmation_improvement"] == pytest.approx(3.58)
+    assert merged["policy_confirmation_passed"]
+    assert merged["policy_passed"]
+
+
+def test_dmc_jepa_summary_uses_online_primary_improvement_as_policy_signal():
     def outcome(control: str, total: float, online: float):
         return {
             "run_index": 0,
@@ -1492,9 +1574,9 @@ def test_dmc_jepa_summary_uses_online_phase_as_primary_policy_signal():
             "policy_initial_mean": 10.0,
             "policy_trained_mean": 10.0 + total,
             "policy_improvement": total,
-            "policy_online_phase_improvement": online,
+            "policy_online_total_improvement_vs_pre_online": online,
             "policy_primary_improvement": online,
-            "policy_primary_improvement_key": "policy_online_phase_improvement",
+            "policy_primary_improvement_key": "policy_online_total_improvement_vs_pre_online",
             "policy_trained_minus_random": 10.0 + total,
             "final_model_metrics": {"model/jepa_loss": 0.1},
         }
@@ -1655,3 +1737,295 @@ def test_online_history_metrics_rejects_actor_replay_regression():
     assert metrics["online_actor_replay_iterations"] == 1
     assert metrics["online_actor_replay_vs_initial_policy"] == -3.0
     assert not metrics["online_actor_replay_trend_passed"]
+
+
+def _selection_record(step: int, mean_return: float, selected: bool) -> dict:
+    return {
+        "policy_selection_step": step,
+        "policy_selection_selected": selected,
+        "policy_selection_mean_return": mean_return,
+    }
+
+
+def test_policy_selection_report_best_and_last_from_history():
+    report = policy_selection_report(
+        [
+            _selection_record(0, -32.0, True),
+            _selection_record(250, -28.0, True),
+            _selection_record(500, -30.5, False),
+        ],
+        selection_enabled=True,
+    )
+
+    assert report["policy_best_trained_selection_mean"] == -28.0
+    assert report["policy_best_trained_selection_step"] == 250
+    assert report["policy_last_iterate_selection_mean"] == -30.5
+    assert report["policy_selection_reverted"] is False
+
+
+def test_policy_selection_report_flags_revert_to_step_zero():
+    report = policy_selection_report(
+        [
+            _selection_record(0, -32.0, True),
+            _selection_record(250, -36.0, False),
+            _selection_record(500, -35.0, False),
+        ],
+        selection_enabled=True,
+    )
+
+    assert report["policy_best_trained_selection_mean"] == -35.0
+    assert report["policy_best_trained_selection_step"] == 500
+    assert report["policy_last_iterate_selection_mean"] == -35.0
+    assert report["policy_selection_reverted"] is True
+
+
+def test_policy_selection_report_disabled_returns_nones():
+    disabled = policy_selection_report(
+        [_selection_record(0, -32.0, True)],
+        selection_enabled=False,
+    )
+    empty = policy_selection_report([], selection_enabled=True)
+
+    for report in (disabled, empty):
+        assert report["policy_best_trained_selection_mean"] is None
+        assert report["policy_best_trained_selection_step"] is None
+        assert report["policy_last_iterate_selection_mean"] is None
+        assert report["policy_selection_reverted"] is None
+
+
+def test_online_history_metrics_exposes_best_trained_selection_returns():
+    metrics = online_history_metrics(
+        [
+            {
+                "actor_replay": {"mean_return": 10.0},
+                "policy": {"policy_training_enabled": True, "policy_passed": True},
+                "candidate_policy": {
+                    "policy_training_enabled": True,
+                    "policy_trained_mean": -28.0,
+                    "policy_best_trained_selection_mean": -28.0,
+                    "policy_selection_reverted": False,
+                },
+            },
+            {
+                "actor_replay": {"mean_return": 12.0},
+                "policy": {"policy_training_enabled": True, "policy_passed": True},
+                "candidate_policy": {
+                    "policy_training_enabled": True,
+                    "policy_trained_mean": -28.0,
+                    "policy_best_trained_selection_mean": -35.0,
+                    "policy_selection_reverted": True,
+                },
+            },
+        ],
+        {"policy_trained_mean": 8.0},
+    )
+
+    assert metrics["online_policy_best_trained_selection_returns"] == [-28.0, -35.0]
+    assert metrics["online_policy_selection_reverted"] == [False, True]
+    assert metrics["online_policy_selection_revert_rate"] == 0.5
+
+
+def test_online_history_metrics_tolerates_missing_selection_keys():
+    metrics = online_history_metrics(
+        [
+            {
+                "actor_replay": {"mean_return": 10.0},
+                "policy": {"policy_training_enabled": True, "policy_passed": True},
+                "candidate_policy": {
+                    "policy_training_enabled": True,
+                    "policy_trained_mean": -40.0,
+                    "policy_best_trained_selection_mean": None,
+                    "policy_selection_reverted": None,
+                },
+            },
+            {
+                "actor_replay": {"mean_return": 12.0},
+                "policy": {"policy_training_enabled": True, "policy_passed": True},
+                "candidate_policy": {
+                    "policy_training_enabled": True,
+                    "policy_trained_mean": -35.0,
+                },
+            },
+        ],
+        {"policy_trained_mean": 8.0},
+    )
+
+    assert metrics["online_policy_best_trained_selection_returns"] == [None, None]
+    assert metrics["online_policy_selection_reverted"] == [None, None]
+    assert metrics["online_policy_selection_revert_rate"] is None
+    assert metrics["online_policy_candidate_returns"] == [-40.0, -35.0]
+
+
+def test_dmc_presets_budget_arithmetic():
+    for name in ("offline", "online", "hybrid"):
+        preset = PRESETS[name]
+        iterations = preset["online_iterations"]
+        collect = preset["collect_steps"] + iterations * preset.get(
+            "online_collect_steps", 0
+        )
+        model_updates = preset["train_steps"] + iterations * preset.get(
+            "online_train_steps", 0
+        )
+        policy_updates = preset["policy_train_steps"] + iterations * preset.get(
+            "online_policy_train_steps", 0
+        )
+        assert collect == 32768, name
+        assert model_updates == 30000, name
+        assert policy_updates == 7500, name
+
+    assert PRESETS["mainline"] is PRESETS["hybrid"]
+
+    offline = PRESETS["offline"]
+    assert offline["replay_capacity"] >= offline["collect_steps"] * offline["num_envs"]
+
+    online = PRESETS["online"]
+    assert online["policy_selection_interval"] == 0
+    assert online["online_policy_champion"] is False
+    assert online["policy_selection_episodes"] >= 1
+
+    hybrid = PRESETS["hybrid"]
+    assert hybrid["policy_selection_interval"] > 0
+    assert hybrid["online_policy_champion"] is True
+
+
+def test_params_to_shell_args_negatable_false_emits_no_flag():
+    shell_args = params_to_shell_args({**COMMON_PARAMS, **PRESETS["online"]})
+    tokens = [token for token in shell_args.split() if token != "\\"]
+
+    assert "--no-online-policy-champion" in tokens
+    interval_index = tokens.index("--policy-selection-interval")
+    assert tokens[interval_index + 1] == "0"
+    assert "--clip-imagined-rewards" not in tokens
+
+
+def test_compare_single_wm_flag_tokens_mirror_negation():
+    tokens = _flag_tokens(
+        {
+            "online_policy_champion": False,
+            "clip_imagined_rewards": False,
+            "allow_fail": True,
+        }
+    )
+
+    assert tokens == ["--no-online-policy-champion", "--allow-fail"]
+
+
+def test_decoder_config_validation():
+    with pytest.raises(ValueError):
+        DecoderConfig(latent_dim=0, observation_dim=4)
+    with pytest.raises(ValueError):
+        DecoderConfig(latent_dim=8, observation_dim=4, learning_rate=0.0)
+
+
+def test_decoder_training_reduces_reconstruction_mse():
+    config = _config()
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    decoder_config = DecoderConfig(
+        latent_dim=config.latent_dim,
+        observation_dim=config.observation_dim,
+        hidden_dim=32,
+        learning_rate=1e-2,
+    )
+    decoder_state = create_decoder_train_state(jax.random.PRNGKey(1), decoder_config)
+
+    observations = jax.random.normal(
+        jax.random.PRNGKey(2), (64, config.observation_dim)
+    )
+    latents = encode_observations(state, observations)
+    initial_mse = float(
+        decoder_reconstruction_mse(decoder_state, latents, observations)
+    )
+    for _ in range(200):
+        decoder_state, loss = train_decoder_step(decoder_state, latents, observations)
+    final_mse = float(decoder_reconstruction_mse(decoder_state, latents, observations))
+
+    assert jnp.isfinite(loss)
+    assert final_mse < initial_mse
+
+
+def test_decoder_training_leaves_world_model_untouched():
+    config = _config()
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    decoder_config = DecoderConfig(
+        latent_dim=config.latent_dim,
+        observation_dim=config.observation_dim,
+        hidden_dim=32,
+    )
+    decoder_state = create_decoder_train_state(jax.random.PRNGKey(1), decoder_config)
+
+    observations = jax.random.normal(
+        jax.random.PRNGKey(2), (16, config.observation_dim)
+    )
+    params_before = jax.tree_util.tree_map(lambda leaf: leaf.copy(), state.params)
+    latents = encode_observations(state, observations)
+    decoder_state, _ = train_decoder_step(decoder_state, latents, observations)
+
+    jax.tree_util.tree_map(
+        np.testing.assert_array_equal,
+        jax.device_get(params_before),
+        jax.device_get(state.params),
+    )
+
+
+def test_decode_open_loop_rollout_shapes_match_plot_contract():
+    config = _config()
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    decoder_config = DecoderConfig(
+        latent_dim=config.latent_dim,
+        observation_dim=config.observation_dim,
+        hidden_dim=32,
+    )
+    decoder_state = create_decoder_train_state(jax.random.PRNGKey(1), decoder_config)
+    horizon = 3
+    batch = ReplayBatch(
+        observations=jax.random.normal(
+            jax.random.PRNGKey(2),
+            (2, config.context_window + horizon, config.observation_dim),
+        ),
+        actions=jnp.zeros((2, config.context_window + horizon - 1), dtype=jnp.int32),
+        rewards=jnp.zeros((2, config.context_window + horizon - 1), dtype=jnp.float32),
+        dones=jnp.zeros((2, config.context_window + horizon - 1), dtype=jnp.float32),
+    )
+
+    rollout = decode_open_loop_rollout(
+        state, decoder_state, batch, config, horizon=horizon
+    )
+
+    obs_dim = config.observation_dim
+    assert rollout["context_observations"].shape == (2, config.context_window, obs_dim)
+    assert rollout["real_observations"].shape == (2, horizon, obs_dim)
+    assert rollout["decoded_context"].shape == (2, config.context_window, obs_dim)
+    assert rollout["reconstructed_observations"].shape == (2, horizon, obs_dim)
+    assert rollout["imagined_observations"].shape == (2, horizon, obs_dim)
+    assert rollout["open_loop_cosine"].shape == (2, horizon)
+    assert rollout["validity"].shape == (2, horizon)
+    assert np.asarray(rollout["validity"]).all()
+    for value in rollout.values():
+        assert np.isfinite(np.asarray(value)).all()
+
+
+def test_select_display_trajectories_prefers_reset_free_windows():
+    observations = jnp.arange(4 * 4 * 2, dtype=jnp.float32).reshape((4, 4, 2))
+    dones = jnp.asarray(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ],
+        dtype=jnp.float32,
+    )
+    batch = ReplayBatch(
+        observations=observations,
+        actions=jnp.zeros((4, 3), dtype=jnp.int32),
+        rewards=jnp.zeros((4, 3), dtype=jnp.float32),
+        dones=dones,
+    )
+
+    chosen = select_display_trajectories(batch, context_window=1, horizon=3, count=2)
+
+    assert chosen.observations.shape == (2, 4, 2)
+    np.testing.assert_array_equal(
+        np.asarray(chosen.observations),
+        np.asarray(observations[jnp.asarray([1, 3])]),
+    )

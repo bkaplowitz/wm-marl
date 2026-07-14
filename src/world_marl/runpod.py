@@ -99,6 +99,8 @@ def default_train_args(args: argparse.Namespace) -> list[str]:
         "4",
         "--activation",
         "relu",
+        "--wandb-project",
+        "wm-marl",
     ]
 
 
@@ -136,6 +138,7 @@ def parse_args() -> argparse.Namespace:
             "compare-world-models",
             "benchmark-policy",
             "compare-single-wm",
+            "frontier-world-model-quality",
             "optuna-single-genwm",
         ),
         default="compare-world-models",
@@ -143,7 +146,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--name-prefix", default="wm-marl")
     parser.add_argument("--template-id", default="runpod-torch-v240")
-    parser.add_argument("--gpu-id", default="NVIDIA L40S")
+    parser.add_argument("--gpu-id", default="NVIDIA GeForce RTX 5090")
     parser.add_argument("--gpu-count", type=int, default=1)
     parser.add_argument(
         "--cloud-type", default="SECURE", choices=("SECURE", "COMMUNITY")
@@ -197,12 +200,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--remote-out-root", default="/workspace/outputs/wm_marl")
     parser.add_argument("--local-out-root", default="runs/runpod")
     parser.add_argument("--skip-uv-sync", action="store_true")
-    parser.add_argument(
-        "--push-wandb-netrc",
-        action="store_true",
-        help="Copy the local ~/.netrc api.wandb.ai entry to the pod's ~/.netrc "
-        "over ssh stdin (the key never appears in argv or the manifest).",
-    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--prefit-train-steps",
@@ -253,6 +250,13 @@ def utc_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+def required_sync_extras(args: argparse.Namespace) -> list[str]:
+    extras = list(args.sync_extra)
+    if args.job == "frontier-world-model-quality" and "dmc" not in extras:
+        extras.append("dmc")
+    return extras
+
+
 def write_manifest(local_out_dir: Path, manifest: dict[str, Any]) -> Path:
     local_out_dir.mkdir(parents=True, exist_ok=True)
     path = local_out_dir / "manifest.json"
@@ -264,6 +268,7 @@ def write_manifest(local_out_dir: Path, manifest: dict[str, Any]) -> Path:
 
 def main() -> int:
     args = parse_args()
+    sync_extras = required_sync_extras(args)
     repo_root = Path(args.repo_root).expanduser().resolve()
     ssh_key = Path(args.ssh_key).expanduser().resolve()
     run_id = utc_stamp()
@@ -280,7 +285,7 @@ def main() -> int:
             ssh_key=ssh_key,
             remote_repo_dir=args.remote_repo_dir,
             skip_uv_sync=args.skip_uv_sync,
-            sync_extras=args.sync_extra,
+            sync_extras=sync_extras,
         )
         return 0
 
@@ -289,6 +294,9 @@ def main() -> int:
     ensure_runpod_api_key(repo_root)
     if not ssh_key.exists():
         raise SystemExit(f"SSH key not found: {ssh_key}")
+    push_netrc = command_uses_wandb(job.command)
+    if push_netrc:
+        read_wandb_netrc_entry()
 
     pod_id: str | None = None
     manifest: dict[str, Any] = {
@@ -318,14 +326,14 @@ def main() -> int:
         ssh_info = wait_for_ssh(pod_id, ssh_key, args)
         ensure_remote_rsync(ssh_info)
         sync_repo(repo_root, args.remote_repo_dir, ssh_info)
-        if args.push_wandb_netrc:
+        if push_netrc:
             push_wandb_netrc(ssh_info)
         start_remote_job_detached(
             args.remote_repo_dir,
             job.command,
             ssh_info,
             args.skip_uv_sync,
-            args.sync_extra,
+            sync_extras,
             job.remote_out_dir,
         )
         detached_running = True
@@ -473,6 +481,21 @@ def build_job_spec(args: argparse.Namespace, run_id: str) -> JobSpec:
                 "uv",
                 "run",
                 "world-marl-compare-single-wm",
+                *job_args,
+            ],
+        )
+    if args.job == "frontier-world-model-quality":
+        job_args = [*args.job_args, "--out-dir", remote_out_dir]
+        return JobSpec(
+            remote_out_dir=remote_out_dir,
+            local_out_dir=local_out_dir,
+            command=[
+                "env",
+                f"XLA_FLAGS={DEFAULT_XLA_FLAGS}",
+                "MUJOCO_GL=egl",
+                "uv",
+                "run",
+                "world-marl-frontier-wm-quality",
                 *job_args,
             ],
         )
@@ -714,30 +737,49 @@ def ssh_script_command(info: SshInfo, script: str) -> list[str]:
     return [*ssh_base(info), f"bash -lc {shlex.quote(script)}"]
 
 
+def command_uses_wandb(command: list[str]) -> bool:
+    """True when the job command enables W&B logging (``--wandb-project``)."""
+    return any(
+        token == "--wandb-project" or token.startswith("--wandb-project=")
+        for token in command
+    )
+
+
+def read_wandb_netrc_entry() -> str:
+    """Read the local api.wandb.ai netrc entry, failing fast when absent."""
+    netrc_path = Path.home() / ".netrc"
+    if not netrc_path.exists():
+        raise SystemExit(
+            "job uses wandb but no local ~/.netrc exists; run 'wandb login' first"
+        )
+    auth = netrc.netrc(netrc_path).authenticators("api.wandb.ai")
+    if auth is None:
+        raise SystemExit(
+            "job uses wandb but ~/.netrc has no api.wandb.ai entry; "
+            "run 'wandb login' first"
+        )
+    login, _, password = auth
+    return f"machine api.wandb.ai\n  login {login}\n  password {password}\n"
+
+
 def push_wandb_netrc(info: SshInfo) -> None:
     """Append the local api.wandb.ai netrc entry to the pod's ~/.netrc.
 
     The entry travels over ssh stdin only — ``run()`` prints argv, so the key
     must never be part of the command line (or the manifest).
     """
-    netrc_path = Path.home() / ".netrc"
-    if not netrc_path.exists():
-        raise SystemExit("--push-wandb-netrc: no local ~/.netrc found")
-    auth = netrc.netrc(netrc_path).authenticators("api.wandb.ai")
-    if auth is None:
-        raise SystemExit("--push-wandb-netrc: no api.wandb.ai entry in ~/.netrc")
-    login, _, password = auth
-    entry = f"machine api.wandb.ai\n  login {login}\n  password {password}\n"
+    entry = read_wandb_netrc_entry()
     cmd = ssh_script_command(info, "umask 077; cat >> ~/.netrc")
     print("+ (writing api.wandb.ai netrc entry to pod over ssh stdin)", flush=True)
     subprocess.run(cmd, check=True, text=True, input=entry)
 
 
 def ensure_remote_rsync(info: SshInfo) -> None:
-    """Ensure the remote rsync is installed on a Runpod pod."""
+    """Ensure remote transfer and headless EGL runtime packages are installed."""
     script = (
-        "command -v rsync >/dev/null 2>&1 || "
-        "(apt-get update && apt-get install -y rsync)"
+        "if ! command -v rsync >/dev/null 2>&1 || "
+        "! test -e /usr/lib/x86_64-linux-gnu/libEGL.so.1; then "
+        "apt-get update && apt-get install -y rsync libegl1; fi"
     )
     run([*ssh_base(info), script])
 
@@ -798,6 +840,16 @@ def remote_job_script(
             f" --extra {extra}" for extra in ("dev", "cuda12", *sync_extras)
         )
         commands.append(f"uv sync --python 3.11{extras}")
+    if "dmc" in sync_extras:
+        commands.extend(
+            [
+                'PLAYGROUND_SITE=$(uv run python -c "import sysconfig; '
+                "print(sysconfig.get_path('purelib'))\")",
+                'MENAGERIE_DIR="$PLAYGROUND_SITE/mujoco_playground/'
+                'external_deps/mujoco_menagerie"',
+                'mkdir -p "$MENAGERIE_DIR"',
+            ]
+        )
     commands.extend(
         [
             "uv run world-marl-verify-install",

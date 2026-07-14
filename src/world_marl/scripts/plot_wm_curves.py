@@ -27,6 +27,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from world_marl.scripts.plot_brax_diagnostics import (
+    aggregate_curve,
+    plot_aggregate_curve,
+    style_paper_axis,
+)
+
 JEPA_ARM = "jepa"
 
 
@@ -155,6 +161,36 @@ def collect_curves(
     return curves
 
 
+def arm_aggregate(
+    records: list[dict[str, Any]],
+) -> tuple[list[dict[str, float]], float | None]:
+    """Mean/min/max curve over an arm's seed records plus mean final return."""
+    rows = [
+        {"point": float(x), "value": float(y)}
+        for record in records
+        for x, y in record["points"]
+    ]
+    curve = aggregate_curve(rows, x_key="point", y_key="value")
+    finals = [float(record["points"][-1][1]) for record in records if record["points"]]
+    final_mean = sum(finals) / len(finals) if finals else None
+    return curve, final_mean
+
+
+def sorted_arm_summaries(
+    arms: dict[str, list[dict[str, Any]]],
+) -> list[tuple[str, list[dict[str, float]], float | None]]:
+    """(arm, aggregate curve, final mean) tuples, best final return first."""
+    summaries = [(arm, *arm_aggregate(records)) for arm, records in arms.items()]
+    summaries.sort(
+        key=lambda item: (
+            item[2] is None,
+            -item[2] if item[2] is not None else 0.0,
+            item[0],
+        )
+    )
+    return summaries
+
+
 def write_plot(
     curves: dict[str, dict[str, list[dict[str, Any]]]], out_path: Path
 ) -> None:
@@ -165,10 +201,28 @@ def write_plot(
     import numpy as np
 
     envs = list(curves)
-    fig, axes = plt.subplots(1, len(envs), figsize=(7 * len(envs), 5), squeeze=False)
+    fig, axes = plt.subplots(1, len(envs), figsize=(7.5 * len(envs), 5), squeeze=False)
     colors = plt.get_cmap("tab10")
     for axis, env in zip(axes[0], envs):
         arms = curves[env]
+        color_index = {arm: index for index, arm in enumerate(sorted(arms))}
+        summaries = sorted_arm_summaries(arms)
+        band_values: list[float] = []
+        for arm, curve, final_mean in summaries:
+            color = colors(color_index[arm] % 10)
+            label = arm if final_mean is None else f"{arm} (final {final_mean:.1f})"
+            plot_aggregate_curve(axis, curve, color=color, label=label, shade=True)
+            xs = [row["x"] for row in curve]
+            means = [row["mean"] for row in curve]
+            axis.plot(
+                xs, means, linestyle="none", marker="o", markersize=4, color=color
+            )
+            band_values.extend(row["low"] for row in curve)
+            band_values.extend(row["high"] for row in curve)
+        low, high = min(band_values), max(band_values)
+        margin = 0.05 * (high - low) or 1.0
+        low, high = low - margin, high + margin
+        axis.set_ylim(low, high)
         randoms = [
             record["random_return"]
             for records in arms.values()
@@ -176,34 +230,33 @@ def write_plot(
             if record["random_return"] is not None
         ]
         if randoms:
-            axis.axhline(
-                float(np.mean(randoms)),
-                color="grey",
-                linestyle="--",
-                linewidth=1,
-                label="random",
-            )
-        for arm_index, (arm, records) in enumerate(sorted(arms.items())):
-            color = colors(arm_index % 10)
-            for record_index, record in enumerate(records):
-                xs, ys = zip(*record["points"])
-                axis.plot(
-                    xs,
-                    ys,
-                    marker="o",
-                    markersize=3,
-                    color=color,
-                    alpha=1.0 if len(records) == 1 else 0.7,
-                    label=arm if record_index == 0 else None,
+            random_mean = float(np.mean(randoms))
+            if low <= random_mean <= high:
+                axis.axhline(
+                    random_mean,
+                    color="grey",
+                    linestyle="--",
+                    linewidth=1,
+                    label=f"random ({random_mean:.1f})",
                 )
-        axis.set_title(env)
-        axis.set_xlabel("real env transitions")
-        axis.set_ylabel("mean episode return")
-        axis.grid(alpha=0.3)
-        axis.legend(fontsize=8)
+            else:
+                axis.annotate(
+                    f"random = {random_mean:.1f} (below axis)",
+                    xy=(0.02, 0.03),
+                    xycoords="axes fraction",
+                    fontsize=9,
+                    color="grey",
+                )
+        style_paper_axis(
+            axis,
+            title=f"{env} (mean over seeds, min/max shaded)",
+            xlabel="real env transitions",
+            ylabel="mean episode return",
+        )
+        axis.legend(fontsize=10, loc="lower right")
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path, dpi=240, bbox_inches="tight")
     plt.close(fig)
 
 

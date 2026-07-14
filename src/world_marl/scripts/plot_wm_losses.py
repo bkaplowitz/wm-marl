@@ -10,11 +10,16 @@ Loss sources per arm:
 - jepa: ``model/total_loss`` (or ``--jepa-metric``) from
   ``none/run_*/metrics.jsonl``, indexed by logged train checkpoint — the same
   rows ``plot_brax_diagnostics`` plots.
-- genwm arms: ``[run N ... fit] step i/S wm_loss=...`` and
-  ``[run N ... policy] step i/S ppo_loss=...`` lines captured in each job's
-  ``console.log``, with the step axis accumulated across the offline fit and
-  online refit segments.
-- model-free: ``[run N model-free] update i/U ppo_loss=...`` console lines.
+- genwm arms / model-free: ``metrics.jsonl`` records written by
+  ``train_single_genwm`` through the shared ``RunLogger`` into each run dir
+  (``phase``/``step``/``total`` plus the trainer's metric values), with the
+  step axis accumulated across the offline fit and online refit phases.
+  ``wm_loss`` records feed the wm_loss figure; policy/model-free
+  ``total_loss`` records feed ppo_loss. The ppo_loss x axis is converted from
+  update counts to transitions consumed per update using the experiment's
+  ``config.json`` (model-free: ``mf_rollout_steps * num_envs`` real
+  transitions; WM policy phases: ``policy_batch_size * imag_horizon``
+  imagined transitions, selected by the record's phase label).
 """
 
 from __future__ import annotations
@@ -22,7 +27,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -32,33 +36,57 @@ from world_marl.scripts.plot_brax_diagnostics import (
     plot_aggregate_curve,
     style_paper_axis,
 )
+from world_marl.scripts.plot_wm_curves import _find_config
 
 JEPA_ARM = "jepa"
-
-CONSOLE_LOSS_PATTERN = re.compile(
-    r"\[run \d+(?P<segment>(?: online \d+)? (?:fit|policy)| model-free)\]"
-    r" (?:step|update) (?P<step>\d+)/(?P<total>\d+)"
-    r" (?P<metric>wm_loss|ppo_loss)=(?P<value>[-+0-9.eE]+)"
-)
+MODEL_FREE_ARM = "model-free"
 
 
-def parse_console_losses(console_path: Path) -> dict[str, list[tuple[int, float]]]:
-    """Extract cumulative-step (x, loss) points from a job's console.log."""
+def ppo_samples_per_update(config: dict[str, Any], phase: str) -> int:
+    """Transitions consumed by one PPO update in this phase (1 if unknown)."""
+    if "model-free" in phase:
+        keys = ("mf_rollout_steps", "num_envs")
+    else:
+        keys = ("policy_batch_size", "imag_horizon")
+    factor = 1
+    for key in keys:
+        factor *= int(config.get(key) or 1)
+    return factor
+
+
+def genwm_loss_points(
+    metrics_path: Path, config: dict[str, Any]
+) -> dict[str, list[tuple[int, float]]]:
+    """Cumulative (x, loss) curves from a run's metrics.jsonl records.
+
+    wm_loss x is the cumulative WM train step; ppo_loss x is cumulative
+    transitions consumed by PPO, scaled per update via ``config``.
+    """
     losses: dict[str, list[tuple[int, float]]] = {"wm_loss": [], "ppo_loss": []}
-    segments: dict[str, tuple[str, int, int]] = {}
-    for match in CONSOLE_LOSS_PATTERN.finditer(
-        console_path.read_text(errors="replace")
-    ):
-        metric = match.group("metric")
-        segment = match.group("segment")
-        total = int(match.group("total"))
-        previous_segment, offset, previous_total = segments.get(metric, ("", 0, 0))
-        if segment != previous_segment:
+    phases: dict[str, tuple[str, int, int]] = {}
+    for line in metrics_path.read_text().splitlines():
+        if not line.strip():
+            continue
+        record = json.loads(line)
+        phase = record.get("phase")
+        step = record.get("step")
+        total = record.get("total")
+        if phase is None or step is None or total is None:
+            continue
+        if "wm_loss" in record:
+            metric, value = "wm_loss", record["wm_loss"]
+        elif "total_loss" in record:
+            metric, value = "ppo_loss", record["total_loss"]
+        else:
+            continue
+        previous_phase, offset, previous_total = phases.get(metric, ("", 0, 0))
+        if phase != previous_phase:
             offset += previous_total
-        segments[metric] = (segment, offset, total)
-        losses[metric].append(
-            (offset + int(match.group("step")), float(match.group("value")))
-        )
+        phases[metric] = (phase, offset, int(total))
+        x = offset + int(step)
+        if metric == "ppo_loss":
+            x *= ppo_samples_per_update(config, phase)
+        losses[metric].append((x, float(value)))
     return losses
 
 
@@ -98,11 +126,16 @@ def collect_loss_rows(
                 if arm == JEPA_ARM:
                     curves = {"wm_loss": jepa_loss_points(arm_dir, metric=jepa_metric)}
                 else:
-                    console_path = arm_dir / "console.log"
-                    if not console_path.is_file():
-                        print(f"warning: no console.log in {arm_dir}", flush=True)
+                    metrics_paths = sorted(arm_dir.rglob("metrics.jsonl"))
+                    if not metrics_paths:
+                        print(f"warning: no metrics.jsonl under {arm_dir}", flush=True)
                         continue
-                    curves = parse_console_losses(console_path)
+                    curves = {"wm_loss": [], "ppo_loss": []}
+                    for metrics_path in metrics_paths:
+                        config = _find_config(metrics_path, arm_dir)
+                        points_by_kind = genwm_loss_points(metrics_path, config)
+                        for kind, points in points_by_kind.items():
+                            curves[kind].extend(points)
                 for metric_kind, points in curves.items():
                     if not points:
                         continue
@@ -115,14 +148,25 @@ def collect_loss_rows(
     return rows
 
 
-def write_loss_figure(
+def loss_axis_scale(
     arms: dict[str, list[dict[str, Any]]],
-    out_path: Path,
+) -> tuple[str, float, float]:
+    """Shared y-scale and limits spanning every arm's loss values."""
+    values = [row["value"] for rows in arms.values() for row in rows]
+    low, high = min(values), max(values)
+    if low > 0:
+        return "log", low / 1.5, high * 1.5
+    margin = 0.05 * (high - low) or 1.0
+    return "symlog", low - margin, high + margin
+
+
+def build_loss_figure(
+    arms: dict[str, list[dict[str, Any]]],
     *,
     env: str,
     metric_kind: str,
     jepa_metric: str,
-) -> None:
+) -> tuple[Any, list[Any]]:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -130,8 +174,9 @@ def write_loss_figure(
 
     names = sorted(arms)
     colors = plt.get_cmap("tab10")
+    scale, low, high = loss_axis_scale(arms)
     fig, axes = plt.subplots(
-        1, len(names), figsize=(4.2 * len(names), 3.4), squeeze=False
+        1, len(names), figsize=(4.2 * len(names), 3.4), squeeze=False, sharey=True
     )
     for index, (axis, arm) in enumerate(zip(axes[0], names)):
         curve = aggregate_curve(arms[arm], x_key="point", y_key="value")
@@ -142,11 +187,31 @@ def write_loss_figure(
             xlabel, ylabel = "Logged train checkpoint", jepa_metric
         elif metric_kind == "wm_loss":
             xlabel, ylabel = "WM train step", "wm_loss"
+        elif arm == MODEL_FREE_ARM:
+            xlabel, ylabel = "PPO transitions (real)", "ppo_loss"
         else:
-            xlabel, ylabel = "PPO update", "ppo_loss"
+            xlabel, ylabel = "PPO transitions (imagined)", "ppo_loss"
         style_paper_axis(axis, title=arm, xlabel=xlabel, ylabel=ylabel)
+        axis.set_yscale(scale)
+        axis.set_ylim(low, high)
     fig.suptitle(f"{env} — {metric_kind} (mean over seeds, min/max shaded)", y=1.02)
     fig.tight_layout()
+    return fig, list(axes[0])
+
+
+def write_loss_figure(
+    arms: dict[str, list[dict[str, Any]]],
+    out_path: Path,
+    *,
+    env: str,
+    metric_kind: str,
+    jepa_metric: str,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    fig, _ = build_loss_figure(
+        arms, env=env, metric_kind=metric_kind, jepa_metric=jepa_metric
+    )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=240, bbox_inches="tight")
     plt.close(fig)
