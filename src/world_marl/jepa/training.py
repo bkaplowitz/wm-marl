@@ -582,7 +582,9 @@ def continuous_policy_train_step(
                 gamma=config.gamma,
                 lambda_return=config.lambda_return,
             )
-        clipped_returns = jnp.clip(actor_returns, -value_clip, value_clip)
+        clipped_returns, value_target_clip_fraction, value_clip_enabled = (
+            clip_value_targets(actor_returns, value_clip)
+        )
         weights = survival_weights(rollout["continues"], gamma=config.gamma)
         if policy_actor_baseline == "none":
             actor_scores = clipped_returns
@@ -685,6 +687,12 @@ def continuous_policy_train_step(
             "policy/actor_score": weighted_mean(actor_scores, weights),
             "policy/actor_objective_score": actor_objective,
             "policy/actor_score_std": weighted_std(actor_scores, weights),
+            "policy/advantage_mean": weighted_mean(actor_scores, weights),
+            "policy/advantage_std": weighted_std(actor_scores, weights),
+            "policy/advantage_positive_fraction": weighted_mean(
+                (actor_scores > 0.0).astype(actor_scores.dtype),
+                weights,
+            ),
             "policy/actor_uses_value_baseline": jnp.asarray(
                 float(policy_actor_baseline == "value"),
                 dtype=actor_loss.dtype,
@@ -708,6 +716,9 @@ def continuous_policy_train_step(
             "policy/return_abs_max": jnp.max(jnp.abs(actor_returns)),
             "policy/value_target_abs_mean": jnp.mean(jnp.abs(clipped_returns)),
             "policy/value_target_abs_max": jnp.max(jnp.abs(clipped_returns)),
+            "policy/value_target_clip_fraction": value_target_clip_fraction,
+            "policy/value_clip_enabled": value_clip_enabled.astype(actor_loss.dtype),
+            "policy/value_clip": jnp.asarray(value_clip, dtype=actor_loss.dtype),
             "policy/action_mean": jnp.mean(rollout["actions"]),
             "policy/action_std": jnp.std(rollout["actions"]),
             "policy/action_abs_mean": jnp.mean(jnp.abs(rollout["actions"])),
@@ -796,6 +807,10 @@ def continuous_policy_train_step(
         real_value_mean = jnp.asarray(0.0, dtype=imagined_value_loss.dtype)
         real_target_mean = jnp.asarray(0.0, dtype=imagined_value_loss.dtype)
         real_target_abs_mean = jnp.asarray(0.0, dtype=imagined_value_loss.dtype)
+        real_target_clip_fraction = jnp.asarray(
+            0.0,
+            dtype=imagined_value_loss.dtype,
+        )
         real_finite_fraction = jnp.asarray(1.0, dtype=imagined_value_loss.dtype)
         if real_critic_loss_enabled:
             if real_critic_batch is None:
@@ -854,9 +869,11 @@ def continuous_policy_train_step(
             else:
                 real_targets = real_returns[0]
                 real_value_latents = real_z[:, 0]
-            real_targets = jax.lax.stop_gradient(
-                jnp.clip(real_targets, -value_clip, value_clip)
+            real_targets, real_target_clip_fraction, _ = clip_value_targets(
+                real_targets,
+                value_clip,
             )
+            real_targets = jax.lax.stop_gradient(real_targets)
             _, real_value_logits = actor_value_logits_from_latent(
                 state.apply_fn,
                 params,
@@ -904,6 +921,7 @@ def continuous_policy_train_step(
             "policy/replay_critic_value_mean": real_value_mean,
             "policy/replay_critic_target_mean": real_target_mean,
             "policy/replay_critic_target_abs_mean": real_target_abs_mean,
+            "policy/replay_critic_target_clip_fraction": (real_target_clip_fraction),
             "policy/replay_critic_finite_fraction": real_finite_fraction,
             "policy/value_finite_fraction": finite_fraction,
         }
@@ -956,7 +974,11 @@ def continuous_critic_warmup_step(
         dones = jnp.swapaxes(batch.dones[:, :horizon], 0, 1)
         continues = 1.0 - dones
         returns = reward_only_returns(rewards, continues, gamma=config.gamma)[0]
-        targets = jax.lax.stop_gradient(jnp.clip(returns, -value_clip, value_clip))
+        targets, target_clip_fraction, value_clip_enabled = clip_value_targets(
+            returns,
+            value_clip,
+        )
+        targets = jax.lax.stop_gradient(targets)
         model_params = jax.tree_util.tree_map(jax.lax.stop_gradient, params)
         z = state.apply_fn(
             {"params": model_params},
@@ -977,6 +999,8 @@ def continuous_critic_warmup_step(
             "critic/target_mean": jnp.mean(targets),
             "critic/target_abs_mean": jnp.mean(jnp.abs(targets)),
             "critic/target_abs_max": jnp.max(jnp.abs(targets)),
+            "critic/target_clip_fraction": target_clip_fraction,
+            "critic/value_clip_enabled": value_clip_enabled.astype(value_loss.dtype),
             "critic/value_mean": jnp.mean(values),
             "critic/value_abs_mean": jnp.mean(jnp.abs(values)),
             "critic/finite_fraction": finite_fraction,
@@ -1608,6 +1632,24 @@ def survival_weights(continues: jax.Array, *, gamma: float) -> jax.Array:
 
 def weighted_mean(values: jax.Array, weights: jax.Array) -> jax.Array:
     return jnp.sum(values * weights) / (jnp.sum(weights) + 1e-6)
+
+
+def clip_value_targets(
+    values: jax.Array,
+    value_clip: float,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Clip value targets when the positive clip limit is enabled."""
+    clip_limit = jnp.asarray(value_clip, dtype=values.dtype)
+    clip_enabled = clip_limit > 0.0
+    clipped = jnp.where(
+        clip_enabled,
+        jnp.clip(values, -clip_limit, clip_limit),
+        values,
+    )
+    clip_fraction = jnp.mean(
+        jnp.logical_and(clip_enabled, jnp.abs(values) > clip_limit).astype(values.dtype)
+    )
+    return clipped, clip_fraction, clip_enabled
 
 
 def weighted_std(values: jax.Array, weights: jax.Array) -> jax.Array:

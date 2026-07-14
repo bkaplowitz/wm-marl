@@ -540,9 +540,18 @@ def test_dreamer_style_policy_update_is_finite_and_keeps_world_model_frozen():
         real_critic_return_mode="lambda",
         real_critic_all_steps=True,
         slow_value_regularization_coef=1.0,
+        value_clip=0.0,
     )
 
     assert jnp.isfinite(metrics["policy/total_loss"])
+    assert metrics["policy/value_clip_enabled"] == 0.0
+    assert metrics["policy/value_target_clip_fraction"] == 0.0
+    np.testing.assert_allclose(
+        np.asarray(metrics["policy/imagined_return"]),
+        np.asarray(metrics["policy/clipped_imagined_return"]),
+    )
+    assert jnp.isfinite(metrics["policy/advantage_std"])
+    assert 0.0 <= metrics["policy/advantage_positive_fraction"] <= 1.0
     assert metrics["policy/gradient_mode_reinforce"] == 1.0
     assert metrics["policy/action_entropy_tanh_normal"] == 1.0
     assert metrics["policy/return_normalization_ema_percentile"] == 1.0

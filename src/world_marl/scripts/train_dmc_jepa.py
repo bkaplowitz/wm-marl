@@ -224,7 +224,12 @@ def parse_args() -> argparse.Namespace:
         default="reinforce",
     )
     policy.add_argument("--policy-return-ema-decay", type=float, default=0.99)
-    policy.add_argument("--value-clip", type=float, default=100.0)
+    policy.add_argument(
+        "--value-clip",
+        type=float,
+        default=100.0,
+        help="Symmetric value-target clip; set to 0 to disable clipping.",
+    )
     policy.add_argument("--value-output-scale", type=float, default=0.0)
     policy.add_argument(
         "--value-prediction-mode",
@@ -536,8 +541,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         and args.target_critic_ema_decay == 0.0
     ):
         parser.error("slow-value regularization requires a target critic")
-    if args.value_clip <= 0.0:
-        parser.error("--value-clip must be > 0")
+    if args.value_clip < 0.0:
+        parser.error("--value-clip must be >= 0 (0 disables clipping)")
     if args.optimizer_epsilon <= 0.0:
         parser.error("--optimizer-epsilon must be > 0")
     if args.twohot_bins < 3 or args.twohot_min >= args.twohot_max:

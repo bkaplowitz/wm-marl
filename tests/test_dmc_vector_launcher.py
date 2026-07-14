@@ -84,7 +84,7 @@ def test_launcher_syncs_tracking_extra_when_enabled(tmp_path):
 
 
 def test_maintained_presets_are_small_and_unambiguous():
-    assert set(PRESETS) == {"smoke", "jepa_100k", "jepa_500k"}
+    assert set(PRESETS) == {"smoke", "jepa_100k", "jepa_200k", "jepa_500k"}
     forbidden = {
         "policy_selection_interval",
         "policy_confirmation_episodes",
@@ -129,6 +129,24 @@ def test_500k_preset_matches_the_current_running_model():
     assert params["validation_seed"] == 1_000_042
     assert params["final_policy_eval_seed"] == 9_000_000
     assert params["final_policy_eval_episodes"] == 20
+
+
+def test_200k_preset_preserves_the_current_model_with_a_fixed_budget():
+    params = PRESETS["jepa_200k"]
+    accounting = step_accounting(params)
+
+    assert accounting["train_replay_env_steps"] == 199_680
+    assert accounting["validation_replay_env_steps"] == 1_280
+    assert accounting["train_plus_validation_env_steps"] == 200_960
+    assert accounting["world_model_updates"] == 195_840
+    assert accounting["policy_updates"] == 98_560
+    assert params["dreamer_report_budget_env_steps"] == 200_000
+
+
+def test_launcher_can_disable_value_clipping():
+    command = params_to_shell_args({"value_clip": 0.0})
+
+    assert command.replace("\\\n", " ").split() == ["--value-clip", "0.0"]
 
 
 def test_500k_preset_locks_current_architecture_and_control_stack():

@@ -132,6 +132,11 @@ PRESETS: dict[str, dict[str, Any]] = {
         "online_iterations": 91,
         "dreamer_report_budget_env_steps": 100_000,
     },
+    "jepa_200k": {
+        **_JEPA_BASE,
+        "online_iterations": 190,
+        "dreamer_report_budget_env_steps": 200_000,
+    },
     "jepa_500k": {
         **_JEPA_BASE,
         "online_iterations": 481,
@@ -164,6 +169,7 @@ OVERRIDABLE_PARAMS = (
     "learning_rate",
     "actor_learning_rate",
     "actor_entropy_coef",
+    "value_clip",
     "online_recent_replay_fraction",
     "online_recent_world_model_fraction",
     "online_recent_policy_start_fraction",
@@ -389,6 +395,7 @@ def parse_args() -> argparse.Namespace:
         "learning_rate",
         "actor_learning_rate",
         "actor_entropy_coef",
+        "value_clip",
         "online_recent_replay_fraction",
         "online_recent_world_model_fraction",
         "online_recent_policy_start_fraction",
