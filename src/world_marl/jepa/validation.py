@@ -172,6 +172,58 @@ def eval_completed_episode_steps(evaluation: dict[str, Any] | None) -> int:
     return maybe_int(evaluation.get("completed_episode_steps"))
 
 
+def policy_selection_report(
+    selection_history: list[dict[str, Any]],
+    *,
+    selection_enabled: bool,
+) -> dict[str, Any]:
+    """Summarize a policy-selection history with honest trained-candidate scores.
+
+    ``best_policy_step``/``best_policy_selection_mean`` alone can mask a cycle
+    where every trained checkpoint scored worse than the incoming actor:
+    selection reverts to step 0 and the final eval re-runs identical params, so
+    the reported "candidate" return equals the champion return. These keys keep
+    the true trained-checkpoint scores visible.
+    """
+    if not selection_enabled or not selection_history:
+        return {
+            "policy_best_trained_selection_mean": None,
+            "policy_best_trained_selection_step": None,
+            "policy_last_iterate_selection_mean": None,
+            "policy_selection_reverted": None,
+        }
+    trained_records = [
+        record
+        for record in selection_history
+        if maybe_int(record.get("policy_selection_step")) > 0
+        and record.get("policy_selection_mean_return") is not None
+    ]
+    best_trained = max(
+        trained_records,
+        key=lambda record: record["policy_selection_mean_return"],
+        default=None,
+    )
+    selected_steps = [
+        maybe_int(record.get("policy_selection_step"))
+        for record in selection_history
+        if record.get("policy_selection_selected")
+    ]
+    return {
+        "policy_best_trained_selection_mean": (
+            best_trained["policy_selection_mean_return"] if best_trained else None
+        ),
+        "policy_best_trained_selection_step": (
+            maybe_int(best_trained["policy_selection_step"]) if best_trained else None
+        ),
+        "policy_last_iterate_selection_mean": selection_history[-1].get(
+            "policy_selection_mean_return"
+        ),
+        "policy_selection_reverted": (
+            max(selected_steps) == 0 if selected_steps else None
+        ),
+    }
+
+
 def merge_online_policy_baseline(
     final_outcome: dict[str, Any],
     initial_outcome: dict[str, Any],
@@ -200,13 +252,18 @@ def merge_online_policy_baseline(
     merged["policy_improvement"] = (
         merged["policy_trained_mean"] - merged["policy_initial_mean"]
     )
-    primary_improvement = (
-        phase_improvement
-        if phase_improvement is not None
-        else merged["policy_improvement"]
-    )
+    total_online_improvement = merged["policy_online_total_improvement_vs_pre_online"]
+    if total_online_improvement is not None:
+        primary_improvement = total_online_improvement
+        primary_improvement_key = "policy_online_total_improvement_vs_pre_online"
+    elif phase_improvement is not None:
+        primary_improvement = phase_improvement
+        primary_improvement_key = "policy_online_phase_improvement"
+    else:
+        primary_improvement = merged["policy_improvement"]
+        primary_improvement_key = "policy_improvement"
     merged["policy_primary_improvement"] = primary_improvement
-    merged["policy_primary_improvement_key"] = "policy_online_phase_improvement"
+    merged["policy_primary_improvement_key"] = primary_improvement_key
     merged["policy_trained_minus_random"] = (
         merged["policy_trained_mean"] - merged["policy_random_mean"]
     )
@@ -229,11 +286,25 @@ def merge_online_policy_baseline(
             merged["policy_confirmation_trained_mean"]
             - merged["policy_confirmation_random_mean"]
         )
-    primary_confirmation_improvement = (
-        phase_confirmation_improvement
-        if phase_confirmation_improvement is not None
-        else merged.get("policy_confirmation_improvement")
+    pre_online_confirmation_trained_mean = initial_outcome.get(
+        "policy_confirmation_trained_mean"
     )
+    total_online_confirmation_improvement = (
+        merged["policy_confirmation_trained_mean"]
+        - pre_online_confirmation_trained_mean
+        if pre_online_confirmation_trained_mean is not None
+        and merged.get("policy_confirmation_trained_mean") is not None
+        else None
+    )
+    merged["policy_online_total_confirmation_improvement_vs_pre_online"] = (
+        total_online_confirmation_improvement
+    )
+    if total_online_confirmation_improvement is not None:
+        primary_confirmation_improvement = total_online_confirmation_improvement
+    elif phase_confirmation_improvement is not None:
+        primary_confirmation_improvement = phase_confirmation_improvement
+    else:
+        primary_confirmation_improvement = merged.get("policy_confirmation_improvement")
     merged["policy_primary_confirmation_improvement"] = primary_confirmation_improvement
     confirmation_passed = not confirmation_enabled or (
         primary_confirmation_improvement is not None
@@ -288,6 +359,22 @@ def online_history_metrics(
         item["policy"].get("policy_champion_return")
         for item in online_history
         if item.get("policy", {}).get("policy_champion_return") is not None
+    ]
+    # None entries preserved so cycles stay aligned, unlike the filtered arrays.
+    policy_training_cycles = [
+        item.get("candidate_policy", {})
+        for item in online_history
+        if item.get("candidate_policy", {}).get("policy_training_enabled", False)
+    ]
+    policy_best_trained_selection_returns = [
+        cycle.get("policy_best_trained_selection_mean")
+        for cycle in policy_training_cycles
+    ]
+    policy_selection_reverts = [
+        cycle.get("policy_selection_reverted") for cycle in policy_training_cycles
+    ]
+    policy_selection_revert_flags = [
+        bool(flag) for flag in policy_selection_reverts if flag is not None
     ]
     policy_update_acceptances = [
         bool(item["policy"].get("policy_update_accepted", False))
@@ -344,6 +431,15 @@ def online_history_metrics(
         "online_policy_phase_passed": bool(policy_passed and all(policy_passed)),
         "online_policy_candidate_returns": policy_candidate_returns,
         "online_policy_champion_returns": policy_champion_returns,
+        "online_policy_best_trained_selection_returns": (
+            policy_best_trained_selection_returns
+        ),
+        "online_policy_selection_reverted": policy_selection_reverts,
+        "online_policy_selection_revert_rate": (
+            float(np.mean(policy_selection_revert_flags))
+            if policy_selection_revert_flags
+            else None
+        ),
         "online_policy_update_acceptances": policy_update_acceptances,
         "online_policy_update_acceptance_rate": (
             float(np.mean(policy_update_acceptances))
@@ -426,7 +522,7 @@ def real_step_accounting(
         for item in online_history
     )
     online_validation_env_steps = sum(
-        maybe_int(item.get("recent_policy_validation", {}).get("env_steps"))
+        maybe_int((item.get("recent_policy_validation") or {}).get("env_steps"))
         for item in online_history
     )
     initial_policy_eval_env_steps = maybe_int(

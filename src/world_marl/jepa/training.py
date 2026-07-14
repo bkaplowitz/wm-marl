@@ -1889,26 +1889,30 @@ def reward_only_returns(
     return returns[::-1]
 
 
-@partial(jax.jit, static_argnames=("config", "horizon", "control"))
-def evaluate_open_loop(
+def open_loop_predicted_latents(
     state: JepaTrainState,
     batch: ReplayBatch,
     config: JepaConfig,
     *,
     horizon: int,
     control: ControlMode = "none",
-) -> dict[str, jax.Array]:
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Roll the dynamics open-loop from encoded context using replay actions.
+
+    Returns raw predicted latents [batch, horizon, latent], encoded latents for
+    the full context+horizon window, and per-step validity from replay dones.
+    """
     if horizon < 1:
         raise ValueError("horizon must be >= 1")
     if batch.observations.shape[1] < config.context_window + horizon:
         raise ValueError("batch is too short for context_window + horizon")
 
-    target_z = state.apply_fn(
+    encoded = state.apply_fn(
         {"params": state.params},
         batch.observations[:, : config.context_window + horizon],
         method=JepaWorldModel.encode,
     )
-    context = target_z[:, : config.context_window]
+    context = encoded[:, : config.context_window]
     action_context = batch.actions[:, : config.context_window]
     if control == "no-action-world-model":
         action_context = jnp.zeros_like(action_context)
@@ -1927,16 +1931,35 @@ def evaluate_open_loop(
         )
         preds.append(next_z)
         context = jnp.concatenate([context[:, 1:], next_z[:, None, :]], axis=1)
-    pred = _normalize(jnp.stack(preds, axis=1))
-    target = _normalize(
-        jax.lax.stop_gradient(
-            target_z[:, config.context_window : config.context_window + horizon]
-        )
-    )
     validity = jnp.cumprod(
         1.0 - batch.dones[:, : config.context_window + horizon],
         axis=1,
     )[:, config.context_window - 1 : config.context_window - 1 + horizon]
+    return jnp.stack(preds, axis=1), encoded, validity
+
+
+@partial(jax.jit, static_argnames=("config", "horizon", "control"))
+def evaluate_open_loop(
+    state: JepaTrainState,
+    batch: ReplayBatch,
+    config: JepaConfig,
+    *,
+    horizon: int,
+    control: ControlMode = "none",
+) -> dict[str, jax.Array]:
+    predicted, encoded, validity = open_loop_predicted_latents(
+        state,
+        batch,
+        config,
+        horizon=horizon,
+        control=control,
+    )
+    pred = _normalize(predicted)
+    target = _normalize(
+        jax.lax.stop_gradient(
+            encoded[:, config.context_window : config.context_window + horizon]
+        )
+    )
     cosine = jnp.sum(pred * target, axis=-1)
     error = 1.0 - cosine
     return {

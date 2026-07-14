@@ -20,6 +20,7 @@ def make_brax_env(
     *,
     backend: str | None = None,
     episode_length: int = 1000,
+    auto_reset: bool = True,
 ):
     """Build a Brax environment by name."""
 
@@ -28,7 +29,12 @@ def make_brax_env(
     kwargs = {}
     if backend is not None:
         kwargs["backend"] = backend
-    return envs.create(env_name=env_id, episode_length=episode_length, **kwargs)
+    return envs.create(
+        env_name=env_id,
+        episode_length=episode_length,
+        auto_reset=auto_reset,
+        **kwargs,
+    )
 
 
 @functools.lru_cache(maxsize=None)

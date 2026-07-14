@@ -1,47 +1,178 @@
-"""Parsing tests for plot_wm_losses (console-log and metrics.jsonl loss curves)."""
+"""Extraction tests for plot_wm_losses (run-generated metrics.jsonl curves)."""
 
 import json
 
 from world_marl.scripts.plot_wm_losses import (
+    build_loss_figure,
+    genwm_loss_points,
     jepa_loss_points,
-    parse_console_losses,
+    loss_axis_scale,
 )
 
 
-def test_parse_console_losses_cumulative_segments(tmp_path):
-    console = tmp_path / "console.log"
-    console.write_text(
-        "\n".join(
-            [
-                "[genwm] fitting",
-                "[run 0 fit] step 1/4 wm_loss=10.0",
-                "[run 0 fit] step 3/4 wm_loss=8.0",
-                "[run 0 policy] step 1/3 ppo_loss=2.0 entropy=1.0",
-                "[run 0 policy] step 3/3 ppo_loss=1.0 entropy=0.5",
-                "[run 0 online 0 fit] step 1/2 wm_loss=6.0",
-                "[run 0 online 0 policy] step 2/3 ppo_loss=0.5 entropy=0.1",
-                "[run 0 online 1 fit] step 2/2 wm_loss=5.0",
-            ]
-        )
+def _write_metrics(path, records):
+    path.write_text("\n".join(json.dumps(record) for record in records))
+
+
+CONFIG = {
+    "policy_batch_size": 4,
+    "imag_horizon": 3,
+    "mf_rollout_steps": 8,
+    "num_envs": 2,
+}
+
+
+def test_genwm_loss_points_cumulative_segments(tmp_path):
+    metrics = tmp_path / "metrics.jsonl"
+    _write_metrics(
+        metrics,
+        [
+            {"note": "backfilled from console.log"},
+            {"phase": "run 0 fit", "step": 1, "total": 4, "wm_loss": 10.0},
+            {"phase": "run 0 fit", "step": 3, "total": 4, "wm_loss": 8.0},
+            {
+                "phase": "run 0 policy",
+                "step": 1,
+                "total": 3,
+                "total_loss": 2.0,
+                "entropy": 1.0,
+            },
+            {
+                "phase": "run 0 policy",
+                "step": 3,
+                "total": 3,
+                "total_loss": 1.0,
+                "entropy": 0.5,
+            },
+            {"phase": "run 0 online 0 fit", "step": 1, "total": 2, "wm_loss": 6.0},
+            {
+                "phase": "run 0 online 0 policy",
+                "step": 2,
+                "total": 3,
+                "total_loss": 0.5,
+            },
+            {"phase": "run 0 online 1 fit", "step": 2, "total": 2, "wm_loss": 5.0},
+        ],
     )
-    losses = parse_console_losses(console)
+    losses = genwm_loss_points(metrics, CONFIG)
     assert losses["wm_loss"] == [(1, 10.0), (3, 8.0), (5, 6.0), (8, 5.0)]
-    assert losses["ppo_loss"] == [(1, 2.0), (3, 1.0), (5, 0.5)]
+    # policy updates consume policy_batch_size * imag_horizon = 12 imagined
+    # transitions each; cumulative update index scales to transitions.
+    assert losses["ppo_loss"] == [(12, 2.0), (36, 1.0), (60, 0.5)]
 
 
-def test_parse_console_losses_model_free_updates(tmp_path):
-    console = tmp_path / "console.log"
-    console.write_text(
-        "\n".join(
-            [
-                "[run 0 model-free] update 6/54 ppo_loss=77.4 entropy=2.8",
-                "[run 0 model-free] update 11/54 ppo_loss=70.7 entropy=2.7",
-            ]
-        )
+def test_genwm_loss_points_model_free_and_non_ppo_records(tmp_path):
+    metrics = tmp_path / "metrics.jsonl"
+    _write_metrics(
+        metrics,
+        [
+            {
+                "phase": "run 0 genie",
+                "step": 1,
+                "total": 5,
+                "genie_total_loss": 4.0,
+                "genie_recon_loss": 3.0,
+            },
+            {
+                "phase": "run 0 model-free",
+                "step": 6,
+                "total": 54,
+                "total_loss": 77.4,
+                "entropy": 2.8,
+            },
+            {
+                "phase": "run 0 model-free",
+                "step": 11,
+                "total": 54,
+                "total_loss": 70.7,
+                "entropy": 2.7,
+            },
+        ],
     )
-    losses = parse_console_losses(console)
-    assert losses["ppo_loss"] == [(6, 77.4), (11, 70.7)]
+    losses = genwm_loss_points(metrics, CONFIG)
+    # model-free updates consume mf_rollout_steps * num_envs = 16 real
+    # transitions each, selected by the phase label not the arm name.
+    assert losses["ppo_loss"] == [(96, 77.4), (176, 70.7)]
     assert losses["wm_loss"] == []
+
+
+def test_genwm_loss_points_without_config_keeps_update_counts(tmp_path):
+    metrics = tmp_path / "metrics.jsonl"
+    _write_metrics(
+        metrics,
+        [{"phase": "run 0 policy", "step": 2, "total": 3, "total_loss": 1.5}],
+    )
+    losses = genwm_loss_points(metrics, {})
+    assert losses["ppo_loss"] == [(2, 1.5)]
+
+
+def test_loss_axis_scale_log_when_all_positive():
+    arms = {
+        "a": [{"seed": "s0", "point": 1, "value": 0.05}],
+        "b": [{"seed": "s0", "point": 1, "value": 80.0}],
+    }
+    scale, low, high = loss_axis_scale(arms)
+    assert scale == "log"
+    assert low <= 0.05
+    assert high >= 80.0
+
+
+def test_loss_axis_scale_symlog_when_nonpositive():
+    arms = {
+        "a": [
+            {"seed": "s0", "point": 1, "value": -0.5},
+            {"seed": "s0", "point": 2, "value": 3.0},
+        ]
+    }
+    scale, low, high = loss_axis_scale(arms)
+    assert scale == "symlog"
+    assert low <= -0.5
+    assert high >= 3.0
+
+
+def test_build_loss_figure_shared_log_axes():
+    import matplotlib.pyplot as plt
+
+    arms = {
+        "a": [
+            {"seed": "s0", "point": 1, "value": 10.0},
+            {"seed": "s0", "point": 2, "value": 0.05},
+        ],
+        "b": [
+            {"seed": "s0", "point": 1, "value": 80.0},
+            {"seed": "s0", "point": 2, "value": 0.5},
+        ],
+    }
+    fig, axes = build_loss_figure(
+        arms, env="brax_reacher", metric_kind="ppo_loss", jepa_metric="m"
+    )
+    try:
+        assert {axis.get_yscale() for axis in axes} == {"log"}
+        limits = {axis.get_ylim() for axis in axes}
+        assert len(limits) == 1
+        ((low, high),) = limits
+        assert low <= 0.05
+        assert high >= 80.0
+    finally:
+        plt.close(fig)
+
+
+def test_build_loss_figure_ppo_xlabels_distinguish_real_vs_imagined():
+    import matplotlib.pyplot as plt
+
+    arms = {
+        "llada2": [{"seed": "s0", "point": 7680, "value": 10.0}],
+        "model-free": [{"seed": "s0", "point": 2048, "value": 80.0}],
+    }
+    fig, axes = build_loss_figure(
+        arms, env="brax_reacher", metric_kind="ppo_loss", jepa_metric="m"
+    )
+    try:
+        labels = {axis.get_title(): axis.get_xlabel() for axis in axes}
+        assert labels["model-free"] == "PPO transitions (real)"
+        assert labels["llada2"] == "PPO transitions (imagined)"
+    finally:
+        plt.close(fig)
 
 
 def test_jepa_loss_points_sequential_index(tmp_path):

@@ -28,6 +28,48 @@ def test_default_job_is_compare_world_models(monkeypatch):
     assert args.job == "compare-world-models"
 
 
+def test_default_gpu_is_rtx_5090(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["world-marl-runpod"])
+
+    args = runpod.parse_args()
+
+    assert args.gpu_id == "NVIDIA GeForce RTX 5090"
+
+
+def test_command_uses_wandb_detection():
+    assert runpod.command_uses_wandb(
+        ["uv", "run", "world-marl-optuna-single-genwm", "--wandb-project", "wm"]
+    )
+    assert runpod.command_uses_wandb(["--wandb-project=wm"])
+    assert not runpod.command_uses_wandb(
+        ["uv", "run", "world-marl-train-e2e", "--substrate", "coins"]
+    )
+
+
+def test_read_wandb_netrc_entry_fails_fast_without_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(runpod.Path, "home", classmethod(lambda cls: tmp_path))
+
+    with pytest.raises(SystemExit, match="wandb login"):
+        runpod.read_wandb_netrc_entry()
+
+    (tmp_path / ".netrc").write_text(
+        "machine example.com\n  login a\n  password b\n", encoding="utf-8"
+    )
+    with pytest.raises(SystemExit, match="wandb login"):
+        runpod.read_wandb_netrc_entry()
+
+
+def test_read_wandb_netrc_entry_returns_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(runpod.Path, "home", classmethod(lambda cls: tmp_path))
+    (tmp_path / ".netrc").write_text(
+        "machine api.wandb.ai\n  login user\n  password secret\n", encoding="utf-8"
+    )
+
+    entry = runpod.read_wandb_netrc_entry()
+
+    assert entry == "machine api.wandb.ai\n  login user\n  password secret\n"
+
+
 def test_compare_defaults_match_wide_transformer_run(tmp_path):
     job = runpod.build_job_spec(_compare_args(tmp_path), "20260624T120000Z")
 

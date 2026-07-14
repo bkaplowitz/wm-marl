@@ -26,7 +26,11 @@ import time
 from pathlib import Path
 from typing import Any
 
-from world_marl.scripts.write_dmc_vector_launcher import COMMON_PARAMS, PRESETS
+from world_marl.scripts.write_dmc_vector_launcher import (
+    COMMON_PARAMS,
+    NEGATABLE_FLAGS,
+    PRESETS,
+)
 
 JEPA_ARM = "jepa"
 GENWM_ARMS = ("discrete-transformer", "continuous-transformer", "llada2")
@@ -118,6 +122,8 @@ def _flag_tokens(params: dict[str, Any]) -> list[str]:
         if isinstance(value, bool):
             if value:
                 tokens.append(flag)
+            elif key in NEGATABLE_FLAGS:
+                tokens.append("--no-" + key.replace("_", "-"))
             continue
         if isinstance(value, (list, tuple)):
             tokens.append(flag)
