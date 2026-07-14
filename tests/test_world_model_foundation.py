@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import jax
+import jax.numpy as jnp
 
 from world_marl.world_model_foundation.collect import (
     adapter_action_mode,
@@ -15,9 +17,15 @@ from world_marl.world_model_foundation.collect import (
     write_json_artifact,
     write_jsonl_metrics,
 )
-from world_marl.world_model_foundation.metrics import METRIC_KEYS
+from world_marl.world_model_foundation.metrics import (
+    METRIC_KEYS,
+    scan_episode_summaries,
+    scanned_episode_metrics,
+)
 from world_marl.world_model_foundation.preprocess import normalize_observations
 from world_marl.world_model_foundation.replay import (
+    sequence_batch_to_jax,
+    sample_sequence_windows,
     WorldModelSequenceBatch,
     synthetic_observation_batch,
 )
@@ -25,6 +33,32 @@ from world_marl.world_model_foundation.sources import world_model_sources
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_sequence_window_sampling_never_crosses_episode_boundaries() -> None:
+    batch = sequence_batch_to_jax(
+        synthetic_observation_batch(
+            time_steps=8,
+            batch_size=2,
+            observation_shape=(3,),
+            action_dim=3,
+        )
+    )
+    is_first = jnp.zeros((8, 2), dtype=bool)
+    is_first = is_first.at[0].set(True)
+    is_first = is_first.at[4].set(True)
+    batch = batch._replace(is_first=is_first)
+
+    sampled = sample_sequence_windows(
+        batch,
+        jax.random.PRNGKey(0),
+        sequence_length=4,
+        batch_size=32,
+        require_same_episode=True,
+        force_first=False,
+    )
+
+    assert not bool(jnp.any(sampled.is_first[1:]))
 
 
 class _FakeDiscreteVectorAdapter:
@@ -73,6 +107,26 @@ class _FakeDiscreteVectorAdapter:
             dtype=np.int32,
         )
 
+    def scan_random_sequence(self, time_steps, *, key, observations):
+        del observations
+        steps = jnp.arange(time_steps, dtype=jnp.float32)
+        observations = jnp.broadcast_to(
+            steps[:, None, None],
+            (time_steps, self.num_envs, *self.observation_shape),
+        )
+        actions = jax.random.randint(
+            key,
+            (time_steps, self.num_envs),
+            minval=0,
+            maxval=self.action_dim,
+            dtype=jnp.int32,
+        )
+        rewards = actions.astype(jnp.float32)
+        terminals = jnp.zeros((time_steps, self.num_envs), dtype=bool)
+        terminals = terminals.at[2, 0].set(time_steps > 2)
+        lasts = terminals.at[1, 1].set(time_steps > 1)
+        return observations, actions, rewards, terminals, lasts
+
 
 class _FakeContinuousImageAdapter:
     substrate = "fake:continuous-image"
@@ -100,7 +154,7 @@ class _FakeContinuousImageAdapter:
     def reset(self) -> np.ndarray:
         self._step = 0
         self.seen_actions.clear()
-        return np.zeros((self.num_envs, 1, *self.observation_shape), dtype=np.float32)
+        return np.zeros((self.num_envs, 1, *self.observation_shape), dtype=np.uint8)
 
     def step(self, actions: np.ndarray) -> SimpleNamespace:
         self._step += 1
@@ -110,8 +164,8 @@ class _FakeContinuousImageAdapter:
         self.seen_actions.append(action_batch)
         observations = np.full(
             (self.num_envs, 1, *self.observation_shape),
-            fill_value=float(self._step) / 10.0,
-            dtype=np.float32,
+            fill_value=64 * self._step,
+            dtype=np.uint8,
         )
         rewards = action_batch.sum(axis=-1, keepdims=True).astype(np.float32)
         dones = np.zeros((self.num_envs, 1), dtype=np.float32)
@@ -131,6 +185,23 @@ class _FakeContinuousImageAdapter:
             high=self.action_high,
             size=(self.num_envs, self.action_dim),
         ).astype(np.float32)[:, None, :]
+
+    def scan_random_sequence(self, time_steps, *, key, observations):
+        del observations
+        steps = jnp.arange(time_steps, dtype=jnp.uint8) * jnp.uint8(64)
+        observations = jnp.broadcast_to(
+            steps[:, None, None, None, None],
+            (time_steps, self.num_envs, *self.observation_shape),
+        )
+        actions = jax.random.uniform(
+            key,
+            (time_steps, self.num_envs, self.action_dim),
+            minval=jnp.asarray(self.action_low),
+            maxval=jnp.asarray(self.action_high),
+        )
+        rewards = jnp.sum(actions, axis=-1)
+        terminals = jnp.zeros((time_steps, self.num_envs), dtype=bool)
+        return observations, actions, rewards, terminals, terminals
 
 
 def test_sequence_batch_validates_time_major_contract() -> None:
@@ -158,6 +229,26 @@ def test_sequence_batch_validates_time_major_contract() -> None:
     assert batch.metadata["env"] == "synthetic:image-grid"
 
 
+def test_sequence_batch_preserves_last_separately_from_terminal() -> None:
+    is_last = np.asarray([[False], [True], [False]])
+    is_terminal = np.asarray([[False], [False], [False]])
+    batch = WorldModelSequenceBatch(
+        observations=np.zeros((3, 1, 2), dtype=np.float32),
+        actions=np.zeros((3, 1), dtype=np.int32),
+        rewards=np.zeros((3, 1), dtype=np.float32),
+        continues=np.ones((3, 1), dtype=np.float32),
+        is_first=np.asarray([[True], [False], [True]]),
+        is_terminal=is_terminal,
+        is_last=is_last,
+    )
+
+    jax_batch = sequence_batch_to_jax(batch)
+
+    assert np.array_equal(batch.is_last, is_last)
+    assert np.array_equal(np.asarray(jax_batch.is_last), is_last)
+    assert np.array_equal(np.asarray(jax_batch.is_terminal), is_terminal)
+
+
 def test_sequence_batch_rejects_shape_mismatch() -> None:
     observations = np.zeros((5, 3, 8, 8, 3), dtype=np.float32)
     bad_rewards = np.zeros((4, 3), dtype=np.float32)
@@ -171,6 +262,42 @@ def test_sequence_batch_rejects_shape_mismatch() -> None:
             is_first=np.zeros((5, 3), dtype=bool),
             is_terminal=np.zeros((5, 3), dtype=bool),
         )
+
+
+def test_sample_sequence_windows_preserves_alignment_and_resets_window_start() -> None:
+    time_steps = 7
+    num_envs = 3
+    time = np.arange(time_steps, dtype=np.float32)[:, None]
+    env = np.arange(num_envs, dtype=np.float32)[None, :]
+    observations = (10.0 * time + env)[..., None]
+    batch = WorldModelSequenceBatch(
+        observations=observations,
+        actions=(10.0 * observations),
+        rewards=200.0 * time + env,
+        continues=np.ones((time_steps, num_envs), dtype=np.float32),
+        is_first=np.zeros((time_steps, num_envs), dtype=bool),
+        is_terminal=np.zeros((time_steps, num_envs), dtype=bool),
+    )
+
+    sampled = sample_sequence_windows(
+        sequence_batch_to_jax(batch),
+        jax.random.PRNGKey(3),
+        sequence_length=4,
+        batch_size=5,
+    )
+
+    assert sampled.observations.shape == (4, 5, 1)
+    assert sampled.actions.shape == (4, 5, 1)
+    assert bool(jnp.all(sampled.is_first[0]))
+    assert not bool(jnp.any(sampled.is_first[1:]))
+    np.testing.assert_allclose(
+        np.diff(np.asarray(sampled.observations[..., 0]), axis=0),
+        10.0,
+    )
+    np.testing.assert_allclose(
+        np.asarray(sampled.actions[..., 0] - 10.0 * sampled.observations[..., 0]),
+        0.0,
+    )
 
 
 def test_synthetic_observation_batch_is_deterministic_and_time_consistent() -> None:
@@ -230,6 +357,11 @@ def test_metric_keys_and_sources_cover_world_model_foundation() -> None:
         "https://github.com/google-deepmind/dm_control"
     )
     assert sources["dm_control"]["observation_mode"] == "official_pixel_wrapper"
+    assert sources["mujoco_playground"]["repo_url"] == (
+        "https://github.com/google-deepmind/mujoco_playground"
+    )
+    assert sources["mujoco_playground"]["physics_backend"] == "mjx"
+    assert sources["mujoco_playground"]["observation_mode"] == "vector"
 
 
 def test_architecture_docs_lock_source_papers_and_boundaries() -> None:
@@ -239,28 +371,37 @@ def test_architecture_docs_lock_source_papers_and_boundaries() -> None:
     genie_doc = (
         ROOT / "src/world_marl/genie2_continuous_jax/ARCHITECTURE.md"
     ).read_text()
+    dreamer_conformance = (
+        ROOT / "src/world_marl/dreamer_v3_baseline/CONFORMANCE.md"
+    ).read_text()
+    genie_conformance = (
+        ROOT / "src/world_marl/genie2_continuous_jax/CONFORMANCE.md"
+    ).read_text()
 
     assert "https://arxiv.org/abs/2301.04104" in dreamer_doc
     assert "taken directly from the DreamerV3 paper" in dreamer_doc
     assert "Genie" not in dreamer_doc
     assert "LeJEPA" not in dreamer_doc
+    assert "Uniform replay with online queue" in dreamer_conformance
+    assert "interleave actor collection" in dreamer_conformance
+    assert "fixed offline dataset" not in dreamer_conformance
+    assert "not a DreamerV3 benchmark run" in dreamer_conformance
 
     assert (
         "https://deepmind.google/blog/genie-2-a-large-scale-foundation-world-model/"
         in genie_doc
     )
-    assert "Genie 2 is the primary architecture target" in genie_doc
-    assert "autoregressive latent diffusion world model" in genie_doc
-    assert "continuous latent autoencoder" in genie_doc
-    assert "causal transformer dynamics" in genie_doc
-    assert "classifier-free guidance" in genie_doc
-    assert "continuous LAM" in genie_doc
-    assert "LAM infers continuous latent actions" in genie_doc
-    assert "VQ/MaskGIT is ablation-only" in genie_doc
-    assert "Genie 3 is a capability target" in genie_doc
-    assert "latent-to-real-action bridge" in genie_doc
+    assert "primary specification is Google DeepMind's public" in genie_doc
+    assert "There is no public Genie2 paper or code" in genie_doc
+    assert "continuous latent frame grid" in genie_doc
+    assert "actual user/environment actions" in genie_doc
+    assert "Classifier-free" in genie_doc
+    assert "primary dynamics is not conditioned on an inferred LAM code" in genie_doc
+    assert "VQ/MaskGIT is a Genie1 ablation" in genie_doc
     assert "https://github.com/p-doom/jasmine" in genie_doc
-    assert "LeWM/LeJEPA innovations are ablations only" in genie_doc
+    assert "LeWM/LeJEPA additions remain separately named ablations" in genie_doc
+    assert "Exact reproduction is therefore not a defensible claim" in genie_conformance
+    assert "Jasmine Appendix C" in genie_conformance
 
 
 def test_synthetic_collector_and_artifact_writers(tmp_path: Path) -> None:
@@ -286,6 +427,41 @@ def test_synthetic_collector_and_artifact_writers(tmp_path: Path) -> None:
     assert metrics_path.read_text().count("\n") == 2
 
 
+def test_episode_metric_aggregation_stays_on_device_until_final_summaries() -> None:
+    rewards = jnp.asarray([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+    dones = jnp.asarray([[False, False], [True, False], [False, True]])
+
+    summary_jaxpr = jax.make_jaxpr(
+        lambda r, d: scan_episode_summaries(r, d, target_episodes=2)
+    )(rewards, dones)
+    rows = scanned_episode_metrics(
+        rewards,
+        dones,
+        target_episodes=2,
+        policy_source="test",
+    )
+
+    assert "scan[" in str(summary_jaxpr)
+    assert [row["return"] for row in rows] == [4.0, 12.0]
+    assert [row["length"] for row in rows] == [2.0, 3.0]
+
+
+def test_arrival_aligned_episode_metrics_exclude_initial_record() -> None:
+    rewards = jnp.asarray([[0.0], [1.0], [2.0], [3.0]])
+    dones = jnp.asarray([[False], [False], [False], [True]])
+
+    rows = scanned_episode_metrics(
+        rewards,
+        dones,
+        target_episodes=1,
+        policy_source="test",
+        arrival_aligned=True,
+    )
+
+    assert rows[0]["return"] == 6.0
+    assert rows[0]["length"] == 3.0
+
+
 def test_adapter_collection_preserves_vector_observation_and_discrete_actions() -> None:
     adapter = _FakeDiscreteVectorAdapter()
 
@@ -303,9 +479,15 @@ def test_adapter_collection_preserves_vector_observation_and_discrete_actions() 
     assert batch.rewards.shape == (4, 2)
     assert batch.continues.shape == (4, 2)
     assert bool(np.all(batch.is_first[0]))
-    assert not bool(np.any(batch.is_first[1:]))
+    assert bool(batch.is_first[2, 1])
+    assert bool(batch.is_first[3, 0])
+    assert not bool(batch.is_first[3, 1])
     assert bool(batch.is_terminal[2, 0])
+    assert bool(batch.is_last[2, 0])
+    assert bool(batch.is_last[1, 1])
+    assert not bool(batch.is_terminal[1, 1])
     assert batch.continues[2, 0] == 0.0
+    assert batch.continues[1, 1] == 1.0
     assert batch.metadata["env"] == "fake:discrete-vector"
     assert batch.metadata["action_mode"] == "discrete"
     assert batch.metadata["observation_shape"] == (3,)
@@ -315,13 +497,21 @@ def test_adapter_collection_preserves_vector_observation_and_discrete_actions() 
 
 def test_adapter_collection_infers_real_backend_from_substrate_namespace() -> None:
     adapter = _FakeDiscreteVectorAdapter()
-    adapter.substrate = "brax:fake"
+    adapter.substrate = "dmc:fake"
 
     batch = collect_adapter_sequence(adapter, time_steps=3, seed=5)
 
-    assert batch.metadata["environment_backend"] == "brax"
+    assert batch.metadata["environment_backend"] == "mujoco_playground"
     assert batch.metadata["observation_mode"] == "vector"
-    assert batch.metadata["real_env_transitions"] == 6
+
+
+def test_collection_requires_scan_contract_without_host_loop_fallback() -> None:
+    adapter = _FakeDiscreteVectorAdapter()
+    adapter.substrate = "fake:no-scan"
+    adapter.scan_random_sequence = None
+
+    with pytest.raises(RuntimeError, match="must implement scan_random_sequence"):
+        collect_adapter_sequence(adapter, time_steps=3, seed=5)
 
 
 def test_adapter_collection_preserves_hwc_observation_and_continuous_actions() -> None:
@@ -336,9 +526,12 @@ def test_adapter_collection_preserves_hwc_observation_and_continuous_actions() -
 
     assert adapter_action_mode(adapter) == "continuous"
     assert batch.observations.shape == (3, 2, 4, 5, 3)
+    assert batch.observations.dtype == np.float32
+    assert float(batch.observations.min()) == 0.0
+    assert float(batch.observations.max()) == pytest.approx(128.0 / 255.0)
     assert batch.actions.shape == (3, 2, 2)
     assert batch.actions.dtype == np.float32
-    assert len(adapter.seen_actions) == 3
+    assert batch.metadata["collection_execution"] == "jax_scan"
     assert np.all(batch.actions >= adapter.action_low - 1e-6)
     assert np.all(batch.actions <= adapter.action_high + 1e-6)
     assert batch.metadata["env"] == "fake:continuous-image"
@@ -382,6 +575,38 @@ def test_make_single_agent_adapter_dispatches_official_dmc_pixels(monkeypatch):
         "image_size": 32,
         "camera_id": 1,
         "num_workers": 2,
+    }
+
+
+def test_make_single_agent_adapter_dispatches_jax_native_dmc(monkeypatch):
+    from world_marl.envs import playground_dmc_adapter
+
+    captured = {}
+
+    class _FakePlaygroundDMCAdapter:
+        def __init__(self, env_id, **kwargs):
+            captured["env_id"] = env_id
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        playground_dmc_adapter,
+        "PlaygroundDMCAdapter",
+        _FakePlaygroundDMCAdapter,
+    )
+
+    adapter = make_single_agent_adapter(
+        "dmc:point_mass/easy",
+        num_envs=2,
+        max_cycles=100,
+        seed=7,
+    )
+
+    assert isinstance(adapter, _FakePlaygroundDMCAdapter)
+    assert captured == {
+        "env_id": "point_mass/easy",
+        "num_envs": 2,
+        "max_cycles": 100,
+        "seed": 7,
     }
 
 

@@ -28,6 +28,48 @@ def test_default_job_is_compare_world_models(monkeypatch):
     assert args.job == "compare-world-models"
 
 
+def test_default_gpu_is_rtx_5090(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["world-marl-runpod"])
+
+    args = runpod.parse_args()
+
+    assert args.gpu_id == "NVIDIA GeForce RTX 5090"
+
+
+def test_command_uses_wandb_detection():
+    assert runpod.command_uses_wandb(
+        ["uv", "run", "world-marl-optuna-single-genwm", "--wandb-project", "wm"]
+    )
+    assert runpod.command_uses_wandb(["--wandb-project=wm"])
+    assert not runpod.command_uses_wandb(
+        ["uv", "run", "world-marl-train-e2e", "--substrate", "coins"]
+    )
+
+
+def test_read_wandb_netrc_entry_fails_fast_without_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(runpod.Path, "home", classmethod(lambda cls: tmp_path))
+
+    with pytest.raises(SystemExit, match="wandb login"):
+        runpod.read_wandb_netrc_entry()
+
+    (tmp_path / ".netrc").write_text(
+        "machine example.com\n  login a\n  password b\n", encoding="utf-8"
+    )
+    with pytest.raises(SystemExit, match="wandb login"):
+        runpod.read_wandb_netrc_entry()
+
+
+def test_read_wandb_netrc_entry_returns_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(runpod.Path, "home", classmethod(lambda cls: tmp_path))
+    (tmp_path / ".netrc").write_text(
+        "machine api.wandb.ai\n  login user\n  password secret\n", encoding="utf-8"
+    )
+
+    entry = runpod.read_wandb_netrc_entry()
+
+    assert entry == "machine api.wandb.ai\n  login user\n  password secret\n"
+
+
 def test_compare_defaults_match_wide_transformer_run(tmp_path):
     job = runpod.build_job_spec(_compare_args(tmp_path), "20260624T120000Z")
 
@@ -95,6 +137,59 @@ def test_benchmark_policy_puts_own_flags_before_train_args(tmp_path):
     assert job.command[substrate_idx + 1] == "coins"
     # the wrapper-managed out-dir must not leak into the train-e2e REMAINDER
     assert "--out-dir" not in job.command[separator + 1 :]
+
+
+def test_frontier_quality_job_uses_managed_output_directory(tmp_path):
+    args = _compare_args(
+        tmp_path,
+        job="frontier-world-model-quality",
+        job_args=["--seed", "3"],
+    )
+
+    job = runpod.build_job_spec(args, "20260710T120000Z")
+
+    assert job.command[:4] == [
+        "env",
+        "XLA_FLAGS=--xla_gpu_enable_triton_gemm=false",
+        "MUJOCO_GL=egl",
+        "uv",
+    ]
+    assert job.command[4:6] == ["run", "world-marl-frontier-wm-quality"]
+    assert job.command[-4:] == [
+        "--seed",
+        "3",
+        "--out-dir",
+        "/workspace/outputs/wm_marl/frontier-world-model-quality/20260710T120000Z",
+    ]
+
+
+def test_frontier_quality_job_installs_dmc_extra_without_duplicates() -> None:
+    args = argparse.Namespace(
+        job="frontier-world-model-quality",
+        sync_extra=["brax", "dmc"],
+    )
+
+    assert runpod.required_sync_extras(args) == ["brax", "dmc"]
+
+    args.sync_extra = []
+    assert runpod.required_sync_extras(args) == ["dmc"]
+
+
+def test_remote_job_script_skips_unused_menagerie_download_for_dmc_extra() -> None:
+    script = runpod.remote_job_script(
+        "/root/wm-marl",
+        ["uv", "run", "world-marl-frontier-wm-quality"],
+        skip_uv_sync=False,
+        sync_extras=["dmc"],
+    )
+
+    assert "sysconfig.get_path('purelib')" in script
+    assert "mujoco_playground/external_deps/mujoco_menagerie" in script
+    assert 'mkdir -p "$MENAGERIE_DIR"' in script
+    assert "git clone" not in script
+    assert script.index('mkdir -p "$MENAGERIE_DIR"') < script.index(
+        "uv run world-marl-verify-install"
+    )
 
 
 def test_loads_runpod_api_key_from_dotenv_when_missing(tmp_path, monkeypatch):
@@ -233,6 +328,7 @@ def test_ensure_remote_rsync_installs_via_ssh(tmp_path, monkeypatch):
     assert calls, "expected an ssh call"
     remote_script = calls[0][-1]
     assert "rsync" in remote_script
+    assert "libegl1" in remote_script
     assert "apt-get install" in remote_script
 
 

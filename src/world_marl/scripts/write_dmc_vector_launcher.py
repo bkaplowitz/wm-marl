@@ -19,6 +19,15 @@ DEFAULT_TASKS = (
     "walker/walk",
 )
 
+# The three benchmark modes share matched budgets: 32768 real train-replay
+# transitions/env, 30000 world-model updates, 7500 policy updates (16 envs).
+# offline: WM pretrained on fixed random data, policy on the frozen WM, no
+#   online loop; within-cycle selection kept as early stopping.
+# online: pure dyna — small random seed fit, then collect-with-current-policy
+#   cycles; champion and selection OFF, so the policy is last-iterate and
+#   improvement can never be exactly 0.0.
+# hybrid: offline pretrain + champion-gated online improvement (the historical
+#   `mainline` structure; `mainline` is kept as a deprecated alias).
 PRESETS: dict[str, dict[str, Any]] = {
     "smoke": {
         "num_envs": 8,
@@ -37,7 +46,39 @@ PRESETS: dict[str, dict[str, Any]] = {
         "policy_eval_episodes": 16,
         "policy_confirmation_episodes": 16,
     },
-    "mainline": {
+    "offline": {
+        "num_envs": 16,
+        "env_workers": 16,
+        "collect_steps": 32768,
+        "validation_steps": 2048,
+        "replay_capacity": 524288,
+        "train_steps": 30000,
+        "policy_train_steps": 7500,
+        "online_iterations": 0,
+        "policy_selection_interval": 250,
+        "policy_selection_episodes": 32,
+        "policy_eval_episodes": 64,
+        "policy_confirmation_episodes": 64,
+    },
+    "online": {
+        "num_envs": 16,
+        "env_workers": 16,
+        "collect_steps": 2048,
+        "validation_steps": 2048,
+        "train_steps": 3000,
+        "policy_train_steps": 1500,
+        "online_iterations": 10,
+        "online_collect_steps": 3072,
+        "online_validation_steps": 1024,
+        "online_train_steps": 2700,
+        "online_policy_train_steps": 600,
+        "policy_selection_interval": 0,
+        "policy_selection_episodes": 32,
+        "online_policy_champion": False,
+        "policy_eval_episodes": 64,
+        "policy_confirmation_episodes": 64,
+    },
+    "hybrid": {
         "num_envs": 16,
         "env_workers": 16,
         "collect_steps": 8192,
@@ -51,6 +92,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "online_policy_train_steps": 750,
         "policy_selection_interval": 250,
         "policy_selection_episodes": 32,
+        "online_policy_champion": True,
         "policy_eval_episodes": 64,
         "policy_confirmation_episodes": 64,
     },
@@ -73,6 +115,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "final_policy_eval_episodes": 256,
     },
 }
+PRESETS["mainline"] = PRESETS["hybrid"]
 PRESETS["stabilized"] = {
     **PRESETS["cadence"],
     "policy_return_mode": "lambda",
@@ -82,6 +125,12 @@ PRESETS["stabilized"] = {
     "value_prediction_mode": "symlog-twohot",
     "clip_imagined_rewards": True,
 }
+
+# Boolean params that may be emitted as --no-<flag> when False. Only flags with
+# a real paired --no- variant in train_dmc_jepa belong here; every other False
+# boolean is a store_true-only flag whose False value must simply omit the flag
+# (e.g. clip_imagined_rewards).
+NEGATABLE_FLAGS = frozenset({"online_policy_champion", "online_reset_replay_env"})
 
 COMMON_PARAMS: dict[str, Any] = {
     "num_runs": 1,
@@ -209,7 +258,11 @@ def parse_args() -> argparse.Namespace:
         "--preset",
         choices=tuple(PRESETS),
         default="mainline",
-        help="Run size preset. Use smoke first to verify the pod.",
+        help=(
+            "Run size preset. Use smoke first to verify the pod. The benchmark "
+            "modes are offline / online / hybrid (matched real-step budgets); "
+            "mainline is a deprecated alias for hybrid."
+        ),
     )
     parser.add_argument("--tasks", nargs="+", default=list(DEFAULT_TASKS))
     parser.add_argument("--seeds", nargs="+", type=int, default=[0])
@@ -391,6 +444,8 @@ def params_to_shell_args(params: dict[str, Any]) -> str:
         if isinstance(value, bool):
             if value:
                 parts.append(flag)
+            elif key in NEGATABLE_FLAGS:
+                parts.append("--no-" + key.replace("_", "-"))
             continue
         if isinstance(value, (list, tuple)):
             parts.append(flag)

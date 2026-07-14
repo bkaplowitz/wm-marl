@@ -145,8 +145,28 @@ Episode boundaries are masked so the model is not trained to predict through
 environment resets.
 
 The current implementation uses one encoder. There is no EMA target encoder and
-no observation decoder. The default target-gradient mode is stop-gradient; the
-same encoder defines both the current latent and the future target latent.
+no observation decoder in the world-model loss. The default target-gradient
+mode is stop-gradient; the same encoder defines both the current latent and the
+future target latent.
+
+## Diagnostic Decoder
+
+Following the LeJEPA visualization recipe, an optional observation decoder can
+be fit *after* world-model training (`decoder.py`, enabled with
+`--decoder-train-steps`). It is an MLP probe from frozen latents back to
+observations, optimized separately so no reconstruction gradient ever reaches
+the encoder or dynamics. It is used only to render open-loop imagined rollouts
+next to real held-out trajectories (`decoder_rollout_frames.png`,
+`decoder_rollout_traces.png`); it plays no role in training or the pass/fail
+gate.
+
+Decoder batches mix the long replay 50/50 with the random-policy anchor
+replay (via `sample_online_candidate_batch`, the same helper the online
+refits use). After long online runs the ring buffer has evicted the offline
+random data, but the rollout diagnostic still displays random-policy
+validation windows — without the anchor mix the probe trains only on the
+final actor distribution and reconstructs the display windows poorly, which
+reads as (nonexistent) dynamics error.
 
 ## Control-Relevant Online Loss
 
@@ -302,6 +322,22 @@ The current mainline is:
   accepted only if real-environment evaluation does not regress beyond the
   configured tolerance.
 
+When the online phase runs, the reported `policy_primary_improvement` is the
+cumulative gain of the final champion over the pre-online offline policy
+(`policy_online_total_improvement_vs_pre_online`), not the final cycle's
+within-cycle delta — a converged run whose last cycles add nothing still
+passes on its accumulated improvement (`policy_primary_improvement_key`
+records which definition was used).
+
+Within-cycle best-checkpoint selection interacts with the champion: the
+incoming champion is pre-seeded as the step-0 candidate and is only replaced
+on strict improvement at the selection seed. When every trained checkpoint
+scores worse, selection reverts to step 0 and the cycle's final eval re-runs
+bit-identical parameters under the same deterministic seed, so the per-cycle
+improvement is *exactly* 0.0 — genuine "training made it worse, kept the old
+policy", not a converged tie. The selection-reporting keys below expose this
+instead of masking it behind the post-selection return.
+
 The current working configuration for vector DMC/Brax Reacher-style tasks is the
 small-batch online-cadence setting:
 
@@ -326,6 +362,53 @@ This differs from the earlier high-throughput configuration with 512 parallel
 environments and large world-model batches. The small-batch setup keeps the real
 sample count closer to Dreamer-style control benchmarks and gives the policy
 more frequent opportunities to steer the data distribution.
+
+## Benchmark Modes
+
+Three named presets (`--preset` in `write_dmc_vector_launcher` and
+`compare_single_wm`) fix the offline/online split explicitly; `mainline` is a
+deprecated alias of `hybrid`. All three spend the same real-interaction and
+update budget at 16 envs — 32768 real train transitions per env, 30000
+world-model updates, 7500 policy updates — so mode comparisons isolate *when*
+data is collected, not how much:
+
+- `offline`: one 32768-step fixed-random collect, then all world-model and
+  policy training on the frozen dataset (`--online-iterations 0`). The preset
+  raises `--replay-capacity` to 524288 because the per-env ring holds
+  `ceil(replay_capacity / num_envs)` steps — the 100k default would silently
+  evict 80% of a 32768-per-env collect. Within-cycle selection stays on as
+  early stopping; the outcome reports both the best trained checkpoint and the
+  last iterate.
+- `online` (pure dyna): 2048 seed collect plus 10 actor-collected cycles of
+  3072 steps (world model 3000 + 10×2700 updates, policy 1500 + 10×600).
+  Champion selection and within-cycle selection are both off
+  (`--no-online-policy-champion`, `--policy-selection-interval 0`), so the
+  deployed policy is always the last iterate and a per-cycle improvement of
+  exactly 0.0 is impossible by construction — it can only be genuinely
+  positive or negative. `--online-reset-replay-env` stays on so each cycle's
+  `mean_return` is attributable to the current actor, making
+  `online_actor_replay_trend_passed` the mode's main trend gate;
+  `--online-candidate-refit` stays on (it gates only world-model refits).
+- `hybrid`: the historical mainline structure — 8192 seed collect plus 6
+  online cycles of 4096 (world model 12000 + 6×3000, policy 3000 + 6×750),
+  champion and selection both on.
+
+Held-out validation steps are deliberately *not* matched (online 12288/env vs
+hybrid 8192 vs offline 2048); they are accounted separately from the 32768
+train budget under `real_validation_replay_env_steps`.
+
+Every policy-training phase reports honest selection accounting alongside the
+legacy keys: `policy_best_trained_selection_mean` /
+`policy_best_trained_selection_step` (best selection-eval return over trained
+checkpoints, step > 0), `policy_last_iterate_selection_mean`, and
+`policy_selection_reverted` (selection kept the step-0 incoming policy). The
+online history aggregates these as
+`online_policy_best_trained_selection_returns`,
+`online_policy_selection_reverted`, and
+`online_policy_selection_revert_rate`; entries are `None` where selection is
+disabled so cycles stay aligned. Caveat: `online_policy_update_acceptances`
+is trivially all-True when `policy_champion_enabled` is false — read it only
+together with that flag.
 
 ## Real Step Accounting
 

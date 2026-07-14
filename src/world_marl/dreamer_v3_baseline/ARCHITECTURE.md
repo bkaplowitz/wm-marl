@@ -36,6 +36,19 @@ The RSSM state is the standard DreamerV3 state:
 The posterior is used for representation learning on replay sequences. The prior
 is used for open-loop prediction and imagined actor-critic rollouts.
 
+## Online Training
+
+For real JAX-native adapters, the environment scan carries the current actor/RSSM
+policy state, circular replay, optimizer state, replay-ratio state, and PRNG key.
+Each arrival is filtered through the posterior, the actor chooses the outgoing
+action, and the transition plus replay-context latent is inserted before scheduled
+joint model/actor/critic updates. The default train ratio is 32 replayed transitions
+per environment transition. Training starts only when replay can supply a full
+batch and follows the author's one-update first eligible step behavior.
+
+The synthetic CLI path trains on a fixed generated sequence solely as a component
+test. It is not reported as an online DreamerV3 benchmark.
+
 ## Losses
 
 World-model training optimizes the paper's reconstruction, reward, continue,
@@ -62,3 +75,23 @@ continues, values -> actor and critic objectives
 Evaluation returns are measured in the real environment. Imagined returns,
 world-model losses, finite checks, and reconstruction diagnostics are supporting
 metrics, not substitutes for real-environment evaluation.
+
+### Real-environment and pixel evaluation
+
+`dmc:<domain>/<task>` uses MuJoCo Playground and MJX for accelerator-resident
+collection and evaluation. This path currently exposes the task's vector
+observation, so it validates real control integration but is not evidence for a
+pixel-based Dreamer benchmark.
+
+`dmc-pixels:<domain>/<task>` uses the Python `dm_control` pixel wrapper. It does
+not implement the repository's required JAX scan collection contract and is
+therefore rejected by the training CLI instead of falling back to a host loop.
+It must not be reported as an accelerator-resident or completed visual
+evaluation. A genuine visual benchmark requires a JAX-compatible renderer and
+the same interaction/update budget across model arms.
+
+`pixels:pointmass` remains a synthetic CNN and tensor-plumbing fixture. Its
+results must not be presented or aggregated as DMC evaluation evidence. See the
+[official DMC repository](https://github.com/google-deepmind/dm_control),
+[pixel wrapper](https://github.com/google-deepmind/dm_control/blob/main/dm_control/suite/wrappers/pixels.py),
+and [MuJoCo Playground](https://github.com/google-deepmind/mujoco_playground).

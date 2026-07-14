@@ -36,6 +36,39 @@ from world_marl.scripts.write_dmc_vector_launcher import COMMON_PARAMS, PRESETS
 FAILED_SCORE = -1_000_000.0
 
 
+class FastFailureGuard:
+    """Stop the study when trials fail near-instantly back to back.
+
+    A streak of almost-immediate ``FAILED_SCORE`` trials means the environment
+    is broken (dead GPU, missing deps), not that the sampled configs are bad;
+    letting the study run on would burn the trial budget on poison scores and
+    exit 0 as if the sweep succeeded.
+    """
+
+    def __init__(self, limit: int, fast_seconds: float) -> None:
+        self.limit = limit
+        self.fast_seconds = fast_seconds
+        self.streak = 0
+        self.tripped = False
+
+    def __call__(self, study, trial) -> None:
+        runtime = trial.user_attrs.get("runtime_seconds")
+        failed_fast = (
+            trial.value == FAILED_SCORE
+            and runtime is not None
+            and runtime < self.fast_seconds
+        )
+        self.streak = self.streak + 1 if failed_fast else 0
+        if self.streak >= self.limit:
+            self.tripped = True
+            study.stop()
+
+
+MODEL_DIM_CHOICES = [128, 256]
+BLOCK_SIZE_CHOICES = [1, 2, 4]
+STEPS_PER_BLOCK_CHOICES = [2, 4, 8]
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", default="gymnax:CartPole-v1")
@@ -54,6 +87,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--sampler-seed", type=int, default=0)
     parser.add_argument(
+        "--model-dims",
+        type=int,
+        nargs="+",
+        default=MODEL_DIM_CHOICES,
+        help="model_dim categorical choices for the search space.",
+    )
+    parser.add_argument(
+        "--block-sizes",
+        type=int,
+        nargs="+",
+        default=BLOCK_SIZE_CHOICES,
+        help="block_size categorical choices (llada2 arm only).",
+    )
+    parser.add_argument(
+        "--steps-per-blocks",
+        type=int,
+        nargs="+",
+        default=STEPS_PER_BLOCK_CHOICES,
+        help="steps_per_block categorical choices (llada2 arm only).",
+    )
+    parser.add_argument(
         "--enqueue",
         action="append",
         default=[],
@@ -66,6 +120,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="append",
         default=[],
         help="Extra flag token appended to every trial command (repeatable).",
+    )
+    parser.add_argument(
+        "--fail-fast-limit",
+        type=int,
+        default=3,
+        help="Abort the study after this many consecutive near-instant failed "
+        "trials (environment failure, e.g. dead GPU); 0 disables the guard.",
+    )
+    parser.add_argument(
+        "--fail-fast-seconds",
+        type=float,
+        default=60.0,
+        help="A failed trial counts as near-instant below this runtime.",
     )
     parser.add_argument("--wandb-project", default=None)
     parser.add_argument("--wandb-entity", default=None)
@@ -80,12 +147,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def sample_params(trial, *, arm: str) -> dict[str, Any]:
+def sample_params(
+    trial,
+    *,
+    arm: str,
+    model_dims: list[int] | None = None,
+    block_sizes: list[int] | None = None,
+    steps_per_blocks: list[int] | None = None,
+) -> dict[str, Any]:
     params: dict[str, Any] = {
         "wm_learning_rate": trial.suggest_float(
             "wm_learning_rate", 1e-4, 3e-3, log=True
         ),
-        "model_dim": trial.suggest_categorical("model_dim", [128, 256]),
+        "model_dim": trial.suggest_categorical(
+            "model_dim", model_dims or MODEL_DIM_CHOICES
+        ),
         "num_layers": trial.suggest_categorical("num_layers", [2, 3, 4]),
         "obs_bins": trial.suggest_categorical("obs_bins", [16, 32, 64]),
         "imag_horizon": trial.suggest_categorical("imag_horizon", [10, 15, 25]),
@@ -95,11 +171,13 @@ def sample_params(trial, *, arm: str) -> dict[str, Any]:
         "ent_coef": trial.suggest_float("ent_coef", 1e-3, 3e-2, log=True),
     }
     if arm == "llada2":
-        # block_size must evenly tile the obs-token sequence (obs_dim tokens);
-        # small powers of two stay safe across CartPole (4) and reacher-like dims.
-        params["block_size"] = trial.suggest_categorical("block_size", [1, 2, 4])
+        # the sampler ceil-divides the obs-token sequence into blocks, so any
+        # block_size is safe on ragged lengths (reacher's 11 obs tokens incl.).
+        params["block_size"] = trial.suggest_categorical(
+            "block_size", block_sizes or BLOCK_SIZE_CHOICES
+        )
         params["steps_per_block"] = trial.suggest_categorical(
-            "steps_per_block", [2, 4, 8]
+            "steps_per_block", steps_per_blocks or STEPS_PER_BLOCK_CHOICES
         )
     return params
 
@@ -161,7 +239,16 @@ def latest_summary(trial_dir: Path) -> dict[str, Any] | None:
 
 
 def run_trial(args: argparse.Namespace, trial) -> float:
-    params = {**base_params(args), **sample_params(trial, arm=args.arm)}
+    params = {
+        **base_params(args),
+        **sample_params(
+            trial,
+            arm=args.arm,
+            model_dims=args.model_dims,
+            block_sizes=args.block_sizes,
+            steps_per_blocks=args.steps_per_blocks,
+        ),
+    }
     trial_dir = args.out_root / f"trial_{trial.number:04d}"
     trial_dir.mkdir(parents=True, exist_ok=True)
     seed = args.seed + trial.number
@@ -241,7 +328,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     for raw in args.enqueue:
         study.enqueue_trial(json.loads(raw), skip_if_exists=True)
-    study.optimize(lambda trial: run_trial(args, trial), n_trials=args.n_trials)
+    guard = FastFailureGuard(args.fail_fast_limit, args.fail_fast_seconds)
+    study.optimize(
+        lambda trial: run_trial(args, trial),
+        n_trials=args.n_trials,
+        callbacks=[guard] if args.fail_fast_limit > 0 else [],
+    )
 
     frame = study.trials_dataframe(attrs=("number", "value", "params", "state"))
     frame.to_csv(args.out_root / "trials.csv", index=False)
@@ -262,6 +354,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     if best is not None:
         print(f"best trial {best.number}: value={best.value} params={best.params}")
+    if guard.tripped:
+        print(
+            f"study stopped: {guard.limit} consecutive trials failed in under "
+            f"{guard.fast_seconds:.0f}s -- environment failure, not bad configs",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
     return 0
 
 

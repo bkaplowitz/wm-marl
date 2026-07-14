@@ -54,6 +54,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--eval-episodes", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--image-size", type=int, default=64)
+    parser.add_argument("--brax-backend", default=None)
     parser.add_argument("--dmc-camera-id", type=int, default=0)
     parser.add_argument("--dmc-workers", type=int, default=1)
     parser.add_argument("--allow-fail", action="store_true")
@@ -106,6 +107,7 @@ def build_arm_command(
     image_size: int | None = None,
     dmc_camera_id: int | None = None,
     dmc_workers: int | None = None,
+    brax_backend: str | None = None,
 ) -> list[str]:
     try:
         cli = ARM_COMMANDS[arm]
@@ -143,6 +145,8 @@ def build_arm_command(
         command.extend(("--dmc-camera-id", str(dmc_camera_id)))
     if dmc_workers is not None:
         command.extend(("--dmc-workers", str(dmc_workers)))
+    if brax_backend is not None:
+        command.extend(("--brax-backend", brax_backend))
     return command
 
 
@@ -166,6 +170,7 @@ def _dispatch_arms(args: argparse.Namespace) -> list[Path]:
             image_size=args.image_size,
             dmc_camera_id=args.dmc_camera_id,
             dmc_workers=args.dmc_workers,
+            brax_backend=args.brax_backend,
         )
         commands.append({"arm": arm, "command": command})
         summary_paths.append(arm_out_dir / "summary.json")
