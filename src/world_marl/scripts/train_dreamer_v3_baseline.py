@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 import matplotlib.image as mpimg
 import numpy as np
@@ -12,7 +14,6 @@ from flax.training.train_state import TrainState
 from world_marl.dreamer_v3_baseline.config import DreamerV3Config
 from world_marl.dreamer_v3_baseline.imagination import (
     dreamer_policy_action,
-    train_dreamer_actor_critic,
 )
 from world_marl.dreamer_v3_baseline.rssm import (
     flatten_rssm_state,
@@ -21,8 +22,11 @@ from world_marl.dreamer_v3_baseline.rssm import (
 )
 from world_marl.dreamer_v3_baseline.training import (
     DreamerWorldModel,
+    dreamer_agent_views,
     dreamer_action_features,
-    train_dreamer_world_model,
+    observe_dreamer_sequence,
+    train_dreamer_agent,
+    train_dreamer_agent_online,
 )
 from world_marl.dreamer_v3_baseline.validation import (
     finite_metric_check,
@@ -34,6 +38,7 @@ from world_marl.world_model_foundation.collect import (
     write_json_artifact,
     write_jsonl_metrics,
 )
+from world_marl.world_model_foundation.metrics import scanned_episode_metrics
 from world_marl.world_model_foundation.sources import world_model_sources
 
 
@@ -48,13 +53,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--policy-train-steps", type=int, default=10)
     parser.add_argument("--imagination-horizon", type=int, default=15)
     parser.add_argument("--collect-steps", type=int, default=None)
-    parser.add_argument("--time-steps", type=int, default=6)
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--time-steps", type=int, default=64)
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--train-batch-size", type=int, default=None)
+    parser.add_argument("--sequence-length", type=int, default=64)
     parser.add_argument("--num-envs", type=int, default=4)
     parser.add_argument("--max-cycles", type=int, default=1000)
-    parser.add_argument("--image-size", type=int, default=8)
+    parser.add_argument("--image-size", type=int, default=64)
     parser.add_argument("--action-dim", type=int, default=4)
-    parser.add_argument("--learning-rate", type=float, default=1e-3)
+    parser.add_argument("--learning-rate", type=float, default=4e-5)
+    parser.add_argument("--train-ratio", type=float, default=None)
+    parser.add_argument("--model-size", choices=("12m", "debug"), default="12m")
     parser.add_argument("--brax-backend", default=None)
     parser.add_argument("--dmc-workers", type=int, default=1)
     parser.add_argument("--dmc-camera-id", type=int, default=0)
@@ -74,9 +83,15 @@ def _config_payload(
         "imagination_horizon": args.imagination_horizon,
         "collect_steps": _collect_steps(args),
         "batch_size": args.batch_size,
+        "train_batch_size": args.train_batch_size,
+        "train_ratio": (
+            config.replay.train_ratio if args.train_ratio is None else args.train_ratio
+        ),
+        "sequence_length": args.sequence_length,
         "num_envs": args.num_envs,
         "max_cycles": args.max_cycles,
         "image_size": args.image_size,
+        "model_size": args.model_size,
         "dmc_camera_id": args.dmc_camera_id,
         "action_dim": config.action_dim,
         "action_mode": config.action_mode,
@@ -161,18 +176,7 @@ def _evaluate_real_env(
         dmc_camera_id=args.dmc_camera_id,
     )
     try:
-        rows: list[dict[str, float | str]] = []
         model = DreamerWorldModel(config)
-        action_low = getattr(adapter, "action_low", None)
-        action_high = getattr(adapter, "action_high", None)
-        if action_low is not None:
-            action_low = np.asarray(action_low, dtype=np.float32).reshape(
-                (config.action_dim,)
-            )
-        if action_high is not None:
-            action_high = np.asarray(action_high, dtype=np.float32).reshape(
-                (config.action_dim,)
-            )
         observations = _squeeze_single_agent_axis(
             adapter.reset(),
             num_envs=adapter.num_envs,
@@ -188,74 +192,67 @@ def _evaluate_real_env(
                 (adapter.num_envs, config.action_dim), dtype=jnp.float32
             )
         target_episodes = max(args.eval_episodes, 1)
-        while len(rows) < target_episodes:
-            action_features = dreamer_action_features(previous_action, config)
-            _, latent_state, _ = model.apply(
-                world_model_state.params,
-                latent_state,
-                action_features,
-                jnp.asarray(observations, dtype=jnp.float32),
-                method=model.observe_step,
+        scan_recurrent_rollout = getattr(adapter, "scan_recurrent_rollout", None)
+        if scan_recurrent_rollout is None:
+            raise RuntimeError(
+                f"adapter for {args.env!r} must provide scan_recurrent_rollout"
             )
-            actions = dreamer_policy_action(
-                actor_state,
-                flatten_rssm_state(latent_state),
-                config,
-            )
-            if config.action_mode == "discrete":
-                policy_action = np.asarray(actions, dtype=np.int32).reshape(
-                    (adapter.num_envs, 1)
-                )
-                previous_action = actions
-            else:
-                policy_action = np.asarray(actions, dtype=np.float32).reshape(
-                    (adapter.num_envs, config.action_dim)
-                )
-                if action_low is not None and action_high is not None:
-                    policy_action = np.clip(policy_action, action_low, action_high)
-                previous_action = jnp.asarray(policy_action, dtype=jnp.float32)
-            step = adapter.step(policy_action)
-            for episode_return, episode_length in zip(
-                step.completed_returns,
-                step.completed_lengths,
-                strict=True,
-            ):
-                if len(rows) >= target_episodes:
-                    break
-                rows.append(
-                    {
-                        "episode": len(rows),
-                        "return": float(episode_return[0]),
-                        "length": float(episode_length),
-                        "policy_source": "imagined_actor",
-                    }
-                )
-            terminals = _squeeze_single_agent_axis(
-                step.dones,
-                num_envs=adapter.num_envs,
-            ).reshape((adapter.num_envs,))
-            latent_state = reset_rssm_state(
-                latent_state,
-                jnp.asarray(terminals > 0.5),
+
+        def policy_step(policy_state, carry, obs_flat, is_first):
+            world_params, policy_train_state = policy_state
+            current_state, previous_action, policy_key = carry
+            policy_key, sample_key, action_key = jax.random.split(policy_key, 3)
+            current_state = reset_rssm_state(
+                current_state,
+                is_first,
                 config=config.rssm,
             )
             if config.action_mode == "discrete":
                 previous_action = jnp.where(
-                    jnp.asarray(terminals > 0.5),
+                    is_first,
                     jnp.zeros_like(previous_action),
                     previous_action,
                 )
             else:
                 previous_action = jnp.where(
-                    jnp.asarray(terminals > 0.5)[:, None],
+                    is_first[:, None],
                     jnp.zeros_like(previous_action),
                     previous_action,
                 )
-            observations = _squeeze_single_agent_axis(
-                step.observations,
-                num_envs=adapter.num_envs,
-            ).reshape((adapter.num_envs, *config.observation_shape))
-        return rows
+            _, current_state, _ = model.apply(
+                world_params,
+                current_state,
+                dreamer_action_features(previous_action, config),
+                obs_flat.reshape((adapter.num_envs, *config.observation_shape)),
+                sample_key,
+                method=model.observe_step,
+            )
+            actions = dreamer_policy_action(
+                policy_train_state,
+                flatten_rssm_state(current_state),
+                config,
+                action_key,
+            )
+            return (current_state, actions, policy_key), actions
+
+        evaluation_steps = math.ceil(target_episodes / adapter.num_envs) * (
+            args.max_cycles + 1
+        )
+        ys, _, _ = scan_recurrent_rollout(
+            policy_step,
+            (world_model_state.params, actor_state),
+            (latent_state, previous_action, jax.random.PRNGKey(args.seed + 20_000)),
+            evaluation_steps,
+            observations=observations,
+        )
+        _, _, rewards, _, dones = ys
+        return scanned_episode_metrics(
+            rewards,
+            dones,
+            target_episodes=target_episodes,
+            policy_source="imagined_actor",
+            arrival_aligned=True,
+        )
     finally:
         close = getattr(adapter, "close", None)
         if close is not None:
@@ -286,10 +283,37 @@ def _make_batch(args: argparse.Namespace):
     )
 
 
+def _minimum_online_environment_steps(
+    *,
+    requested_steps: int,
+    num_envs: int,
+    sequence_length: int,
+    batch_size: int,
+    train_ratio: float,
+    train_steps: int,
+) -> int:
+    if train_ratio <= 0:
+        raise ValueError("online Dreamer training requires a positive train ratio")
+    ready_step = max(
+        sequence_length + 1,
+        math.ceil(batch_size * sequence_length / num_envs),
+    )
+    update_ratio = num_envs * train_ratio / (batch_size * sequence_length)
+    additional_steps = (
+        0 if train_steps <= 1 else math.ceil((train_steps - 1) / update_ratio)
+    )
+    return max(requested_steps, ready_step + additional_steps)
+
+
 def _run_accounting(
     args: argparse.Namespace,
     batch: Any,
     real_env_metrics: list[dict[str, float | str]],
+    *,
+    model_updates: int,
+    sequence_length: int,
+    train_batch_size: int,
+    training_execution: str,
 ) -> dict[str, Any]:
     environment_backend = str(batch.metadata.get("environment_backend", "unknown"))
     evaluation_transitions = 0
@@ -301,54 +325,200 @@ def _run_accounting(
         "seed": args.seed,
         "evaluation_seed": args.seed + 10_000,
         "environment_backend": environment_backend,
+        "physics_backend": str(batch.metadata.get("physics_backend", "unknown")),
         "observation_mode": str(batch.metadata.get("observation_mode", "unknown")),
+        "collection_execution": str(
+            batch.metadata.get("collection_execution", "unknown")
+        ),
+        "collection_policy": str(batch.metadata.get("collection_policy", "unknown")),
+        "training_execution": training_execution,
+        "requested_collection_steps": _collect_steps(args),
+        "online_environment_steps": batch.time_steps,
         "real_env_transitions": int(batch.metadata.get("real_env_transitions", 0)),
         "evaluation_env_transitions": evaluation_transitions,
         "evaluation_episodes": len(real_env_metrics),
-        "model_updates": args.train_steps,
-        "policy_updates": args.policy_train_steps,
+        "evaluation_execution": str(
+            real_env_metrics[0].get("evaluation_execution", "synthetic")
+        ),
+        "requested_model_updates": args.train_steps,
+        "model_updates": model_updates,
+        "policy_updates": model_updates,
         "imagined_transitions": (
-            args.policy_train_steps * args.imagination_horizon * batch.batch_size
+            model_updates
+            * args.imagination_horizon
+            * sequence_length
+            * train_batch_size
         ),
     }
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.policy_train_steps != args.train_steps:
+        raise ValueError(
+            "paper-faithful DreamerV3 updates world model, actor, and critic "
+            "together; --policy-train-steps must equal --train-steps"
+        )
+    if args.env.startswith("dmc-pixels:"):
+        raise RuntimeError(
+            "host-loop collection is not supported by the scanned Dreamer trainer"
+        )
     out_dir = args.out_dir
-    batch = _make_batch(args)
-    action_mode = str(batch.metadata.get("action_mode", "discrete"))
-    action_dim = int(batch.metadata.get("action_dim", args.action_dim))
-    config = DreamerV3Config(
-        action_dim=action_dim,
-        action_mode=action_mode,
-        observation_shape=batch.observation_shape,
+    config_factory = (
+        DreamerV3Config.debug if args.model_size == "debug" else DreamerV3Config
     )
-    state, world_metrics = train_dreamer_world_model(
-        batch=batch,
-        config=config,
-        train_steps=args.train_steps,
-        learning_rate=args.learning_rate,
-        seed=args.seed,
-    )
-    finite_metric_check(world_metrics[-1])
-    action_dtype = jnp.int32 if config.action_mode == "discrete" else jnp.float32
-    outputs = state.apply_fn(
-        state.params,
-        jnp.asarray(batch.observations, dtype=jnp.float32),
-        jnp.asarray(batch.actions, dtype=action_dtype),
-        jnp.asarray(batch.is_first, dtype=bool),
-    )
-    actor_state, critic_state, actor_critic_metrics, imagined_rollout = (
-        train_dreamer_actor_critic(
-            world_model_state=state,
+    if args.env.startswith("synthetic:"):
+        batch = _make_batch(args)
+        action_mode = str(batch.metadata.get("action_mode", "discrete"))
+        action_dim = int(batch.metadata.get("action_dim", args.action_dim))
+        config = config_factory(
+            action_dim=action_dim,
+            action_mode=action_mode,
+            observation_shape=batch.observation_shape,
+        )
+        resolved_sequence_length = min(
+            batch.time_steps - 1,
+            config.replay.batch_length,
+            args.sequence_length,
+        )
+        resolved_train_batch_size = (
+            min(batch.batch_size, config.replay.batch_size)
+            if args.train_batch_size is None
+            else args.train_batch_size
+        )
+        agent_state, agent_metrics, imagined_rollout = train_dreamer_agent(
             batch=batch,
             config=config,
-            train_steps=args.policy_train_steps,
+            train_steps=args.train_steps,
+            seed=args.seed,
             learning_rate=args.learning_rate,
+            sequence_length=resolved_sequence_length,
+            batch_size=resolved_train_batch_size,
             imagination_horizon=args.imagination_horizon,
-            seed=args.seed + 1,
         )
+        training_execution = "jax_scan_synthetic_fixture"
+    else:
+        adapter = make_single_agent_adapter(
+            args.env,
+            num_envs=args.num_envs,
+            max_cycles=args.max_cycles,
+            seed=args.seed,
+            brax_backend=args.brax_backend,
+            dmc_workers=args.dmc_workers,
+            image_size=args.image_size,
+            dmc_camera_id=args.dmc_camera_id,
+        )
+        try:
+            observations = _squeeze_single_agent_axis(
+                adapter.reset(),
+                num_envs=adapter.num_envs,
+            )
+            action_mode = (
+                "discrete"
+                if tuple(getattr(adapter, "action_shape", ())) == ()
+                else "continuous"
+            )
+            config = config_factory(
+                action_dim=int(adapter.action_dim),
+                action_mode=action_mode,
+                observation_shape=tuple(adapter.observation_shape),
+            )
+            requested_environment_steps = _collect_steps(args)
+            resolved_sequence_length = min(
+                requested_environment_steps - 1,
+                config.replay.batch_length,
+                args.sequence_length,
+            )
+            if resolved_sequence_length <= 0:
+                raise ValueError(
+                    "collect steps must provide a nonempty replay sequence"
+                )
+            resolved_train_batch_size = (
+                config.replay.batch_size
+                if args.train_batch_size is None
+                else args.train_batch_size
+            )
+            resolved_train_ratio = (
+                config.replay.train_ratio
+                if args.train_ratio is None
+                else args.train_ratio
+            )
+            environment_steps = _minimum_online_environment_steps(
+                requested_steps=requested_environment_steps,
+                num_envs=adapter.num_envs,
+                sequence_length=resolved_sequence_length,
+                batch_size=resolved_train_batch_size,
+                train_ratio=resolved_train_ratio,
+                train_steps=args.train_steps,
+            )
+            agent_state, agent_metrics, imagined_rollout, batch = (
+                train_dreamer_agent_online(
+                    adapter=adapter,
+                    observations=observations,
+                    config=config,
+                    environment_steps=environment_steps,
+                    max_train_steps=args.train_steps,
+                    seed=args.seed,
+                    train_ratio=resolved_train_ratio,
+                    learning_rate=args.learning_rate,
+                    sequence_length=resolved_sequence_length,
+                    batch_size=resolved_train_batch_size,
+                    imagination_horizon=args.imagination_horizon,
+                )
+            )
+            batch.metadata["requested_collection_steps"] = requested_environment_steps
+        finally:
+            close = getattr(adapter, "close", None)
+            if close is not None:
+                close()
+        training_execution = "nested_jax_scan"
+    world_model_state, actor_state, _ = dreamer_agent_views(agent_state, config)
+    world_metric_keys = {
+        "reconstruction_loss",
+        "reward_loss",
+        "continue_loss",
+        "kl_loss",
+        "dynamics_kl_loss",
+        "representation_kl_loss",
+    }
+    world_metrics = [
+        {
+            "step": row["step"],
+            "loss": row["world_model_loss"],
+            **{key: row[key] for key in world_metric_keys},
+        }
+        for row in agent_metrics
+    ]
+    actor_metric_keys = {
+        "actor_loss",
+        "critic_loss",
+        "replay_critic_loss",
+        "return_scale",
+        "imagined_reward",
+        "imagined_value",
+        "actor_entropy",
+    }
+    actor_critic_metrics = [
+        {
+            "step": row["step"],
+            **{key: row[key] for key in actor_metric_keys},
+        }
+        for row in agent_metrics
+    ]
+    finite_metric_check(world_metrics[-1])
+    action_dtype = jnp.int32 if config.action_mode == "discrete" else jnp.float32
+    actions = jnp.asarray(batch.actions, dtype=action_dtype)
+    previous_actions = jnp.concatenate(
+        [jnp.zeros_like(actions[:1]), actions[:-1]],
+        axis=0,
+    )
+    outputs = observe_dreamer_sequence(
+        world_model_state.params,
+        jnp.asarray(batch.observations, dtype=jnp.float32),
+        previous_actions,
+        jnp.asarray(batch.is_first, dtype=bool),
+        config,
+        jax.random.PRNGKey(args.seed + 2),
     )
     finite_metric_check(actor_critic_metrics[-1])
     gate_passed = loss_decreased(world_metrics)
@@ -357,16 +527,25 @@ def main(argv: list[str] | None = None) -> int:
         args,
         batch,
         config,
-        state,
+        world_model_state,
         actor_state,
     )
     real_env_return = float(np.mean([row["return"] for row in real_env_metrics]))
-    accounting = _run_accounting(args, batch, real_env_metrics)
+    accounting = _run_accounting(
+        args,
+        batch,
+        real_env_metrics,
+        model_updates=len(agent_metrics),
+        sequence_length=resolved_sequence_length,
+        train_batch_size=resolved_train_batch_size,
+        training_execution=training_execution,
+    )
 
     write_json_artifact(out_dir / "config.json", _config_payload(args, config))
     write_json_artifact(out_dir / "sources.json", world_model_sources())
     write_jsonl_metrics(out_dir / "world_model_metrics.jsonl", world_metrics)
     write_jsonl_metrics(out_dir / "actor_critic_metrics.jsonl", actor_critic_metrics)
+    write_jsonl_metrics(out_dir / "agent_metrics.jsonl", agent_metrics)
     write_jsonl_metrics(out_dir / "real_env_metrics.jsonl", real_env_metrics)
     first_obs = np.asarray(batch.observations[0, 0])
     first_reconstruction = np.asarray(outputs["reconstructions"][0, 0])
@@ -378,7 +557,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     model = DreamerWorldModel(config)
     imagined_predictions = model.apply(
-        state.params,
+        world_model_state.params,
         imagined_rollout.features[:, 0],
         method=model.predict,
     )
