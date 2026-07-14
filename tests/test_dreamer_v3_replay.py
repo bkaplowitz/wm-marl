@@ -1733,6 +1733,40 @@ def test_restore_rejects_invalid_live_chunk_geometry_without_mutation(
     _assert_restore_rejected_without_mutation(replay, broken)
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("size", int(np.iinfo(np.intp).max), "configured replay chunk size"),
+        ("length", 4, "configured replay chunk length"),
+    ],
+)
+def test_restore_prevalidates_chunk_geometry_before_construction(
+    monkeypatch,
+    field: str,
+    value: int,
+    message: str,
+) -> None:
+    replay = _replay(
+        capacity=20,
+        chunk_size=3,
+        sequence_length=1,
+        context=0,
+        online=False,
+    )
+    _add_rows(replay, 5)
+    before = replay.state_dict()
+    broken = copy.deepcopy(before)
+    broken["chunks"][0][field] = value
+
+    def forbidden_construction(*args, **kwargs):
+        raise AssertionError("ReplayChunk.from_state_dict was called")
+
+    monkeypatch.setattr(ReplayChunk, "from_state_dict", forbidden_construction)
+    with pytest.raises(ValueError, match=message):
+        replay.load_state_dict(broken)
+    _assert_tree_equal(replay.state_dict(), before)
+
+
 @pytest.mark.parametrize("corruption", ["sealed_nonfull", "open_full"])
 def test_chunk_restore_rejects_noncanonical_seal_geometry(corruption: str) -> None:
     chunk = ReplayChunk(

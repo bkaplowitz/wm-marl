@@ -455,7 +455,9 @@ disjoint across writers, and together cover precisely
 Restore builds a candidate and rejects it before live-state replacement unless
 chunk geometry/ownership, per-writer chronology and cadence, item-key
 uniqueness, refcounts, selector types/order, FIFO counters, and the exact sample
-metric identities all agree. Stale online keys remain valid only when their id
+metric identities all agree. Raw persisted chunk size and length are checked
+against the configured bounds before chunk construction or NumPy allocation.
+Stale online keys remain valid only when their id
 was allocated by that writer, their offset and logical row exist, their phase
 is `absolute_row % R == 1 % R`, and each writer's surviving queue subsequence is
 in increasing row order; live keys must additionally resolve `R` rows.

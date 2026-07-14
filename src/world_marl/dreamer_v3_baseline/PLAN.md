@@ -235,8 +235,8 @@ disjoint allocation provenance, per-writer counter/history/current-chunk
 cadence (including the empty successor for `chunk_size=1`), retained-chain
 suffix ownership and chronology, canonical sealed/open geometry, unique item
 and queue starts, stale/live queue provenance and phase, and exact Python
-integer types. A valid idle writer whose predecessor was evicted must restore
-and continue bit-exactly.
+integer types for outer writer identities and selector ids/indices. A valid idle
+writer whose predecessor was evicted must restore and continue bit-exactly.
 
 Persisted consecutive batches are validated operationally even after their
 backing chunks are evicted: annotations must obey leading-first,

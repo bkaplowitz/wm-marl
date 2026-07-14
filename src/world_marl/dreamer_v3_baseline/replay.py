@@ -1257,6 +1257,14 @@ class DreamerReplay:
             )
             candidate.chunks = {}
             for chunk_state in state["chunks"]:
+                if not isinstance(chunk_state, Mapping):
+                    raise TypeError("replay chunk state must be a mapping")
+                size = chunk_state.get("size")
+                length = chunk_state.get("length")
+                if type(size) is not int or size != self.config.chunk_size:
+                    raise ValueError("configured replay chunk size differs")
+                if type(length) is not int or not 0 <= length <= size:
+                    raise ValueError("configured replay chunk length is invalid")
                 chunk = ReplayChunk.from_state_dict(
                     chunk_state, self.transition_spaces, self.latent_spaces
                 )
