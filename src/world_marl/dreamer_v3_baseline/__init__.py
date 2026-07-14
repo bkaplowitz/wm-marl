@@ -70,11 +70,10 @@ from world_marl.dreamer_v3_baseline.oracle import (
 )
 from world_marl.dreamer_v3_baseline.rssm import (
     DreamerRSSM,
+    RSSM,
+    RSSMTrajectory,
+    RSSM_SOURCE_SPEC,
     RSSMState,
-    categorical_straight_through,
-    flatten_rssm_state,
-    initial_rssm_state,
-    reset_rssm_state,
 )
 
 __all__ = [
@@ -122,6 +121,9 @@ __all__ = [
     "ParameterTranslator",
     "PolicyConfig",
     "RSSMConfig",
+    "RSSM",
+    "RSSMTrajectory",
+    "RSSM_SOURCE_SPEC",
     "RSSMState",
     "ReplayConfig",
     "RewardHead",
@@ -134,10 +136,6 @@ __all__ = [
     "TwoHotOutput",
     "balanced_categorical_kl_loss",
     "categorical_kl_loss",
-    "categorical_straight_through",
-    "flatten_rssm_state",
-    "initial_rssm_state",
-    "reset_rssm_state",
     "resolve_dreamer_config",
     "symexp",
     "symlog",
