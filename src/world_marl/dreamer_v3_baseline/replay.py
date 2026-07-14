@@ -814,6 +814,29 @@ class DreamerReplay:
                     raise ValueError(
                         "live consecutive current suffix has invalid chronology"
                     )
+                chunk = self.chunks[key.chunk_id]
+                for name in self.transition_spaces:
+                    expected = chunk.transition_data[name][key.offset]
+                    if name == "is_first" and position == 0:
+                        expected = np.ones_like(expected)
+                    elif name == "is_last" and position + 1 < self.raw_length:
+                        following = keys[position + 1]
+                        following_chunk = self.chunks[following.chunk_id]
+                        expected = np.logical_or(
+                            expected,
+                            following_chunk.transition_data["is_first"][
+                                following.offset
+                            ],
+                        )
+                    if not np.array_equal(
+                        np.asarray(current[name])[batch_index, position],
+                        expected,
+                        equal_nan=True,
+                    ):
+                        raise ValueError(
+                            "live consecutive current transition differs from "
+                            "replay storage"
+                        )
 
     def __len__(self) -> int:
         with self._lock:
@@ -955,10 +978,47 @@ class DreamerReplay:
     def _evict_item(self) -> None:
         if not self.fifo:
             raise RuntimeError("replay FIFO is empty during capacity eviction")
-        item_id = self.fifo.pop(0)
-        key = self.items.pop(item_id)
+        if any(type(candidate) is not int for candidate in self.fifo):
+            raise TypeError("replay FIFO item ids must be integers")
+        if self.fifo != list(self.items):
+            raise RuntimeError("replay FIFO/items disagree during eviction")
+        item_id = self.fifo[0]
+        selector_keys = self.selector.keys
+        selector_indices = self.selector.indices
+        if (
+            type(selector_keys) is not list
+            or type(selector_indices) is not dict
+            or any(type(candidate) is not int for candidate in selector_keys)
+            or any(
+                type(candidate) is not int or type(index) is not int
+                for candidate, index in selector_indices.items()
+            )
+            or len(set(selector_keys)) != len(selector_keys)
+            or selector_indices
+            != {candidate: index for index, candidate in enumerate(selector_keys)}
+            or set(selector_keys) != set(self.items)
+        ):
+            raise RuntimeError("replay selector is inconsistent during eviction")
+        key = self.items[item_id]
+        self._preflight_ref_decrement(key.chunk_id)
         self.selector.delete(item_id)
+        self.fifo.pop(0)
+        self.items.pop(item_id)
         self._dec_ref(key.chunk_id)
+
+    def _preflight_ref_decrement(self, chunk_id: bytes) -> None:
+        seen: set[bytes] = set()
+        while True:
+            if chunk_id in seen:
+                raise RuntimeError("replay reference graph contains a cycle")
+            seen.add(chunk_id)
+            reference_count = self.refs.get(chunk_id)
+            chunk = self.chunks.get(chunk_id)
+            if reference_count is None or reference_count <= 0 or chunk is None:
+                raise RuntimeError("invalid replay reference decrement")
+            if reference_count > 1 or chunk.successor_id is None:
+                return
+            chunk_id = chunk.successor_id
 
     def _resolve(self, start: ReplayKey, length: int) -> list[ReplayKey]:
         if start.chunk_id not in self.chunks:
@@ -1022,7 +1082,7 @@ class DreamerReplay:
             sequence_ids = []
             for _ in range(self.batch_size):
                 keys = None
-                if mode == "train":
+                if mode == "train" and self.config.online:
                     while self.online_queue.keys:
                         candidate = self.online_queue.pop()
                         try:
@@ -1153,7 +1213,9 @@ class DreamerReplay:
                     "online_fraction": (
                         self._metrics["online_samples"] / sampled if sampled else 0.0
                     ),
-                    "online_queue": len(self.online_queue),
+                    "online_queue": (
+                        len(self.online_queue) if self.config.online else 0
+                    ),
                     "replay_ratio": (
                         self._metrics["sampled_sequences"]
                         * self.config.sequence_length
@@ -1319,7 +1381,12 @@ class DreamerReplay:
                     raise ValueError("duplicate or invalid replay item id or key")
                 candidate.items[item_id] = key
                 item_keys.add(key)
-            candidate.fifo = list(state["fifo"])
+            fifo = state["fifo"]
+            if not isinstance(fifo, list) or any(
+                type(item_id) is not int for item_id in fifo
+            ):
+                raise ValueError("replay FIFO must be a list of integer item ids")
+            candidate.fifo = list(fifo)
             if candidate.fifo != list(candidate.items):
                 raise ValueError("replay FIFO/items disagreement")
             candidate.next_item_id = state["next_item_id"]
@@ -1337,6 +1404,7 @@ class DreamerReplay:
             )
             if list(candidate.items) != expected_item_ids:
                 raise ValueError("replay item ids are not a contiguous retained suffix")
+            candidate._validate_item_provenance()
             candidate.selector = UniformSelector.from_state_dict(state["selector"])
             if set(candidate.selector.keys) != set(candidate.items):
                 raise ValueError("selector/items disagreement")
@@ -1475,9 +1543,13 @@ class DreamerReplay:
                 raise ValueError("writer history does not end at current chunk")
 
     def _validate_online_queue(self) -> None:
+        if not self.config.online:
+            if self.online_queue.keys:
+                raise ValueError("offline replay cannot retain an online queue")
+            return
         locations = self._history_locations()
         seen: set[ReplayKey] = set()
-        last_rows: dict[int, int] = {}
+        writer_rows: dict[int, list[int]] = {}
         for key in self.online_queue.keys:
             if key in seen:
                 raise ValueError("online queue keys must be unique")
@@ -1493,10 +1565,7 @@ class DreamerReplay:
                 or absolute_row % self.raw_length != 1 % self.raw_length
             ):
                 raise ValueError("online queue key has invalid writer cadence")
-            previous = last_rows.get(writer.worker_id)
-            if previous is not None and absolute_row <= previous:
-                raise ValueError("online queue writer order is invalid")
-            last_rows[writer.worker_id] = absolute_row
+            writer_rows.setdefault(writer.worker_id, []).append(absolute_row)
             if key.chunk_id not in self.chunks:
                 continue
             try:
@@ -1505,6 +1574,34 @@ class DreamerReplay:
                 raise ValueError(
                     "online queue key is not a resolvable replay sequence"
                 ) from error
+        for worker_id, rows in writer_rows.items():
+            writer = self.writers[worker_id]
+            latest_start = writer.row_count - self.raw_length
+            phase = 1 % self.raw_length
+            cadence = list(range(phase, latest_start + 1, self.raw_length))
+            if rows != cadence[-len(rows) :]:
+                raise ValueError(
+                    "online queue writer projection is not a cadence suffix"
+                )
+
+    def _validate_item_provenance(self) -> None:
+        locations = self._history_locations()
+        writer_rows: dict[int, list[int]] = {}
+        for key in self.items.values():
+            location = locations.get(key.chunk_id)
+            if location is None or key.offset >= self.config.chunk_size:
+                raise ValueError("replay item key was never allocated")
+            writer, ordinal = location
+            absolute_row = ordinal * self.config.chunk_size + key.offset
+            writer_rows.setdefault(writer.worker_id, []).append(absolute_row)
+        for worker_id, rows in writer_rows.items():
+            writer = self.writers[worker_id]
+            latest_start = writer.row_count - self.raw_length
+            expected = list(range(latest_start - len(rows) + 1, latest_start + 1))
+            if rows != expected:
+                raise ValueError(
+                    "retained replay items are not an emitted-start suffix"
+                )
 
     def _validate_retained_chronology(self) -> None:
         for writer in self.writers.values():
@@ -1640,6 +1737,7 @@ class DreamerReplay:
             raise ValueError("restored replay exceeds capacity")
         for key in self.items.values():
             self._resolve(key, self.raw_length)
+        self._validate_item_provenance()
         self._validate_online_queue()
         if self.refs != self._recomputed_refs():
             raise ValueError("restored replay refcounts are inconsistent")

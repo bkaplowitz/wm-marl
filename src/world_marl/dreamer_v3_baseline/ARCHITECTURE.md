@@ -401,6 +401,13 @@ retained predecessor when capacity eviction removed it; the persisted final
 ### OnlineQueue
 
 FIFO fresh sequences, drained before uniform replay fill, fully checkpointed.
+For each writer, a nonempty persisted queue projection must be the exact
+`R`-spaced suffix of all emitted online starts, with phase `1 % R`, ending at
+that writer's latest eligible start. Entries from different writers may remain
+interleaved in any collection order. An empty per-writer projection is valid
+after service or eviction. Offline replay persists no queue; even an impossible
+direct in-memory queue injection is ignored by sampling and statistics without
+changing the queue, selector RNG, or sample metrics.
 
 ### UniformSelector
 
@@ -457,17 +464,32 @@ chunk geometry/ownership, per-writer chronology and cadence, item-key
 uniqueness, refcounts, selector types/order, FIFO counters, and the exact sample
 metric identities all agree. Raw persisted chunk size and length are checked
 against the configured bounds before chunk construction or NumPy allocation.
-Stale online keys remain valid only when their id
-was allocated by that writer, their offset and logical row exist, their phase
-is `absolute_row % R == 1 % R`, and each writer's surviving queue subsequence is
-in increasing row order; live keys must additionally resolve `R` rows.
+The FIFO is a list of exact Python integers and equals retained item-id order.
+Each writer's nonempty item-key projection, read in global item-id order, is
+the exact step-one suffix of every emitted valid start and ends at
+`row_count-R`; a writer may have an empty projection after global capacity
+eviction, and no global ordering is imposed across writers. Eviction validates
+the complete FIFO/items and selector key/index bijection plus every recursively
+triggered reference decrement before any selector, FIFO, item, chunk, or
+refcount mutation begins.
+
+Stale online keys remain valid only when their id was allocated by that writer,
+their offset and logical row exist, and their nonempty per-writer projection is
+the exact suffix of the `1+kR` cadence ending at the latest eligible start;
+live keys must additionally resolve `R` rows. Cross-writer interleaving remains
+unconstrained, while an offline persisted queue must be empty.
 
 Each persisted consecutive current batch must begin with `is_first`, satisfy
 `is_terminal => is_last` and
 `is_last[:,:-1] == is_first[:,1:]`, and contain a fully consecutive logical
 step-id sequence in the allocation ledger. These checks still apply when its
-backing chunks were evicted; every live suffix is also compared with linked
-storage. The exact metric identities are
+backing chunks were evicted. At every position whose backing chunk remains
+live, every declared immutable transition leaf must equal linked storage after
+reconstructing sampling annotations (`is_first[:,0]=True` and
+`is_last[t] |= backing_is_first[t+1]`). Persisted latent leaves are deliberately
+not compared because `update_context` may validly replace them after sampling;
+fully evicted prefixes retain ledger-and-annotation validation only. The exact
+metric identities are
 `sampled_sequences == batch_size * sample_calls` and
 `sampled_sequences == online_samples + uniform_samples`, including the all-zero
 state produced by `stats(reset=True)`.

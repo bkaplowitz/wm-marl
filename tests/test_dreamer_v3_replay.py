@@ -3028,3 +3028,521 @@ def test_public_exports_and_jepa_replay_are_independent() -> None:
     )
     assert legacy_batch.observations.shape == (1, 3, 2)
     assert legacy_batch.actions.shape == (1, 2)
+
+
+def _third_repair_live_current() -> DreamerReplay:
+    replay = _replay(
+        capacity=20,
+        chunk_size=4,
+        sequence_length=2,
+        context=0,
+        consecutive=2,
+        online=False,
+    )
+    _add_rows(replay, 6)
+    replay.sample("report", timeout=0.1)
+    current = replay.consecutive_streams["report"].current
+    assert current is not None
+    assert all(key.chunk_id in replay.chunks for key in _decode(current.step_ids))
+    return replay
+
+
+@pytest.mark.parametrize("corruption", ["swap", "gap", "wrong_tail"])
+def test_third_repair_restore_rejects_non_suffix_item_provenance(
+    corruption: str,
+) -> None:
+    replay = _replay(
+        capacity=3,
+        chunk_size=8,
+        sequence_length=1,
+        context=0,
+        online=False,
+    )
+    _add_rows(replay, 5)
+    broken = copy.deepcopy(replay.state_dict())
+    keys = [item["key"] for item in broken["items"]]
+    assert [key["offset"] for key in keys] == [2, 3, 4]
+    if corruption == "swap":
+        broken["items"][0]["key"], broken["items"][1]["key"] = keys[1], keys[0]
+    elif corruption == "gap":
+        broken["items"][0]["key"] = {
+            "chunk_id": keys[0]["chunk_id"],
+            "offset": 1,
+        }
+    else:
+        broken["items"][-1]["key"] = {
+            "chunk_id": keys[-1]["chunk_id"],
+            "offset": 0,
+        }
+    _assert_restore_rejected_without_mutation(replay, broken)
+
+
+def test_third_repair_item_suffix_controls_resume_exactly() -> None:
+    replay = _replay(
+        capacity=3,
+        chunk_size=4,
+        sequence_length=1,
+        context=0,
+        online=False,
+        seed=11,
+    )
+    for index in range(4):
+        replay.add(_row(index, first=index == 0), worker=1)
+        replay.add(_row(100 + index, first=index == 0), worker=2)
+    state = replay.state_dict()
+    locations = {
+        chunk_id: (worker, ordinal)
+        for worker, writer in state["writers"].items()
+        for ordinal, chunk_id in enumerate(writer["chunk_history"])
+    }
+    projections: dict[int, list[int]] = {1: [], 2: []}
+    for item in state["items"]:
+        key = item["key"]
+        worker, ordinal = locations[key["chunk_id"]]
+        projections[worker].append(ordinal * replay.config.chunk_size + key["offset"])
+    assert projections[1] == [3]
+    assert projections[2] == [2, 3]
+    restored = _replay(
+        capacity=3,
+        chunk_size=4,
+        sequence_length=1,
+        context=0,
+        online=False,
+        seed=11,
+    )
+    restored.load_state_dict(state)
+    for mode in ("report", "report", "train"):
+        left = replay.sample_raw(mode, timeout=0.1)
+        right = restored.sample_raw(mode, timeout=0.1)
+        _assert_tree_equal(left.as_dict(), right.as_dict())
+        _assert_tree_equal(replay.state_dict(), restored.state_dict())
+
+    evicted = _replay(
+        capacity=1,
+        chunk_size=4,
+        sequence_length=1,
+        context=0,
+        online=False,
+    )
+    evicted.add(_row(0), worker=1)
+    evicted.add(_row(100, first=True), worker=2)
+    evicted_state = evicted.state_dict()
+    only_key = evicted_state["items"][0]["key"]
+    assert only_key["chunk_id"] in evicted_state["writers"][2]["chunk_history"]
+    clone = _replay(
+        capacity=1,
+        chunk_size=4,
+        sequence_length=1,
+        context=0,
+        online=False,
+    )
+    clone.load_state_dict(evicted_state)
+    _assert_tree_equal(clone.state_dict(), evicted_state)
+
+
+@pytest.mark.parametrize("corruption", ["swap", "gap", "wrong_tail"])
+def test_item_suffix_raw_length_three_rejects_cross_chunk_corruption(
+    corruption: str,
+) -> None:
+    replay = _replay(
+        capacity=3,
+        chunk_size=3,
+        sequence_length=3,
+        context=0,
+        online=False,
+    )
+    _add_rows(replay, 7)
+    broken = copy.deepcopy(replay.state_dict())
+    keys = [item["key"] for item in broken["items"]]
+    assert [
+        (int.from_bytes(key["chunk_id"], "big"), key["offset"]) for key in keys
+    ] == [(1, 2), (2, 0), (2, 1)]
+    if corruption == "swap":
+        broken["items"][0]["key"], broken["items"][1]["key"] = keys[1], keys[0]
+    elif corruption == "gap":
+        broken["items"][0]["key"] = {
+            "chunk_id": (1).to_bytes(16, "big"),
+            "offset": 1,
+        }
+    else:
+        broken["items"][-1]["key"] = {
+            "chunk_id": (1).to_bytes(16, "big"),
+            "offset": 0,
+        }
+    _assert_restore_rejected_without_mutation(replay, broken)
+
+
+def test_item_suffix_raw_length_three_allows_cross_writer_absolute_decrease() -> None:
+    replay = _replay(
+        capacity=4,
+        chunk_size=3,
+        sequence_length=3,
+        context=0,
+        online=False,
+        seed=23,
+    )
+    for index in range(7):
+        replay.add(_row(index, first=index == 0), worker=1)
+    for index in range(4):
+        replay.add(_row(100 + index, first=index == 0), worker=2)
+    state = replay.state_dict()
+    locations = {
+        chunk_id: (worker, ordinal)
+        for worker, writer in state["writers"].items()
+        for ordinal, chunk_id in enumerate(writer["chunk_history"])
+    }
+    positions = []
+    for item in state["items"]:
+        key = item["key"]
+        worker, ordinal = locations[key["chunk_id"]]
+        positions.append((worker, ordinal * replay.config.chunk_size + key["offset"]))
+    assert positions == [(1, 3), (1, 4), (2, 0), (2, 1)]
+    restored = _replay(
+        capacity=4,
+        chunk_size=3,
+        sequence_length=3,
+        context=0,
+        online=False,
+        seed=23,
+    )
+    restored.load_state_dict(state)
+    _assert_tree_equal(restored.state_dict(), state)
+    for mode in ("report", "train"):
+        left = replay.sample_raw(mode, timeout=0.1)
+        right = restored.sample_raw(mode, timeout=0.1)
+        _assert_tree_equal(left.as_dict(), right.as_dict())
+        _assert_tree_equal(replay.state_dict(), restored.state_dict())
+
+
+@pytest.mark.parametrize(
+    "corrupt_fifo",
+    [
+        lambda fifo: fifo.__setitem__(0, False),
+        lambda fifo: fifo.__setitem__(0, np.int64(fifo[0])),
+        lambda fifo: tuple(fifo),
+    ],
+    ids=["bool", "numpy-int", "tuple"],
+)
+def test_third_repair_restore_requires_canonical_fifo_types(corrupt_fifo) -> None:
+    replay = _replay(sequence_length=1, context=0, online=False)
+    _add_rows(replay, 3)
+    broken = copy.deepcopy(replay.state_dict())
+    replacement = corrupt_fifo(broken["fifo"])
+    if replacement is not None:
+        broken["fifo"] = replacement
+    _assert_restore_rejected_without_mutation(replay, broken)
+
+
+@pytest.mark.parametrize("corruption", ["bool", "missing_item", "selector"])
+def test_third_repair_evict_preflight_is_transactional(corruption: str) -> None:
+    replay = _replay(
+        capacity=2,
+        chunk_size=4,
+        sequence_length=1,
+        context=0,
+        online=False,
+    )
+    _add_rows(replay, 2)
+    item_id = replay.fifo[0]
+    if corruption == "bool":
+        replay.fifo[0] = False
+    elif corruption == "missing_item":
+        del replay.items[item_id]
+    else:
+        replay.selector.indices.pop(item_id)
+    before = replay.state_dict()
+    with pytest.raises((KeyError, TypeError, ValueError, RuntimeError)):
+        replay._evict_item()
+    _assert_tree_equal(replay.state_dict(), before)
+
+
+def test_evict_preflight_rejects_selector_container_before_any_mutation() -> None:
+    replay = _replay(
+        capacity=2,
+        chunk_size=4,
+        sequence_length=1,
+        context=0,
+        online=False,
+    )
+    _add_rows(replay, 2)
+    item_id = replay.fifo[0]
+    assert item_id in replay.selector.indices
+    replay.selector.keys = tuple(replay.selector.keys)
+    keys_before = replay.selector.keys
+    indices_before = dict(replay.selector.indices)
+    before = replay.state_dict()
+    with pytest.raises((AttributeError, TypeError, ValueError, RuntimeError)):
+        replay._evict_item()
+    _assert_tree_equal(replay.state_dict(), before)
+    assert replay.selector.keys is keys_before
+    assert replay.selector.indices == indices_before
+
+
+def test_third_repair_canonical_fifo_restore_continues_exactly() -> None:
+    replay = _replay(
+        capacity=2,
+        chunk_size=4,
+        sequence_length=1,
+        context=0,
+        online=False,
+        seed=13,
+    )
+    _add_rows(replay, 4)
+    restored = _replay(
+        capacity=2,
+        chunk_size=4,
+        sequence_length=1,
+        context=0,
+        online=False,
+        seed=13,
+    )
+    restored.load_state_dict(replay.state_dict())
+    replay.add(_row(4, first=True))
+    restored.add(_row(4, first=True))
+    left = replay.sample_raw("train", timeout=0.1)
+    right = restored.sample_raw("train", timeout=0.1)
+    _assert_tree_equal(left.as_dict(), right.as_dict())
+    _assert_tree_equal(replay.state_dict(), restored.state_dict())
+
+
+@pytest.mark.parametrize("corruption", ["gap", "tail"])
+def test_third_repair_restore_rejects_incomplete_online_cadence_suffix(
+    corruption: str,
+) -> None:
+    replay = _replay(
+        capacity=20,
+        chunk_size=8,
+        sequence_length=2,
+        context=0,
+        online=True,
+    )
+    _add_rows(replay, 7)
+    broken = copy.deepcopy(replay.state_dict())
+    queue = broken["online_queue"]["keys"]
+    assert [key["offset"] for key in queue] == [1, 3, 5]
+    queue.pop(1 if corruption == "gap" else -1)
+    _assert_restore_rejected_without_mutation(replay, broken)
+
+
+def test_third_repair_offline_restore_rejects_queue_transactionally() -> None:
+    replay = _replay(
+        capacity=20,
+        chunk_size=8,
+        sequence_length=2,
+        context=0,
+        online=False,
+    )
+    _add_rows(replay, 4)
+    broken = copy.deepcopy(replay.state_dict())
+    broken["online_queue"]["keys"] = [copy.deepcopy(broken["items"][1]["key"])]
+    assert broken["online_queue"]["keys"][0]["offset"] == 1
+    _assert_restore_rejected_without_mutation(replay, broken)
+
+
+def test_third_repair_offline_sampling_ignores_injected_online_queue() -> None:
+    replay = _replay(
+        capacity=20,
+        chunk_size=8,
+        sequence_length=2,
+        context=0,
+        online=False,
+        seed=17,
+    )
+    _add_rows(replay, 6)
+    pristine = replay.state_dict()
+    clone = _replay(
+        capacity=20,
+        chunk_size=8,
+        sequence_length=2,
+        context=0,
+        online=False,
+        seed=17,
+    )
+    clone.load_state_dict(pristine)
+    injected = replay.items[1]
+    replay.online_queue.push(injected)
+    queue_before = replay.online_queue.state_dict()
+    left = replay.sample_raw("train", timeout=0.1)
+    right = clone.sample_raw("train", timeout=0.1)
+    _assert_tree_equal(left.as_dict(), right.as_dict())
+    assert replay.online_queue.state_dict() == queue_before
+    np.testing.assert_array_equal(
+        _selector_rng_bytes(replay.selector), _selector_rng_bytes(clone.selector)
+    )
+    assert replay.stats() == clone.stats()
+
+
+def test_third_repair_online_suffix_controls_resume_metrics_and_rng() -> None:
+    replay = _replay(
+        capacity=20,
+        chunk_size=4,
+        sequence_length=2,
+        context=0,
+        online=True,
+        seed=19,
+    )
+    for index in range(5):
+        replay.add(_row(index, first=index == 0), worker=1)
+    for index in range(2):
+        replay.add(_row(100 + index, first=index == 0), worker=2)
+    for index in range(3):
+        replay.add(_row(200 + index, first=index == 0), worker=3)
+    state = replay.state_dict()
+    restored = _replay(
+        capacity=20,
+        chunk_size=4,
+        sequence_length=2,
+        context=0,
+        online=True,
+        seed=19,
+    )
+    restored.load_state_dict(state)
+    _assert_tree_equal(restored.state_dict(), state)
+    for _ in range(4):
+        left = replay.sample_raw("train", timeout=0.1)
+        right = restored.sample_raw("train", timeout=0.1)
+        _assert_tree_equal(left.as_dict(), right.as_dict())
+        _assert_tree_equal(replay.state_dict(), restored.state_dict())
+
+    raw_one = _replay(
+        capacity=20,
+        chunk_size=2,
+        sequence_length=1,
+        context=0,
+        online=True,
+    )
+    _add_rows(raw_one, 3)
+    raw_state = raw_one.state_dict()
+    assert [key["offset"] for key in raw_state["online_queue"]["keys"]] == [0, 1, 0]
+    raw_clone = _replay(
+        capacity=20,
+        chunk_size=2,
+        sequence_length=1,
+        context=0,
+        online=True,
+    )
+    raw_clone.load_state_dict(raw_state)
+    _assert_tree_equal(raw_clone.state_dict(), raw_state)
+
+
+@pytest.mark.parametrize(
+    "leaf",
+    ["reward", "obs", "action", "value", "is_terminal"],
+)
+def test_third_repair_restore_binds_live_current_immutable_payload(leaf: str) -> None:
+    replay = _third_repair_live_current()
+    broken = copy.deepcopy(replay.state_dict())
+    current = broken["consecutive"]["report"]["current"]
+    if leaf == "obs":
+        current[leaf][0, 1, 0] += 1
+    elif leaf == "is_terminal":
+        current[leaf][0, 1] = not bool(current[leaf][0, 1])
+    else:
+        current[leaf][0, 1] += 100
+    _assert_restore_rejected_without_mutation(replay, broken)
+
+
+def test_third_repair_restore_binds_coordinated_current_flags_to_storage() -> None:
+    replay = _third_repair_live_current()
+    broken = copy.deepcopy(replay.state_dict())
+    current = broken["consecutive"]["report"]["current"]
+    assert not bool(current["is_first"][0, 1])
+    current["is_first"][0, 1] = True
+    current["is_last"][0, 0] = True
+    _assert_restore_rejected_without_mutation(replay, broken)
+
+
+def _third_repair_partially_live_current() -> DreamerReplay:
+    replay = _replay(
+        capacity=1,
+        chunk_size=2,
+        sequence_length=2,
+        context=0,
+        consecutive=2,
+        online=False,
+    )
+    _add_rows(replay, 5)
+    replay.sample("report", timeout=0.1)
+    for index in range(5, 30):
+        current = replay.consecutive_streams["report"].current
+        assert current is not None
+        live = [key.chunk_id in replay.chunks for key in _decode(current.step_ids)]
+        if any(live) and not all(live):
+            return replay
+        replay.add(_row(index, first=False))
+    raise AssertionError("failed to construct partially live retained current")
+
+
+def test_third_repair_restore_binds_partially_live_current_suffix() -> None:
+    replay = _third_repair_partially_live_current()
+    broken = copy.deepcopy(replay.state_dict())
+    current = broken["consecutive"]["report"]["current"]
+    keys = _decode(current["stepid"])
+    position = next(
+        index for index, key in enumerate(keys) if key.chunk_id in replay.chunks
+    )
+    current["reward"][0, position] += 100
+    _assert_restore_rejected_without_mutation(replay, broken)
+
+
+def test_partially_live_current_round_trip_resumes_exact_next_report_slice() -> None:
+    replay = _third_repair_partially_live_current()
+    state = replay.state_dict()
+    current = state["consecutive"]["report"]["current"]
+    keys = _decode(current["stepid"])
+    live = [key.chunk_id in replay.chunks for key in keys]
+    assert any(live) and not all(live)
+    restored = _replay(
+        capacity=1,
+        chunk_size=2,
+        sequence_length=2,
+        context=0,
+        consecutive=2,
+        online=False,
+    )
+    restored.load_state_dict(state)
+    _assert_tree_equal(restored.state_dict(), state)
+    left = replay.sample("report", timeout=0.1)
+    right = restored.sample("report", timeout=0.1)
+    np.testing.assert_array_equal(left.data["consec"], [[1, 1]])
+    _assert_tree_equal(left.as_dict(), right.as_dict())
+    _assert_tree_equal(replay.state_dict(), restored.state_dict())
+
+
+def test_third_repair_live_latent_divergence_and_evicted_current_resume() -> None:
+    replay = _third_repair_live_current()
+    current = replay.consecutive_streams["report"].current
+    assert current is not None
+    replay.update_context(
+        current.step_ids,
+        {
+            "dyn/deter": np.full((1, replay.raw_length, 2), 91, np.float32),
+            "dyn/stoch": np.full((1, replay.raw_length, 1, 2), 92, np.float32),
+        },
+    )
+    restored = _replay(
+        capacity=20,
+        chunk_size=4,
+        sequence_length=2,
+        context=0,
+        consecutive=2,
+        online=False,
+    )
+    restored.load_state_dict(replay.state_dict())
+    left = replay.sample("report", timeout=0.1)
+    right = restored.sample("report", timeout=0.1)
+    _assert_tree_equal(left.as_dict(), right.as_dict())
+
+    evicted = _evicted_consecutive_current_scenario()
+    evicted_clone = _replay(
+        capacity=1,
+        chunk_size=2,
+        sequence_length=2,
+        context=0,
+        consecutive=2,
+        online=False,
+    )
+    evicted_clone.load_state_dict(evicted.state_dict())
+    left = evicted.sample("report", timeout=0.1)
+    right = evicted_clone.sample("report", timeout=0.1)
+    _assert_tree_equal(left.as_dict(), right.as_dict())

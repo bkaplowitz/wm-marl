@@ -233,15 +233,32 @@ Persistence schema version 2 records every writer's complete lifetime
 `chunk_history`, including evicted ids. Acceptance requires exact contiguous and
 disjoint allocation provenance, per-writer counter/history/current-chunk
 cadence (including the empty successor for `chunk_size=1`), retained-chain
-suffix ownership and chronology, canonical sealed/open geometry, unique item
-and queue starts, stale/live queue provenance and phase, and exact Python
-integer types for outer writer identities and selector ids/indices. A valid idle
-writer whose predecessor was evicted must restore and continue bit-exactly.
+suffix ownership and chronology, canonical sealed/open geometry, and unique
+item and queue starts. In global item-id order, every writer's nonempty retained
+item projection is the exact step-one suffix of its emitted starts ending at
+`row_count - raw_length`; empty projections after global eviction are valid and
+cross-writer interleaving is unconstrained. FIFO state is a canonical list of
+exact Python integers, as are outer writer identities and selector ids/indices.
+Eviction preflights the complete FIFO/item/selector/ref-decrement operation
+before its first mutation. A valid idle writer whose predecessor was evicted
+must restore and continue bit-exactly.
+
+For online replay, each writer's nonempty persisted queue projection is the
+exact `raw_length`-spaced suffix of phase `1 % raw_length` through the latest
+eligible start. Empty projections, stale/live entries, `raw_length=1`, and
+arbitrary cross-writer interleaving remain valid; offline persisted queues must
+be empty. Impossible direct offline queue injection is ignored without draining
+it or changing uniform selector RNG, metrics, or reported queue size.
 
 Persisted consecutive batches are validated operationally even after their
 backing chunks are evicted: annotations must obey leading-first,
 terminal-to-last, and adjacent last/first equality, while all step ids must be
-allocated and logically consecutive. Restore also enforces
+allocated and logically consecutive. Every live retained position additionally
+binds all declared immutable transition leaves to backing storage after
+reconstructing leading-first and next-first-is-last annotations. Mutable latent
+leaves are exempt because latent writeback may legitimately diverge from the
+sampled copy; fully evicted positions retain ledger/annotation validation only.
+Restore also enforces
 `sampled_sequences == batch_size * sample_calls == online_samples +
 uniform_samples`, with the latter equality read as a separate identity, and
 accepts the all-zero metrics state after reset. Every rejection is
