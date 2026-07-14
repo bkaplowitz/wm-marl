@@ -375,15 +375,28 @@ visible without changing is_terminal. RSSM scans reset at each is_first.
 
 ### ReplayChunk
 
-Fixed append-only transition storage. Sealing freezes transition data; latent
-context remains replaceable by key.
+Fixed-capacity transition and latent storage. `append` first validates the
+complete exact transition-plus-latent row, including the policy-produced
+float32 latent shapes, and only then allocates or mutates storage; a rejected
+row cannot leave zero-filled arrays or advance length. The accepted row stores
+the policy's initial latent entries exactly. A full chunk is sealed to exactly
+one successor and its transition prefix becomes read-only, while latent context
+remains replaceable by key. Restore accepts only full sealed chunks and nonfull
+open chunks, both at the configured aggregate chunk size.
 
 ### ReplayWriter
 
-One per environment. Enforces chronology, opens/seals chunks, emits
-non-overlapping online sequences after T transitions, and continues its worker
-stream across episode resets. Episode boundaries are data flags, not replay
-discontinuities.
+One per environment. It owns an ordered lifetime `chunk_history` containing
+every chunk id allocated for that worker, including chunks later evicted. It
+enforces chronology, opens/seals chunks, retains the last `R-1` keys, emits
+every valid uniform start, and enqueues non-overlapping online starts satisfying
+`row % R == 1 % R`, where `R=context+sequence_length*consecutive`. This is
+`1+nR` for `R>1` and every row for `R=1`. The row and emitted
+counters, pending suffix, current empty successor, and lifetime history are one
+cadence invariant. Episode boundaries are data flags, not replay
+discontinuities. On restore an empty current chunk may legitimately have no
+retained predecessor when capacity eviction removed it; the persisted final
+`is_last` flag still controls the next append.
 
 ### OnlineQueue
 
@@ -426,6 +439,36 @@ link/reference, current writer, queue, selector RNG, FIFO item, latent entry,
 and the independent current raw batch and consecutive index for all three mode
 streams. Restore rebinds blocked samplers to the restored stream for their own
 mode without allowing cross-mode reuse.
+
+`add` validates and normalizes a complete row before mutation, requires the
+exact active writer, preflights every needed id, appends the transition and
+policy latent entries, updates pending/item references, seals and allocates a
+successor when full, emits the valid start, applies the online phase, and only
+then advances writer and aggregate counters. New chunk allocation verifies its
+owner before changing the id counter, chunk map, references, or lifetime
+history.
+
+Persistence schema version 2 treats writer histories as the allocation ledger.
+Their exact positive 16-byte ids must be strictly increasing per writer,
+disjoint across writers, and together cover precisely
+`1..next_chunk_id-1`; each retained writer chain is the suffix of its history.
+Restore builds a candidate and rejects it before live-state replacement unless
+chunk geometry/ownership, per-writer chronology and cadence, item-key
+uniqueness, refcounts, selector types/order, FIFO counters, and the exact sample
+metric identities all agree. Stale online keys remain valid only when their id
+was allocated by that writer, their offset and logical row exist, their phase
+is `absolute_row % R == 1 % R`, and each writer's surviving queue subsequence is
+in increasing row order; live keys must additionally resolve `R` rows.
+
+Each persisted consecutive current batch must begin with `is_first`, satisfy
+`is_terminal => is_last` and
+`is_last[:,:-1] == is_first[:,1:]`, and contain a fully consecutive logical
+step-id sequence in the allocation ledger. These checks still apply when its
+backing chunks were evicted; every live suffix is also compared with linked
+storage. The exact metric identities are
+`sampled_sequences == batch_size * sample_calls` and
+`sampled_sequences == online_samples + uniform_samples`, including the all-zero
+state produced by `stats(reset=True)`.
 
 ## 9. Environment, driver, artifacts, checkpoints
 

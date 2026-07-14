@@ -229,6 +229,26 @@ context, and each mode's current consecutive batch/index—not merely transition
 arrays. Train, report, and eval streams resume independently; only train may
 drain the online queue.
 
+Persistence schema version 2 records every writer's complete lifetime
+`chunk_history`, including evicted ids. Acceptance requires exact contiguous and
+disjoint allocation provenance, per-writer counter/history/current-chunk
+cadence (including the empty successor for `chunk_size=1`), retained-chain
+suffix ownership and chronology, canonical sealed/open geometry, unique item
+and queue starts, stale/live queue provenance and phase, and exact Python
+integer types. A valid idle writer whose predecessor was evicted must restore
+and continue bit-exactly.
+
+Persisted consecutive batches are validated operationally even after their
+backing chunks are evicted: annotations must obey leading-first,
+terminal-to-last, and adjacent last/first equality, while all step ids must be
+allocated and logically consecutive. Restore also enforces
+`sampled_sequences == batch_size * sample_calls == online_samples +
+uniform_samples`, with the latter equality read as a separate identity, and
+accepts the all-zero metrics state after reset. Every rejection is
+transactional. Task 5 is accepted only after the focused corruption/control
+matrix, the complete replay file, accepted Dreamer regression matrix, oracle
+provenance/regeneration checks, fixture hash check, and JEPA-scope diff all pass.
+
 **Commit:** feat(dreamer): add online latent replay
 
 ## Task 6: Port the unified agent objective
