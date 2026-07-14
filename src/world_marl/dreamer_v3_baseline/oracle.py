@@ -16,6 +16,7 @@ from types import MappingProxyType, ModuleType, SimpleNamespace
 from typing import Any, Iterator, Mapping, Sequence
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import yaml
 
@@ -68,6 +69,7 @@ _PAPER_OVERRIDES: dict[str, Any] = {
 class OracleSourceSpec:
     name: str
     revision_hashes: Mapping[str, Mapping[str, str]]
+    execution_dtypes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not _CASE_PATTERN.fullmatch(self.name):
@@ -97,6 +99,10 @@ class OracleSourceSpec:
             "revision_hashes",
             MappingProxyType(normalized),
         )
+        dtypes = tuple(jnp.dtype(dtype).name for dtype in self.execution_dtypes)
+        if len(set(dtypes)) != len(dtypes):
+            raise ValueError("oracle source execution dtypes must be unique")
+        object.__setattr__(self, "execution_dtypes", dtypes)
 
     def hashes_for(self, revision: str) -> Mapping[str, str]:
         try:
@@ -105,6 +111,10 @@ class OracleSourceSpec:
             raise ValueError(
                 f"oracle source spec {self.name!r} does not pin revision {revision}"
             ) from error
+
+    def allows_execution_dtype(self, dtype: str, canonical_dtype: str) -> bool:
+        allowed = self.execution_dtypes or (jnp.dtype(canonical_dtype).name,)
+        return jnp.dtype(dtype).name in allowed
 
 
 _ORACLE_SOURCE_SPECS: dict[str, OracleSourceSpec] = {}
@@ -259,6 +269,16 @@ class OracleManifest:
                 f"{resolved_source_spec.name!r}"
             )
         fixture = Path(fixture_path)
+        assert config.run is not None
+        execution_dtype = jnp.dtype(dtype or config.run.compute_dtype).name
+        if not resolved_source_spec.allows_execution_dtype(
+            execution_dtype,
+            config.run.compute_dtype,
+        ):
+            raise ValueError(
+                f"oracle source spec {resolved_source_spec.name!r} does not allow "
+                f"execution dtype {execution_dtype!r}"
+            )
         return cls(
             schema_version=ORACLE_SCHEMA_VERSION,
             case_name=case_name,
@@ -270,7 +290,7 @@ class OracleManifest:
             profile_hash=config.canonical_hash(),
             overrides=profile_overrides(resolved_profile),
             jax_version=jax.__version__,
-            dtype=dtype or config.run.compute_dtype,  # type: ignore[union-attr]
+            dtype=execution_dtype,
             device=device or jax.default_backend(),
             seed=seed,
             tensor_schema={
@@ -418,8 +438,23 @@ class OracleManifest:
         if self.jax_version != jax.__version__:
             raise ValueError("oracle JAX version does not match the runtime")
         assert expected_config.run is not None
-        if self.dtype != expected_config.run.compute_dtype:
-            raise ValueError("oracle dtype does not match the resolved config")
+        if not source_spec.allows_execution_dtype(
+            self.dtype,
+            expected_config.run.compute_dtype,
+        ):
+            raise ValueError(
+                "oracle dtype is not allowed by the pinned source specification"
+            )
+        if source_spec.execution_dtypes:
+            if self.generator_request is None:
+                raise ValueError(
+                    "multi-dtype oracle source requires an explicit generator request"
+                )
+            request = json.loads(self.generator_request)
+            if request.get("compute_dtype") != self.dtype:
+                raise ValueError(
+                    "oracle dtype does not match the executed generator request"
+                )
         expected_device = jax.default_backend()
         if self.device != expected_device:
             raise ValueError(
@@ -631,6 +666,7 @@ class OracleHarness:
         generator_command: Sequence[str],
         source_spec: str | OracleSourceSpec,
         generator_request: Mapping[str, Any] | None = None,
+        dtype: str | None = None,
     ) -> tuple[Path, Path]:
         if not _CASE_PATTERN.fullmatch(case_name):
             raise ValueError(f"invalid oracle case name: {case_name!r}")
@@ -662,6 +698,7 @@ class OracleHarness:
             generator_command=generator_command,
             generator_request=generator_request,
             source_spec=source_spec,
+            dtype=dtype,
         )
         manifest.validate(
             official_checkout=self.official_checkout,
@@ -784,8 +821,9 @@ class OracleHarness:
         profile: DreamerProfile | str,
         observation_mode: ObservationMode | str,
         *,
-        case_name: str = "networks",
+        case_name: str | None = None,
         seed: int = 0,
+        compute_dtype: str = "bfloat16",
     ) -> tuple[Path, Path]:
         from world_marl.dreamer_v3_baseline.network_oracle import run_networks_case
 
@@ -795,6 +833,7 @@ class OracleHarness:
             observation_mode,
             case_name=case_name,
             seed=seed,
+            compute_dtype=compute_dtype,
         )
 
 

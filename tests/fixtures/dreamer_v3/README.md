@@ -32,6 +32,20 @@ block-linear, convolution, transpose-convolution, MLP, BlockGRU, dictionary
 encoder/decoder, and head cases. Parameter tensors are stored alongside outputs
 under canonical source paths so parity tests must establish a complete bijection
 between native and official parameter trees before comparing computations.
+The canonical `networks` pairs execute the pinned source with bfloat16 compute;
+separate `networks-float32` pairs execute the explicit float32 parity mode. The
+network source spec alone authorizes those two execution dtypes; every other
+source spec remains canonical-dtype-only. Each request, worker response,
+manifest, and `execution.compute_dtype` tensor agree on the executed dtype.
+Because NumPy serializes `ml_dtypes.bfloat16` as an opaque `void16`, bfloat16
+numeric tensors are losslessly stored as their float32 value views in NPZ while
+the replayed worker response retains and tests their true bfloat16 dtype.
+
+Network head cases cover scalar and vector binary, categorical, one-hot, MSE,
+symlog-MSE, symexp-twohot, and bounded-normal families, including invalid
+family/space pairings, nonuniform discrete classes, and entropy metadata. The
+decoder cases include nonlexicographic two-image declaration order with unequal
+channel counts and per-key prediction and loss tensors.
 
 The `paper` profile uses source revision
 `bfcdfc183d2c1543a3bf3cdda6edb7fae29b6a01` with in-memory overrides for

@@ -87,6 +87,7 @@ NETWORKS_SOURCE_SPEC = OracleSourceSpec(
         PAPER_REVISION: _SOURCE_HASHES,
         UPSTREAM_CURRENT_REVISION: _SOURCE_HASHES,
     },
+    execution_dtypes=("bfloat16", "float32"),
 )
 register_oracle_source_spec(NETWORKS_SOURCE_SPEC)
 
@@ -236,17 +237,21 @@ class _Space:
         low: Any = None,
         high: Any = None,
         *,
-        classes: int | None = None,
+        classes: int | Sequence[int] | np.ndarray | None = None,
     ) -> None:
         del low, high
         self.dtype = jnp.dtype(dtype)
         self.shape = tuple(shape)
         self.discrete = classes is not None
-        self.classes = (
-            np.full(self.shape or (), classes, np.int32)
-            if classes is not None
-            else None
-        )
+        if classes is None:
+            self.classes = None
+        else:
+            values = np.asarray(classes, np.int32)
+            if values.shape == ():
+                values = np.full(self.shape or (), values.item(), np.int32)
+            elif values.shape != self.shape:
+                raise ValueError("official oracle class metadata shape mismatch")
+            self.classes = values
 
 
 def _join_path(prefix: str, name: str) -> str:
@@ -272,6 +277,7 @@ def _exec_source(
 def _load_official_modules(
     sources: Mapping[str, bytes],
     revision: str,
+    compute_dtype: Any,
 ) -> tuple[ModuleType, ModuleType, ModuleType, ModuleType]:
     fake_ninjax = SimpleNamespace(Module=_Module, seed=_seed)
     official_nets = _exec_source(
@@ -289,7 +295,10 @@ def _load_official_modules(
             "np": np,
         },
     )
-    official_nets.COMPUTE_DTYPE = jnp.float32
+    official_nets.COMPUTE_DTYPE = {
+        "bfloat16": jnp.bfloat16,
+        "float32": jnp.float32,
+    }[jnp.dtype(compute_dtype).name]
     official_outs = SimpleNamespace(
         Agg=AggregateOutput,
         Binary=BinaryOutput,
@@ -367,8 +376,14 @@ def _official_network_arrays(
     rssm: ModuleType,
     profile: DreamerProfile,
     seed: int,
+    compute_dtype: Any,
 ) -> dict[str, np.ndarray]:
-    arrays: dict[str, np.ndarray] = {}
+    arrays: dict[str, np.ndarray] = {
+        "execution.compute_dtype": np.frombuffer(
+            jnp.dtype(compute_dtype).name.encode(),
+            np.uint8,
+        )
+    }
     case_index = 0
 
     def context() -> _ParameterContext:
@@ -404,7 +419,11 @@ def _official_network_arrays(
         arrays[f"initializer.{case}.seed"] = _host(key)
         arrays[f"initializer.{case}.shape"] = np.asarray(shape, np.int32)
 
-    rms_input = _input_grid((2, 3), -2.0, 3.0)
+    compute_dtype = {
+        "bfloat16": jnp.bfloat16,
+        "float32": jnp.float32,
+    }[jnp.dtype(compute_dtype).name]
+    rms_input = _input_grid((2, 3), -2.0, 3.0).astype(compute_dtype)
     rms_context = context()
     rms = _bind(nets.Norm("rms"), rms_context)
     with _activate(rms_context):
@@ -412,7 +431,7 @@ def _official_network_arrays(
     arrays["rms.input"] = _host(rms_input)
     _collect_case(arrays, "rms", rms_context, rms_output)
 
-    linear_input = _input_grid((2, 3), -1.0, 2.0)
+    linear_input = _input_grid((2, 3), -1.0, 2.0).astype(compute_dtype)
     linear_context = context()
     linear = _bind(nets.Linear(5, winit="trunc_normal_in"), linear_context)
     with _activate(linear_context):
@@ -420,7 +439,7 @@ def _official_network_arrays(
     arrays["linear.input"] = _host(linear_input)
     _collect_case(arrays, "linear", linear_context, linear_output)
 
-    block_input = _input_grid((2, 8), -2.0, 1.0)
+    block_input = _input_grid((2, 8), -2.0, 1.0).astype(compute_dtype)
     block_context = context()
     block = _bind(nets.BlockLinear(8, 4, winit="trunc_normal_in"), block_context)
     with _activate(block_context):
@@ -428,7 +447,7 @@ def _official_network_arrays(
     arrays["blocklinear.input"] = _host(block_input)
     _collect_case(arrays, "blocklinear", block_context, block_output)
 
-    conv_input = _input_grid((1, 6, 6, 2), -1.0, 1.0)
+    conv_input = _input_grid((1, 6, 6, 2), -1.0, 1.0).astype(compute_dtype)
     for prefix, transposed in (("conv", False), ("transposed_conv", True)):
         conv_context = context()
         conv = _bind(
@@ -463,9 +482,9 @@ def _official_network_arrays(
     arrays["mlp.input"] = _host(mlp_input)
     _collect_case(arrays, "mlp", mlp_context, mlp_output)
 
-    deter = _input_grid((2, 16), -1.5, 2.0)
-    stoch = _input_grid((2, 2, 3), -1.0, 1.0)
-    action = jnp.asarray([[3.0, -0.5, 1.5], [-2.0, 0.25, 4.0]], jnp.float32)
+    deter = _input_grid((2, 16), -1.5, 2.0).astype(compute_dtype)
+    stoch = _input_grid((2, 2, 3), -1.0, 1.0).astype(compute_dtype)
+    action = jnp.asarray([[3.0, -0.5, 1.5], [-2.0, 0.25, 4.0]], compute_dtype)
     is_first = jnp.asarray([True, False])
     blockgru_context = context()
     blockgru = _bind(
@@ -556,6 +575,27 @@ def _official_network_arrays(
                 arrays[f"encoder.input.{key}"] = _host(value)
         _collect_case(arrays, prefix, encoder_context, encoder_output)
 
+    invalid_image_context = context()
+    invalid_image_encoder = _bind(
+        rssm.Encoder(
+            {"image": _Space(jnp.float32, (32, 32, 1))},
+            **encoder_kwargs,
+        ),
+        invalid_image_context,
+    )
+    try:
+        with _activate(invalid_image_context):
+            invalid_image_encoder(
+                {},
+                {"image": jnp.zeros((2, 2, 32, 32, 1), jnp.float32)},
+                reset,
+                False,
+            )
+    except Exception:
+        arrays["partition.encoder_rank3_float_rejected"] = np.asarray(1, np.uint8)
+    else:
+        raise AssertionError("official rank-three float encoder case was not rejected")
+
     decoder_spaces = {
         "a_image": _Space(jnp.uint8, (32, 32, 1)),
         "m_cont": _Space(jnp.float32, (2,)),
@@ -624,6 +664,56 @@ def _official_network_arrays(
         image_decoder_output["image"].pred(),
     )
 
+    rank3_float_decoder_context = context()
+    rank3_float_decoder = _bind(
+        rssm.Decoder(
+            {"image": _Space(jnp.float32, (32, 32, 1))},
+            **decoder_kwargs,
+        ),
+        rank3_float_decoder_context,
+    )
+    with _activate(rank3_float_decoder_context):
+        _, _, rank3_float_output = rank3_float_decoder({}, features, reset, False)
+    rank3_float_shape = rank3_float_output["image"].pred().shape
+    arrays["partition.decoder_rank3_float_is_image"] = np.asarray(
+        rank3_float_shape[-3:] == (32, 32, 1),
+        np.uint8,
+    )
+
+    ordered_spaces = {
+        "z_image": _Space(jnp.uint8, (32, 32, 2)),
+        "a_image": _Space(jnp.uint8, (32, 32, 1)),
+    }
+    ordered_context = context()
+    ordered_decoder = _bind(
+        rssm.Decoder(ordered_spaces, **decoder_kwargs),
+        ordered_context,
+    )
+    with _activate(ordered_context):
+        _, _, ordered_outputs = ordered_decoder({}, features, reset, False)
+    arrays["decoder_order.deter"] = _host(features["deter"])
+    arrays["decoder_order.stoch"] = _host(features["stoch"])
+    ordered_targets = {
+        "z_image": jnp.linspace(
+            0.0,
+            1.0,
+            2 * 2 * 32 * 32 * 2,
+            dtype=jnp.float32,
+        ).reshape((2, 2, 32, 32, 2)),
+        "a_image": jnp.linspace(
+            1.0,
+            0.0,
+            2 * 2 * 32 * 32,
+            dtype=jnp.float32,
+        ).reshape((2, 2, 32, 32, 1)),
+    }
+    for key, output in ordered_outputs.items():
+        arrays[f"decoder_order.pred.{key}"] = _host(output.pred())
+        arrays[f"decoder_order.target.{key}"] = _host(ordered_targets[key])
+        arrays[f"decoder_order.loss.{key}"] = _host(output.loss(ordered_targets[key]))
+    for path, value in sorted(ordered_context.parameters.items()):
+        arrays[f"decoder_order.param.{path.replace('/', '__')}"] = _host(value)
+
     head_cases = {
         "reward": (
             _Space(jnp.float32, ()),
@@ -671,6 +761,128 @@ def _official_network_arrays(
         arrays[f"head.{name}.input"] = _host(head_input)
         _collect_case(arrays, f"head.{name}", head_context, head_output.pred())
 
+    family_cases = {
+        "binary_scalar": (_Space(jnp.bool_, (), classes=2), "binary", {}),
+        "binary_vector": (_Space(jnp.bool_, (2,), classes=2), "binary", {}),
+        "categorical_scalar": (
+            _Space(jnp.int32, (), classes=4),
+            "categorical",
+            {},
+        ),
+        "categorical_vector": (
+            _Space(jnp.int32, (2,), classes=3),
+            "categorical",
+            {},
+        ),
+        "onehot_scalar": (
+            _Space(jnp.int32, (), classes=3),
+            "onehot",
+            {"unimix": 0.01},
+        ),
+        "onehot_vector": (
+            _Space(jnp.int32, (2,), classes=3),
+            "onehot",
+            {"unimix": 0.01},
+        ),
+        "mse_scalar": (_Space(jnp.float32, ()), "mse", {}),
+        "mse_vector": (_Space(jnp.float32, (2,)), "mse", {}),
+        "symlog_mse_scalar": (_Space(jnp.float32, ()), "symlog_mse", {}),
+        "symlog_mse_vector": (_Space(jnp.float32, (2,)), "symlog_mse", {}),
+        "symexp_twohot_scalar": (
+            _Space(jnp.float32, ()),
+            "symexp_twohot",
+            {"bins": 7},
+        ),
+        "symexp_twohot_vector": (
+            _Space(jnp.float32, (2,)),
+            "symexp_twohot",
+            {"bins": 7},
+        ),
+        "bounded_normal_scalar": (
+            _Space(jnp.float32, ()),
+            "bounded_normal",
+            {"minstd": 0.1, "maxstd": 1.0},
+        ),
+        "bounded_normal_vector": (
+            _Space(jnp.float32, (2,)),
+            "bounded_normal",
+            {"minstd": 0.1, "maxstd": 1.0},
+        ),
+    }
+    for name, (space, output_family, output_kwargs) in family_cases.items():
+        head_input = _input_grid((2, 4), -1.0, 2.0)
+        head_context = context()
+        head = _bind(
+            heads.MLPHead(
+                space,
+                output_family,
+                units=6,
+                layers=1,
+                act="silu",
+                norm="rms",
+                winit="trunc_normal_in",
+                **output_kwargs,
+            ),
+            head_context,
+        )
+        with _activate(head_context):
+            head_output = head(head_input, 1)
+        prefix = f"head_family.{name}"
+        arrays[f"{prefix}.input"] = _host(head_input)
+        _collect_case(arrays, prefix, head_context, head_output.pred())
+        raw_output = (
+            head_output.output if hasattr(head_output, "output") else head_output
+        )
+        if hasattr(raw_output, "minent"):
+            arrays[f"{prefix}.minent"] = _host(raw_output.minent)
+            arrays[f"{prefix}.maxent"] = _host(raw_output.maxent)
+
+    invalid_head_cases = {
+        "binary": (_Space(jnp.float32, ()), "binary"),
+        "categorical": (_Space(jnp.float32, (2,)), "categorical"),
+        "onehot": (_Space(jnp.float32, (2,)), "onehot"),
+        "mse": (_Space(jnp.int32, (2,), classes=3), "mse"),
+        "symlog_mse": (_Space(jnp.int32, (2,), classes=3), "symlog_mse"),
+        "symexp_twohot": (
+            _Space(jnp.int32, (2,), classes=3),
+            "symexp_twohot",
+        ),
+        "bounded_normal": (
+            _Space(jnp.int32, (2,), classes=3),
+            "bounded_normal",
+        ),
+        "categorical_nonuniform": (
+            _Space(jnp.int32, (2,), classes=(2, 3)),
+            "categorical",
+        ),
+        "onehot_nonuniform": (
+            _Space(jnp.int32, (2,), classes=(2, 3)),
+            "onehot",
+        ),
+    }
+    for name, (space, output_family) in invalid_head_cases.items():
+        invalid_context = context()
+        try:
+            invalid_head = _bind(
+                heads.MLPHead(
+                    space,
+                    output_family,
+                    units=6,
+                    layers=1,
+                    act="silu",
+                    norm="rms",
+                    winit="trunc_normal_in",
+                    bins=7,
+                ),
+                invalid_context,
+            )
+            with _activate(invalid_context):
+                invalid_head(_input_grid((2, 4), -1.0, 2.0), 1)
+        except Exception:
+            arrays[f"head_invalid.{name}.rejected"] = np.asarray(1, np.uint8)
+        else:
+            raise AssertionError(f"official invalid head case was accepted: {name}")
+
     return {name: np.asarray(value) for name, value in sorted(arrays.items())}
 
 
@@ -678,6 +890,9 @@ def _networks_worker(request: Mapping[str, Any]) -> dict[str, Any]:
     checkout = Path(request["official_checkout"]).resolve()
     revision = str(request["official_commit"])
     profile = DreamerProfile(request["profile"])
+    compute_dtype = jnp.dtype(request["compute_dtype"]).name
+    if compute_dtype not in NETWORKS_SOURCE_SPEC.execution_dtypes:
+        raise ValueError("network worker compute dtype is not source-spec authorized")
     ObservationMode(request["observation_mode"])
     if revision != official_revision(profile):
         raise ValueError("network worker revision does not match requested profile")
@@ -691,13 +906,25 @@ def _networks_worker(request: Mapping[str, Any]) -> dict[str, Any]:
         if _sha256_bytes(source) != digest:
             raise ValueError(f"official network source hash mismatch: {path}")
         sources[path] = source
-    nets, heads, rssm, _ = _load_official_modules(sources, revision)
-    arrays = _official_network_arrays(nets, heads, rssm, profile, int(request["seed"]))
+    nets, heads, rssm, _ = _load_official_modules(
+        sources,
+        revision,
+        compute_dtype,
+    )
+    arrays = _official_network_arrays(
+        nets,
+        heads,
+        rssm,
+        profile,
+        int(request["seed"]),
+        compute_dtype,
+    )
     return {
         "arrays": {
             name: {"dtype": value.dtype.name, "values": value.tolist()}
             for name, value in arrays.items()
         },
+        "compute_dtype": compute_dtype,
         "worker_pid": os.getpid(),
     }
 
@@ -707,12 +934,23 @@ def run_networks_case(
     profile: DreamerProfile | str,
     observation_mode: ObservationMode | str,
     *,
-    case_name: str = "networks",
+    case_name: str | None = None,
     seed: int = 0,
+    compute_dtype: str = "bfloat16",
 ) -> tuple[Path, Path]:
     resolved_profile = DreamerProfile(profile)
     resolved_mode = ObservationMode(observation_mode)
+    resolved_dtype = jnp.dtype(compute_dtype).name
+    if resolved_dtype not in NETWORKS_SOURCE_SPEC.execution_dtypes:
+        raise ValueError("network oracle compute dtype is not source-spec authorized")
+    expected_case_name = (
+        "networks" if resolved_dtype == "bfloat16" else "networks-float32"
+    )
+    resolved_case_name = case_name or expected_case_name
+    if resolved_case_name != expected_case_name:
+        raise ValueError("network oracle case name does not identify execution dtype")
     request = {
+        "compute_dtype": resolved_dtype,
         "official_checkout": str(harness.official_checkout),
         "official_commit": official_revision(resolved_profile),
         "observation_mode": resolved_mode.value,
@@ -735,16 +973,20 @@ def run_networks_case(
         text=True,
     )
     payload = json.loads(completed.stdout)
+    if payload.get("compute_dtype") != resolved_dtype:
+        raise ValueError("oracle network worker reported a different compute dtype")
     worker_pid = int(payload["worker_pid"])
     if worker_pid <= 0 or worker_pid == os.getpid():
         raise ValueError("oracle network worker did not cross a process boundary")
     harness._last_worker_pid = worker_pid
-    arrays = {
-        name: np.asarray(spec["values"], dtype=spec["dtype"])
-        for name, spec in payload["arrays"].items()
-    }
+    arrays = {}
+    for name, spec in payload["arrays"].items():
+        value = np.asarray(spec["values"], dtype=spec["dtype"])
+        if value.dtype.name == "bfloat16":
+            value = value.astype(np.float32)
+        arrays[name] = value
     return harness.write_fixture(
-        case_name=case_name,
+        case_name=resolved_case_name,
         profile=resolved_profile,
         observation_mode=resolved_mode,
         arrays=arrays,
@@ -752,6 +994,7 @@ def run_networks_case(
         generator_command=command,
         generator_request=request,
         source_spec=NETWORKS_SOURCE_SPEC,
+        dtype=resolved_dtype,
     )
 
 

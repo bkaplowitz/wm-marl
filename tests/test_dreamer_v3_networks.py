@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import jax
@@ -36,6 +37,7 @@ from world_marl.dreamer_v3_baseline.networks import (
     TensorSpace,
 )
 from world_marl.dreamer_v3_baseline.oracle import (
+    CONFIG_SOURCE_SPEC,
     OracleHarness,
     OracleManifest,
     ParameterTranslator,
@@ -62,8 +64,22 @@ SOURCE_HASHES = {
 }
 
 
-def _assert_f32(actual, expected) -> None:
-    np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-5)
+def _assert_source_equal(actual, expected) -> None:
+    actual = np.asarray(actual)
+    expected = np.asarray(expected)
+    uses_bfloat16 = "bfloat16" in (actual.dtype.name, expected.dtype.name)
+    tolerance = 2e-2 if uses_bfloat16 else 1e-5
+    if actual.dtype.name == "bfloat16":
+        actual = actual.astype(np.float32)
+    else:
+        assert actual.dtype.name == expected.dtype.name
+    if expected.dtype.name == "bfloat16":
+        expected = expected.astype(np.float32)
+    np.testing.assert_allclose(actual, expected, rtol=tolerance, atol=tolerance)
+
+
+def _compute_dtype(name: str):
+    return {"bfloat16": jnp.bfloat16, "float32": jnp.float32}[name]
 
 
 def _flat_params(variables) -> dict[str, np.ndarray]:
@@ -114,18 +130,70 @@ def _translate_case(
 
 
 @pytest.fixture(
-    params=(DreamerProfile.PAPER, DreamerProfile.UPSTREAM_CURRENT),
-    ids=lambda profile: profile.value,
+    params=(
+        (DreamerProfile.PAPER, "bfloat16"),
+        (DreamerProfile.PAPER, "float32"),
+        (DreamerProfile.UPSTREAM_CURRENT, "bfloat16"),
+        (DreamerProfile.UPSTREAM_CURRENT, "float32"),
+    ),
+    ids=lambda item: f"{item[0].value}-{item[1]}",
 )
 def official_case(request) -> tuple[OracleManifest, dict[str, np.ndarray]]:
-    profile = request.param
-    stem = f"{profile.value}-vision-networks"
+    profile, compute_dtype = request.param
+    suffix = "" if compute_dtype == "bfloat16" else "-float32"
+    stem = f"{profile.value}-vision-networks{suffix}"
     fixture_path = FIXTURE_DIR / f"{stem}.npz"
     manifest_path = FIXTURE_DIR / f"{stem}.manifest.json"
     manifest = OracleManifest.load(manifest_path, fixture_path=fixture_path)
     with np.load(fixture_path, allow_pickle=False) as fixture:
         arrays = {name: fixture[name] for name in fixture.files}
     return manifest, arrays
+
+
+def test_network_manifests_record_the_dtype_the_worker_actually_executed(
+    official_case,
+) -> None:
+    manifest, arrays = official_case
+
+    request = json.loads(manifest.generator_request)
+    assert request["compute_dtype"] == manifest.dtype
+    assert arrays["execution.compute_dtype"].tobytes().decode() == manifest.dtype
+    assert all(
+        value.dtype.name == "float32"
+        for name, value in arrays.items()
+        if ".param." in name
+    )
+
+
+def test_non_network_source_specs_remain_canonical_dtype_only(tmp_path: Path) -> None:
+    if not (OFFICIAL_CHECKOUT / ".git").exists():
+        pytest.skip("explicit DreamerV3 oracle checkout is unavailable")
+    harness = OracleHarness(OFFICIAL_CHECKOUT, tmp_path)
+
+    with pytest.raises(ValueError, match="does not allow execution dtype"):
+        harness.write_fixture(
+            case_name="config-float32",
+            profile=DreamerProfile.PAPER,
+            observation_mode=ObservationMode.VISION,
+            arrays={"marker": np.asarray(1, np.uint8)},
+            seed=0,
+            generator_command=("oracle",),
+            generator_request={"compute_dtype": "float32"},
+            source_spec=CONFIG_SOURCE_SPEC,
+            dtype="float32",
+        )
+
+
+def test_network_manifest_rejects_generator_dtype_tampering(official_case) -> None:
+    manifest, _ = official_case
+    request = json.loads(manifest.generator_request)
+    request["compute_dtype"] = "float32" if manifest.dtype == "bfloat16" else "bfloat16"
+    tampered = replace(manifest, generator_request=request)
+    suffix = "" if manifest.dtype == "bfloat16" else "-float32"
+    fixture_path = FIXTURE_DIR / f"{manifest.profile.value}-vision-networks{suffix}.npz"
+
+    with pytest.raises(ValueError, match="executed generator request"):
+        tampered.validate(fixture_path=fixture_path)
 
 
 def test_network_oracles_pin_exact_three_file_authority(official_case) -> None:
@@ -156,6 +224,10 @@ def test_network_oracle_replays_exact_worker_command_and_stdin(official_case) ->
     payload = json.loads(replayed.stdout)
 
     assert int(payload["worker_pid"]) != os.getpid()
+    assert payload["compute_dtype"] == manifest.dtype
+    assert payload["arrays"]["mlp.output"]["dtype"] == manifest.dtype
+    assert payload["arrays"]["encoder.output"]["dtype"] == manifest.dtype
+    assert payload["arrays"]["blockgru.output"]["dtype"] == manifest.dtype
     assert tuple(sorted(payload["arrays"])) == tuple(arrays)
     for name, spec in payload["arrays"].items():
         np.testing.assert_array_equal(
@@ -164,19 +236,34 @@ def test_network_oracle_replays_exact_worker_command_and_stdin(official_case) ->
         )
 
 
-def test_network_oracle_regeneration_is_byte_deterministic(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("profile", "compute_dtype"),
+    (
+        (DreamerProfile.PAPER, "bfloat16"),
+        (DreamerProfile.PAPER, "float32"),
+        (DreamerProfile.UPSTREAM_CURRENT, "bfloat16"),
+        (DreamerProfile.UPSTREAM_CURRENT, "float32"),
+    ),
+)
+def test_network_oracle_regeneration_is_byte_deterministic(
+    tmp_path: Path,
+    profile: DreamerProfile,
+    compute_dtype: str,
+) -> None:
     if not (OFFICIAL_CHECKOUT / ".git").exists():
         pytest.skip("explicit DreamerV3 oracle checkout is unavailable")
     first = OracleHarness(OFFICIAL_CHECKOUT, tmp_path / "first")
     second = OracleHarness(OFFICIAL_CHECKOUT, tmp_path / "second")
 
     first_fixture, first_manifest = first.run_networks_case(
-        DreamerProfile.PAPER,
+        profile,
         ObservationMode.VISION,
+        compute_dtype=compute_dtype,
     )
     second_fixture, second_manifest = second.run_networks_case(
-        DreamerProfile.PAPER,
+        profile,
         ObservationMode.VISION,
+        compute_dtype=compute_dtype,
     )
 
     assert first_fixture.read_bytes() == second_fixture.read_bytes()
@@ -208,7 +295,7 @@ def test_initializer_names_fans_scales_and_dtypes_match_official(
     )
 
     assert actual.dtype == jnp.float32
-    _assert_f32(actual, arrays[f"initializer.{case}.output"])
+    _assert_source_equal(actual, arrays[f"initializer.{case}.output"])
 
 
 def test_initializer_rejects_unknown_distribution_and_invalid_shape() -> None:
@@ -221,9 +308,9 @@ def test_initializer_rejects_unknown_distribution_and_invalid_shape() -> None:
 def test_rmsnorm_has_no_mean_subtraction_and_translated_forward_parity(
     official_case,
 ) -> None:
-    _, arrays = official_case
-    inputs = jnp.asarray(arrays["rms.input"])
-    module = RMSNorm()
+    manifest, arrays = official_case
+    inputs = jnp.asarray(arrays["rms.input"]).astype(_compute_dtype(manifest.dtype))
+    module = RMSNorm(compute_dtype=_compute_dtype(manifest.dtype))
     initialized = module.init(jax.random.PRNGKey(0), inputs)
     params = _translate_case(arrays, "rms", initialized)
 
@@ -231,15 +318,19 @@ def test_rmsnorm_has_no_mean_subtraction_and_translated_forward_parity(
 
     assert set(_flat_params(params)) == {"scale"}
     assert not np.allclose(np.asarray(inputs.mean(-1)), 0.0)
-    _assert_f32(output, arrays["rms.output"])
+    _assert_source_equal(output, arrays["rms.output"])
 
 
 def test_linear_parameter_names_shapes_and_forward_match_official(
     official_case,
 ) -> None:
-    _, arrays = official_case
-    inputs = jnp.asarray(arrays["linear.input"])
-    module = Linear(5, initializer="trunc_normal_in")
+    manifest, arrays = official_case
+    inputs = jnp.asarray(arrays["linear.input"]).astype(_compute_dtype(manifest.dtype))
+    module = Linear(
+        5,
+        initializer="trunc_normal_in",
+        compute_dtype=_compute_dtype(manifest.dtype),
+    )
     initialized = module.init(jax.random.PRNGKey(0), inputs)
     params = _translate_case(arrays, "linear", initialized)
 
@@ -248,7 +339,7 @@ def test_linear_parameter_names_shapes_and_forward_match_official(
         "bias": (5,),
         "kernel": (3, 5),
     }
-    _assert_f32(module.apply(params, inputs), arrays["linear.output"])
+    _assert_source_equal(module.apply(params, inputs), arrays["linear.output"])
 
 
 def test_linear_explicit_norm_activation_and_zero_output_initializer() -> None:
@@ -259,6 +350,7 @@ def test_linear_explicit_norm_activation_and_zero_output_initializer() -> None:
         output_scale=0.0,
         normalization="rms",
         activation="silu",
+        compute_dtype=jnp.float32,
     )
     variables = module.init(jax.random.PRNGKey(1), inputs)
 
@@ -271,15 +363,21 @@ def test_linear_explicit_norm_activation_and_zero_output_initializer() -> None:
 def test_blocklinear_uses_independent_block_matrices_and_exact_einsum(
     official_case,
 ) -> None:
-    _, arrays = official_case
-    inputs = jnp.asarray(arrays["blocklinear.input"])
-    module = BlockLinear(8, blocks=4)
+    manifest, arrays = official_case
+    inputs = jnp.asarray(arrays["blocklinear.input"]).astype(
+        _compute_dtype(manifest.dtype)
+    )
+    module = BlockLinear(
+        8,
+        blocks=4,
+        compute_dtype=_compute_dtype(manifest.dtype),
+    )
     initialized = module.init(jax.random.PRNGKey(0), inputs)
     params = _translate_case(arrays, "blocklinear", initialized)
 
     flat = _flat_params(params)
     assert flat["kernel"].shape == (4, 2, 2)
-    _assert_f32(module.apply(params, inputs), arrays["blocklinear.output"])
+    _assert_source_equal(module.apply(params, inputs), arrays["blocklinear.output"])
 
     isolated = np.zeros_like(flat["kernel"])
     isolated[2] = 1.0
@@ -297,24 +395,38 @@ def test_conv2d_regular_and_manual_transposed_paths_match_official(
     official_case,
     prefix: str,
 ) -> None:
-    _, arrays = official_case
-    inputs = jnp.asarray(arrays[f"{prefix}.input"])
+    manifest, arrays = official_case
+    inputs = jnp.asarray(arrays[f"{prefix}.input"]).astype(
+        _compute_dtype(manifest.dtype)
+    )
     transposed = prefix == "transposed_conv"
-    module = Conv2D(3, kernel=3, stride=2, transposed=transposed)
+    module = Conv2D(
+        3,
+        kernel=3,
+        stride=2,
+        transposed=transposed,
+        compute_dtype=_compute_dtype(manifest.dtype),
+    )
     initialized = module.init(jax.random.PRNGKey(0), inputs)
     params = _translate_case(arrays, prefix, initialized)
 
     flat = _flat_params(params)
     assert flat["kernel"].shape == (3, 3, 2, 3)
-    _assert_f32(module.apply(params, inputs), arrays[f"{prefix}.output"])
+    _assert_source_equal(module.apply(params, inputs), arrays[f"{prefix}.output"])
 
 
 def test_mlp_has_exact_hidden_layer_count_names_and_forward_parity(
     official_case,
 ) -> None:
-    _, arrays = official_case
+    manifest, arrays = official_case
     inputs = jnp.asarray(arrays["mlp.input"])
-    module = MLP(2, 6, activation="silu", normalization="rms")
+    module = MLP(
+        2,
+        6,
+        activation="silu",
+        normalization="rms",
+        compute_dtype=_compute_dtype(manifest.dtype),
+    )
     initialized = module.init(jax.random.PRNGKey(0), inputs)
     params = _translate_case(arrays, "mlp", initialized)
 
@@ -327,7 +439,7 @@ def test_mlp_has_exact_hidden_layer_count_names_and_forward_parity(
         "norm0/scale",
         "norm1/scale",
     }
-    _assert_f32(module.apply(params, inputs), arrays["mlp.output"])
+    _assert_source_equal(module.apply(params, inputs), arrays["mlp.output"])
 
 
 def _small_rssm_config() -> RSSMConfig:
@@ -354,12 +466,16 @@ def _small_rssm_config() -> RSSMConfig:
 def test_blockgru_matches_exact_official_projection_group_and_gate_order(
     official_case,
 ) -> None:
-    _, arrays = official_case
+    manifest, arrays = official_case
     deter = jnp.asarray(arrays["blockgru.deter"])
     stoch = jnp.asarray(arrays["blockgru.stoch"])
     action = jnp.asarray(arrays["blockgru.action"])
     reset = jnp.asarray(arrays["blockgru.is_first"])
-    module = BlockGRU(_small_rssm_config(), action_dim=3)
+    module = BlockGRU(
+        _small_rssm_config(),
+        action_dim=3,
+        compute_dtype=_compute_dtype(manifest.dtype),
+    )
     initialized = module.init(jax.random.PRNGKey(0), deter, stoch, action, reset)
     params = _translate_case(arrays, "blockgru", initialized)
 
@@ -369,7 +485,7 @@ def test_blockgru_matches_exact_official_projection_group_and_gate_order(
     assert not any(
         value.ndim == 2 and value.shape == (16, 48) for value in flat.values()
     )
-    _assert_f32(
+    _assert_source_equal(
         module.apply(params, deter, stoch, action, reset),
         arrays["blockgru.output"],
     )
@@ -378,19 +494,23 @@ def test_blockgru_matches_exact_official_projection_group_and_gate_order(
 def test_blockgru_stops_action_scale_gradient_and_zeros_reset_inputs(
     official_case,
 ) -> None:
-    _, arrays = official_case
+    manifest, arrays = official_case
     deter = jnp.asarray(arrays["blockgru.deter"])
     stoch = jnp.asarray(arrays["blockgru.stoch"])
     action = jnp.asarray(arrays["blockgru.action"])
     reset = jnp.asarray(arrays["blockgru.is_first"])
-    module = BlockGRU(_small_rssm_config(), action_dim=3)
+    module = BlockGRU(
+        _small_rssm_config(),
+        action_dim=3,
+        compute_dtype=_compute_dtype(manifest.dtype),
+    )
     initialized = module.init(jax.random.PRNGKey(0), deter, stoch, action, reset)
     params = _translate_case(arrays, "blockgru", initialized)
 
     gradient = jax.grad(
         lambda value: module.apply(params, deter, stoch, value, reset).sum()
     )(action)
-    _assert_f32(gradient, arrays["blockgru.grad_action"])
+    _assert_source_equal(gradient, arrays["blockgru.grad_action"])
 
     changed_deter = deter.at[0].set(999.0)
     changed_stoch = stoch.at[0].set(-999.0)
@@ -403,7 +523,7 @@ def test_blockgru_stops_action_scale_gradient_and_zeros_reset_inputs(
         changed_action,
         reset,
     )
-    _assert_f32(changed[0], original[0])
+    _assert_source_equal(changed[0], original[0])
 
 
 def _encoder_spaces() -> dict[str, TensorSpace]:
@@ -437,16 +557,20 @@ def test_dictencoder_sorted_key_partition_symlog_and_mixed_forward_parity(
     manifest, arrays = official_case
     spaces = _encoder_spaces()
     obs = {key: jnp.asarray(arrays[f"encoder.input.{key}"]) for key in reversed(spaces)}
-    module = DictEncoder(spaces, _encoder_config(manifest.profile))
+    module = DictEncoder(
+        spaces,
+        _encoder_config(manifest.profile),
+        compute_dtype=_compute_dtype(manifest.dtype),
+    )
     initialized = module.init(jax.random.PRNGKey(0), obs)
     params = _translate_case(arrays, "encoder", initialized)
 
     output = module.apply(params, obs)
 
     assert output.shape == tuple(arrays["encoder.output"].shape)
-    _assert_f32(output, arrays["encoder.output"])
+    _assert_source_equal(output, arrays["encoder.output"])
     reordered = {key: obs[key] for key in sorted(obs)}
-    _assert_f32(module.apply(params, reordered), output)
+    _assert_source_equal(module.apply(params, reordered), output)
 
 
 def test_dictencoder_uses_distinct_paper_stride_and_current_maxpool_branches(
@@ -460,12 +584,13 @@ def test_dictencoder_uses_distinct_paper_stride_and_current_maxpool_branches(
     image_module = DictEncoder(
         {key: _encoder_spaces()[key] for key in image_only},
         _encoder_config(manifest.profile),
+        compute_dtype=_compute_dtype(manifest.dtype),
     )
     image_initialized = image_module.init(jax.random.PRNGKey(0), image_only)
     image_params = _translate_case(arrays, "encoder_image", image_initialized)
     output = image_module.apply(image_params, image_only)
 
-    _assert_f32(output, arrays["encoder_image.output"])
+    _assert_source_equal(output, arrays["encoder_image.output"])
     assert output.shape[-1] == arrays["encoder_image.output"].shape[-1]
 
 
@@ -475,11 +600,15 @@ def test_dictencoder_vector_only_path_matches_official_symlog_mlp(
     manifest, arrays = official_case
     spaces = {key: space for key, space in _encoder_spaces().items() if "vector" in key}
     obs = {key: jnp.asarray(arrays[f"encoder.input.{key}"]) for key in spaces}
-    module = DictEncoder(spaces, _encoder_config(manifest.profile))
+    module = DictEncoder(
+        spaces,
+        _encoder_config(manifest.profile),
+        compute_dtype=_compute_dtype(manifest.dtype),
+    )
     initialized = module.init(jax.random.PRNGKey(0), obs)
     params = _translate_case(arrays, "encoder_vector", initialized)
 
-    _assert_f32(module.apply(params, obs), arrays["encoder_vector.output"])
+    _assert_source_equal(module.apply(params, obs), arrays["encoder_vector.output"])
 
 
 def test_dictencoder_rejects_metadata_and_wrong_image_dtype() -> None:
@@ -496,6 +625,108 @@ def test_dictencoder_rejects_metadata_and_wrong_image_dtype() -> None:
         module.init(
             jax.random.PRNGKey(0),
             {"image": jnp.zeros((1, 32, 32, 3), jnp.float32)},
+        )
+
+
+def test_networks_default_to_bfloat16_compute_with_float32_parameters() -> None:
+    mlp_input = jnp.asarray([[1.0, -2.0, 3.0]], jnp.float32)
+    canonical = MLP(1, 4)
+    canonical_variables = canonical.init(jax.random.PRNGKey(10), mlp_input)
+    canonical_output = canonical.apply(canonical_variables, mlp_input)
+
+    explicit = MLP(1, 4, compute_dtype=jnp.float32)
+    explicit_variables = explicit.init(jax.random.PRNGKey(10), mlp_input)
+    explicit_output = explicit.apply(explicit_variables, mlp_input)
+
+    assert canonical.compute_dtype == jnp.bfloat16
+    assert canonical_output.dtype == jnp.bfloat16
+    assert explicit_output.dtype == jnp.float32
+    assert all(
+        value.dtype.name == "float32"
+        for value in _flat_params(canonical_variables).values()
+    )
+
+    primitive_inputs = {
+        RMSNorm(): jnp.ones((1, 4), jnp.bfloat16),
+        Linear(4): jnp.ones((1, 3), jnp.bfloat16),
+        BlockLinear(4, 2): jnp.ones((1, 4), jnp.bfloat16),
+        Conv2D(2, 3): jnp.ones((1, 4, 4, 1), jnp.bfloat16),
+    }
+    for index, (module, value) in enumerate(primitive_inputs.items()):
+        variables = module.init(jax.random.PRNGKey(20 + index), value)
+        assert module.compute_dtype == jnp.bfloat16
+        assert module.apply(variables, value).dtype == jnp.bfloat16
+        assert all(
+            item.dtype.name == "float32" for item in _flat_params(variables).values()
+        )
+
+
+def test_dictencoder_and_blockgru_default_composites_emit_bfloat16() -> None:
+    encoder = DictEncoder(
+        {"vector": TensorSpace((2,), "float32")},
+        EncoderConfig(layers=1, units=4),
+    )
+    observations = {"vector": jnp.asarray([[1.0, -2.0]], jnp.float32)}
+    encoder_variables = encoder.init(jax.random.PRNGKey(30), observations)
+    assert encoder.apply(encoder_variables, observations).dtype == jnp.bfloat16
+
+    config = _small_rssm_config()
+    blockgru = BlockGRU(config, action_dim=3)
+    deter = jnp.ones((1, config.deter), jnp.float32)
+    stoch = jnp.ones((1, config.stoch, config.classes), jnp.float32)
+    action = jnp.ones((1, 3), jnp.float32)
+    variables = blockgru.init(jax.random.PRNGKey(31), deter, stoch, action)
+    assert blockgru.apply(variables, deter, stoch, action).dtype == jnp.bfloat16
+
+
+def test_dictionary_partition_is_rank_based_and_validates_declared_and_runtime_dtypes() -> (
+    None
+):
+    encoder_config = EncoderConfig(layers=1, units=4, multipliers=(1,))
+    decoder_config = DecoderConfig(
+        layers=1,
+        units=4,
+        depth=2,
+        multipliers=(1,),
+        kernel=3,
+        bias_space=2,
+    )
+    rank_three_float = TensorSpace((4, 4, 1), "float32")
+
+    with pytest.raises(TypeError, match="rank-three image.*uint8"):
+        DictEncoder({"bad": rank_three_float}, encoder_config).init(
+            jax.random.PRNGKey(40),
+            {"bad": jnp.zeros((1, 4, 4, 1), jnp.float32)},
+        )
+    with pytest.raises(TypeError, match="rank-three image.*uint8"):
+        DictDecoder({"bad": rank_three_float}, decoder_config).init(
+            jax.random.PRNGKey(41),
+            {
+                "deter": jnp.zeros((1, 4), jnp.float32),
+                "stoch": jnp.zeros((1, 1, 2), jnp.float32),
+            },
+        )
+
+    vector_encoder = DictEncoder(
+        {"vector": TensorSpace((2,), "float32")},
+        encoder_config,
+        compute_dtype=jnp.float32,
+    )
+    with pytest.raises(TypeError, match="declared dtype"):
+        vector_encoder.init(
+            jax.random.PRNGKey(42),
+            {"vector": jnp.zeros((1, 2), jnp.float16)},
+        )
+
+    discrete_encoder = DictEncoder(
+        {"vector": TensorSpace((2,), "int32", classes=3)},
+        encoder_config,
+        compute_dtype=jnp.float32,
+    )
+    with pytest.raises(TypeError, match="declared dtype"):
+        discrete_encoder.init(
+            jax.random.PRNGKey(43),
+            {"vector": jnp.zeros((1, 2), jnp.int16)},
         )
 
 
@@ -535,7 +766,11 @@ def test_dictdecoder_output_families_targets_and_no_batch_reduction(
         "stoch": jnp.asarray(arrays["decoder.stoch"]),
     }
     spaces = _decoder_spaces()
-    module = DictDecoder(spaces, _decoder_config(manifest.profile))
+    module = DictDecoder(
+        spaces,
+        _decoder_config(manifest.profile),
+        compute_dtype=_compute_dtype(manifest.dtype),
+    )
     initialized = module.init(jax.random.PRNGKey(0), feat)
     params = _translate_case(arrays, "decoder", initialized)
 
@@ -543,12 +778,12 @@ def test_dictdecoder_output_families_targets_and_no_batch_reduction(
 
     assert set(outputs) == set(spaces)
     for key in ("a_image", "z_image", "m_cont", "z_disc"):
-        _assert_f32(outputs[key].pred(), arrays[f"decoder.pred.{key}"])
+        _assert_source_equal(outputs[key].pred(), arrays[f"decoder.pred.{key}"])
     assert outputs["a_image"].pred().shape[:2] == feat["deter"].shape[:2]
     assert outputs["m_cont"].loss(jnp.ones((2, 2, 2), jnp.float32)).shape == (2, 2)
     image_target = jnp.asarray(arrays["decoder.target.a_image"])
     assert image_target.min() >= 0.0 and image_target.max() <= 1.0
-    _assert_f32(
+    _assert_source_equal(
         outputs["a_image"].loss(image_target),
         arrays["decoder.loss.a_image"],
     )
@@ -563,14 +798,18 @@ def test_dictdecoder_profile_image_branch_matches_exact_resolution(
         "stoch": jnp.asarray(arrays["decoder.stoch"]),
     }
     spaces = {"image": TensorSpace((32, 32, 3), "uint8")}
-    module = DictDecoder(spaces, _decoder_config(manifest.profile))
+    module = DictDecoder(
+        spaces,
+        _decoder_config(manifest.profile),
+        compute_dtype=_compute_dtype(manifest.dtype),
+    )
     initialized = module.init(jax.random.PRNGKey(0), feat)
     params = _translate_case(arrays, "decoder_image", initialized)
 
     output = module.apply(params, feat)["image"].pred()
 
     assert output.shape == (2, 2, 32, 32, 3)
-    _assert_f32(output, arrays["decoder_image.output"])
+    _assert_source_equal(output, arrays["decoder_image.output"])
 
 
 def test_dictdecoder_vector_only_continuous_and_discrete_paths_match_official(
@@ -582,14 +821,18 @@ def test_dictdecoder_vector_only_continuous_and_discrete_paths_match_official(
         "stoch": jnp.asarray(arrays["decoder.stoch"]),
     }
     spaces = {key: space for key, space in _decoder_spaces().items() if not space.image}
-    module = DictDecoder(spaces, _decoder_config(manifest.profile))
+    module = DictDecoder(
+        spaces,
+        _decoder_config(manifest.profile),
+        compute_dtype=_compute_dtype(manifest.dtype),
+    )
     initialized = module.init(jax.random.PRNGKey(0), feat)
     params = _translate_case(arrays, "decoder_vector", initialized)
 
     outputs = module.apply(params, feat)
 
-    _assert_f32(outputs["m_cont"].pred(), arrays["decoder_vector.pred.m_cont"])
-    _assert_f32(outputs["z_disc"].pred(), arrays["decoder_vector.pred.z_disc"])
+    _assert_source_equal(outputs["m_cont"].pred(), arrays["decoder_vector.pred.m_cont"])
+    _assert_source_equal(outputs["z_disc"].pred(), arrays["decoder_vector.pred.z_disc"])
 
 
 @pytest.mark.parametrize(
@@ -623,15 +866,19 @@ def test_mlphead_exact_hidden_output_layers_and_output_families(
     space: TensorSpace,
     config: HeadConfig | PolicyConfig,
 ) -> None:
-    _, arrays = official_case
+    manifest, arrays = official_case
     inputs = jnp.asarray(arrays[f"head.{name}.input"])
-    module = MLPHead(space, config)
+    module = MLPHead(
+        space,
+        config,
+        compute_dtype=_compute_dtype(manifest.dtype),
+    )
     initialized = module.init(jax.random.PRNGKey(0), inputs)
     params = _translate_case(arrays, f"head.{name}", initialized)
 
     output = module.apply(params, inputs)
 
-    _assert_f32(output.pred(), arrays[f"head.{name}.output"])
+    _assert_source_equal(output.pred(), arrays[f"head.{name}.output"])
     flat = _flat_params(params)
     assert (
         sum(path.startswith("mlp/linear") and path.endswith("kernel") for path in flat)
@@ -643,6 +890,301 @@ def test_mlphead_exact_hidden_output_layers_and_output_families(
     if name == "policy":
         assert np.all(np.asarray(output.output.stddev) >= config.min_std)
         assert np.all(np.asarray(output.output.stddev) <= config.max_std)
+
+
+@pytest.mark.parametrize(
+    ("family", "space"),
+    (
+        ("binary", TensorSpace((), "bool", classes=2)),
+        ("categorical", TensorSpace((2,), "int32", classes=3)),
+        ("onehot", TensorSpace((2,), "int32", classes=3)),
+        ("mse", TensorSpace((2,), "float32")),
+        ("symlog_mse", TensorSpace((), "float32")),
+        ("symexp_twohot", TensorSpace((2,), "float32")),
+        ("bounded_normal", TensorSpace((2,), "float32")),
+    ),
+)
+def test_mlphead_supports_exact_valid_family_space_pairs(
+    family: str,
+    space: TensorSpace,
+) -> None:
+    if family in {"onehot", "bounded_normal"}:
+        config: HeadConfig | PolicyConfig = PolicyConfig(
+            layers=1,
+            units=4,
+            discrete=family,
+            continuous=family,
+        )
+    else:
+        config = HeadConfig(
+            layers=1,
+            units=4,
+            output=family,
+            bins=7 if family == "symexp_twohot" else None,
+        )
+    module = MLPHead(space, config, compute_dtype=jnp.float32)
+    inputs = jnp.ones((3, 5), jnp.float32)
+    variables = module.init(jax.random.PRNGKey(50), inputs)
+
+    output = module.apply(variables, inputs)
+
+    expected_shape = (3, *space.shape)
+    if family == "onehot":
+        expected_shape = (*expected_shape, 3)
+        assert _flat_params(variables)["head/logits/kernel"].shape == (4, 6)
+    assert output.pred().shape == expected_shape
+
+
+@pytest.mark.parametrize(
+    ("family", "space"),
+    (
+        ("binary", TensorSpace((), "float32")),
+        ("categorical", TensorSpace((2,), "float32")),
+        ("onehot", TensorSpace((2,), "float32")),
+        ("mse", TensorSpace((2,), "int32", classes=3)),
+        ("symlog_mse", TensorSpace((2,), "int32", classes=3)),
+        ("symexp_twohot", TensorSpace((2,), "int32", classes=3)),
+        ("bounded_normal", TensorSpace((2,), "int32", classes=3)),
+    ),
+)
+def test_mlphead_rejects_every_invalid_family_space_pair(
+    family: str,
+    space: TensorSpace,
+) -> None:
+    if family in {"onehot", "bounded_normal"}:
+        config: HeadConfig | PolicyConfig = PolicyConfig(
+            layers=0,
+            units=4,
+            discrete=family,
+            continuous=family,
+        )
+    else:
+        config = HeadConfig(
+            layers=0,
+            units=4,
+            output=family,
+            bins=7 if family == "symexp_twohot" else None,
+        )
+    module = MLPHead(space, config, compute_dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match="requires"):
+        module.init(jax.random.PRNGKey(51), jnp.ones((2, 4), jnp.float32))
+
+
+def test_mlphead_rejects_nonuniform_discrete_classes() -> None:
+    with pytest.raises(ValueError, match="uniform"):
+        space = TensorSpace((2,), "int32", classes=(2, 3))
+        MLPHead(
+            space,
+            HeadConfig(layers=0, units=4, output="categorical", bins=None),
+            compute_dtype=jnp.float32,
+        ).init(jax.random.PRNGKey(52), jnp.ones((2, 4), jnp.float32))
+
+
+def test_categorical_and_bounded_normal_expose_official_entropy_bounds() -> None:
+    inputs = jnp.ones((2, 4), jnp.float32)
+    categorical = MLPHead(
+        TensorSpace((), "int32", classes=4),
+        HeadConfig(layers=0, units=4, output="categorical", bins=None),
+        compute_dtype=jnp.float32,
+    )
+    bounded = MLPHead(
+        TensorSpace((2,), "float32"),
+        PolicyConfig(layers=0, units=4),
+        compute_dtype=jnp.float32,
+    )
+    categorical_output = categorical.apply(
+        categorical.init(jax.random.PRNGKey(53), inputs), inputs
+    )
+    bounded_output = bounded.apply(bounded.init(jax.random.PRNGKey(54), inputs), inputs)
+
+    assert categorical_output.minent == 0
+    np.testing.assert_allclose(categorical_output.maxent, np.log(4), rtol=0, atol=0)
+    assert hasattr(bounded_output.output, "minent")
+    assert hasattr(bounded_output.output, "maxent")
+    assert np.all(bounded_output.output.minent <= bounded_output.output.maxent)
+
+
+def test_dictdecoder_preserves_declared_nonlexicographic_image_channel_order() -> None:
+    spaces = {
+        "z_image": TensorSpace((32, 32, 2), "uint8"),
+        "a_image": TensorSpace((32, 32, 1), "uint8"),
+    }
+    features = {
+        "deter": jnp.zeros((1, 16), jnp.float32),
+        "stoch": jnp.zeros((1, 2, 3), jnp.float32),
+    }
+    module = DictDecoder(
+        spaces,
+        _decoder_config(DreamerProfile.PAPER),
+        compute_dtype=jnp.float32,
+    )
+    variables = module.init(jax.random.PRNGKey(55), features)
+    flat = {
+        name: np.zeros_like(value) for name, value in _flat_params(variables).items()
+    }
+    flat["imgout/bias"] = np.asarray([-2.0, 0.0, 2.0], np.float32)
+
+    outputs = module.apply(_nested_params(flat), features)
+
+    z_expected = jax.nn.sigmoid(jnp.asarray([-2.0, 0.0], jnp.float32))
+    a_expected = jax.nn.sigmoid(jnp.asarray([2.0], jnp.float32))
+    np.testing.assert_allclose(outputs["z_image"].pred()[0, 0, 0], z_expected)
+    np.testing.assert_allclose(outputs["a_image"].pred()[0, 0, 0], a_expected)
+
+
+@pytest.mark.parametrize(
+    ("case", "space", "config"),
+    (
+        (
+            "binary_scalar",
+            TensorSpace((), "bool", classes=2),
+            HeadConfig(layers=1, units=6, output="binary", bins=None),
+        ),
+        (
+            "binary_vector",
+            TensorSpace((2,), "bool", classes=2),
+            HeadConfig(layers=1, units=6, output="binary", bins=None),
+        ),
+        (
+            "categorical_scalar",
+            TensorSpace((), "int32", classes=4),
+            HeadConfig(layers=1, units=6, output="categorical", bins=None),
+        ),
+        (
+            "categorical_vector",
+            TensorSpace((2,), "int32", classes=3),
+            HeadConfig(layers=1, units=6, output="categorical", bins=None),
+        ),
+        (
+            "onehot_scalar",
+            TensorSpace((), "int32", classes=3),
+            PolicyConfig(layers=1, units=6, discrete="onehot"),
+        ),
+        (
+            "onehot_vector",
+            TensorSpace((2,), "int32", classes=3),
+            PolicyConfig(layers=1, units=6, discrete="onehot"),
+        ),
+        (
+            "mse_scalar",
+            TensorSpace((), "float32"),
+            HeadConfig(layers=1, units=6, output="mse", bins=None),
+        ),
+        (
+            "mse_vector",
+            TensorSpace((2,), "float32"),
+            HeadConfig(layers=1, units=6, output="mse", bins=None),
+        ),
+        (
+            "symlog_mse_scalar",
+            TensorSpace((), "float32"),
+            HeadConfig(layers=1, units=6, output="symlog_mse", bins=None),
+        ),
+        (
+            "symlog_mse_vector",
+            TensorSpace((2,), "float32"),
+            HeadConfig(layers=1, units=6, output="symlog_mse", bins=None),
+        ),
+        (
+            "symexp_twohot_scalar",
+            TensorSpace((), "float32"),
+            HeadConfig(layers=1, units=6, output="symexp_twohot", bins=7),
+        ),
+        (
+            "symexp_twohot_vector",
+            TensorSpace((2,), "float32"),
+            HeadConfig(layers=1, units=6, output="symexp_twohot", bins=7),
+        ),
+        (
+            "bounded_normal_scalar",
+            TensorSpace((), "float32"),
+            PolicyConfig(layers=1, units=6),
+        ),
+        (
+            "bounded_normal_vector",
+            TensorSpace((2,), "float32"),
+            PolicyConfig(layers=1, units=6),
+        ),
+    ),
+)
+def test_all_head_families_scalar_and_vector_match_source_executed_cases(
+    official_case,
+    case: str,
+    space: TensorSpace,
+    config: HeadConfig | PolicyConfig,
+) -> None:
+    manifest, arrays = official_case
+    prefix = f"head_family.{case}"
+    inputs = jnp.asarray(arrays[f"{prefix}.input"])
+    module = MLPHead(
+        space,
+        config,
+        compute_dtype=_compute_dtype(manifest.dtype),
+    )
+    initialized = module.init(jax.random.PRNGKey(0), inputs)
+    params = _translate_case(arrays, prefix, initialized)
+
+    output = module.apply(params, inputs)
+
+    _assert_source_equal(output.pred(), arrays[f"{prefix}.output"])
+    raw_output = output.output if hasattr(output, "output") else output
+    if f"{prefix}.minent" in arrays:
+        _assert_source_equal(raw_output.minent, arrays[f"{prefix}.minent"])
+        _assert_source_equal(raw_output.maxent, arrays[f"{prefix}.maxent"])
+
+
+def test_invalid_head_pairs_and_nonuniform_classes_are_source_executed(
+    official_case,
+) -> None:
+    _, arrays = official_case
+    invalid_cases = (
+        "binary",
+        "bounded_normal",
+        "categorical",
+        "mse",
+        "onehot",
+        "symlog_mse",
+        "symexp_twohot",
+        "categorical_nonuniform",
+        "onehot_nonuniform",
+    )
+    assert all(
+        arrays[f"head_invalid.{case}.rejected"].item() == 1 for case in invalid_cases
+    )
+
+
+def test_rank_partition_and_nonlexicographic_decoder_are_source_executed(
+    official_case,
+) -> None:
+    manifest, arrays = official_case
+    assert arrays["partition.encoder_rank3_float_rejected"].item() == 1
+    assert arrays["partition.decoder_rank3_float_is_image"].item() == 1
+
+    spaces = {
+        "z_image": TensorSpace((32, 32, 2), "uint8"),
+        "a_image": TensorSpace((32, 32, 1), "uint8"),
+    }
+    features = {
+        "deter": jnp.asarray(arrays["decoder_order.deter"]),
+        "stoch": jnp.asarray(arrays["decoder_order.stoch"]),
+    }
+    module = DictDecoder(
+        spaces,
+        _decoder_config(manifest.profile),
+        compute_dtype=_compute_dtype(manifest.dtype),
+    )
+    initialized = module.init(jax.random.PRNGKey(0), features)
+    params = _translate_case(arrays, "decoder_order", initialized)
+    outputs = module.apply(params, features)
+
+    for key in spaces:
+        _assert_source_equal(outputs[key].pred(), arrays[f"decoder_order.pred.{key}"])
+        target = jnp.asarray(arrays[f"decoder_order.target.{key}"])
+        _assert_source_equal(
+            outputs[key].loss(target),
+            arrays[f"decoder_order.loss.{key}"],
+        )
 
 
 def test_task_three_interfaces_are_exported_from_package_boundary() -> None:

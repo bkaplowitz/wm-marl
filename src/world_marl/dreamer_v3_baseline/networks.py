@@ -30,7 +30,29 @@ from world_marl.dreamer_v3_baseline.distributions import (
 
 Array = jax.Array
 _f32 = jnp.float32
+_DEFAULT_COMPUTE_DTYPE = jnp.bfloat16
 _METADATA_KEYS = frozenset({"action", "is_first", "is_last", "is_terminal", "reward"})
+
+
+def _require_compute_dtype(value: Array, compute_dtype: Any, name: str) -> None:
+    expected = jnp.dtype(compute_dtype)
+    if value.dtype != expected:
+        raise TypeError(
+            f"{name} requires {expected.name} compute input, got {value.dtype}"
+        )
+
+
+def _space_dtype(space: TensorSpace) -> np.dtype:
+    return np.dtype(space.dtype)
+
+
+def _uniform_classes(space: TensorSpace, family: str) -> int:
+    if not space.discrete:
+        raise ValueError(f"{family} head requires a discrete TensorSpace")
+    classes = space.class_values.reshape(-1)
+    if not len(classes) or not np.all(classes == classes[0]):
+        raise ValueError(f"{family} head requires uniform discrete classes")
+    return int(classes[0])
 
 
 def _activation(name: str, value: Array) -> Array:
@@ -123,9 +145,11 @@ class RMSNorm(nn.Module):
     use_scale: bool = True
     use_bias: bool = False
     param_dtype: Any = _f32
+    compute_dtype: Any = _DEFAULT_COMPUTE_DTYPE
 
     @nn.compact
     def __call__(self, value: Array) -> Array:
+        _require_compute_dtype(value, self.compute_dtype, "RMSNorm")
         dtype = value.dtype
         value = _f32(value)
         mean_square = jnp.square(value).mean(-1, keepdims=True)
@@ -159,9 +183,11 @@ class Linear(nn.Module):
     normalization: str = "none"
     activation: str = "none"
     param_dtype: Any = _f32
+    compute_dtype: Any = _DEFAULT_COMPUTE_DTYPE
 
     @nn.compact
     def __call__(self, value: Array) -> Array:
+        _require_compute_dtype(value, self.compute_dtype, "Linear")
         units = (self.units,) if isinstance(self.units, int) else tuple(self.units)
         size = math.prod(units)
         kernel = self.param(
@@ -181,7 +207,11 @@ class Linear(nn.Module):
             value = value + bias
         value = value.reshape((*value.shape[:-1], *units))
         if self.normalization == "rms":
-            value = RMSNorm(name="norm")(value)
+            value = RMSNorm(
+                param_dtype=self.param_dtype,
+                compute_dtype=self.compute_dtype,
+                name="norm",
+            )(value)
         elif self.normalization != "none":
             raise ValueError(f"unsupported linear normalization: {self.normalization}")
         return _activation(self.activation, value)
@@ -197,9 +227,11 @@ class BlockLinear(nn.Module):
     normalization: str = "none"
     activation: str = "none"
     param_dtype: Any = _f32
+    compute_dtype: Any = _DEFAULT_COMPUTE_DTYPE
 
     @nn.compact
     def __call__(self, value: Array) -> Array:
+        _require_compute_dtype(value, self.compute_dtype, "BlockLinear")
         if self.blocks > self.units or self.units % self.blocks:
             raise ValueError("BlockLinear output units must be divisible by blocks")
         if value.shape[-1] % self.blocks:
@@ -230,7 +262,11 @@ class BlockLinear(nn.Module):
             ).astype(value.dtype)
             value = value + bias
         if self.normalization == "rms":
-            value = RMSNorm(name="norm")(value)
+            value = RMSNorm(
+                param_dtype=self.param_dtype,
+                compute_dtype=self.compute_dtype,
+                name="norm",
+            )(value)
         elif self.normalization != "none":
             raise ValueError(
                 f"unsupported block linear normalization: {self.normalization}"
@@ -250,9 +286,11 @@ class Conv2D(nn.Module):
     bias_initializer: str = "zeros"
     output_scale: float = 1.0
     param_dtype: Any = _f32
+    compute_dtype: Any = _DEFAULT_COMPUTE_DTYPE
 
     @nn.compact
     def __call__(self, value: Array) -> Array:
+        _require_compute_dtype(value, self.compute_dtype, "Conv2D")
         kernel_size = (
             (self.kernel, self.kernel)
             if isinstance(self.kernel, int)
@@ -306,21 +344,30 @@ class MLP(nn.Module):
     bias: bool = True
     initializer: str = "trunc_normal_in"
     bias_initializer: str = "zeros"
+    param_dtype: Any = _f32
+    compute_dtype: Any = _DEFAULT_COMPUTE_DTYPE
 
     @nn.compact
     def __call__(self, value: Array) -> Array:
         shape = value.shape[:-1]
-        value = _f32(value).reshape((-1, value.shape[-1]))
+        value = jnp.asarray(value).astype(self.compute_dtype)
+        value = value.reshape((-1, value.shape[-1]))
         for index in range(self.layers):
             value = Linear(
                 self.units,
                 bias=self.bias,
                 initializer=self.initializer,
                 bias_initializer=self.bias_initializer,
+                param_dtype=self.param_dtype,
+                compute_dtype=self.compute_dtype,
                 name=f"linear{index}",
             )(value)
             if self.normalization == "rms":
-                value = RMSNorm(name=f"norm{index}")(value)
+                value = RMSNorm(
+                    param_dtype=self.param_dtype,
+                    compute_dtype=self.compute_dtype,
+                    name=f"norm{index}",
+                )(value)
             elif self.normalization != "none":
                 raise ValueError(f"unsupported MLP normalization: {self.normalization}")
             value = _activation(self.activation, value)
@@ -330,6 +377,8 @@ class MLP(nn.Module):
 class BlockGRU(nn.Module):
     config: RSSMConfig
     action_dim: int
+    param_dtype: Any = _f32
+    compute_dtype: Any = _DEFAULT_COMPUTE_DTYPE
 
     @nn.compact
     def __call__(
@@ -346,6 +395,12 @@ class BlockGRU(nn.Module):
             raise ValueError("BlockGRU deter width does not match configuration")
         if stoch.shape[-2:] != (config.stoch, config.classes):
             raise ValueError("BlockGRU stochastic shape does not match configuration")
+        for name, value in (("deter", deter), ("stoch", stoch), ("action", action)):
+            if not jnp.issubdtype(value.dtype, jnp.floating):
+                raise TypeError(f"BlockGRU {name} must be floating")
+        deter = deter.astype(self.compute_dtype)
+        stoch = stoch.astype(self.compute_dtype)
+        action = action.astype(self.compute_dtype)
         if is_first is not None:
             reset = jnp.asarray(is_first, bool)
             expanded = reset[(...,) + (None,) * (deter.ndim - reset.ndim)]
@@ -359,11 +414,17 @@ class BlockGRU(nn.Module):
         shared = dict(
             bias=True,
             initializer=config.initializer,
+            param_dtype=self.param_dtype,
+            compute_dtype=self.compute_dtype,
         )
 
         def project(name: str, value: Array) -> Array:
             value = Linear(config.hidden, name=name, **shared)(value)
-            value = RMSNorm(name=f"{name}norm")(value)
+            value = RMSNorm(
+                param_dtype=self.param_dtype,
+                compute_dtype=self.compute_dtype,
+                name=f"{name}norm",
+            )(value)
             return _activation(config.activation, value)
 
         x0 = project("dynin0", deter)
@@ -382,7 +443,11 @@ class BlockGRU(nn.Module):
                 name=f"dynhid{index}",
                 **shared,
             )(value)
-            value = RMSNorm(name=f"dynhid{index}norm")(value)
+            value = RMSNorm(
+                param_dtype=self.param_dtype,
+                compute_dtype=self.compute_dtype,
+                name=f"dynhid{index}norm",
+            )(value)
             value = _activation(config.activation, value)
         value = BlockLinear(
             3 * config.deter,
@@ -405,30 +470,52 @@ class BlockGRU(nn.Module):
 class TensorSpace:
     shape: tuple[int, ...]
     dtype: str
-    classes: int | None = None
+    classes: int | tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:
         if any(size <= 0 for size in self.shape):
             raise ValueError("TensorSpace dimensions must be positive")
         try:
-            np.dtype(self.dtype)
+            dtype = np.dtype(self.dtype)
         except TypeError as error:
             raise ValueError(f"invalid TensorSpace dtype: {self.dtype}") from error
-        if self.classes is not None and self.classes <= 1:
-            raise ValueError("discrete TensorSpace requires at least two classes")
+        object.__setattr__(self, "dtype", dtype.name)
+        if self.classes is not None:
+            classes = np.asarray(self.classes, np.int32)
+            if classes.shape == ():
+                classes = np.full(self.shape or (), classes.item(), np.int32)
+            elif classes.shape != self.shape:
+                raise ValueError("TensorSpace classes must be scalar or match shape")
+            if np.any(classes <= 1):
+                raise ValueError("discrete TensorSpace requires at least two classes")
+            if classes.shape:
+                object.__setattr__(self, "classes", tuple(classes.reshape(-1).tolist()))
+            else:
+                object.__setattr__(self, "classes", int(classes.item()))
 
     @property
     def discrete(self) -> bool:
         return self.classes is not None
 
     @property
+    def class_values(self) -> np.ndarray:
+        if self.classes is None:
+            raise ValueError("continuous TensorSpace has no classes")
+        values = np.asarray(self.classes, np.int32)
+        if values.shape == ():
+            return np.full(self.shape or (), values.item(), np.int32)
+        return values.reshape(self.shape)
+
+    @property
     def image(self) -> bool:
-        return self.dtype == "uint8" and len(self.shape) == 3
+        return len(self.shape) == 3
 
 
 class DictEncoder(nn.Module):
     spaces: Mapping[str, TensorSpace]
     config: EncoderConfig
+    param_dtype: Any = _f32
+    compute_dtype: Any = _DEFAULT_COMPUTE_DTYPE
 
     def setup(self) -> None:
         if not self.spaces:
@@ -440,6 +527,16 @@ class DictEncoder(nn.Module):
             )
         if any(len(space.shape) > 3 for space in self.spaces.values()):
             raise ValueError("DictEncoder supports observation ranks up to three")
+        invalid_images = [
+            key
+            for key, space in self.spaces.items()
+            if len(space.shape) == 3 and _space_dtype(space) != np.dtype(np.uint8)
+        ]
+        if invalid_images:
+            raise TypeError(
+                "DictEncoder rank-three image spaces must declare uint8: "
+                + ", ".join(invalid_images)
+            )
 
     @nn.compact
     def __call__(self, observations: Mapping[str, Array]) -> Array:
@@ -458,6 +555,11 @@ class DictEncoder(nn.Module):
             for key in vector_keys:
                 space = self.spaces[key]
                 value = observations[key]
+                if np.dtype(value.dtype) != _space_dtype(space):
+                    raise TypeError(
+                        f"DictEncoder {key!r} runtime dtype {value.dtype} does not "
+                        f"match declared dtype {space.dtype}"
+                    )
                 current_leading = value.shape[: value.ndim - len(space.shape)]
                 leading_shape = leading_shape or current_leading
                 if (
@@ -466,15 +568,16 @@ class DictEncoder(nn.Module):
                 ):
                     raise ValueError(f"DictEncoder vector shape mismatch: {key}")
                 if space.discrete:
+                    classes = _uniform_classes(space, "encoder discrete")
                     value = jax.nn.one_hot(
                         value.astype(jnp.int32),
-                        space.classes,
-                        dtype=_f32,
+                        classes,
+                        dtype=self.compute_dtype,
                     )
                 else:
-                    value = _f32(value)
                     if self.config.symlog:
                         value = symlog(value)
+                    value = value.astype(self.compute_dtype)
                 vectors.append(value.reshape((*leading_shape, -1)))
             value = jnp.concatenate(vectors, -1).reshape(
                 (-1, sum(x.shape[-1] for x in vectors))
@@ -483,9 +586,15 @@ class DictEncoder(nn.Module):
                 value = Linear(
                     self.config.units,
                     initializer=self.config.initializer,
+                    param_dtype=self.param_dtype,
+                    compute_dtype=self.compute_dtype,
                     name=f"mlp{index}",
                 )(value)
-                value = RMSNorm(name=f"mlp{index}norm")(value)
+                value = RMSNorm(
+                    param_dtype=self.param_dtype,
+                    compute_dtype=self.compute_dtype,
+                    name=f"mlp{index}norm",
+                )(value)
                 value = _activation(self.config.activation, value)
             outputs.append(value)
         if image_keys:
@@ -493,6 +602,11 @@ class DictEncoder(nn.Module):
             for key in image_keys:
                 space = self.spaces[key]
                 value = observations[key]
+                if np.dtype(value.dtype) != _space_dtype(space):
+                    raise TypeError(
+                        f"DictEncoder image {key!r} runtime dtype {value.dtype} does "
+                        f"not match declared dtype {space.dtype}"
+                    )
                 if value.dtype != jnp.uint8:
                     raise TypeError(f"DictEncoder image {key!r} must use uint8")
                 current_leading = value.shape[: value.ndim - len(space.shape)]
@@ -503,7 +617,7 @@ class DictEncoder(nn.Module):
                 ):
                     raise ValueError(f"DictEncoder image shape mismatch: {key}")
                 images.append(value)
-            value = _f32(jnp.concatenate(images, -1)) / 255 - 0.5
+            value = jnp.concatenate(images, -1).astype(self.compute_dtype) / 255 - 0.5
             value = value.reshape((-1, *value.shape[len(leading_shape) :]))
             depths = tuple(
                 self.config.depth * multiplier for multiplier in self.config.multipliers
@@ -514,6 +628,8 @@ class DictEncoder(nn.Module):
                         depth,
                         self.config.kernel,
                         initializer=self.config.initializer,
+                        param_dtype=self.param_dtype,
+                        compute_dtype=self.compute_dtype,
                         name=f"cnn{index}",
                     )(value)
                 elif self.config.strided:
@@ -522,6 +638,8 @@ class DictEncoder(nn.Module):
                         self.config.kernel,
                         stride=2,
                         initializer=self.config.initializer,
+                        param_dtype=self.param_dtype,
+                        compute_dtype=self.compute_dtype,
                         name=f"cnn{index}",
                     )(value)
                 else:
@@ -529,6 +647,8 @@ class DictEncoder(nn.Module):
                         depth,
                         self.config.kernel,
                         initializer=self.config.initializer,
+                        param_dtype=self.param_dtype,
+                        compute_dtype=self.compute_dtype,
                         name=f"cnn{index}",
                     )(value)
                     batch, height, width, channels = value.shape
@@ -537,7 +657,11 @@ class DictEncoder(nn.Module):
                     value = value.reshape(
                         (batch, height // 2, 2, width // 2, 2, channels)
                     ).max((2, 4))
-                value = RMSNorm(name=f"cnn{index}norm")(value)
+                value = RMSNorm(
+                    param_dtype=self.param_dtype,
+                    compute_dtype=self.compute_dtype,
+                    name=f"cnn{index}norm",
+                )(value)
                 value = _activation(self.config.activation, value)
             if not (3 <= value.shape[-3] <= 16 and 3 <= value.shape[-2] <= 16):
                 raise ValueError(
@@ -558,46 +682,70 @@ class _OutputHead(nn.Module):
     min_std: float = 0.1
     max_std: float = 1.0
     unimix: float = 0.0
+    param_dtype: Any = _f32
+    compute_dtype: Any = _DEFAULT_COMPUTE_DTYPE
 
     @nn.compact
     def __call__(self, value: Array):
+        _require_compute_dtype(value, self.compute_dtype, "output head")
         shared = dict(
             initializer=self.initializer,
             output_scale=self.output_scale,
+            param_dtype=self.param_dtype,
+            compute_dtype=self.compute_dtype,
         )
+        event_shape = self.space.shape
         if self.output == "binary":
+            classes = _uniform_classes(self.space, "binary")
+            if classes != 2:
+                raise ValueError("binary head requires exactly two classes")
             result = BinaryOutput(
                 Linear(self.space.shape, name="logit", **shared)(value)
             )
         elif self.output == "categorical":
-            if not self.space.discrete:
-                raise ValueError("categorical head requires a discrete TensorSpace")
-            shape = (*self.space.shape, self.space.classes)
+            classes = _uniform_classes(self.space, "categorical")
+            shape = (*self.space.shape, classes)
             logits = Linear(shape, name="logits", **shared)(value)
             result = CategoricalOutput(logits)
+            result.minent = 0
+            result.maxent = np.log(classes)
         elif self.output == "onehot":
-            logits = Linear(self.space.shape, name="logits", **shared)(value)
+            classes = _uniform_classes(self.space, "onehot")
+            event_shape = (*self.space.shape, classes)
+            logits = Linear(event_shape, name="logits", **shared)(value)
             result = OneHotOutput(logits, self.unimix)
         elif self.output == "mse":
+            if self.space.discrete:
+                raise ValueError("mse head requires a continuous TensorSpace")
             result = MSEOutput(Linear(self.space.shape, name="pred", **shared)(value))
         elif self.output == "symlog_mse":
+            if self.space.discrete:
+                raise ValueError("symlog_mse head requires a continuous TensorSpace")
             result = MSEOutput(
                 Linear(self.space.shape, name="pred", **shared)(value),
                 symlog,
             )
         elif self.output == "symexp_twohot":
+            if self.space.discrete:
+                raise ValueError("symexp_twohot head requires a continuous TensorSpace")
             shape = (*self.space.shape, self.bins)
             result = TwoHotOutput(
                 Linear(shape, name="logits", **shared)(value), self.bins
             )
         elif self.output == "bounded_normal":
+            if self.space.discrete:
+                raise ValueError(
+                    "bounded_normal head requires a continuous TensorSpace"
+                )
             mean = Linear(self.space.shape, name="mean", **shared)(value)
             stddev = Linear(self.space.shape, name="stddev", **shared)(value)
             result = NormalOutput.bounded(mean, stddev, self.min_std, self.max_std)
+            result.minent = NormalOutput(jnp.zeros_like(mean), self.min_std).entropy()
+            result.maxent = NormalOutput(jnp.zeros_like(mean), self.max_std).entropy()
         else:
             raise ValueError(f"unsupported output family: {self.output}")
-        if self.space.shape:
-            return AggregateOutput(result, len(self.space.shape), jnp.sum)
+        if event_shape:
+            return AggregateOutput(result, len(event_shape), jnp.sum)
         return result
 
 
@@ -606,6 +754,8 @@ class _DictOutputHead(nn.Module):
     outputs: Mapping[str, str]
     initializer: str
     output_scale: float
+    param_dtype: Any = _f32
+    compute_dtype: Any = _DEFAULT_COMPUTE_DTYPE
 
     @nn.compact
     def __call__(self, value: Array) -> dict[str, Any]:
@@ -615,15 +765,19 @@ class _DictOutputHead(nn.Module):
                 self.outputs[key],
                 self.initializer,
                 self.output_scale,
+                param_dtype=self.param_dtype,
+                compute_dtype=self.compute_dtype,
                 name=key,
             )(value)
-            for key in sorted(self.spaces)
+            for key in self.spaces
         }
 
 
 class DictDecoder(nn.Module):
     spaces: Mapping[str, TensorSpace]
     config: DecoderConfig
+    param_dtype: Any = _f32
+    compute_dtype: Any = _DEFAULT_COMPUTE_DTYPE
 
     def setup(self) -> None:
         if not self.spaces:
@@ -633,13 +787,31 @@ class DictDecoder(nn.Module):
             raise ValueError(
                 f"DictDecoder metadata keys are forbidden: {sorted(metadata)}"
             )
+        if any(len(space.shape) > 3 for space in self.spaces.values()):
+            raise ValueError("DictDecoder supports observation ranks up to three")
+        invalid_images = [
+            key
+            for key, space in self.spaces.items()
+            if len(space.shape) == 3 and _space_dtype(space) != np.dtype(np.uint8)
+        ]
+        if invalid_images:
+            raise TypeError(
+                "DictDecoder rank-three image spaces must declare uint8: "
+                + ", ".join(invalid_images)
+            )
 
     @nn.compact
     def __call__(self, features: Mapping[str, Array]) -> dict[str, Any]:
         if set(features) != {"deter", "stoch"}:
             raise ValueError("DictDecoder features must contain deter and stoch")
-        deter = _f32(features["deter"])
-        stoch = _f32(features["stoch"])
+        deter = jnp.asarray(features["deter"])
+        stoch = jnp.asarray(features["stoch"])
+        if not jnp.issubdtype(deter.dtype, jnp.floating) or not jnp.issubdtype(
+            stoch.dtype, jnp.floating
+        ):
+            raise TypeError("DictDecoder features must use floating dtypes")
+        deter = deter.astype(self.compute_dtype)
+        stoch = stoch.astype(self.compute_dtype)
         if deter.shape[:-1] != stoch.shape[:-2]:
             raise ValueError("DictDecoder feature leading shapes must match")
         leading = deter.shape[:-1]
@@ -649,7 +821,7 @@ class DictDecoder(nn.Module):
         vector_spaces = {
             key: space for key, space in self.spaces.items() if not space.image
         }
-        image_keys = sorted(key for key, space in self.spaces.items() if space.image)
+        image_keys = [key for key, space in self.spaces.items() if space.image]
         reconstructions: dict[str, Any] = {}
         if vector_spaces:
             value = MLP(
@@ -658,6 +830,8 @@ class DictDecoder(nn.Module):
                 activation=self.config.activation,
                 normalization=self.config.normalization,
                 initializer=self.config.initializer,
+                param_dtype=self.param_dtype,
+                compute_dtype=self.compute_dtype,
                 name="mlp",
             )(combined)
             value = value.reshape((*leading, value.shape[-1]))
@@ -671,6 +845,8 @@ class DictDecoder(nn.Module):
                     output_families,
                     self.config.initializer,
                     self.config.output_scale,
+                    param_dtype=self.param_dtype,
+                    compute_dtype=self.compute_dtype,
                     name="vec",
                 )(value)
             )
@@ -699,6 +875,8 @@ class DictDecoder(nn.Module):
                 spatial_size,
                 groups,
                 initializer=self.config.initializer,
+                param_dtype=self.param_dtype,
+                compute_dtype=self.compute_dtype,
                 name="sp0",
             )(flat_deter)
             channels_per_group = shape[-1] // groups
@@ -708,16 +886,28 @@ class DictDecoder(nn.Module):
             x1 = Linear(
                 2 * self.config.units,
                 initializer=self.config.initializer,
+                param_dtype=self.param_dtype,
+                compute_dtype=self.compute_dtype,
                 name="sp1",
             )(flat_stoch)
-            x1 = RMSNorm(name="sp1norm")(x1)
+            x1 = RMSNorm(
+                param_dtype=self.param_dtype,
+                compute_dtype=self.compute_dtype,
+                name="sp1norm",
+            )(x1)
             x1 = _activation(self.config.activation, x1)
             x1 = Linear(
                 shape,
                 initializer=self.config.initializer,
+                param_dtype=self.param_dtype,
+                compute_dtype=self.compute_dtype,
                 name="sp2",
             )(x1)
-            value = RMSNorm(name="spnorm")(x0 + x1)
+            value = RMSNorm(
+                param_dtype=self.param_dtype,
+                compute_dtype=self.compute_dtype,
+                name="spnorm",
+            )(x0 + x1)
             value = _activation(self.config.activation, value)
             for index, depth in reversed(tuple(enumerate(depths[:-1]))):
                 if self.config.strided:
@@ -727,6 +917,8 @@ class DictDecoder(nn.Module):
                         stride=2,
                         transposed=True,
                         initializer=self.config.initializer,
+                        param_dtype=self.param_dtype,
+                        compute_dtype=self.compute_dtype,
                         name=f"conv{index}",
                     )(value)
                 else:
@@ -735,9 +927,15 @@ class DictDecoder(nn.Module):
                         depth,
                         self.config.kernel,
                         initializer=self.config.initializer,
+                        param_dtype=self.param_dtype,
+                        compute_dtype=self.compute_dtype,
                         name=f"conv{index}",
                     )(value)
-                value = RMSNorm(name=f"conv{index}norm")(value)
+                value = RMSNorm(
+                    param_dtype=self.param_dtype,
+                    compute_dtype=self.compute_dtype,
+                    name=f"conv{index}norm",
+                )(value)
                 value = _activation(self.config.activation, value)
             if self.config.outer:
                 value = Conv2D(
@@ -745,6 +943,8 @@ class DictDecoder(nn.Module):
                     self.config.kernel,
                     initializer=self.config.initializer,
                     output_scale=self.config.output_scale,
+                    param_dtype=self.param_dtype,
+                    compute_dtype=self.compute_dtype,
                     name="imgout",
                 )(value)
             elif self.config.strided:
@@ -755,6 +955,8 @@ class DictDecoder(nn.Module):
                     transposed=True,
                     initializer=self.config.initializer,
                     output_scale=self.config.output_scale,
+                    param_dtype=self.param_dtype,
+                    compute_dtype=self.compute_dtype,
                     name="imgout",
                 )(value)
             else:
@@ -764,6 +966,8 @@ class DictDecoder(nn.Module):
                     self.config.kernel,
                     initializer=self.config.initializer,
                     output_scale=self.config.output_scale,
+                    param_dtype=self.param_dtype,
+                    compute_dtype=self.compute_dtype,
                     name="imgout",
                 )(value)
             value = jax.nn.sigmoid(value)
@@ -777,6 +981,8 @@ class DictDecoder(nn.Module):
 class MLPHead(nn.Module):
     space: TensorSpace
     config: HeadConfig | PolicyConfig
+    param_dtype: Any = _f32
+    compute_dtype: Any = _DEFAULT_COMPUTE_DTYPE
 
     @nn.compact
     def __call__(self, features: Array):
@@ -787,6 +993,8 @@ class MLPHead(nn.Module):
             activation=self.config.activation,
             normalization=self.config.normalization,
             initializer=self.config.initializer,
+            param_dtype=self.param_dtype,
+            compute_dtype=self.compute_dtype,
             name="mlp",
         )(value)
         if isinstance(self.config, PolicyConfig):
@@ -801,6 +1009,8 @@ class MLPHead(nn.Module):
                 min_std=self.config.min_std,
                 max_std=self.config.max_std,
                 unimix=self.config.unimix,
+                param_dtype=self.param_dtype,
+                compute_dtype=self.compute_dtype,
                 name="head",
             )(value)
         return _OutputHead(
@@ -809,6 +1019,8 @@ class MLPHead(nn.Module):
             self.config.initializer,
             self.config.output_scale,
             bins=self.config.bins or 255,
+            param_dtype=self.param_dtype,
+            compute_dtype=self.compute_dtype,
             name="head",
         )(value)
 
