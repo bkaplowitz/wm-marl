@@ -75,6 +75,17 @@ from world_marl.dreamer_v3_baseline.rssm import (
     RSSM_SOURCE_SPEC,
     RSSMState,
 )
+from world_marl.dreamer_v3_baseline.replay import (
+    ConsecutiveStream,
+    DreamerReplay,
+    OnlineQueue,
+    ReplayBatch,
+    ReplayChunk,
+    ReplayKey,
+    ReplayWriter,
+    UniformSelector,
+)
+from world_marl.dreamer_v3_baseline.replay_oracle import REPLAY_SOURCE_SPEC
 
 __all__ = [
     "AggregateOutput",
@@ -83,6 +94,7 @@ __all__ = [
     "BlockLinear",
     "ContinueHead",
     "ContinueHeadConfig",
+    "ConsecutiveStream",
     "Conv2D",
     "BinaryOutput",
     "CategoricalOutput",
@@ -95,6 +107,7 @@ __all__ = [
     "DreamerActor",
     "DreamerCritic",
     "DreamerRSSM",
+    "DreamerReplay",
     "DreamerProfile",
     "DreamerV3Config",
     "EncoderConfig",
@@ -114,6 +127,7 @@ __all__ = [
     "ObservationMode",
     "OptimizerConfig",
     "OneHotOutput",
+    "OnlineQueue",
     "OracleHarness",
     "OracleManifest",
     "OracleSourceSpec",
@@ -125,7 +139,12 @@ __all__ = [
     "RSSMTrajectory",
     "RSSM_SOURCE_SPEC",
     "RSSMState",
+    "REPLAY_SOURCE_SPEC",
+    "ReplayBatch",
+    "ReplayChunk",
     "ReplayConfig",
+    "ReplayKey",
+    "ReplayWriter",
     "RewardHead",
     "RewardHeadConfig",
     "RMSNorm",
@@ -134,6 +153,7 @@ __all__ = [
     "TensorSpec",
     "TensorSpace",
     "TwoHotOutput",
+    "UniformSelector",
     "balanced_categorical_kl_loss",
     "categorical_kl_loss",
     "resolve_dreamer_config",

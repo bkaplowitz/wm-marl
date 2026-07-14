@@ -20,6 +20,16 @@ that implement network primitives, encoders, decoders, heads, and BlockGRU.
 Later RSSM, loss, optimizer, replay, and train-step cases register the exact
 source modules they execute.
 
+Replay fixtures execute the pinned official `Chunk`, `Replay`, `Uniform`, and
+`Consec` class definitions in an isolated worker. Their source spec covers
+`embodied/core/chunk.py`, `replay.py`, `selectors.py`, `streams.py`, and
+`dreamerv3/configs.yaml`. The recorded request fixes the primary online case,
+the capacity/swap-pop case, the complete row schema, NumPy 1.26.4, Elements
+3.22.0 helper hashes, debug UUID mode, and deterministic shim hashes. The
+fixtures preserve exact valid starts, online FIFO order, PCG64 state and draws,
+cross-chunk annotations, consecutive overlap, capacity references, and latent
+writeback tensors.
+
 Distribution fixtures persist fixed Gumbel tensors together with the exact
 official categorical indices, hard one-hot samples, and one-hot
 straight-through gradients they produce. Fixture generation and native parity
