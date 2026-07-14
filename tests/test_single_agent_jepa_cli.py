@@ -238,6 +238,12 @@ def test_cli_accepts_recent_replay_and_curve_evaluation(monkeypatch):
         _minimal_args(
             "--online-recent-replay-fraction",
             "0.5",
+            "--online-recent-world-model-fraction",
+            "0.4",
+            "--online-recent-policy-start-fraction",
+            "0.0",
+            "--online-recent-critic-fraction",
+            "0.25",
             "--online-recent-replay-steps",
             "128",
             "--online-recent-replay-max-oversample",
@@ -254,11 +260,37 @@ def test_cli_accepts_recent_replay_and_curve_evaluation(monkeypatch):
     args = train_dmc_jepa.parse_args()
 
     assert args.online_recent_replay_fraction == 0.5
+    assert train_dmc_jepa._requested_recent_fractions(args) == {
+        "world_model": 0.4,
+        "policy_start": 0.0,
+        "critic": 0.25,
+    }
     assert args.online_recent_replay_steps == 128
     assert args.online_recent_replay_max_oversample == 10.0
     assert args.curve_eval_interval_env_steps == 50_000
     assert args.curve_eval_episodes == 20
     assert args.curve_eval_seed == 9_000_000
+
+
+def test_component_recent_replay_fractions_inherit_shared_default(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _minimal_args(
+            "--online-recent-replay-fraction",
+            "0.5",
+            "--online-recent-replay-steps",
+            "128",
+        ),
+    )
+
+    args = train_dmc_jepa.parse_args()
+
+    assert train_dmc_jepa._requested_recent_fractions(args) == {
+        "world_model": 0.5,
+        "policy_start": 0.5,
+        "critic": 0.5,
+    }
 
 
 def test_recent_replay_batch_respects_requested_fraction():

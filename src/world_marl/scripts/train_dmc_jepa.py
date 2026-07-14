@@ -259,7 +259,33 @@ def parse_args() -> argparse.Namespace:
     online.add_argument("--online-train-steps", type=int, default=1024)
     online.add_argument("--online-policy-train-steps", type=int, default=512)
     online.add_argument("--online-checkpoint-interval", type=int, default=16)
-    online.add_argument("--online-recent-replay-fraction", type=float, default=0.0)
+    online.add_argument(
+        "--online-recent-replay-fraction",
+        type=float,
+        default=0.0,
+        help=(
+            "Default recent-replay fraction for each online learner. "
+            "Component-specific fractions override this value."
+        ),
+    )
+    online.add_argument(
+        "--online-recent-world-model-fraction",
+        type=float,
+        default=None,
+        help="Override recent replay for online world-model batches.",
+    )
+    online.add_argument(
+        "--online-recent-policy-start-fraction",
+        type=float,
+        default=None,
+        help="Override recent replay for actor imagination start states.",
+    )
+    online.add_argument(
+        "--online-recent-critic-fraction",
+        type=float,
+        default=None,
+        help="Override recent replay for real replay-critic targets.",
+    )
     online.add_argument("--online-recent-replay-steps", type=int, default=320)
     online.add_argument(
         "--online-recent-replay-max-oversample",
@@ -434,8 +460,16 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
             "--curve-eval-interval-env-steps and --curve-eval-episodes must "
             "either both be zero or both be positive"
         )
-    if not 0.0 <= args.online_recent_replay_fraction <= 1.0:
-        parser.error("--online-recent-replay-fraction must be in [0, 1]")
+    recent_fraction_names = (
+        "online_recent_replay_fraction",
+        "online_recent_world_model_fraction",
+        "online_recent_policy_start_fraction",
+        "online_recent_critic_fraction",
+    )
+    for name in recent_fraction_names:
+        value = getattr(args, name)
+        if value is not None and not 0.0 <= value <= 1.0:
+            parser.error(f"--{name.replace('_', '-')} must be in [0, 1]")
     if (
         args.online_recent_replay_max_oversample != 0.0
         and args.online_recent_replay_max_oversample < 1.0
@@ -446,9 +480,9 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         args.context_window + 1,
         args.policy_replay_critic_horizon + 1,
     )
-    if (
-        args.online_recent_replay_fraction > 0.0
-        and args.online_recent_replay_steps < recent_min_steps
+    requested_recent_fractions = _requested_recent_fractions(args)
+    if max(requested_recent_fractions.values()) > 0.0 and (
+        args.online_recent_replay_steps < recent_min_steps
     ):
         parser.error(
             "--online-recent-replay-steps is too short for the configured "
@@ -678,6 +712,27 @@ def _reproducibility_snapshot(
     return snapshot
 
 
+def _requested_recent_fractions(args: argparse.Namespace) -> dict[str, float]:
+    default = float(args.online_recent_replay_fraction)
+    return {
+        "world_model": float(
+            default
+            if args.online_recent_world_model_fraction is None
+            else args.online_recent_world_model_fraction
+        ),
+        "policy_start": float(
+            default
+            if args.online_recent_policy_start_fraction is None
+            else args.online_recent_policy_start_fraction
+        ),
+        "critic": float(
+            default
+            if args.online_recent_critic_fraction is None
+            else args.online_recent_critic_fraction
+        ),
+    }
+
+
 def run_one(
     args: argparse.Namespace,
     *,
@@ -702,6 +757,7 @@ def run_one(
     try:
         adapter = _make_vector_adapter(args, seed=seed)
         config = _jepa_config(args, adapter)
+        requested_recent_fractions = _requested_recent_fractions(args)
         resolved_config = {
             "args": vars(args),
             "run_index": run_index,
@@ -713,6 +769,7 @@ def run_one(
             "action_high": adapter.action_high,
             "env_backend": _env_backend(args.env),
             "jepa_config": dataclasses.asdict(config),
+            "online_recent_replay_requested_fractions": (requested_recent_fractions),
             "protocol": "reset_rich_interleaved_latest_policy",
         }
         logger.write_json("config.json", resolved_config)
@@ -764,7 +821,7 @@ def run_one(
                 observation_dim=config.observation_dim,
                 action_dim=config.action_dim,
             )
-            if args.online_recent_replay_fraction > 0.0
+            if max(requested_recent_fractions.values()) > 0.0
             else None
         )
 
@@ -972,21 +1029,30 @@ def run_one(
                     online_recent_replay.size if online_recent_replay is not None else 0
                 ),
             }
-            effective_recent_fraction = _effective_recent_fraction(
-                args.online_recent_replay_fraction,
-                full_replay_size=replay.size,
-                recent_replay_size=(
-                    online_recent_replay.size if online_recent_replay is not None else 0
-                ),
-                max_oversample=args.online_recent_replay_max_oversample,
+            recent_replay_size = (
+                online_recent_replay.size if online_recent_replay is not None else 0
             )
-            effective_recent_oversample = _recent_oversample_ratio(
-                effective_recent_fraction,
-                full_replay_size=replay.size,
-                recent_replay_size=(
-                    online_recent_replay.size if online_recent_replay is not None else 0
-                ),
-            )
+            effective_recent_fractions = {
+                component: _effective_recent_fraction(
+                    requested_fraction,
+                    full_replay_size=replay.size,
+                    recent_replay_size=recent_replay_size,
+                    max_oversample=args.online_recent_replay_max_oversample,
+                )
+                for component, requested_fraction in (
+                    requested_recent_fractions.items()
+                )
+            }
+            effective_recent_oversamples = {
+                component: _recent_oversample_ratio(
+                    effective_fraction,
+                    full_replay_size=replay.size,
+                    recent_replay_size=recent_replay_size,
+                )
+                for component, effective_fraction in (
+                    effective_recent_fractions.items()
+                )
+            }
             collection.update(
                 {
                     "online_recent_replay_fraction": (
@@ -996,14 +1062,32 @@ def run_one(
                         args.online_recent_replay_fraction
                     ),
                     "online_recent_replay_effective_fraction": (
-                        effective_recent_fraction
+                        effective_recent_fractions["world_model"]
                     ),
                     "online_recent_replay_max_oversample": (
                         args.online_recent_replay_max_oversample
                     ),
                     "online_recent_replay_effective_oversample": (
-                        effective_recent_oversample
+                        effective_recent_oversamples["world_model"]
                     ),
+                    **{
+                        f"online_recent_{component}_requested_fraction": (
+                            requested_recent_fractions[component]
+                        )
+                        for component in requested_recent_fractions
+                    },
+                    **{
+                        f"online_recent_{component}_effective_fraction": (
+                            effective_recent_fractions[component]
+                        )
+                        for component in requested_recent_fractions
+                    },
+                    **{
+                        f"online_recent_{component}_effective_oversample": (
+                            effective_recent_oversamples[component]
+                        )
+                        for component in requested_recent_fractions
+                    },
                 }
             )
             logger.write_json(f"{phase}_actor_replay.json", collection)
@@ -1030,7 +1114,7 @@ def run_one(
                 desc=f"{phase} fit world model",
                 train_env_steps=train_env_steps,
                 recent_replay=online_recent_replay,
-                recent_fraction=effective_recent_fraction,
+                recent_fraction=effective_recent_fractions["world_model"],
             )
             jax_rngs.update("world_model", model_rng)
             logger.plot_world_model_loss(
@@ -1068,15 +1152,22 @@ def run_one(
                     train_env_steps=train_env_steps,
                 ),
                 recent_replay=online_recent_replay,
-                recent_fraction=effective_recent_fraction,
+                start_recent_fraction=effective_recent_fractions["policy_start"],
+                critic_recent_fraction=effective_recent_fractions["critic"],
             )
             policy_metrics.update(
                 {
-                    "policy_online_recent_replay_requested_fraction": (
-                        args.online_recent_replay_fraction
+                    "policy_online_recent_start_requested_fraction": (
+                        requested_recent_fractions["policy_start"]
                     ),
-                    "policy_online_recent_replay_effective_oversample": (
-                        effective_recent_oversample
+                    "policy_online_recent_start_effective_oversample": (
+                        effective_recent_oversamples["policy_start"]
+                    ),
+                    "policy_online_recent_critic_requested_fraction": (
+                        requested_recent_fractions["critic"]
+                    ),
+                    "policy_online_recent_critic_effective_oversample": (
+                        effective_recent_oversamples["critic"]
                     ),
                     "policy_online_recent_replay_max_oversample": (
                         args.online_recent_replay_max_oversample
@@ -1793,7 +1884,8 @@ def _train_policy(
     reset_actor: bool,
     actor_entropy_coef: float,
     recent_replay: SequenceReplayBuffer | None = None,
-    recent_fraction: float = 0.0,
+    start_recent_fraction: float = 0.0,
+    critic_recent_fraction: float = 0.0,
 ) -> tuple[Any, jax.Array, dict[str, Any]]:
     if train_steps == 0:
         return (
@@ -1824,7 +1916,7 @@ def _train_policy(
                 replay,
                 np_rng,
                 recent_replay=recent_replay,
-                recent_fraction=recent_fraction,
+                recent_fraction=critic_recent_fraction,
                 batch_size=args.policy_batch_size,
                 chunk_length=args.critic_horizon,
                 max_horizon=1,
@@ -1867,7 +1959,7 @@ def _train_policy(
             config=config,
             batch_size=args.policy_batch_size,
             recent_replay=recent_replay,
-            recent_fraction=recent_fraction,
+            recent_fraction=start_recent_fraction,
         )
         real_critic_batch = None
         if args.policy_replay_critic_loss_coef > 0.0:
@@ -1875,7 +1967,7 @@ def _train_policy(
                 replay,
                 np_rng,
                 recent_replay=recent_replay,
-                recent_fraction=recent_fraction,
+                recent_fraction=critic_recent_fraction,
                 batch_size=args.policy_replay_critic_batch_size,
                 chunk_length=args.policy_replay_critic_horizon,
                 max_horizon=1,
@@ -1949,7 +2041,8 @@ def _train_policy(
             "policy_actor_entropy_coef": actor_entropy_coef,
             "policy_actor_entropy_initial_coef": args.actor_entropy_coef,
             "policy_actor_entropy_final_coef": args.actor_entropy_final_coef,
-            "policy_online_recent_replay_fraction": recent_fraction,
+            "policy_online_recent_start_fraction": start_recent_fraction,
+            "policy_online_recent_critic_fraction": critic_recent_fraction,
             "policy_target_critic_ema_decay": args.target_critic_ema_decay,
             "policy_replay_critic_loss_coef": args.policy_replay_critic_loss_coef,
             "critic_warmup_steps": args.critic_warmup_steps,
