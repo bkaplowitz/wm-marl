@@ -30,6 +30,33 @@ fixtures preserve exact valid starts, online FIFO order, PCG64 state and draws,
 cross-chunk annotations, consecutive overlap, capacity references, and latent
 writeback tensors.
 
+Replay manifests are location-independent recipes. Their command is the
+literal descriptor `python:current`,
+`module:world_marl.dreamer_v3_baseline.replay_oracle`, `_worker`; their request
+contains no checkout, interpreter, Elements package, or distribution path. The
+request instead pins CPython/NumPy/Elements semantics and raw SHA256 digests for
+the complete local generator closure: `replay_oracle.py`, `oracle.py`, and
+`config.py`. Ordinary manifest loading compares only persisted data with the
+frozen contract and therefore performs no live source inspection.
+
+Executing a replay recipe requires `resolve_generator_invocation()`. Resolution
+rechecks the three live generator files, deterministic shims, current
+interpreter, NumPy, and pinned Elements helper files, then creates an unsaved
+one-shot envelope containing the current absolute checkout, interpreter,
+Elements package, and Elements distribution coordinates. The isolated worker
+requires that exact envelope and repeats the live checks before reading official
+Git objects. A copied source tree therefore resolves its copied worker without
+changing the manifest, while any byte change to the generator closure fails
+before execution.
+
+This provenance seal is a continuing handoff requirement. Every later task
+that changes `config.py`, `oracle.py`, `replay_oracle.py`, or
+`replay_oracle_contract.py` must recompute the affected frozen contracts,
+regenerate both replay manifests through `OracleHarness`, prove the two replay
+NPZ files remain byte-identical unless their arrays were intentionally changed,
+and rerun the complete 265-test oracle-manifest plus replay gate in that same
+task. Committing a closure or contract edit with stale manifests is invalid.
+
 Distribution fixtures persist fixed Gumbel tensors together with the exact
 official categorical indices, hard one-hot samples, and one-hot
 straight-through gradients they produce. Fixture generation and native parity

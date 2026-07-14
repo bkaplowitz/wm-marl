@@ -68,6 +68,28 @@ GeneratorProvenanceValidator = Callable[
     ["OracleManifest", Mapping[str, Any], Path | None],
     None,
 ]
+GeneratorInvocationResolver = Callable[
+    ["OracleManifest", Mapping[str, str | Path | None]],
+    "OracleInvocation",
+]
+
+
+@dataclass(frozen=True)
+class OracleInvocation:
+    command: tuple[str, ...]
+    cwd: Path
+    generator_request: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "command", tuple(self.command))
+        object.__setattr__(self, "cwd", Path(self.cwd).resolve())
+        object.__setattr__(
+            self,
+            "generator_request",
+            _canonical_generator_request(self.generator_request),
+        )
+        if not self.command or any(type(part) is not str for part in self.command):
+            raise ValueError("oracle invocation command must contain strings")
 
 
 @dataclass(frozen=True)
@@ -76,9 +98,18 @@ class OracleSourceSpec:
     revision_hashes: Mapping[str, Mapping[str, str]]
     execution_dtypes: tuple[str, ...] = ()
     generator_validation_required: bool = False
+    generator_validator_id: str | None = None
     generator_validator: GeneratorProvenanceValidator | None = field(
         default=None,
         repr=False,
+        compare=False,
+    )
+    generator_resolution_required: bool = False
+    generator_resolver_id: str | None = None
+    generator_resolver: GeneratorInvocationResolver | None = field(
+        default=None,
+        repr=False,
+        compare=False,
     )
 
     def __post_init__(self) -> None:
@@ -119,6 +150,28 @@ class OracleSourceSpec:
             self.generator_validator
         ):
             raise TypeError("oracle source generator validator must be callable")
+        if (self.generator_validator is None) != (self.generator_validator_id is None):
+            raise ValueError(
+                "oracle source generator validator and contract id must be paired"
+            )
+        if self.generator_validator_id is not None and not _CASE_PATTERN.fullmatch(
+            self.generator_validator_id
+        ):
+            raise ValueError("invalid oracle generator validator contract id")
+        if self.generator_resolution_required and self.generator_resolver is None:
+            raise ValueError("oracle source requires a generator resolver")
+        if self.generator_resolver is not None and not callable(
+            self.generator_resolver
+        ):
+            raise TypeError("oracle source generator resolver must be callable")
+        if (self.generator_resolver is None) != (self.generator_resolver_id is None):
+            raise ValueError(
+                "oracle source generator resolver and contract id must be paired"
+            )
+        if self.generator_resolver_id is not None and not _CASE_PATTERN.fullmatch(
+            self.generator_resolver_id
+        ):
+            raise ValueError("invalid oracle generator resolver contract id")
 
     def hashes_for(self, revision: str) -> Mapping[str, str]:
         try:
@@ -133,7 +186,49 @@ class OracleSourceSpec:
         return jnp.dtype(dtype).name in allowed
 
 
-_ORACLE_SOURCE_SPECS: dict[str, OracleSourceSpec] = {}
+try:
+    _PRESERVED_ORACLE_SOURCE_SPECS = tuple(_ORACLE_SOURCE_SPECS.values())
+except NameError:
+    _PRESERVED_ORACLE_SOURCE_SPECS = ()
+
+
+def _rehydrate_oracle_source_spec(source_spec: Any) -> OracleSourceSpec:
+    return OracleSourceSpec(
+        name=source_spec.name,
+        revision_hashes=source_spec.revision_hashes,
+        execution_dtypes=source_spec.execution_dtypes,
+        generator_validation_required=source_spec.generator_validation_required,
+        generator_validator_id=source_spec.generator_validator_id,
+        generator_validator=source_spec.generator_validator,
+        generator_resolution_required=source_spec.generator_resolution_required,
+        generator_resolver_id=source_spec.generator_resolver_id,
+        generator_resolver=source_spec.generator_resolver,
+    )
+
+
+_ORACLE_SOURCE_SPECS: dict[str, OracleSourceSpec] = {
+    source_spec.name: _rehydrate_oracle_source_spec(source_spec)
+    for source_spec in _PRESERVED_ORACLE_SOURCE_SPECS
+}
+del _PRESERVED_ORACLE_SOURCE_SPECS
+
+
+def _oracle_source_spec_signature(source_spec: OracleSourceSpec) -> tuple[Any, ...]:
+    return (
+        source_spec.name,
+        tuple(
+            (
+                revision,
+                tuple(sorted(file_hashes.items())),
+            )
+            for revision, file_hashes in sorted(source_spec.revision_hashes.items())
+        ),
+        source_spec.execution_dtypes,
+        source_spec.generator_validation_required,
+        source_spec.generator_validator_id,
+        source_spec.generator_resolution_required,
+        source_spec.generator_resolver_id,
+    )
 
 
 def register_oracle_source_spec(source_spec: OracleSourceSpec) -> None:
@@ -142,10 +237,33 @@ def register_oracle_source_spec(source_spec: OracleSourceSpec) -> None:
         and source_spec.generator_validator is None
     ):
         raise ValueError("oracle source requires a generator validator")
+    if (
+        source_spec.generator_resolution_required
+        and source_spec.generator_resolver is None
+    ):
+        raise ValueError("oracle source requires a generator resolver")
     existing = _ORACLE_SOURCE_SPECS.get(source_spec.name)
-    if existing is not None and existing != source_spec:
+    if existing is not None and _oracle_source_spec_signature(
+        existing
+    ) != _oracle_source_spec_signature(source_spec):
         raise ValueError(f"oracle source spec already registered: {source_spec.name}")
     _ORACLE_SOURCE_SPECS[source_spec.name] = source_spec
+
+
+def _resolve_source_spec(
+    source_spec: str | OracleSourceSpec,
+) -> OracleSourceSpec:
+    if isinstance(source_spec, str):
+        return oracle_source_spec(source_spec)
+    name = getattr(source_spec, "name", None)
+    if not isinstance(name, str):
+        raise TypeError("oracle source spec must be a name or source specification")
+    registered = oracle_source_spec(name)
+    if _oracle_source_spec_signature(source_spec) != _oracle_source_spec_signature(
+        registered
+    ):
+        raise ValueError(f"oracle source spec does not match registration: {name}")
+    return registered
 
 
 def oracle_source_spec(name: str) -> OracleSourceSpec:
@@ -274,11 +392,7 @@ class OracleManifest:
         config = resolve_dreamer_config(resolved_profile, resolved_mode)
         checkout = Path(official_checkout).resolve()
         revision = official_revision(resolved_profile)
-        resolved_source_spec = (
-            source_spec
-            if isinstance(source_spec, OracleSourceSpec)
-            else oracle_source_spec(source_spec)
-        )
+        resolved_source_spec = _resolve_source_spec(source_spec)
         expected_source_hashes = resolved_source_spec.hashes_for(revision)
         source_hashes = {
             path: _sha256_bytes(_git_show(checkout, revision, path))
@@ -510,6 +624,9 @@ class OracleManifest:
                 if official_checkout is not None
                 else None,
             )
+        resolver = source_spec.generator_resolver
+        if source_spec.generator_resolution_required and resolver is None:
+            raise ValueError("oracle source generator resolver is unavailable")
         if official_checkout is not None:
             checkout = Path(official_checkout).resolve()
             for path, recorded_hash in self.official_file_hashes.items():
@@ -529,6 +646,37 @@ class OracleManifest:
             if _sha256_path(fixture) != self.fixture_sha256:
                 raise ValueError("oracle fixture hash mismatch")
             self._validate_tensor_schema(fixture)
+
+    def resolve_generator_invocation(
+        self,
+        *,
+        official_checkout: str | Path,
+        python_executable: str | Path | None = None,
+        elements_package_dir: str | Path | None = None,
+        elements_dist_info: str | Path | None = None,
+    ) -> OracleInvocation:
+        self.validate()
+        source_spec = oracle_source_spec(self.source_spec)
+        resolver = source_spec.generator_resolver
+        if source_spec.generator_resolution_required and resolver is None:
+            raise ValueError("oracle source generator resolver is unavailable")
+        coordinates: Mapping[str, str | Path | None] = MappingProxyType(
+            {
+                "elements_dist_info": elements_dist_info,
+                "elements_package_dir": elements_package_dir,
+                "official_checkout": official_checkout,
+                "python_executable": python_executable,
+            }
+        )
+        if resolver is not None:
+            return resolver(self, coordinates)
+        if self.generator_request is None:
+            raise ValueError("oracle generator invocation requires a request")
+        return OracleInvocation(
+            command=self.generator_command,
+            cwd=Path(official_checkout),
+            generator_request=self.generator_request,
+        )
 
     def _validate_tensor_schema(self, fixture_path: Path) -> None:
         with np.load(fixture_path, allow_pickle=False) as fixture:
@@ -1780,6 +1928,7 @@ __all__ = [
     "DISTRIBUTIONS_SOURCE_SPEC",
     "ORACLE_SCHEMA_VERSION",
     "OracleHarness",
+    "OracleInvocation",
     "OracleManifest",
     "OracleSourceSpec",
     "PAPER_REVISION",

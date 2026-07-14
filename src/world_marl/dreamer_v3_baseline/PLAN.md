@@ -270,18 +270,34 @@ accepts the all-zero metrics state after reset. Every rejection is
 transactional.
 
 Replay fixture provenance is source-dispatched and fail closed. The registered
-replay source requires its validator; public manifest load rejects before any
-checkout Git subprocess unless request keys, case name/seed, profile/mode,
-revision/overrides, source/dtype, case contract, row schema, runtime and shim
-hashes, Elements/debug-UUID coordinates, and the exact three-element worker
-command all match. The isolated worker repeats the exact key, replay/7,
-path/runtime, case, and row-schema contract so direct invocation cannot bypass
-manifest validation. Both profile manifests must regenerate byte-identically;
-their NPZ payload hashes remain unchanged.
+replay source requires both its validator and invocation resolver under stable
+callback contract ids. Public manifest load is source-free: it accepts only the
+portable three-element command descriptor and stable request, which binds
+replay/7, manifest coordinates, cases, row schema, runtime/shim semantics, and
+raw hashes for `replay_oracle.py`, `oracle.py`, and `config.py`; it persists no
+machine paths. Invocation resolution first repeats generic manifest validation,
+then re-attests the complete live generator closure, shims, interpreter,
+NumPy, and Elements files before producing the current absolute command and a
+one-shot execution envelope. The worker requires that envelope and repeats all
+live and official-source checks. Registry reloads rehydrate old-class entries,
+refresh equal callbacks by structural id, and reject conflicts. Relocation,
+comment-only source tampering, persisted hash/runtime tampering, direct worker
+tampering, and reload-then-regenerate tests must pass. Both profile manifests
+must regenerate byte-identically, and their NPZ payload hash remains
+`c65d650b6359b335470d43abd3d4f2bd4352f1599510835fada493194910f08e`.
 
 Task 5 is accepted only after the focused corruption/control matrix, the
 complete replay file, accepted Dreamer regression matrix, oracle
 provenance/regeneration checks, fixture hash check, and JEPA-scope diff all pass.
+
+Downstream handoff invariant: every later task that changes `config.py`,
+`oracle.py`, `replay_oracle.py`, or `replay_oracle_contract.py` must, within that
+same task, recompute every affected frozen replay contract, regenerate both
+profile replay manifests through `OracleHarness`, prove both replay NPZ files
+remain byte-identical unless the array contract was intentionally changed, and
+rerun the 265-test gate consisting of `test_dreamer_v3_oracle_manifest.py` and
+`test_dreamer_v3_replay.py`. A later task is not complete with a stale replay
+manifest or an unreviewed NPZ change.
 
 **Commit:** feat(dreamer): add online latent replay
 

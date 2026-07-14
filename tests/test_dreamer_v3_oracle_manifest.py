@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -54,19 +57,26 @@ REPLAY_REQUEST_KEYS = {
     "case_name",
     "cases",
     "compute_dtype",
-    "elements_dist_info",
-    "elements_package_dir",
+    "generator_files",
     "observation_mode",
-    "official_checkout",
     "official_commit",
     "overrides",
     "profile",
-    "python_executable",
     "row_schema",
     "runtime",
     "seed",
     "source_spec",
     "uuid_mode",
+}
+REPLAY_COMMAND_DESCRIPTOR = (
+    "python:current",
+    "module:world_marl.dreamer_v3_baseline.replay_oracle",
+    "_worker",
+)
+REPLAY_GENERATOR_FILES = {
+    "world_marl/dreamer_v3_baseline/config.py",
+    "world_marl/dreamer_v3_baseline/oracle.py",
+    "world_marl/dreamer_v3_baseline/replay_oracle.py",
 }
 
 
@@ -124,6 +134,34 @@ def _load_tampered_replay(path: Path) -> OracleManifest:
     return OracleManifest.load(path, fixture_path=REPLAY_FIXTURE)
 
 
+def _copy_replay_bundle(tmp_path: Path) -> Path:
+    bundle = tmp_path / "copied-replay"
+    source_world_marl = Path(replay_oracle_module.__file__).resolve().parents[1]
+    shutil.copytree(
+        source_world_marl,
+        bundle / "src" / "world_marl",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    fixtures = bundle / "fixtures"
+    fixtures.mkdir(parents=True)
+    shutil.copy2(REPLAY_MANIFEST, fixtures / REPLAY_MANIFEST.name)
+    shutil.copy2(REPLAY_FIXTURE, fixtures / REPLAY_FIXTURE.name)
+    return bundle
+
+
+def _run_copied_bundle(bundle: Path, script: str) -> subprocess.CompletedProcess[str]:
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(bundle / "src")
+    environment.pop("PYTHONHOME", None)
+    return subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=REPLAY_OFFICIAL_CHECKOUT,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+
 def test_replay_manifest_rejects_an_extra_generator_argument(tmp_path: Path) -> None:
     fixture_dir = Path(__file__).parent / "fixtures" / "dreamer_v3"
     source = fixture_dir / "paper-proprio-replay.manifest.json"
@@ -153,6 +191,163 @@ def test_replay_manifest_binds_the_exact_generator_request(profile: str) -> None
     assert set(request) == REPLAY_REQUEST_KEYS
     assert request["case_name"] == manifest.case_name
     assert request["seed"] == manifest.seed
+    assert manifest.generator_command == REPLAY_COMMAND_DESCRIPTOR
+    assert set(request["generator_files"]) == REPLAY_GENERATOR_FILES
+    assert all(len(digest) == 64 for digest in request["generator_files"].values())
+    assert request["runtime"]["python_implementation"] == "CPython"
+    assert request["runtime"]["python_version"] == "3.11.5"
+    assert {
+        "official_checkout",
+        "python_executable",
+        "elements_package_dir",
+        "elements_dist_info",
+    }.isdisjoint(request)
+
+
+def test_replay_manifest_load_is_source_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("public manifest load inspected live source")
+
+    monkeypatch.setattr(replay_oracle_module.inspect, "getsource", unavailable)
+    monkeypatch.setattr(
+        replay_oracle_module,
+        "_live_generator_file_hashes",
+        unavailable,
+        raising=False,
+    )
+
+    manifest = OracleManifest.load(REPLAY_MANIFEST, fixture_path=REPLAY_FIXTURE)
+
+    assert manifest.source_spec == "replay"
+
+
+def test_replay_invocation_resolver_builds_one_shot_absolute_envelope() -> None:
+    manifest = OracleManifest.load(REPLAY_MANIFEST, fixture_path=REPLAY_FIXTURE)
+
+    invocation = manifest.resolve_generator_invocation(
+        official_checkout=REPLAY_OFFICIAL_CHECKOUT
+    )
+    envelope = json.loads(invocation.generator_request)
+
+    assert invocation.command[2] == "_worker"
+    assert all(Path(path).is_absolute() for path in invocation.command[:2])
+    assert invocation.cwd == REPLAY_OFFICIAL_CHECKOUT.resolve()
+    assert set(envelope) == {"execution", "request"}
+    assert envelope["request"] == json.loads(manifest.generator_request)
+    assert set(envelope["execution"]) == {
+        "elements_dist_info",
+        "elements_package_dir",
+        "official_checkout",
+        "python_executable",
+    }
+    assert all(Path(path).is_absolute() for path in envelope["execution"].values())
+
+
+def test_replay_invocation_resolves_and_executes_from_a_copied_package(
+    tmp_path: Path,
+) -> None:
+    if not (REPLAY_OFFICIAL_CHECKOUT / ".git").exists():
+        pytest.skip("explicit DreamerV3 oracle checkout is unavailable")
+    bundle = _copy_replay_bundle(tmp_path)
+    copied_worker = (
+        bundle / "src/world_marl/dreamer_v3_baseline/replay_oracle.py"
+    ).resolve()
+    script = "\n".join(
+        (
+            "import json, pathlib, subprocess, sys",
+            "from world_marl.dreamer_v3_baseline.oracle import OracleManifest",
+            f"manifest = OracleManifest.load({str(bundle / 'fixtures' / REPLAY_MANIFEST.name)!r}, fixture_path={str(bundle / 'fixtures' / REPLAY_FIXTURE.name)!r})",
+            f"invocation = manifest.resolve_generator_invocation(official_checkout={str(REPLAY_OFFICIAL_CHECKOUT)!r})",
+            f"assert pathlib.Path(invocation.command[1]).resolve() == pathlib.Path({str(copied_worker)!r})",
+            "assert pathlib.Path(invocation.command[0]).resolve() == pathlib.Path(sys.executable).resolve()",
+            "payload = json.loads(subprocess.run(invocation.command, cwd=invocation.cwd, input=invocation.generator_request, check=True, capture_output=True, text=True).stdout)",
+            "assert len(payload['arrays']) == 48",
+        )
+    )
+
+    completed = _run_copied_bundle(bundle, script)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        "world_marl/dreamer_v3_baseline/replay_oracle.py",
+        "world_marl/dreamer_v3_baseline/oracle.py",
+        "world_marl/dreamer_v3_baseline/config.py",
+    ),
+)
+def test_replay_invocation_rejects_any_local_generator_file_tamper(
+    tmp_path: Path,
+    relative_path: str,
+) -> None:
+    bundle = _copy_replay_bundle(tmp_path)
+    source = bundle / "src" / relative_path
+    source.write_bytes(source.read_bytes() + b"\n# comment-only provenance tamper\n")
+    script = "\n".join(
+        (
+            "from world_marl.dreamer_v3_baseline.oracle import OracleManifest",
+            f"manifest = OracleManifest.load({str(bundle / 'fixtures' / REPLAY_MANIFEST.name)!r}, fixture_path={str(bundle / 'fixtures' / REPLAY_FIXTURE.name)!r})",
+            "try:",
+            f"    manifest.resolve_generator_invocation(official_checkout={str(REPLAY_OFFICIAL_CHECKOUT)!r})",
+            "except ValueError as error:",
+            "    assert 'generator content' in str(error)",
+            "else:",
+            "    raise AssertionError('tampered generator resolved')",
+        )
+    )
+
+    completed = _run_copied_bundle(bundle, script)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_oracle_source_registry_survives_replay_and_oracle_reloads() -> None:
+    if not (REPLAY_OFFICIAL_CHECKOUT / ".git").exists():
+        pytest.skip("explicit DreamerV3 oracle checkout is unavailable")
+    script = "\n".join(
+        (
+            "import importlib",
+            "import tempfile",
+            "from dataclasses import replace",
+            "from pathlib import Path",
+            "import world_marl.dreamer_v3_baseline.oracle as oracle",
+            "import world_marl.dreamer_v3_baseline.replay_oracle as replay",
+            "replay = importlib.reload(replay)",
+            "replay = importlib.reload(replay)",
+            "assert oracle.oracle_source_spec('replay') is replay.REPLAY_SOURCE_SPEC",
+            "oracle = importlib.reload(oracle)",
+            f"oracle.OracleManifest.load({str(REPLAY_MANIFEST)!r}, fixture_path={str(REPLAY_FIXTURE)!r})",
+            "assert oracle.oracle_source_spec('replay').name == 'replay'",
+            "assert isinstance(oracle.oracle_source_spec('replay'), oracle.OracleSourceSpec)",
+            "with tempfile.TemporaryDirectory() as directory:",
+            f"    harness = oracle.OracleHarness({str(REPLAY_OFFICIAL_CHECKOUT)!r}, directory)",
+            "    fixture, manifest_path = replay.run_replay_case(harness, 'paper')",
+            f"    oracle.OracleManifest.load(manifest_path, official_checkout={str(REPLAY_OFFICIAL_CHECKOUT)!r}, fixture_path=fixture)",
+            "replay = importlib.reload(replay)",
+            "assert oracle.oracle_source_spec('replay') is replay.REPLAY_SOURCE_SPEC",
+            "conflict = replace(replay.REPLAY_SOURCE_SPEC, generator_validator_id='forged-contract')",
+            "try:",
+            "    oracle.register_oracle_source_spec(conflict)",
+            "except ValueError:",
+            "    pass",
+            "else:",
+            "    raise AssertionError('conflicting callback contract registered')",
+        )
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_replay_manifest_rejects_an_extra_request_key(tmp_path: Path) -> None:
@@ -196,18 +391,14 @@ def test_replay_manifest_rejects_a_forged_worker_command(
         _load_tampered_replay(path)
 
 
-def test_replay_manifest_rejects_a_consistently_forged_interpreter(
+def test_replay_manifest_rejects_a_forged_interpreter_descriptor(
     tmp_path: Path,
 ) -> None:
-    def mutate_request(request: dict[str, Any]) -> None:
-        request["python_executable"] = "/bin/false"
-
     def mutate_manifest(payload: dict[str, Any]) -> None:
-        payload["generator_command"][0] = "/bin/false"
+        payload["generator_command"][0] = "python:forged"
 
     path = _write_tampered_replay_request(
         tmp_path,
-        request_mutation=mutate_request,
         manifest_mutation=mutate_manifest,
     )
 
@@ -215,25 +406,41 @@ def test_replay_manifest_rejects_a_consistently_forged_interpreter(
         _load_tampered_replay(path)
 
 
-@pytest.mark.parametrize(
-    ("key", "value"),
-    (
-        ("python_executable", 7),
-        ("official_checkout", 7),
-        ("official_checkout", "."),
-    ),
-)
-def test_replay_manifest_rejects_noncanonical_path_coordinates(
+def test_replay_manifest_rejects_a_relative_command_interpreter(
     tmp_path: Path,
-    key: str,
-    value: Any,
+) -> None:
+    def mutate(payload: dict[str, Any]) -> None:
+        payload["generator_command"][0] = ".venv/bin/python"
+
+    path = _write_tampered_replay_request(tmp_path, manifest_mutation=mutate)
+
+    with pytest.raises(ValueError, match="generator command"):
+        _load_tampered_replay(path)
+
+
+def test_replay_manifest_rejects_a_relative_worker_path(tmp_path: Path) -> None:
+    def mutate(payload: dict[str, Any]) -> None:
+        payload["generator_command"][1] = (
+            "src/world_marl/dreamer_v3_baseline/replay_oracle.py"
+        )
+
+    path = _write_tampered_replay_request(tmp_path, manifest_mutation=mutate)
+
+    with pytest.raises(ValueError, match="generator command"):
+        _load_tampered_replay(path)
+
+
+@pytest.mark.parametrize("relative_path", sorted(REPLAY_GENERATOR_FILES))
+def test_replay_manifest_rejects_persisted_generator_file_tampering(
+    tmp_path: Path,
+    relative_path: str,
 ) -> None:
     def mutate(request: dict[str, Any]) -> None:
-        request[key] = value
+        request["generator_files"][relative_path] = "0" * 64
 
     path = _write_tampered_replay_request(tmp_path, request_mutation=mutate)
 
-    with pytest.raises(ValueError, match="coordinate"):
+    with pytest.raises(ValueError, match="generator file contract"):
         _load_tampered_replay(path)
 
 
@@ -322,18 +529,27 @@ def test_replay_manifest_rejects_runtime_contract_tampering(
 @pytest.mark.parametrize(
     ("key", "value"),
     (
-        ("elements_package_dir", "/tmp/untrusted-elements"),
-        ("elements_dist_info", "/tmp/untrusted-elements.dist-info"),
-        ("uuid_mode", "random"),
+        ("python_implementation", "PyPy"),
+        ("python_version", "3.11.6"),
     ),
 )
-def test_replay_manifest_rejects_elements_and_uuid_coordinate_tampering(
+def test_replay_manifest_rejects_persisted_python_runtime_tampering(
     tmp_path: Path,
     key: str,
     value: str,
 ) -> None:
     def mutate(request: dict[str, Any]) -> None:
-        request[key] = value
+        request["runtime"][key] = value
+
+    path = _write_tampered_replay_request(tmp_path, request_mutation=mutate)
+
+    with pytest.raises(ValueError, match="runtime contract"):
+        _load_tampered_replay(path)
+
+
+def test_replay_manifest_rejects_uuid_coordinate_tampering(tmp_path: Path) -> None:
+    def mutate(request: dict[str, Any]) -> None:
+        request["uuid_mode"] = "random"
 
     path = _write_tampered_replay_request(tmp_path, request_mutation=mutate)
 
@@ -341,26 +557,19 @@ def test_replay_manifest_rejects_elements_and_uuid_coordinate_tampering(
         _load_tampered_replay(path)
 
 
-def test_replay_manifest_rejects_checkout_before_git_subprocess(
+def test_replay_resolver_rejects_relative_checkout_before_git_subprocess(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def mutate(request: dict[str, Any]) -> None:
-        request["official_checkout"] = str(tmp_path / "forged-checkout")
-
     def reject_subprocess(*args, **kwargs):
         del args, kwargs
         raise AssertionError("checkout provenance reached a subprocess")
 
-    path = _write_tampered_replay_request(tmp_path, request_mutation=mutate)
     monkeypatch.setattr(oracle_module.subprocess, "run", reject_subprocess)
+    manifest = OracleManifest.load(REPLAY_MANIFEST, fixture_path=REPLAY_FIXTURE)
 
-    with pytest.raises(ValueError, match="official checkout"):
-        OracleManifest.load(
-            path,
-            official_checkout=REPLAY_OFFICIAL_CHECKOUT,
-            fixture_path=REPLAY_FIXTURE,
-        )
+    with pytest.raises(ValueError, match="must be absolute"):
+        manifest.resolve_generator_invocation(official_checkout="relative-checkout")
 
 
 def test_required_oracle_source_validator_cannot_be_omitted() -> None:
@@ -373,6 +582,49 @@ def test_required_oracle_source_validator_cannot_be_omitted() -> None:
         )
 
 
+def test_register_rejects_a_required_oracle_source_resolver_removed_after_init() -> (
+    None
+):
+    source_spec = replace(
+        replay_oracle_module.REPLAY_SOURCE_SPEC,
+        name="test_required_resolver_registration",
+    )
+    object.__setattr__(source_spec, "generator_resolver", None)
+
+    with pytest.raises(ValueError, match="generator resolver"):
+        oracle_module.register_oracle_source_spec(source_spec)
+
+
+def test_resolver_runs_generic_manifest_validation_before_dispatch() -> None:
+    if not (REPLAY_OFFICIAL_CHECKOUT / ".git").exists():
+        pytest.skip("explicit DreamerV3 oracle checkout is unavailable")
+    with np.load(REPLAY_FIXTURE, allow_pickle=False) as fixture:
+        arrays = {name: fixture[name] for name in fixture.files}
+    request = replay_oracle_module._stable_replay_request(
+        DreamerProfile.PAPER,
+        ObservationMode.PROPRIO,
+        "replay",
+        7,
+    )
+    manifest = OracleManifest.create(
+        case_name="replay",
+        profile=DreamerProfile.PAPER,
+        observation_mode=ObservationMode.PROPRIO,
+        official_checkout=REPLAY_OFFICIAL_CHECKOUT,
+        fixture_path=REPLAY_FIXTURE,
+        arrays=arrays,
+        seed=7,
+        generator_command=REPLAY_COMMAND_DESCRIPTOR,
+        source_spec=replay_oracle_module.REPLAY_SOURCE_SPEC,
+        generator_request=request,
+        dtype="float32",
+    )
+    forged = replace(manifest, jax_version="0.0.0")
+
+    with pytest.raises(ValueError, match="JAX version"):
+        forged.resolve_generator_invocation(official_checkout=REPLAY_OFFICIAL_CHECKOUT)
+
+
 @pytest.mark.parametrize(
     ("mutation", "key", "value"),
     (
@@ -380,7 +632,7 @@ def test_required_oracle_source_validator_cannot_be_omitted() -> None:
         ("missing", "case_name", None),
         ("replace", "case_name", "forged"),
         ("replace", "seed", 8),
-        ("replace", "official_checkout", "."),
+        ("execution", "official_checkout", "."),
     ),
 )
 def test_replay_worker_rejects_nonexact_source_request(
@@ -389,22 +641,28 @@ def test_replay_worker_rejects_nonexact_source_request(
     value: Any,
 ) -> None:
     manifest = OracleManifest.load(REPLAY_MANIFEST, fixture_path=REPLAY_FIXTURE)
-    request = json.loads(manifest.generator_request)
+    invocation = manifest.resolve_generator_invocation(
+        official_checkout=REPLAY_OFFICIAL_CHECKOUT
+    )
+    envelope = json.loads(invocation.generator_request)
+    request = envelope["request"]
     if mutation == "missing":
         del request[key]
+    elif mutation == "execution":
+        envelope["execution"][key] = value
     else:
         request[key] = value
 
     completed = subprocess.run(
-        manifest.generator_command,
-        cwd=request["official_checkout"],
-        input=json.dumps(request, sort_keys=True, separators=(",", ":")),
+        invocation.command,
+        cwd=invocation.cwd,
+        input=json.dumps(envelope, sort_keys=True, separators=(",", ":")),
         capture_output=True,
         text=True,
     )
 
     assert completed.returncode != 0
-    assert "replay worker source request" in completed.stderr
+    assert "replay worker" in completed.stderr
 
 
 def test_manifest_round_trip_validates_all_provenance_hashes(

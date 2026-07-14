@@ -582,12 +582,24 @@ schema/config/profile mismatch. Resume continues same run, never warm-start.
 ### OracleSourceSpec
 
 Pins the exact official file hashes for both authority revisions and the
-allowed execution dtypes for one oracle family. A source may atomically attach
-a pure generator-provenance validator and mark it required. Construction and
-registration reject a required source without its callable, so import order
-cannot downgrade a source-specific manifest to generic validation. The
-callback receives the already parsed manifest/request and the resolved
-supplied checkout coordinate; it performs no process launch or source read.
+allowed execution dtypes for one oracle family. A source may attach a pure
+generator-provenance validator and a live invocation resolver. Each callback
+has a stable contract id, and each may be marked required. Construction and
+registration independently reject a required source without its callable.
+Registry equality compares hashes, dtypes, required flags, and callback ids,
+not Python callable identity: re-importing a module refreshes equal callbacks,
+while a changed id or contract fails closed. Reloading `oracle.py` rehydrates
+every preserved entry into the new `OracleSourceSpec` class while retaining
+its callbacks and ids. An object created before reload is accepted by creation
+APIs only when its name and complete structural signature equal the current
+registered entry; the current entry performs all subsequent work.
+
+### OracleInvocation
+
+The resolved, one-shot execution value. It contains an executable command,
+resolved working directory, and canonical JSON stdin. It is never serialized
+into an oracle manifest. A source resolver constructs it from the stable
+manifest recipe plus caller-supplied runtime coordinates.
 
 ### OracleManifest
 
@@ -599,18 +611,40 @@ object, and requires a nonempty command and nonnegative seed. It then invokes
 the source validator before any supplied-checkout Git read, and only afterward
 checks official object bytes and fixture bytes/schema.
 
+`resolve_generator_invocation()` first repeats ordinary source-free manifest
+validation, so a manually constructed or subsequently replaced manifest cannot
+bypass generic authority/config/device/command checks. It then dispatches the
+registered source resolver. Sources without a resolver retain their recorded
+command/request behavior; a source that requires resolution fails if its
+resolver is unavailable.
+
 The replay source validator requires the exact request key set and binds
 case name `replay`, seed 7, profile, observation mode, revision, overrides,
 source name, and float32 execution dtype to the manifest. Cases, row schema,
-debug UUID mode, Elements coordinates and helper hashes, NumPy version, local
+debug UUID mode, Elements helper hashes, frozen CPython/NumPy versions, local
 shim hashes, and isolated-worker mode must equal the source-owned contracts.
-The command must be exactly the current interpreter, this source tree's
-`replay_oracle.py`, and `_worker`; request paths must be absolute, and
-interpreter and request paths are resolved and compared. A supplied official
-checkout must resolve to the recorded request coordinate. The isolated worker
-independently repeats the exact key,
-case-name, seed, runtime, path, case, and row-schema checks before reading or
-executing official source.
+The persisted command is the location-independent descriptor
+`[python:current, module:world_marl.dreamer_v3_baseline.replay_oracle,
+_worker]`. The persisted request contains no checkout, interpreter, Elements
+package, or distribution path. Instead it records raw SHA256 digests for the
+complete local generator closure: `replay_oracle.py`, `oracle.py`, and
+`config.py`. `replay_oracle_contract.py` stores the frozen descriptor, runtime,
+shim, and closure contracts outside that closure, avoiding a self-hash cycle.
+Public load compares only persisted data to these literals: it never reads live
+source, calls `inspect.getsource`, or inspects the current interpreter.
+
+The replay resolver rechecks all three live raw file digests, all shim digests,
+the frozen Python/NumPy identity, and the pinned Elements version/helper files.
+It resolves the current absolute interpreter and worker, plus the supplied
+official checkout and current Elements paths, into an exact one-shot envelope
+with keys `request` and `execution`. `execution` contains only
+`official_checkout`, `python_executable`, `elements_package_dir`, and
+`elements_dist_info`; these coordinates are never saved. The isolated worker
+requires that exact envelope and independently repeats stable-request, live
+closure, interpreter, Elements, official-source, case, and row-schema checks
+before executing official source. Copying the package therefore preserves
+manifest validity while resolving the copied worker, and any byte change in
+any of the three local generator files prevents resolution and execution.
 
 ### ParameterTranslator
 

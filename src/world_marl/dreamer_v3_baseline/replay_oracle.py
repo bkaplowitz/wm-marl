@@ -6,6 +6,7 @@ import inspect
 import io
 import json
 import os
+import platform
 import subprocess
 import sys
 import textwrap
@@ -28,6 +29,7 @@ if __package__:
         PAPER_REVISION,
         UPSTREAM_CURRENT_REVISION,
         OracleHarness,
+        OracleInvocation,
         OracleSourceSpec,
         _canonical_json,
         _git_show,
@@ -35,6 +37,11 @@ if __package__:
         official_revision,
         profile_overrides,
         register_oracle_source_spec,
+    )
+    from .replay_oracle_contract import (
+        REPLAY_COMMAND_DESCRIPTOR,
+        REPLAY_GENERATOR_FILE_HASHES,
+        REPLAY_RUNTIME_CONTRACT,
     )
 else:  # pragma: no cover - exercised by the isolated worker.
     package_dir = Path(__file__).resolve().parent
@@ -55,6 +62,7 @@ else:  # pragma: no cover - exercised by the isolated worker.
         PAPER_REVISION,
         UPSTREAM_CURRENT_REVISION,
         OracleHarness,
+        OracleInvocation,
         OracleSourceSpec,
         _canonical_json,
         _git_show,
@@ -62,6 +70,11 @@ else:  # pragma: no cover - exercised by the isolated worker.
         official_revision,
         profile_overrides,
         register_oracle_source_spec,
+    )
+    from world_marl.dreamer_v3_baseline.replay_oracle_contract import (
+        REPLAY_COMMAND_DESCRIPTOR,
+        REPLAY_GENERATOR_FILE_HASHES,
+        REPLAY_RUNTIME_CONTRACT,
     )
 
 
@@ -83,10 +96,10 @@ _SOURCE_HASHES = {
     ),
 }
 
-_ELEMENTS_VERSION = "3.22.0"
-_ELEMENTS_MODE = "debug"
-_NUMPY_VERSION = "1.26.4"
-_WORKER_MODE = "isolated-ast-exec"
+_ELEMENTS_VERSION = str(REPLAY_RUNTIME_CONTRACT["elements_version"])
+_ELEMENTS_MODE = str(REPLAY_RUNTIME_CONTRACT["elements_mode"])
+_NUMPY_VERSION = str(REPLAY_RUNTIME_CONTRACT["numpy_version"])
+_WORKER_MODE = str(REPLAY_RUNTIME_CONTRACT["worker_mode"])
 _ELEMENTS_PACKAGE_DIR = Path(
     "/private/tmp/dreamerv3-upstream-venv/lib/python3.11/site-packages/elements"
 )
@@ -94,17 +107,7 @@ _ELEMENTS_DIST_INFO = Path(
     "/private/tmp/dreamerv3-upstream-venv/lib/python3.11/site-packages/"
     "elements-3.22.0.dist-info"
 )
-_ELEMENTS_HELPER_HASHES = {
-    "elements/checkpoint.py": (
-        "80f2fe99141d5bd1c96d9c5f32502cfff4fb5e56571595a092c6aace12f42e92"
-    ),
-    "elements/rwlock.py": (
-        "020866b2d6d1216c3d9e8019d641bd5f073ea90d2cf5646361a722b0e156b9be"
-    ),
-    "elements/uuid.py": (
-        "e8829a81c80058e4f130a5821acd9db62de5f72fbb02ad4b10262ccfa3006d6a"
-    ),
-}
+_ELEMENTS_HELPER_HASHES = dict(REPLAY_RUNTIME_CONTRACT["elements_helper_hashes"])
 _NATIVE_MODULE_NAMES = frozenset(
     {
         "world_marl.dreamer_v3_baseline.replay",
@@ -116,14 +119,11 @@ _REQUEST_KEYS = frozenset(
         "case_name",
         "cases",
         "compute_dtype",
-        "elements_dist_info",
-        "elements_package_dir",
+        "generator_files",
         "observation_mode",
-        "official_checkout",
         "official_commit",
         "overrides",
         "profile",
-        "python_executable",
         "row_schema",
         "runtime",
         "seed",
@@ -131,6 +131,15 @@ _REQUEST_KEYS = frozenset(
         "uuid_mode",
     }
 )
+_EXECUTION_KEYS = frozenset(
+    {
+        "elements_dist_info",
+        "elements_package_dir",
+        "official_checkout",
+        "python_executable",
+    }
+)
+_GENERATOR_PACKAGE_PREFIX = "world_marl/dreamer_v3_baseline/"
 
 
 def _native_module_violations() -> list[str]:
@@ -272,7 +281,7 @@ def _timestamp(*, millis=False):
     return "oracle"
 
 
-def _helper_hashes() -> dict[str, str]:
+def _live_shim_hashes() -> dict[str, str]:
     helpers = {
         "Limiters": _Limiters,
         "RWLock": _RWLock,
@@ -290,14 +299,36 @@ def _helper_hashes() -> dict[str, str]:
 
 
 def _runtime_contract() -> dict[str, Any]:
+    return json.loads(json.dumps(REPLAY_RUNTIME_CONTRACT, sort_keys=True))
+
+
+def _live_generator_file_hashes() -> dict[str, str]:
+    package_dir = Path(__file__).resolve().parent
     return {
-        "elements_mode": _ELEMENTS_MODE,
-        "elements_version": _ELEMENTS_VERSION,
-        "elements_helper_hashes": _ELEMENTS_HELPER_HASHES,
-        "numpy_version": _NUMPY_VERSION,
-        "shim_hashes": _helper_hashes(),
-        "worker_mode": _WORKER_MODE,
+        relative_path: hashlib.sha256(
+            (
+                package_dir / relative_path.removeprefix(_GENERATOR_PACKAGE_PREFIX)
+            ).read_bytes()
+        ).hexdigest()
+        for relative_path in sorted(REPLAY_GENERATOR_FILE_HASHES)
     }
+
+
+def _validate_live_generator_contract(request: Mapping[str, Any]) -> None:
+    expected_runtime = _runtime_contract()
+    live_files = _live_generator_file_hashes()
+    if live_files != dict(REPLAY_GENERATOR_FILE_HASHES) or not _same_contract(
+        request["generator_files"], live_files
+    ):
+        raise ValueError("replay generator content does not match the frozen contract")
+    if platform.python_implementation() != expected_runtime["python_implementation"]:
+        raise ValueError("replay generator Python implementation changed")
+    if platform.python_version() != expected_runtime["python_version"]:
+        raise ValueError("replay generator Python version changed")
+    if np.__version__ != expected_runtime["numpy_version"]:
+        raise ValueError("replay generator NumPy version changed")
+    if _live_shim_hashes() != expected_runtime["shim_hashes"]:
+        raise ValueError("replay generator shim content changed")
 
 
 def _case_contract(seed: int) -> dict[str, Any]:
@@ -374,11 +405,37 @@ def _request_path(
         raise ValueError(f"{boundary} path coordinate changed: {key}") from error
 
 
+def _execution_path(
+    coordinates: Mapping[str, str | Path | None],
+    key: str,
+    *,
+    default: str | Path | None = None,
+    resolve: bool = True,
+) -> Path:
+    value = coordinates.get(key)
+    if value is None:
+        value = default
+    if value is None:
+        raise ValueError(f"replay generator execution coordinate is required: {key}")
+    path = Path(value)
+    if not path.is_absolute():
+        raise ValueError(
+            f"replay generator execution coordinate must be absolute: {key}"
+        )
+    try:
+        return path.resolve() if resolve else path.absolute()
+    except (OSError, RuntimeError, ValueError) as error:
+        raise ValueError(
+            f"replay generator execution coordinate changed: {key}"
+        ) from error
+
+
 def _validate_replay_generator_provenance(
     manifest: Any,
     request: Mapping[str, Any],
     official_checkout: Path | None,
 ) -> None:
+    del official_checkout
     if set(request) != _REQUEST_KEYS:
         raise ValueError("replay generator request keys do not match the contract")
     if manifest.case_name != "replay" or type(manifest.seed) is not int:
@@ -402,41 +459,98 @@ def _validate_replay_generator_provenance(
         raise ValueError("replay generator manifest coordinate is not authorized")
     if manifest.dtype != "float32" or manifest.source_spec != "replay":
         raise ValueError("replay generator manifest coordinate is not authorized")
-    request_python = _request_path(
-        request,
-        "python_executable",
-        boundary="replay generator",
-    )
-    request_checkout = _request_path(
-        request,
-        "official_checkout",
-        boundary="replay generator",
-    )
     if not _same_contract(request["cases"], _case_contract(manifest.seed)):
         raise ValueError("replay generator case contract changed")
     if not _same_contract(request["row_schema"], _row_schema_contract()):
         raise ValueError("replay generator row schema changed")
     if not _same_contract(request["runtime"], _runtime_contract()):
         raise ValueError("replay generator runtime contract changed")
-    if (
-        request["elements_package_dir"] != str(_ELEMENTS_PACKAGE_DIR)
-        or request["elements_dist_info"] != str(_ELEMENTS_DIST_INFO)
-        or request["uuid_mode"] != "debug-counter"
-    ):
+    if not _same_contract(request["generator_files"], REPLAY_GENERATOR_FILE_HASHES):
+        raise ValueError("replay generator file contract changed")
+    if request["uuid_mode"] != "debug-counter":
         raise ValueError("replay generator runtime coordinate changed")
-    command = manifest.generator_command
-    if len(command) != 3 or any(type(part) is not str for part in command):
+    if tuple(manifest.generator_command) != REPLAY_COMMAND_DESCRIPTOR:
         raise ValueError("replay generator command does not match the contract")
-    command_python = Path(command[0]).resolve()
-    if (
-        command_python != request_python
-        or command_python != Path(sys.executable).resolve()
-        or Path(command[1]).resolve() != Path(__file__).resolve()
-        or command[2] != "_worker"
-    ):
-        raise ValueError("replay generator command does not match the contract")
-    if official_checkout is not None and request_checkout != official_checkout:
-        raise ValueError("replay generator official checkout changed")
+
+
+def _stable_replay_request(
+    profile: DreamerProfile,
+    mode: ObservationMode,
+    case_name: str,
+    seed: int,
+) -> dict[str, Any]:
+    return {
+        "case_name": case_name,
+        "cases": _case_contract(seed),
+        "compute_dtype": "float32",
+        "generator_files": dict(REPLAY_GENERATOR_FILE_HASHES),
+        "observation_mode": mode.value,
+        "official_commit": official_revision(profile),
+        "overrides": dict(profile_overrides(profile)),
+        "profile": profile.value,
+        "row_schema": _row_schema_contract(),
+        "runtime": _runtime_contract(),
+        "seed": seed,
+        "source_spec": "replay",
+        "uuid_mode": "debug-counter",
+    }
+
+
+def _build_replay_invocation(
+    request: Mapping[str, Any],
+    coordinates: Mapping[str, str | Path | None],
+) -> OracleInvocation:
+    _validate_live_generator_contract(request)
+    checkout = _execution_path(coordinates, "official_checkout")
+    python = _execution_path(
+        coordinates,
+        "python_executable",
+        default=Path(sys.executable),
+        resolve=False,
+    )
+    if python.resolve() != Path(sys.executable).resolve():
+        raise ValueError("replay generator interpreter provenance changed")
+    package_dir = _execution_path(
+        coordinates,
+        "elements_package_dir",
+        default=_ELEMENTS_PACKAGE_DIR,
+    )
+    dist_info = _execution_path(
+        coordinates,
+        "elements_dist_info",
+        default=_ELEMENTS_DIST_INFO,
+    )
+    elements_version, elements_hashes = _installed_elements_provenance(
+        package_dir, dist_info
+    )
+    if elements_version != _ELEMENTS_VERSION:
+        raise ValueError("replay generator Elements version changed")
+    if elements_hashes != _ELEMENTS_HELPER_HASHES:
+        raise ValueError("replay generator Elements helper files changed")
+    execution = {
+        "elements_dist_info": str(dist_info),
+        "elements_package_dir": str(package_dir),
+        "official_checkout": str(checkout),
+        "python_executable": str(python),
+    }
+    return OracleInvocation(
+        command=(str(python), str(Path(__file__).resolve()), "_worker"),
+        cwd=checkout,
+        generator_request=_canonical_json(
+            {"execution": execution, "request": dict(request)}
+        ).decode(),
+    )
+
+
+def _resolve_replay_generator_invocation(
+    manifest: Any,
+    coordinates: Mapping[str, str | Path | None],
+) -> OracleInvocation:
+    if manifest.generator_request is None:
+        raise ValueError("replay generator invocation requires a request")
+    request = json.loads(manifest.generator_request)
+    _validate_replay_generator_provenance(manifest, request, None)
+    return _build_replay_invocation(request, coordinates)
 
 
 REPLAY_SOURCE_SPEC = OracleSourceSpec(
@@ -447,7 +561,11 @@ REPLAY_SOURCE_SPEC = OracleSourceSpec(
     },
     execution_dtypes=("float32",),
     generator_validation_required=True,
+    generator_validator_id="replay-generator-validator-v2",
     generator_validator=_validate_replay_generator_provenance,
+    generator_resolution_required=True,
+    generator_resolver_id="replay-generator-resolver-v1",
+    generator_resolver=_resolve_replay_generator_invocation,
 )
 register_oracle_source_spec(REPLAY_SOURCE_SPEC)
 
@@ -770,10 +888,18 @@ def _official_arrays(
     return {name: np.asarray(value) for name, value in sorted(arrays.items())}
 
 
-def _worker(request: Mapping[str, Any]) -> dict[str, Any]:
+def _worker(envelope: Mapping[str, Any]) -> dict[str, Any]:
     _require_isolated_worker_modules()
+    if set(envelope) != {"execution", "request"}:
+        raise ValueError("replay worker invocation envelope keys changed")
+    request = envelope["request"]
+    execution = envelope["execution"]
+    if not isinstance(request, Mapping) or not isinstance(execution, Mapping):
+        raise ValueError("replay worker invocation envelope changed")
     if set(request) != _REQUEST_KEYS:
         raise ValueError("replay worker source request keys changed")
+    if set(execution) != _EXECUTION_KEYS:
+        raise ValueError("replay worker execution coordinate keys changed")
     if (
         request["case_name"] != "replay"
         or type(request["seed"]) is not int
@@ -781,9 +907,9 @@ def _worker(request: Mapping[str, Any]) -> dict[str, Any]:
     ):
         raise ValueError("replay worker source request coordinate changed")
     checkout = _request_path(
-        request,
+        execution,
         "official_checkout",
-        boundary="replay worker source request",
+        boundary="replay worker execution",
     )
     revision = str(request["official_commit"])
     profile = DreamerProfile(request["profile"])
@@ -803,18 +929,19 @@ def _worker(request: Mapping[str, Any]) -> dict[str, Any]:
     expected_runtime = _runtime_contract()
     if not _same_contract(request["runtime"], expected_runtime):
         raise ValueError("replay worker runtime provenance is not authorized")
+    if not _same_contract(request["generator_files"], REPLAY_GENERATOR_FILE_HASHES):
+        raise ValueError("replay worker generator file contract changed")
+    _validate_live_generator_contract(request)
     package_dir = _request_path(
-        request,
+        execution,
         "elements_package_dir",
-        boundary="replay worker source request",
+        boundary="replay worker execution",
     )
     dist_info = _request_path(
-        request,
+        execution,
         "elements_dist_info",
-        boundary="replay worker source request",
+        boundary="replay worker execution",
     )
-    if package_dir != _ELEMENTS_PACKAGE_DIR or dist_info != _ELEMENTS_DIST_INFO:
-        raise ValueError("replay worker Elements package coordinate changed")
     elements_version, elements_hashes = _installed_elements_provenance(
         package_dir, dist_info
     )
@@ -822,12 +949,10 @@ def _worker(request: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("replay worker Elements version changed")
     if elements_hashes != _ELEMENTS_HELPER_HASHES:
         raise ValueError("replay worker Elements helper files changed")
-    if np.__version__ != _NUMPY_VERSION:
-        raise ValueError("replay worker NumPy version changed")
     request_python = _request_path(
-        request,
+        execution,
         "python_executable",
-        boundary="replay worker source request",
+        boundary="replay worker execution",
     )
     if request_python != Path(sys.executable).resolve():
         raise ValueError("replay worker interpreter provenance changed")
@@ -906,39 +1031,20 @@ def run_replay_case(
         raise ValueError("replay oracle only authorizes proprio fixtures")
     if case_name != "replay" or seed != 7:
         raise ValueError("replay oracle case name and seed are fixed")
-    request = {
-        "case_name": case_name,
-        "cases": _case_contract(seed),
-        "compute_dtype": "float32",
-        "elements_dist_info": str(_ELEMENTS_DIST_INFO),
-        "elements_package_dir": str(_ELEMENTS_PACKAGE_DIR),
-        "official_checkout": str(harness.official_checkout),
-        "official_commit": official_revision(profile),
-        "observation_mode": mode.value,
-        "overrides": dict(profile_overrides(profile)),
-        "profile": profile.value,
-        "python_executable": str(Path(harness.python_executable).resolve()),
-        "row_schema": _row_schema_contract(),
-        "runtime": {
-            **_runtime_contract(),
+    request = _stable_replay_request(profile, mode, case_name, seed)
+    invocation = _build_replay_invocation(
+        request,
+        {
+            "elements_dist_info": None,
+            "elements_package_dir": None,
+            "official_checkout": harness.official_checkout,
+            "python_executable": harness.python_executable,
         },
-        "seed": seed,
-        "source_spec": REPLAY_SOURCE_SPEC.name,
-        "uuid_mode": "debug-counter",
-    }
-    python = Path(harness.python_executable).absolute()
-    canonical_python = python.with_name("python")
-    if canonical_python.exists():
-        python = canonical_python
-    command = (
-        str(python),
-        str(Path(__file__).resolve()),
-        "_worker",
     )
     completed = subprocess.run(
-        command,
-        cwd=harness.official_checkout,
-        input=_canonical_json(request).decode(),
+        invocation.command,
+        cwd=invocation.cwd,
+        input=invocation.generator_request,
         check=True,
         capture_output=True,
         text=True,
@@ -989,7 +1095,7 @@ def run_replay_case(
         observation_mode=mode,
         arrays=arrays,
         seed=seed,
-        generator_command=command,
+        generator_command=REPLAY_COMMAND_DESCRIPTOR,
         generator_request=request,
         source_spec=REPLAY_SOURCE_SPEC,
         dtype="float32",

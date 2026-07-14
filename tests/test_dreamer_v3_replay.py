@@ -356,20 +356,21 @@ def test_recorded_replay_worker_replays_all_arrays_and_attestations(profile) -> 
     fixture_path = FIXTURE_DIR / f"{stem}.npz"
     manifest_path = FIXTURE_DIR / f"{stem}.manifest.json"
     manifest = OracleManifest.load(manifest_path, fixture_path=fixture_path)
-    request = json.loads(manifest.generator_request)
+    invocation = manifest.resolve_generator_invocation(
+        official_checkout=OFFICIAL_CHECKOUT
+    )
+    envelope = json.loads(invocation.generator_request)
+    request = envelope["request"]
+    execution = envelope["execution"]
     assert tuple(manifest.generator_command)[-1] == "_worker"
-    assert (
-        Path(manifest.generator_command[0]).resolve() == Path(sys.executable).resolve()
-    )
-    assert request["python_executable"] == str(
-        Path(manifest.generator_command[0]).resolve()
-    )
-    assert request["elements_package_dir"].endswith("site-packages/elements")
-    assert request["elements_dist_info"].endswith("elements-3.22.0.dist-info")
+    assert Path(invocation.command[0]).resolve() == Path(sys.executable).resolve()
+    assert execution["python_executable"] == invocation.command[0]
+    assert execution["elements_package_dir"].endswith("site-packages/elements")
+    assert execution["elements_dist_info"].endswith("elements-3.22.0.dist-info")
     completed = subprocess.run(
-        manifest.generator_command,
-        cwd=request["official_checkout"],
-        input=manifest.generator_request,
+        invocation.command,
+        cwd=invocation.cwd,
+        input=invocation.generator_request,
         check=True,
         capture_output=True,
         text=True,
@@ -377,9 +378,9 @@ def test_recorded_replay_worker_replays_all_arrays_and_attestations(profile) -> 
     payload = json.loads(completed.stdout)
     repeated = json.loads(
         subprocess.run(
-            manifest.generator_command,
-            cwd=request["official_checkout"],
-            input=manifest.generator_request,
+            invocation.command,
+            cwd=invocation.cwd,
+            input=invocation.generator_request,
             check=True,
             capture_output=True,
             text=True,
@@ -492,16 +493,19 @@ def test_replay_oracle_worker_never_imports_native_replay(profile) -> None:
         FIXTURE_DIR / f"{stem}.manifest.json",
         fixture_path=FIXTURE_DIR / f"{stem}.npz",
     )
+    invocation = manifest.resolve_generator_invocation(
+        official_checkout=OFFICIAL_CHECKOUT
+    )
     command = (
-        manifest.generator_command[0],
+        invocation.command[0],
         "-X",
         "importtime",
-        *manifest.generator_command[1:],
+        *invocation.command[1:],
     )
     completed = subprocess.run(
         command,
         cwd=OFFICIAL_CHECKOUT,
-        input=manifest.generator_request,
+        input=invocation.generator_request,
         check=True,
         capture_output=True,
         text=True,
@@ -534,7 +538,10 @@ def test_replay_oracle_worker_rejects_injected_native_modules(
         FIXTURE_DIR / "paper-proprio-replay.manifest.json",
         fixture_path=FIXTURE_DIR / "paper-proprio-replay.npz",
     )
-    oracle_path = Path(manifest.generator_command[1]).resolve()
+    invocation = manifest.resolve_generator_invocation(
+        official_checkout=OFFICIAL_CHECKOUT
+    )
+    oracle_path = Path(invocation.command[1]).resolve()
     lines = [
         "import runpy, sys",
         "from types import ModuleType",
@@ -550,9 +557,9 @@ def test_replay_oracle_worker_rejects_injected_native_modules(
         ]
     )
     completed = subprocess.run(
-        [manifest.generator_command[0], "-c", "\n".join(lines)],
+        [invocation.command[0], "-c", "\n".join(lines)],
         cwd=OFFICIAL_CHECKOUT,
-        input=manifest.generator_request,
+        input=invocation.generator_request,
         capture_output=True,
         text=True,
     )
