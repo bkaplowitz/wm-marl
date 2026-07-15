@@ -70,6 +70,24 @@ def test_cli_accepts_reset_rich_bootstrap(monkeypatch):
     assert args.initial_reset_interval == 6
 
 
+def test_cli_accepts_bounded_online_reset_diversity(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _minimal_args(
+            "--online-reset-interval",
+            "6",
+            "--online-reset-until-env-steps",
+            "100",
+        ),
+    )
+
+    args = train_dmc_jepa.parse_args()
+
+    assert args.online_reset_interval == 6
+    assert args.online_reset_until_env_steps == 100
+
+
 def test_random_collection_marks_nonterminal_reset_cuts():
     class Adapter:
         num_envs = 1
@@ -127,6 +145,101 @@ def test_random_collection_marks_nonterminal_reset_cuts():
     )
     np.testing.assert_array_equal(replay.dones[:, 0], np.zeros(6))
     np.testing.assert_array_equal(observations, np.asarray([[[300.0]]]))
+
+
+def test_policy_collection_preserves_online_reset_cadence_across_phases(
+    monkeypatch,
+):
+    class Adapter:
+        num_envs = 1
+
+        def __init__(self):
+            self.reset_calls = 0
+            self.step_count = 0
+
+        def reset(self):
+            self.reset_calls += 1
+            self.step_count = 0
+            return np.asarray([[[100 * self.reset_calls]]], dtype=np.float32)
+
+        def step(self, actions):
+            del actions
+            self.step_count += 1
+            return SimpleNamespace(
+                observations=np.asarray(
+                    [[[100 * self.reset_calls + self.step_count]]],
+                    dtype=np.float32,
+                ),
+                rewards=np.zeros((1, 1), dtype=np.float32),
+                dones=np.zeros((1, 1), dtype=np.float32),
+                completed_returns=(),
+                completed_lengths=(),
+            )
+
+    monkeypatch.setattr(
+        train_dmc_jepa,
+        "select_continuous_actions",
+        lambda *args, **kwargs: jnp.zeros((1, 1), dtype=jnp.float32),
+    )
+    adapter = Adapter()
+    replay = SequenceReplayBuffer(
+        capacity=6,
+        num_envs=1,
+        observation_shape=(1,),
+        action_shape=(1,),
+        action_dtype=np.float32,
+    )
+    observations = adapter.reset()
+    common = {
+        "adapter": adapter,
+        "state": None,
+        "config": SimpleNamespace(),
+        "replay": replay,
+        "action_low": np.asarray([-1.0], dtype=np.float32),
+        "action_high": np.asarray([1.0], dtype=np.float32),
+        "desc": "test",
+        "quiet": True,
+        "np_rng": np.random.default_rng(0),
+        "stochastic_actions": True,
+        "failure_return_threshold": 100.0,
+        "success_return_threshold": 900.0,
+        "reset_interval": 3,
+        "reset_until_env_steps": 4,
+    }
+
+    observations, _, first = train_dmc_jepa._collect_policy_steps(
+        observations=observations,
+        steps=2,
+        train_env_step_offset=0,
+        reset_step_offset=0,
+        **common,
+    )
+    observations, _, second = train_dmc_jepa._collect_policy_steps(
+        observations=observations,
+        steps=2,
+        train_env_step_offset=2,
+        reset_step_offset=2,
+        **common,
+    )
+    observations, _, third = train_dmc_jepa._collect_policy_steps(
+        observations=observations,
+        steps=2,
+        train_env_step_offset=4,
+        reset_step_offset=4,
+        **common,
+    )
+
+    assert first["forced_reset_events"] == 0
+    assert second["forced_reset_events"] == 1
+    assert second["forced_reset_env_segments"] == 1
+    assert third["forced_reset_events"] == 0
+    assert adapter.reset_calls == 2
+    np.testing.assert_array_equal(
+        replay.cuts[:, 0],
+        np.asarray([0.0, 0.0, 1.0, 0.0, 0.0, 0.0]),
+    )
+    np.testing.assert_array_equal(replay.dones[:, 0], np.zeros(6))
+    np.testing.assert_array_equal(observations, np.asarray([[[203.0]]]))
 
 
 def test_cli_accepts_wandb_video_controls(monkeypatch):

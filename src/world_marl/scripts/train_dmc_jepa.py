@@ -288,6 +288,24 @@ def parse_args() -> argparse.Namespace:
     online = parser.add_argument_group("online schedule")
     online.add_argument("--online-iterations", type=int, default=0)
     online.add_argument("--online-collect-steps", type=int, default=64)
+    online.add_argument(
+        "--online-reset-interval",
+        type=int,
+        default=None,
+        help=(
+            "Periodically reset all online environments after this many "
+            "vector steps and record a replay cut. Disabled by default."
+        ),
+    )
+    online.add_argument(
+        "--online-reset-until-env-steps",
+        type=int,
+        default=None,
+        help=(
+            "Apply periodic online resets only through this counted training "
+            "environment step. By default, resets remain active throughout."
+        ),
+    )
     online.add_argument("--online-train-steps", type=int, default=1024)
     online.add_argument("--online-policy-train-steps", type=int, default=512)
     online.add_argument(
@@ -510,6 +528,16 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
             parser.error("--initial-reset-interval is too short for model sequences")
         if args.initial_reset_interval > args.collect_steps:
             parser.error("--initial-reset-interval must be <= --collect-steps")
+    if args.online_reset_interval is not None:
+        if args.online_reset_interval < min_sequence_steps:
+            parser.error("--online-reset-interval is too short for model sequences")
+    elif args.online_reset_until_env_steps is not None:
+        parser.error("--online-reset-until-env-steps requires --online-reset-interval")
+    if (
+        args.online_reset_until_env_steps is not None
+        and args.online_reset_until_env_steps < 0
+    ):
+        parser.error("--online-reset-until-env-steps must be >= 0")
     if args.chunk_length < args.context_window:
         parser.error("--chunk-length must be >= --context-window")
     if not (args.env.startswith("dmc:") or args.env.startswith("brax:")):
@@ -1094,6 +1122,10 @@ def run_one(
                 np_rng=numpy_rngs.get("online_collection"),
                 stochastic_actions=args.stochastic_collection,
                 train_env_step_offset=train_env_steps,
+                reset_interval=args.online_reset_interval,
+                reset_step_offset=(train_env_steps - initial_train_env_steps)
+                // args.num_envs,
+                reset_until_env_steps=args.online_reset_until_env_steps,
                 failure_return_threshold=args.failure_return_threshold,
                 success_return_threshold=args.success_return_threshold,
             )
@@ -1687,6 +1719,9 @@ def _collect_policy_steps(
     train_env_step_offset: int,
     failure_return_threshold: float,
     success_return_threshold: float,
+    reset_interval: int | None = None,
+    reset_step_offset: int = 0,
+    reset_until_env_steps: int | None = None,
 ) -> tuple[np.ndarray, int, dict[str, Any]]:
     action_low_jax = jnp.asarray(action_low, dtype=jnp.float32)
     action_high_jax = jnp.asarray(action_high, dtype=jnp.float32)
@@ -1695,6 +1730,7 @@ def _collect_policy_steps(
     completed_lengths: list[int] = []
     finish_collection_steps: list[int] = []
     finish_train_steps: list[int] = []
+    forced_reset_events = 0
     progress = tqdm(range(steps), desc=desc, unit="step", disable=quiet)
     for step_index in progress:
         action_key, step_action_key = jax.random.split(action_key)
@@ -1710,12 +1746,26 @@ def _collect_policy_steps(
             )
         )
         step = adapter.step(actions[:, None, :])
+        next_train_env_steps = (
+            train_env_step_offset + (step_index + 1) * adapter.num_envs
+        )
+        forced_reset = (
+            reset_interval is not None
+            and (reset_step_offset + step_index + 1) % reset_interval == 0
+            and (
+                reset_until_env_steps is None
+                or next_train_env_steps <= reset_until_env_steps
+            )
+        )
         _add_replay_step(
             replay,
             observations=observations[:, 0],
             actions=actions,
             rewards=step.rewards[:, 0],
             dones=step.dones[:, 0],
+            cuts=(
+                np.ones((adapter.num_envs,), dtype=np.float32) if forced_reset else None
+            ),
         )
         completed_count = len(step.completed_returns)
         completed_returns.extend(float(item[0]) for item in step.completed_returns)
@@ -1731,12 +1781,21 @@ def _collect_policy_steps(
                 episodes=len(completed_returns),
                 mean_return=f"{np.mean(completed_returns):.3g}",
             )
-        observations = step.observations
+        if forced_reset:
+            forced_reset_events += 1
+            observations = adapter.reset()
+        else:
+            observations = step.observations
 
     metrics = {
         "env_steps": steps * adapter.num_envs,
         "steps_per_env": steps,
         "stochastic_actions": stochastic_actions,
+        "online_reset_interval": reset_interval,
+        "online_reset_until_env_steps": reset_until_env_steps,
+        "online_reset_step_offset": reset_step_offset,
+        "forced_reset_events": forced_reset_events,
+        "forced_reset_env_segments": forced_reset_events * adapter.num_envs,
         "completed_episodes": len(completed_returns),
         "mean_return": (
             float(np.mean(completed_returns)) if completed_returns else None
