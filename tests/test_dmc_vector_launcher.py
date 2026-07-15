@@ -239,6 +239,28 @@ def test_launcher_can_disable_value_clipping():
     ]
 
 
+def test_launcher_serializes_value_clip_schedule():
+    command = params_to_shell_args(
+        {
+            "value_clip": 100.0,
+            "value_clip_final": 200.0,
+            "value_clip_schedule_start_env_steps": 100_000,
+            "value_clip_schedule_end_env_steps": 200_000,
+        }
+    )
+
+    assert command.replace("\\\n", " ").split() == [
+        "--value-clip",
+        "100.0",
+        "--value-clip-final",
+        "200.0",
+        "--value-clip-schedule-start-env-steps",
+        "100000",
+        "--value-clip-schedule-end-env-steps",
+        "200000",
+    ]
+
+
 def test_launcher_serializes_actor_kl_controls():
     command = params_to_shell_args(
         {

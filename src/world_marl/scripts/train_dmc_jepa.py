@@ -257,6 +257,27 @@ def parse_args() -> argparse.Namespace:
         help="Symmetric value-target clip; set to 0 to disable clipping.",
     )
     policy.add_argument(
+        "--value-clip-final",
+        type=float,
+        default=None,
+        help=(
+            "Optional final value-target clip for a linear training-step schedule. "
+            "Requires both value-clip schedule boundaries."
+        ),
+    )
+    policy.add_argument(
+        "--value-clip-schedule-start-env-steps",
+        type=int,
+        default=None,
+        help="Training transition at which to begin changing the value clip.",
+    )
+    policy.add_argument(
+        "--value-clip-schedule-end-env-steps",
+        type=int,
+        default=None,
+        help="Training transition at which to reach the final value clip.",
+    )
+    policy.add_argument(
         "--policy-normalized-advantage-clip",
         type=float,
         default=0.0,
@@ -691,6 +712,32 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("slow-value regularization requires a target critic")
     if args.value_clip < 0.0:
         parser.error("--value-clip must be >= 0 (0 disables clipping)")
+    value_clip_schedule = (
+        args.value_clip_final,
+        args.value_clip_schedule_start_env_steps,
+        args.value_clip_schedule_end_env_steps,
+    )
+    if any(value is not None for value in value_clip_schedule):
+        if not all(value is not None for value in value_clip_schedule):
+            parser.error(
+                "--value-clip-final and both value-clip schedule boundaries "
+                "must be set together"
+            )
+        assert args.value_clip_final is not None
+        assert args.value_clip_schedule_start_env_steps is not None
+        assert args.value_clip_schedule_end_env_steps is not None
+        if args.value_clip <= 0.0 or args.value_clip_final <= 0.0:
+            parser.error("scheduled value clips must both be > 0")
+        if args.value_clip_schedule_start_env_steps < 0:
+            parser.error("--value-clip-schedule-start-env-steps must be >= 0")
+        if (
+            args.value_clip_schedule_end_env_steps
+            <= args.value_clip_schedule_start_env_steps
+        ):
+            parser.error(
+                "--value-clip-schedule-end-env-steps must be greater than "
+                "--value-clip-schedule-start-env-steps"
+            )
     if args.policy_normalized_advantage_clip < 0.0:
         parser.error(
             "--policy-normalized-advantage-clip must be >= 0 (0 disables clipping)"
@@ -1153,6 +1200,10 @@ def run_one(
                 args,
                 train_env_steps=train_env_steps,
             ),
+            value_clip=_scheduled_value_clip(
+                args,
+                train_env_steps=train_env_steps,
+            ),
         )
         jax_rngs.update("policy", policy_rng)
         logger.write_json("policy_initial_fit.json", initial_policy_metrics)
@@ -1373,6 +1424,10 @@ def run_one(
                 reset_actor=False,
                 actor_update_interval=actor_update_interval,
                 actor_entropy_coef=_scheduled_actor_entropy_coef(
+                    args,
+                    train_env_steps=train_env_steps,
+                ),
+                value_clip=_scheduled_value_clip(
                     args,
                     train_env_steps=train_env_steps,
                 ),
@@ -2206,6 +2261,7 @@ def _train_policy(
     reset_actor: bool,
     actor_update_interval: int,
     actor_entropy_coef: float,
+    value_clip: float,
     recent_replay: SequenceReplayBuffer | None = None,
     start_recent_fraction: float = 0.0,
     critic_recent_fraction: float = 0.0,
@@ -2253,7 +2309,7 @@ def _train_policy(
                 batch,
                 config,
                 horizon=args.critic_horizon,
-                value_clip=args.value_clip,
+                value_clip=value_clip,
                 target_critic_ema_decay=args.target_critic_ema_decay,
             )
             if (
@@ -2343,7 +2399,7 @@ def _train_policy(
             policy_return_normalization=args.policy_return_normalization,
             policy_gradient_mode=args.policy_gradient_mode,
             return_normalization_ema_decay=args.policy_return_ema_decay,
-            value_clip=args.value_clip,
+            value_clip=value_clip,
             normalized_advantage_clip=args.policy_normalized_advantage_clip,
             actor_reference_params=(
                 actor_reference_params if args.policy_actor_kl_coef > 0.0 else None
@@ -2408,6 +2464,9 @@ def _train_policy(
             "policy_actor_entropy_coef": actor_entropy_coef,
             "policy_actor_entropy_initial_coef": args.actor_entropy_coef,
             "policy_actor_entropy_final_coef": args.actor_entropy_final_coef,
+            "policy_value_clip": value_clip,
+            "policy_value_clip_initial": args.value_clip,
+            "policy_value_clip_final": args.value_clip_final,
             "policy_online_recent_start_fraction": start_recent_fraction,
             "policy_bootstrap_start_fraction": bootstrap_start_fraction,
             "policy_bootstrap_start_size_per_env": (
@@ -2698,6 +2757,24 @@ def _scheduled_actor_entropy_coef(
     return float(
         args.actor_entropy_coef + progress * (final_coef - args.actor_entropy_coef)
     )
+
+
+def _scheduled_value_clip(
+    args: argparse.Namespace,
+    *,
+    train_env_steps: int,
+) -> float:
+    final_clip = args.value_clip_final
+    start = args.value_clip_schedule_start_env_steps
+    end = args.value_clip_schedule_end_env_steps
+    if final_clip is None or start is None or end is None:
+        return float(args.value_clip)
+    if train_env_steps <= start:
+        return float(args.value_clip)
+    if train_env_steps >= end:
+        return float(final_clip)
+    progress = (train_env_steps - start) / (end - start)
+    return float(args.value_clip + progress * (final_clip - args.value_clip))
 
 
 def _scheduled_online_actor_update_interval(

@@ -417,6 +417,52 @@ def test_cli_accepts_budget_relative_entropy_decay(monkeypatch):
     ) == pytest.approx(3e-4)
 
 
+def test_cli_accepts_budget_relative_value_clip_schedule(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _minimal_args(
+            "--value-clip",
+            "100",
+            "--value-clip-final",
+            "200",
+            "--value-clip-schedule-start-env-steps",
+            "100000",
+            "--value-clip-schedule-end-env-steps",
+            "200000",
+        ),
+    )
+
+    args = train_dmc_jepa.parse_args()
+
+    assert train_dmc_jepa._scheduled_value_clip(
+        args,
+        train_env_steps=99_999,
+    ) == pytest.approx(100.0)
+    assert train_dmc_jepa._scheduled_value_clip(
+        args,
+        train_env_steps=150_000,
+    ) == pytest.approx(150.0)
+    assert train_dmc_jepa._scheduled_value_clip(
+        args,
+        train_env_steps=200_000,
+    ) == pytest.approx(200.0)
+
+
+def test_cli_rejects_partial_value_clip_schedule(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _minimal_args(
+            "--value-clip-final",
+            "200",
+        ),
+    )
+
+    with pytest.raises(SystemExit):
+        train_dmc_jepa.parse_args()
+
+
 def test_online_actor_update_interval_can_start_after_warmup(monkeypatch):
     monkeypatch.setattr(
         sys,
