@@ -17,6 +17,7 @@ from world_marl.jepa.training import (
     create_jepa_train_state,
     diagonal_gaussian_kl,
     evaluate_open_loop,
+    full_policy_kl_penalty,
     lambda_returns,
     latent_collapse_metrics,
     masked_mean,
@@ -544,6 +545,9 @@ def test_dreamer_style_policy_update_is_finite_and_keeps_world_model_frozen():
         slow_value_regularization_coef=1.0,
         value_clip=0.0,
         normalized_advantage_clip=5.0,
+        actor_reference_params=state.params,
+        actor_kl_coef=1.0,
+        actor_kl_target_per_dim=0.01,
     )
 
     assert jnp.isfinite(metrics["policy/total_loss"])
@@ -556,6 +560,9 @@ def test_dreamer_style_policy_update_is_finite_and_keeps_world_model_frozen():
     assert jnp.isfinite(metrics["policy/advantage_std"])
     assert metrics["policy/normalized_advantage_clip_enabled"] == 1.0
     assert metrics["policy/bounded_advantage_abs_max"] <= 5.0
+    assert metrics["policy/actor_kl_enabled"] == 1.0
+    assert metrics["policy/actor_kl_penalty"] == pytest.approx(0.0, abs=1e-7)
+    assert jnp.isfinite(metrics["policy/reference_full_distribution_kl_mean"])
     assert jnp.isfinite(metrics["policy/update_full_distribution_kl_mean"])
     assert metrics["policy/update_full_distribution_kl_mean"] >= 0.0
     assert 0.0 <= metrics["policy/advantage_positive_fraction"] <= 1.0
@@ -619,6 +626,34 @@ def test_diagonal_gaussian_kl_detects_mean_and_scale_updates():
 
     np.testing.assert_allclose(same, 0.0, atol=1e-7)
     assert jnp.all(changed > 0.0)
+
+
+def test_full_policy_kl_penalty_uses_per_dimension_hinge():
+    reference_kl = jnp.asarray([0.01, 0.03], dtype=jnp.float32)
+    weights = jnp.ones_like(reference_kl)
+
+    penalty, mean, per_dim, excess, enabled = full_policy_kl_penalty(
+        reference_kl,
+        weights,
+        action_dim=2,
+        coef=2.0,
+        target_per_dim=0.005,
+    )
+    disabled = full_policy_kl_penalty(
+        reference_kl,
+        weights,
+        action_dim=2,
+        coef=0.0,
+        target_per_dim=0.005,
+    )
+
+    np.testing.assert_allclose(mean, 0.02, rtol=1e-5)
+    np.testing.assert_allclose(per_dim, 0.01, rtol=1e-5)
+    np.testing.assert_allclose(excess, 0.005, rtol=1e-5)
+    np.testing.assert_allclose(penalty, 0.01, rtol=1e-5)
+    assert bool(enabled)
+    assert disabled[0] == pytest.approx(0.0)
+    assert not bool(disabled[-1])
 
 
 def test_continuous_critic_warmup_updates_value_only():

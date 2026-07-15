@@ -535,6 +535,9 @@ def continuous_policy_train_step(
     return_normalization_ema_decay: float = 0.99,
     value_clip: float = 100.0,
     normalized_advantage_clip: float = 0.0,
+    actor_reference_params: FrozenDict | None = None,
+    actor_kl_coef: float = 0.0,
+    actor_kl_target_per_dim: float = 0.0,
     action_saturation_threshold: float = 0.95,
     start_actions: jax.Array | None = None,
     actor_entropy_coef: float = 0.0,
@@ -631,7 +634,45 @@ def continuous_policy_train_step(
         actor_objective = weighted_mean(policy_terms, weights)
         return_loss = -actor_objective
         entropy_bonus = weighted_mean(rollout["action_entropy"], weights)
-        actor_loss = return_loss - actor_entropy_coef * entropy_bonus
+        if actor_reference_params is None:
+            reference_kl = jnp.zeros_like(weights)
+            reference_available = jnp.asarray(False)
+        else:
+            reference_params = jax.tree_util.tree_map(
+                jax.lax.stop_gradient,
+                actor_reference_params,
+            )
+            reference_means, reference_log_stds, _ = actor_value_stats_from_latent(
+                state.apply_fn,
+                reference_params,
+                jax.lax.stop_gradient(rollout["latents"]),
+            )
+            reference_kl = diagonal_gaussian_kl(
+                reference_means,
+                reference_log_stds,
+                rollout["action_means"],
+                rollout["action_log_stds"],
+            )
+            reference_available = jnp.asarray(True)
+        (
+            actor_kl_penalty,
+            reference_kl_mean,
+            reference_kl_per_dim,
+            reference_kl_excess_per_dim,
+            actor_kl_enabled,
+        ) = full_policy_kl_penalty(
+            reference_kl,
+            weights,
+            action_dim=config.action_dim,
+            coef=actor_kl_coef,
+            target_per_dim=actor_kl_target_per_dim,
+            reference_available=reference_available,
+        )
+        actor_loss = (
+            return_loss
+            - actor_entropy_coef * entropy_bonus
+            + actor_kl_penalty
+        )
         action_saturation = jnp.mean(
             (
                 jnp.abs(rollout["normalized_actions"]) >= action_saturation_threshold
@@ -655,6 +696,8 @@ def continuous_policy_train_step(
             actor_scores,
             normalized_actor_scores,
             actor_objective_scores,
+            reference_kl,
+            actor_kl_penalty,
             actor_loss,
         )
         metrics = {
@@ -664,6 +707,23 @@ def continuous_policy_train_step(
             "policy/actor_entropy_coef": jnp.asarray(
                 actor_entropy_coef,
                 dtype=actor_loss.dtype,
+            ),
+            "policy/actor_kl_coef": jnp.asarray(
+                actor_kl_coef,
+                dtype=actor_loss.dtype,
+            ),
+            "policy/actor_kl_target_per_dim": jnp.asarray(
+                actor_kl_target_per_dim,
+                dtype=actor_loss.dtype,
+            ),
+            "policy/actor_kl_penalty": actor_kl_penalty,
+            "policy/actor_kl_enabled": actor_kl_enabled.astype(actor_loss.dtype),
+            "policy/reference_full_distribution_kl_mean": reference_kl_mean,
+            "policy/reference_full_distribution_kl_per_action_dim": (
+                reference_kl_per_dim
+            ),
+            "policy/reference_full_distribution_kl_excess_per_action_dim": (
+                reference_kl_excess_per_dim
             ),
             "policy/action_entropy_tanh_normal": jnp.asarray(
                 actor_entropy_mode == "tanh-normal",
@@ -1729,6 +1789,32 @@ def diagonal_gaussian_kl(
         new_log_stds - old_log_stds + 0.5 * (variance_ratio + squared_mean_delta - 1.0)
     )
     return jnp.sum(per_dimension, axis=-1)
+
+
+def full_policy_kl_penalty(
+    reference_kl: jax.Array,
+    weights: jax.Array,
+    *,
+    action_dim: int,
+    coef: float,
+    target_per_dim: float,
+    reference_available: jax.Array | bool = True,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Penalize policy drift only after a dimension-normalized KL budget."""
+    kl_mean = weighted_mean(reference_kl, weights)
+    kl_per_dim = kl_mean / float(action_dim)
+    coef_array = jnp.asarray(coef, dtype=reference_kl.dtype)
+    target_array = jnp.asarray(target_per_dim, dtype=reference_kl.dtype)
+    enabled = jnp.logical_and(
+        jnp.asarray(reference_available),
+        coef_array > 0.0,
+    )
+    excess = jnp.where(
+        enabled,
+        jnp.maximum(kl_per_dim - target_array, 0.0),
+        0.0,
+    )
+    return coef_array * excess, kl_mean, kl_per_dim, excess, enabled
 
 
 def clip_value_targets(

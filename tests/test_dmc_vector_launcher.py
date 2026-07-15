@@ -159,6 +159,25 @@ def test_launcher_can_disable_value_clipping():
     ]
 
 
+def test_launcher_serializes_actor_kl_controls():
+    command = params_to_shell_args(
+        {
+            "policy_actor_kl_coef": 1.0,
+            "policy_actor_kl_target_per_dim": 0.01,
+            "policy_actor_kl_reference_interval": 64,
+        }
+    )
+
+    assert command.replace("\\\n", " ").split() == [
+        "--policy-actor-kl-coef",
+        "1.0",
+        "--policy-actor-kl-target-per-dim",
+        "0.01",
+        "--policy-actor-kl-reference-interval",
+        "64",
+    ]
+
+
 def test_500k_preset_locks_current_architecture_and_control_stack():
     params = PRESETS["jepa_500k"]
 
@@ -180,6 +199,9 @@ def test_500k_preset_locks_current_architecture_and_control_stack():
     assert params["actor_entropy_coef"] == 3e-3
     assert params["value_clip"] == 100.0
     assert params["policy_normalized_advantage_clip"] == 0.0
+    assert params["policy_actor_kl_coef"] == 0.0
+    assert params["policy_actor_kl_target_per_dim"] == 0.01
+    assert params["policy_actor_kl_reference_interval"] == 64
     assert params["target_critic_ema_decay"] == 0.98
     assert params["policy_replay_critic_loss_coef"] == 0.3
     assert params["policy_slow_value_regularization_coef"] == 1.0

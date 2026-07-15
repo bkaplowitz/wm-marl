@@ -239,6 +239,24 @@ def parse_args() -> argparse.Namespace:
             "set to 0 to disable. This does not clip critic targets."
         ),
     )
+    policy.add_argument(
+        "--policy-actor-kl-coef",
+        type=float,
+        default=0.0,
+        help="Penalty coefficient for actor KL beyond the configured target.",
+    )
+    policy.add_argument(
+        "--policy-actor-kl-target-per-dim",
+        type=float,
+        default=0.01,
+        help="Allowed full-Gaussian actor KL per action dimension.",
+    )
+    policy.add_argument(
+        "--policy-actor-kl-reference-interval",
+        type=int,
+        default=64,
+        help="Actor updates between KL reference-policy refreshes.",
+    )
     policy.add_argument("--value-output-scale", type=float, default=0.0)
     policy.add_argument(
         "--value-prediction-mode",
@@ -556,6 +574,12 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error(
             "--policy-normalized-advantage-clip must be >= 0 (0 disables clipping)"
         )
+    if args.policy_actor_kl_coef < 0.0:
+        parser.error("--policy-actor-kl-coef must be >= 0")
+    if args.policy_actor_kl_target_per_dim < 0.0:
+        parser.error("--policy-actor-kl-target-per-dim must be >= 0")
+    if args.policy_actor_kl_reference_interval < 1:
+        parser.error("--policy-actor-kl-reference-interval must be >= 1")
     if args.optimizer_epsilon <= 0.0:
         parser.error("--optimizer-epsilon must be > 0")
     if args.twohot_bins < 3 or args.twohot_min >= args.twohot_max:
@@ -1964,6 +1988,10 @@ def _train_policy(
                 )
 
     metrics: dict[str, Any] = {}
+    actor_reference_params = jax.tree_util.tree_map(
+        jax.lax.stop_gradient,
+        state.params,
+    )
     progress = tqdm(
         range(1, train_steps + 1),
         desc=f"{phase} train actor-critic",
@@ -1971,6 +1999,11 @@ def _train_policy(
         disable=args.quiet,
     )
     for step_index in progress:
+        if (step_index - 1) % args.policy_actor_kl_reference_interval == 0:
+            actor_reference_params = jax.tree_util.tree_map(
+                jax.lax.stop_gradient,
+                state.params,
+            )
         start_observations, start_actions = _sample_mixed_policy_starts(
             replay,
             np_rng,
@@ -2007,6 +2040,13 @@ def _train_policy(
             return_normalization_ema_decay=args.policy_return_ema_decay,
             value_clip=args.value_clip,
             normalized_advantage_clip=args.policy_normalized_advantage_clip,
+            actor_reference_params=(
+                actor_reference_params
+                if args.policy_actor_kl_coef > 0.0
+                else None
+            ),
+            actor_kl_coef=args.policy_actor_kl_coef,
+            actor_kl_target_per_dim=args.policy_actor_kl_target_per_dim,
             action_saturation_threshold=0.95,
             start_actions=start_actions,
             actor_entropy_coef=actor_entropy_coef,
@@ -2063,6 +2103,11 @@ def _train_policy(
             "policy_online_recent_start_fraction": start_recent_fraction,
             "policy_online_recent_critic_fraction": critic_recent_fraction,
             "policy_target_critic_ema_decay": args.target_critic_ema_decay,
+            "policy_actor_kl_coef": args.policy_actor_kl_coef,
+            "policy_actor_kl_target_per_dim": args.policy_actor_kl_target_per_dim,
+            "policy_actor_kl_reference_interval": (
+                args.policy_actor_kl_reference_interval
+            ),
             "policy_replay_critic_loss_coef": args.policy_replay_critic_loss_coef,
             "critic_warmup_steps": args.critic_warmup_steps,
             "critic_final_metrics": to_jsonable(critic_metrics),
