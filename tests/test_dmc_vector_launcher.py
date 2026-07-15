@@ -117,6 +117,7 @@ def test_100k_preset_matches_the_reset_rich_interleaved_contract():
     assert params["online_train_steps"] == 1_024
     assert params["online_policy_train_steps"] == 512
     assert params["online_policy_actor_update_interval"] == 1
+    assert params["online_policy_actor_update_interval_start_env_steps"] == 0
 
 
 def test_actor_update_interval_override_is_accounted_separately(
@@ -138,6 +139,8 @@ def test_actor_update_interval_override_is_accounted_separately(
             "1",
             "--online-policy-actor-update-interval",
             "2",
+            "--online-policy-actor-update-interval-start-env-steps",
+            "50000",
         ],
     )
 
@@ -147,8 +150,9 @@ def test_actor_update_interval_override_is_accounted_separately(
     accounting = launcher.step_accounting(params)
 
     assert params["online_policy_actor_update_interval"] == 2
+    assert params["online_policy_actor_update_interval_start_env_steps"] == 50_000
     assert accounting["critic_updates"] == 1_280 + 91 * 512
-    assert accounting["actor_updates"] == 1_280 + 91 * 256
+    assert accounting["actor_updates"] == 1_280 + 44 * 512 + 47 * 256
 
 
 def test_500k_preset_matches_the_current_running_model():

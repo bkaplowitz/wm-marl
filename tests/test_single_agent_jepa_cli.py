@@ -233,6 +233,36 @@ def test_cli_accepts_budget_relative_entropy_decay(monkeypatch):
     ) == pytest.approx(3e-4)
 
 
+def test_online_actor_update_interval_can_start_after_warmup(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _minimal_args(
+            "--online-policy-actor-update-interval",
+            "2",
+            "--online-policy-actor-update-interval-start-env-steps",
+            "50000",
+        ),
+    )
+
+    args = train_dmc_jepa.parse_args()
+
+    assert (
+        train_dmc_jepa._scheduled_online_actor_update_interval(
+            args,
+            train_env_steps=49_999,
+        )
+        == 1
+    )
+    assert (
+        train_dmc_jepa._scheduled_online_actor_update_interval(
+            args,
+            train_env_steps=50_000,
+        )
+        == 2
+    )
+
+
 def test_cli_accepts_recent_replay_and_curve_evaluation(monkeypatch):
     monkeypatch.setattr(
         sys,
@@ -263,6 +293,7 @@ def test_cli_accepts_recent_replay_and_curve_evaluation(monkeypatch):
 
     assert args.online_recent_replay_fraction == 0.5
     assert args.online_policy_actor_update_interval == 1
+    assert args.online_policy_actor_update_interval_start_env_steps == 0
     assert train_dmc_jepa._requested_recent_fractions(args) == {
         "world_model": 0.4,
         "policy_start": 0.0,

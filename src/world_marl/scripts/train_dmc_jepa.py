@@ -299,6 +299,16 @@ def parse_args() -> argparse.Namespace:
             "standard one-to-one cadence."
         ),
     )
+    online.add_argument(
+        "--online-policy-actor-update-interval-start-env-steps",
+        type=int,
+        default=0,
+        help=(
+            "Keep one actor update per critic update until this many training "
+            "environment steps have been collected, then apply the configured "
+            "online actor-update interval. Zero applies it immediately."
+        ),
+    )
     online.add_argument("--online-checkpoint-interval", type=int, default=16)
     online.add_argument(
         "--online-freeze-encoder",
@@ -460,6 +470,7 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         "online_iterations",
         "online_train_steps",
         "online_policy_train_steps",
+        "online_policy_actor_update_interval_start_env_steps",
         "final_policy_eval_episodes",
         "dreamer_report_window_env_steps",
         "dreamer_report_budget_env_steps",
@@ -1059,6 +1070,7 @@ def run_one(
             next_curve_eval_step += args.curve_eval_interval_env_steps
         for online_index in range(1, args.online_iterations + 1):
             phase = f"online_{online_index:03d}"
+            phase_start_train_env_steps = train_env_steps
             phase_replay = _new_replay_buffer(
                 capacity=args.online_collect_steps,
                 num_envs=args.num_envs,
@@ -1233,6 +1245,10 @@ def run_one(
                 )
 
             policy_rng = jax_rngs.current("policy")
+            actor_update_interval = _scheduled_online_actor_update_interval(
+                args,
+                train_env_steps=phase_start_train_env_steps,
+            )
             state, policy_rng, policy_metrics = _train_policy(
                 args,
                 logger,
@@ -1246,7 +1262,7 @@ def run_one(
                 phase=f"{phase}_policy",
                 train_steps=args.online_policy_train_steps,
                 reset_actor=False,
-                actor_update_interval=args.online_policy_actor_update_interval,
+                actor_update_interval=actor_update_interval,
                 actor_entropy_coef=_scheduled_actor_entropy_coef(
                     args,
                     train_env_steps=train_env_steps,
@@ -1372,10 +1388,8 @@ def run_one(
                     "reproducibility": reproducibility,
                     "world_model_train_steps": args.online_train_steps,
                     "policy_train_steps": args.online_policy_train_steps,
-                    "policy_actor_updates": (
-                        args.online_policy_train_steps
-                        // args.online_policy_actor_update_interval
-                    ),
+                    "policy_actor_update_interval": actor_update_interval,
+                    "policy_actor_updates": policy_metrics["policy_actor_updates"],
                 }
             )
             if checkpoint_phase:
@@ -2450,6 +2464,16 @@ def _scheduled_actor_entropy_coef(
     return float(
         args.actor_entropy_coef + progress * (final_coef - args.actor_entropy_coef)
     )
+
+
+def _scheduled_online_actor_update_interval(
+    args: argparse.Namespace,
+    *,
+    train_env_steps: int,
+) -> int:
+    if train_env_steps < args.online_policy_actor_update_interval_start_env_steps:
+        return 1
+    return int(args.online_policy_actor_update_interval)
 
 
 def _final_policy_evaluation(

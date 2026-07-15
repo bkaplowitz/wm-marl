@@ -50,6 +50,7 @@ _JEPA_BASE: dict[str, Any] = {
     "online_train_steps": 1_024,
     "online_policy_train_steps": 512,
     "online_policy_actor_update_interval": 1,
+    "online_policy_actor_update_interval_start_env_steps": 0,
     "online_checkpoint_interval": 16,
     "policy_batch_size": 1_024,
     "imag_horizon": 15,
@@ -163,6 +164,7 @@ OVERRIDABLE_PARAMS = (
     "policy_train_steps",
     "online_policy_train_steps",
     "online_policy_actor_update_interval",
+    "online_policy_actor_update_interval_start_env_steps",
     "online_checkpoint_interval",
     "online_recent_replay_steps",
     "latent_dim",
@@ -280,6 +282,10 @@ def step_accounting(params: dict[str, Any]) -> dict[str, int | float | None]:
         params,
         "online_policy_actor_update_interval",
     )
+    online_actor_interval_start_env_steps = _int_param(
+        params,
+        "online_policy_actor_update_interval_start_env_steps",
+    )
 
     train_vector_steps = _sum_optional(
         collect_steps,
@@ -297,17 +303,15 @@ def step_accounting(params: dict[str, Any]) -> dict[str, int | float | None]:
         online_iterations,
         online_policy_train_steps,
     )
-    actor_updates = _sum_optional(
-        policy_train_steps,
-        _product_optional(
-            online_iterations,
-            (
-                None
-                if online_policy_train_steps is None
-                or online_actor_update_interval is None
-                else online_policy_train_steps // online_actor_update_interval
-            ),
-        ),
+    actor_updates = _scheduled_actor_update_total(
+        initial_updates=policy_train_steps,
+        online_iterations=online_iterations,
+        online_updates=online_policy_train_steps,
+        online_interval=online_actor_update_interval,
+        interval_start_env_steps=online_actor_interval_start_env_steps,
+        num_envs=num_envs,
+        collect_steps=collect_steps,
+        online_collect_steps=online_collect_steps,
     )
     sampled_transitions = _product_optional(
         world_model_updates,
@@ -375,6 +379,47 @@ def _phase_total(
     return initial + iterations * online
 
 
+def _scheduled_actor_update_total(
+    *,
+    initial_updates: int | None,
+    online_iterations: int | None,
+    online_updates: int | None,
+    online_interval: int | None,
+    interval_start_env_steps: int | None,
+    num_envs: int | None,
+    collect_steps: int | None,
+    online_collect_steps: int | None,
+) -> int | None:
+    values = (
+        initial_updates,
+        online_iterations,
+        online_updates,
+        online_interval,
+        interval_start_env_steps,
+        num_envs,
+        collect_steps,
+        online_collect_steps,
+    )
+    if any(value is None for value in values):
+        return None
+    assert initial_updates is not None
+    assert online_iterations is not None
+    assert online_updates is not None
+    assert online_interval is not None
+    assert interval_start_env_steps is not None
+    assert num_envs is not None
+    assert collect_steps is not None
+    assert online_collect_steps is not None
+
+    actor_updates = initial_updates
+    train_env_steps = num_envs * collect_steps
+    for _ in range(online_iterations):
+        interval = 1 if train_env_steps < interval_start_env_steps else online_interval
+        actor_updates += online_updates // interval
+        train_env_steps += num_envs * online_collect_steps
+    return actor_updates
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-root", type=Path, default=Path("runs/jepa"))
@@ -401,6 +446,7 @@ def parse_args() -> argparse.Namespace:
         "policy_train_steps",
         "online_policy_train_steps",
         "online_policy_actor_update_interval",
+        "online_policy_actor_update_interval_start_env_steps",
         "online_checkpoint_interval",
         "policy_actor_kl_reference_interval",
         "online_recent_replay_steps",
