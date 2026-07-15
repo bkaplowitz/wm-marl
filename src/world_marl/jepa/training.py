@@ -78,12 +78,26 @@ class JepaTrainState:
     return_range_ema: jax.Array
     return_range_initialized: jax.Array
 
-    def apply_model_gradients(self, grads) -> "JepaTrainState":
+    def apply_model_gradients(
+        self,
+        grads,
+        *,
+        freeze_encoder: bool = False,
+    ) -> "JepaTrainState":
         updates, opt_state = self.model_tx.update(
             grads,
             self.model_opt_state,
             self.params,
         )
+        if freeze_encoder:
+            updates = updates.copy(
+                add_or_replace={
+                    "encoder": jax.tree_util.tree_map(
+                        jnp.zeros_like,
+                        updates["encoder"],
+                    )
+                }
+            )
         return self.replace(
             step=self.step + 1,
             params=optax.apply_updates(self.params, updates),
@@ -220,6 +234,7 @@ def _update_target_critic_params(
         "config",
         "chunk_length",
         "control",
+        "freeze_encoder",
     ),
 )
 def train_model_step(
@@ -230,6 +245,7 @@ def train_model_step(
     *,
     chunk_length: int,
     control: ControlMode = "none",
+    freeze_encoder: bool = False,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     def loss_fn(params):
         loss, metrics = world_model_loss(
@@ -245,15 +261,30 @@ def train_model_step(
 
     (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
     del loss
+    encoder_grad_norm = optax.global_norm(grads["encoder"])
+    if freeze_encoder:
+        grads = grads.copy(
+            add_or_replace={
+                "encoder": jax.tree_util.tree_map(jnp.zeros_like, grads["encoder"])
+            }
+        )
     metrics = {
         **metrics,
         "model/grad_norm": optax.global_norm(grads),
+        "model/encoder_grad_norm_unmasked": encoder_grad_norm,
+        "model/encoder_frozen": jnp.asarray(
+            float(freeze_encoder),
+            dtype=metrics["model/total_loss"].dtype,
+        ),
         "model/grad_clip_norm": jnp.asarray(
             config.model_grad_clip_norm,
             dtype=metrics["model/total_loss"].dtype,
         ),
     }
-    return state.apply_model_gradients(grads), metrics
+    return state.apply_model_gradients(
+        grads,
+        freeze_encoder=freeze_encoder,
+    ), metrics
 
 
 def actor_value_from_latent(

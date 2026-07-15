@@ -292,6 +292,15 @@ def parse_args() -> argparse.Namespace:
     online.add_argument("--online-policy-train-steps", type=int, default=512)
     online.add_argument("--online-checkpoint-interval", type=int, default=16)
     online.add_argument(
+        "--online-freeze-encoder",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Freeze the observation encoder during online world-model refits. "
+            "This is intended as a latent-interface stability diagnostic."
+        ),
+    )
+    online.add_argument(
         "--online-recent-replay-fraction",
         type=float,
         default=0.0,
@@ -343,6 +352,15 @@ def parse_args() -> argparse.Namespace:
     reporting.add_argument("--curve-eval-episodes", type=int, default=0)
     reporting.add_argument("--curve-eval-num-envs", type=int, default=None)
     reporting.add_argument("--curve-eval-seed", type=int, default=None)
+    reporting.add_argument(
+        "--online-interface-diagnostic-batch-size",
+        type=int,
+        default=256,
+        help=(
+            "Replay observations used to separate world-model-induced latent "
+            "interface drift from actor/critic update drift; set to 0 to disable."
+        ),
+    )
 
     reproducibility = parser.add_argument_group("reproducibility and output")
     reproducibility.add_argument("--num-runs", type=int, default=1)
@@ -437,6 +455,7 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         "dreamer_report_budget_env_steps",
         "curve_eval_interval_env_steps",
         "curve_eval_episodes",
+        "online_interface_diagnostic_batch_size",
         "wandb_video_camera",
     )
     for name in nonnegative:
@@ -1142,6 +1161,24 @@ def run_one(
                 }
             )
 
+            interface_observations = None
+            interface_before_world_model = None
+            if args.online_interface_diagnostic_batch_size > 0:
+                interface_rng = np.random.default_rng(
+                    np.random.SeedSequence([seed, 17_001, online_index])
+                )
+                interface_observations, _ = _sample_policy_starts(
+                    replay,
+                    interface_rng,
+                    config=config,
+                    batch_size=args.online_interface_diagnostic_batch_size,
+                )
+                interface_before_world_model = _policy_interface_snapshot(
+                    state,
+                    interface_observations,
+                    config,
+                )
+
             model_rng = jax_rngs.current("world_model")
             state, model_rng, _, online_model_losses = _fit_world_model(
                 args,
@@ -1157,6 +1194,7 @@ def run_one(
                 train_env_steps=train_env_steps,
                 recent_replay=online_recent_replay,
                 recent_fraction=effective_recent_fractions["world_model"],
+                freeze_encoder=args.online_freeze_encoder,
             )
             jax_rngs.update("world_model", model_rng)
             logger.plot_world_model_loss(
@@ -1174,6 +1212,14 @@ def run_one(
                 action_high=adapter.action_high,
             )
             logger.write_json(f"{phase}_model_metrics.json", model_metrics)
+
+            interface_after_world_model = None
+            if interface_observations is not None:
+                interface_after_world_model = _policy_interface_snapshot(
+                    state,
+                    interface_observations,
+                    config,
+                )
 
             policy_rng = jax_rngs.current("policy")
             state, policy_rng, policy_metrics = _train_policy(
@@ -1218,6 +1264,43 @@ def run_one(
             )
             jax_rngs.update("policy", policy_rng)
             logger.write_json(f"{phase}_policy.json", policy_metrics)
+
+            interface_metrics = None
+            if (
+                interface_observations is not None
+                and interface_before_world_model is not None
+                and interface_after_world_model is not None
+            ):
+                interface_after_policy = _policy_interface_snapshot(
+                    state,
+                    interface_observations,
+                    config,
+                )
+                interface_metrics = {
+                    "phase": "online_interface_drift",
+                    "online_iteration": online_index,
+                    "budget/train_env_steps": train_env_steps,
+                    "interface/anchor_batch_size": (
+                        args.online_interface_diagnostic_batch_size
+                    ),
+                    **_policy_interface_drift_metrics(
+                        interface_before_world_model,
+                        interface_after_world_model,
+                        prefix="interface/world_model",
+                    ),
+                    **_policy_interface_drift_metrics(
+                        interface_after_world_model,
+                        interface_after_policy,
+                        prefix="interface/policy_update",
+                    ),
+                    **_policy_interface_drift_metrics(
+                        interface_before_world_model,
+                        interface_after_policy,
+                        prefix="interface/total_phase",
+                    ),
+                }
+                logger.write_json(f"{phase}_interface_drift.json", interface_metrics)
+                logger.append_metrics(interface_metrics)
 
             curve_evaluation = None
             if (
@@ -1272,6 +1355,7 @@ def run_one(
                     "actor_replay": collection,
                     "model_metrics": model_metrics,
                     "policy": policy_metrics,
+                    "interface_drift": interface_metrics,
                     "policy_evaluation": curve_evaluation,
                     "reproducibility": reproducibility,
                     "world_model_train_steps": args.online_train_steps,
@@ -1860,6 +1944,7 @@ def _fit_world_model(
     train_env_steps: int,
     recent_replay: SequenceReplayBuffer | None = None,
     recent_fraction: float = 0.0,
+    freeze_encoder: bool = False,
 ) -> tuple[Any, jax.Array, dict[str, Any], list[float]]:
     loss_history: list[jax.Array] = []
     metrics: dict[str, Any] = {}
@@ -1887,6 +1972,7 @@ def _fit_world_model(
             config,
             chunk_length=args.chunk_length,
             control=CONTROL,
+            freeze_encoder=freeze_encoder,
         )
         loss_history.append(metrics["model/total_loss"])
         if (
@@ -1904,6 +1990,7 @@ def _fit_world_model(
                     "update": step_index,
                     "budget/train_env_steps": train_env_steps,
                     "data/online_recent_replay_fraction": recent_fraction,
+                    "model/online_encoder_frozen": float(freeze_encoder),
                     **metrics,
                 }
             )
@@ -2202,6 +2289,124 @@ def _sample_policy_starts(
         jnp.concatenate(observation_chunks, axis=0)[:batch_size],
         jnp.concatenate(action_chunks, axis=0)[:batch_size],
     )
+
+
+def _policy_interface_snapshot(
+    state,
+    observations: jax.Array,
+    config: JepaConfig,
+) -> dict[str, np.ndarray]:
+    """Evaluate the encoder and policy heads on fixed replay observations."""
+
+    latents = state.apply_fn(
+        {"params": state.params},
+        observations,
+        method=JepaWorldModel.encode,
+    )
+    policy_latents = latents[:, -1] if latents.ndim == 3 else latents
+    means, log_stds, values = state.apply_fn(
+        {"params": state.params},
+        policy_latents,
+        method=JepaWorldModel.actor_value_stats_from_latent,
+    )
+    return {
+        "latents": np.asarray(jax.device_get(latents), dtype=np.float64),
+        "means": np.asarray(jax.device_get(means), dtype=np.float64),
+        "log_stds": np.asarray(jax.device_get(log_stds), dtype=np.float64),
+        "values": np.asarray(jax.device_get(values), dtype=np.float64),
+    }
+
+
+def _policy_interface_drift_metrics(
+    before: dict[str, np.ndarray],
+    after: dict[str, np.ndarray],
+    *,
+    prefix: str,
+) -> dict[str, float]:
+    """Measure coordinate-sensitive and behavior-level phase-boundary drift."""
+
+    before_latents = np.asarray(before["latents"], dtype=np.float64).reshape(
+        (-1, before["latents"].shape[-1])
+    )
+    after_latents = np.asarray(after["latents"], dtype=np.float64).reshape(
+        (-1, after["latents"].shape[-1])
+    )
+    latent_delta = after_latents - before_latents
+    before_norm = np.linalg.norm(before_latents, axis=-1)
+    after_norm = np.linalg.norm(after_latents, axis=-1)
+    cosine = np.sum(before_latents * after_latents, axis=-1) / np.maximum(
+        before_norm * after_norm,
+        1e-12,
+    )
+
+    before_centered = before_latents - np.mean(before_latents, axis=0, keepdims=True)
+    after_centered = after_latents - np.mean(after_latents, axis=0, keepdims=True)
+    cross = before_centered.T @ after_centered
+    before_gram = before_centered.T @ before_centered
+    after_gram = after_centered.T @ after_centered
+    cka_denominator = np.sqrt(
+        np.sum(np.square(before_gram)) * np.sum(np.square(after_gram))
+    )
+    linear_cka = np.sum(np.square(cross)) / max(float(cka_denominator), 1e-12)
+
+    before_means = np.asarray(before["means"], dtype=np.float64)
+    after_means = np.asarray(after["means"], dtype=np.float64)
+    before_log_stds = np.asarray(before["log_stds"], dtype=np.float64)
+    after_log_stds = np.asarray(after["log_stds"], dtype=np.float64)
+    variance_ratio = np.exp(2.0 * (before_log_stds - after_log_stds))
+    squared_mean_delta = np.square(before_means - after_means) * np.exp(
+        -2.0 * after_log_stds
+    )
+    kl_per_dimension = (
+        after_log_stds
+        - before_log_stds
+        + 0.5 * (variance_ratio + squared_mean_delta - 1.0)
+    )
+    policy_kl_per_dim = np.mean(kl_per_dimension, axis=-1)
+
+    before_actions = np.tanh(before_means)
+    after_actions = np.tanh(after_means)
+    action_delta = np.abs(after_actions - before_actions)
+    before_values = np.asarray(before["values"], dtype=np.float64)
+    after_values = np.asarray(after["values"], dtype=np.float64)
+    value_delta = np.abs(after_values - before_values)
+
+    return {
+        f"{prefix}/latent_cosine_mean": float(np.mean(cosine)),
+        f"{prefix}/latent_cosine_p10": float(np.percentile(cosine, 10.0)),
+        f"{prefix}/latent_linear_cka": float(linear_cka),
+        f"{prefix}/latent_relative_rms_delta": float(
+            np.sqrt(np.mean(np.square(latent_delta)))
+            / max(float(np.sqrt(np.mean(np.square(before_latents)))), 1e-12)
+        ),
+        f"{prefix}/latent_norm_ratio": float(
+            np.mean(after_norm) / max(float(np.mean(before_norm)), 1e-12)
+        ),
+        f"{prefix}/policy_kl_per_action_dim_mean": float(
+            np.mean(policy_kl_per_dim)
+        ),
+        f"{prefix}/policy_kl_per_action_dim_p95": float(
+            np.percentile(policy_kl_per_dim, 95.0)
+        ),
+        f"{prefix}/actor_mean_abs_delta": float(
+            np.mean(np.abs(after_means - before_means))
+        ),
+        f"{prefix}/actor_log_std_abs_delta": float(
+            np.mean(np.abs(after_log_stds - before_log_stds))
+        ),
+        f"{prefix}/normalized_action_mean_abs_delta": float(np.mean(action_delta)),
+        f"{prefix}/normalized_action_mean_max_delta": float(np.max(action_delta)),
+        f"{prefix}/action_mean_saturation_before": float(
+            np.mean(np.abs(before_actions) >= 0.95)
+        ),
+        f"{prefix}/action_mean_saturation_after": float(
+            np.mean(np.abs(after_actions) >= 0.95)
+        ),
+        f"{prefix}/value_abs_delta": float(np.mean(value_delta)),
+        f"{prefix}/value_relative_abs_delta": float(
+            np.mean(value_delta) / max(float(np.mean(np.abs(before_values))), 1.0)
+        ),
+    }
 
 
 def _scheduled_actor_entropy_coef(

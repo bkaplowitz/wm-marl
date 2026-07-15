@@ -257,6 +257,46 @@ def test_continuous_action_jepa_model_step_is_finite():
     assert jnp.isfinite(metrics["model/total_loss"])
 
 
+def test_model_step_can_freeze_only_the_observation_encoder():
+    config = _config()
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    state, _ = train_model_step(
+        state,
+        jax.random.PRNGKey(1),
+        _batch(config),
+        config,
+        chunk_length=2,
+    )
+    encoder_before = state.params["encoder"]
+    predictor_before = state.params["predictor"]
+
+    state, metrics = train_model_step(
+        state,
+        jax.random.PRNGKey(2),
+        _batch(config),
+        config,
+        chunk_length=2,
+        freeze_encoder=True,
+    )
+
+    assert all(
+        jnp.array_equal(before, after)
+        for before, after in zip(
+            jax.tree_util.tree_leaves(encoder_before),
+            jax.tree_util.tree_leaves(state.params["encoder"]),
+        )
+    )
+    assert any(
+        not jnp.array_equal(before, after)
+        for before, after in zip(
+            jax.tree_util.tree_leaves(predictor_before),
+            jax.tree_util.tree_leaves(state.params["predictor"]),
+        )
+    )
+    assert metrics["model/encoder_frozen"] == 1.0
+    assert metrics["model/encoder_grad_norm_unmasked"] > 0.0
+
+
 def test_dynamics_ensemble_model_step_and_policy_metrics_are_finite():
     config = JepaConfig(
         observation_dim=4,
