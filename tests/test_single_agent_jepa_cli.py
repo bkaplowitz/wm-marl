@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from flax.core import freeze
 
 from world_marl.jepa.replay import SequenceReplayBuffer
 from world_marl.scripts import train_dmc_jepa
@@ -50,6 +51,85 @@ def test_cli_accepts_shared_validation_seed(monkeypatch):
     args = train_dmc_jepa.parse_args()
 
     assert args.validation_seed == 1_000_042
+
+
+def test_cli_accepts_slow_policy_bundle(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _minimal_args(
+            "--policy-bundle-ema-decay",
+            "0.995",
+            "--policy-bundle-ema-start-env-steps",
+            "50000",
+            "--policy-bundle-online-action-fraction",
+            "0.25",
+        ),
+    )
+
+    args = train_dmc_jepa.parse_args()
+
+    assert args.policy_bundle_ema_decay == pytest.approx(0.995)
+    assert args.policy_bundle_ema_start_env_steps == 50_000
+    assert args.policy_bundle_online_action_fraction == pytest.approx(0.25)
+
+
+def test_cli_rejects_policy_bundle_mix_when_bundle_is_disabled(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _minimal_args("--policy-bundle-online-action-fraction", "0.25"),
+    )
+
+    with pytest.raises(SystemExit):
+        train_dmc_jepa.parse_args()
+
+
+def test_policy_bundle_ema_tracks_encoder_and_actor_together():
+    initial = freeze(
+        {
+            "encoder": {"value": jnp.asarray([1.0])},
+            "actor_head": {"value": jnp.asarray([2.0])},
+            "value_head": {"value": jnp.asarray([3.0])},
+        }
+    )
+    updated = freeze(
+        {
+            "encoder": {"value": jnp.asarray([5.0])},
+            "actor_head": {"value": jnp.asarray([10.0])},
+            "value_head": {"value": jnp.asarray([30.0])},
+        }
+    )
+
+    slow = train_dmc_jepa._update_policy_bundle_ema(None, initial, decay=0.5)
+    slow = train_dmc_jepa._update_policy_bundle_ema(slow, updated, decay=0.75)
+
+    assert set(slow) == {"encoder", "actor_head"}
+    np.testing.assert_allclose(slow["encoder"]["value"], [2.0])
+    np.testing.assert_allclose(slow["actor_head"]["value"], [4.0])
+
+
+def test_slow_policy_action_mix_uses_complete_policy_outputs(monkeypatch):
+    def fake_select(state, *_args, **_kwargs):
+        return state.actions
+
+    monkeypatch.setattr(train_dmc_jepa, "select_continuous_actions", fake_select)
+    online = SimpleNamespace(actions=jnp.asarray([[1.0, -1.0]]))
+    slow = SimpleNamespace(actions=jnp.asarray([[-1.0, 1.0]]))
+
+    actions = train_dmc_jepa._select_behavior_actions(
+        online,
+        slow,
+        jnp.zeros((1, 1)),
+        SimpleNamespace(),
+        jnp.asarray([-1.0, -1.0]),
+        jnp.asarray([1.0, 1.0]),
+        key=jax.random.PRNGKey(0),
+        stochastic=False,
+        online_action_fraction=0.25,
+    )
+
+    np.testing.assert_allclose(actions, [[-0.5, 0.5]])
 
 
 def test_cli_accepts_reset_rich_bootstrap(monkeypatch):

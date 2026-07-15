@@ -24,6 +24,7 @@ from world_marl.determinism import configure_deterministic_environment
 import jax
 import jax.numpy as jnp
 import numpy as np
+from flax.core import FrozenDict, freeze
 from tqdm.auto import tqdm
 
 from world_marl.checkpointing import load_params, save_checkpoint
@@ -57,6 +58,7 @@ from world_marl.logging import (
 
 CONTROL = "none"
 MIN_TERMINAL_FRACTION_FOR_CONTINUE_BASELINE = 0.01
+POLICY_BUNDLE_PARAM_GROUPS = ("encoder", "actor_head")
 
 
 def parse_args() -> argparse.Namespace:
@@ -312,6 +314,33 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=64,
         help="Actor updates between KL reference-policy refreshes.",
+    )
+    policy.add_argument(
+        "--policy-bundle-ema-decay",
+        type=float,
+        default=0.0,
+        help=(
+            "Per-online-phase EMA decay for a slow observation-encoder and "
+            "actor-head bundle; 0 disables the slow behavior policy."
+        ),
+    )
+    policy.add_argument(
+        "--policy-bundle-ema-start-env-steps",
+        type=int,
+        default=0,
+        help=(
+            "Training transition at which to initialize and begin updating "
+            "the slow policy bundle."
+        ),
+    )
+    policy.add_argument(
+        "--policy-bundle-online-action-fraction",
+        type=float,
+        default=0.0,
+        help=(
+            "Fraction of online-policy action mixed with the slow-policy "
+            "action during collection and evaluation."
+        ),
     )
     policy.add_argument("--value-output-scale", type=float, default=0.0)
     policy.add_argument(
@@ -773,6 +802,20 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--policy-actor-kl-target-per-dim must be >= 0")
     if args.policy_actor_kl_reference_interval < 1:
         parser.error("--policy-actor-kl-reference-interval must be >= 1")
+    if not 0.0 <= args.policy_bundle_ema_decay < 1.0:
+        parser.error("--policy-bundle-ema-decay must be in [0, 1)")
+    if args.policy_bundle_ema_start_env_steps < 0:
+        parser.error("--policy-bundle-ema-start-env-steps must be >= 0")
+    if not 0.0 <= args.policy_bundle_online_action_fraction <= 1.0:
+        parser.error("--policy-bundle-online-action-fraction must be in [0, 1]")
+    if (
+        args.policy_bundle_ema_decay == 0.0
+        and args.policy_bundle_online_action_fraction != 0.0
+    ):
+        parser.error(
+            "--policy-bundle-online-action-fraction requires "
+            "--policy-bundle-ema-decay > 0"
+        )
     if args.optimizer_epsilon <= 0.0:
         parser.error("--optimizer-epsilon must be > 0")
     if args.twohot_bins < 3 or args.twohot_min >= args.twohot_max:
@@ -931,6 +974,7 @@ def _reproducibility_snapshot(
     phase: str,
     recent_replay: SequenceReplayBuffer | None = None,
     full_replay: SequenceReplayBuffer | None = None,
+    policy_bundle_ema: FrozenDict | None = None,
 ) -> dict[str, Any]:
     snapshot = {
         "phase": phase,
@@ -938,6 +982,8 @@ def _reproducibility_snapshot(
         "params_sha256": fingerprint_pytree(state.params),
         "target_critic_sha256": fingerprint_pytree(state.target_critic_params),
     }
+    if policy_bundle_ema is not None:
+        snapshot["policy_bundle_ema_sha256"] = fingerprint_pytree(policy_bundle_ema)
     if recent_replay is not None:
         snapshot["recent_replay_sha256"] = recent_replay.fingerprint()
         snapshot["recent_replay_size_per_env"] = recent_replay.size
@@ -980,6 +1026,108 @@ def _scheduled_recent_fractions(
     return fractions
 
 
+def _protocol_name(args: argparse.Namespace) -> str:
+    if args.policy_bundle_ema_decay > 0.0:
+        return "reset_rich_interleaved_slow_policy_bundle"
+    return "reset_rich_interleaved_latest_policy"
+
+
+def _policy_bundle(params) -> FrozenDict:
+    return freeze({name: params[name] for name in POLICY_BUNDLE_PARAM_GROUPS})
+
+
+def _update_policy_bundle_ema(
+    previous: FrozenDict | None,
+    current_params: FrozenDict,
+    *,
+    decay: float,
+) -> FrozenDict:
+    current = _policy_bundle(current_params)
+    if previous is None:
+        return current
+    return freeze(
+        jax.tree_util.tree_map(
+            lambda slow, online: decay * slow + (1.0 - decay) * online,
+            previous,
+            current,
+        )
+    )
+
+
+def _state_with_policy_bundle(state, bundle: FrozenDict | None):
+    if bundle is None:
+        return state
+    return state.replace(
+        params=state.params.copy(
+            add_or_replace={name: bundle[name] for name in POLICY_BUNDLE_PARAM_GROUPS}
+        )
+    )
+
+
+def _policy_bundle_rms_delta(
+    bundle: FrozenDict | None,
+    current_params: FrozenDict,
+) -> float:
+    if bundle is None:
+        return 0.0
+    squared = [
+        jnp.mean(jnp.square(slow - online))
+        for slow, online in zip(
+            jax.tree_util.tree_leaves(bundle),
+            jax.tree_util.tree_leaves(_policy_bundle(current_params)),
+            strict=True,
+        )
+    ]
+    return float(jax.device_get(jnp.sqrt(jnp.mean(jnp.stack(squared)))))
+
+
+def _select_behavior_actions(
+    state,
+    slow_policy_state,
+    observations: jax.Array,
+    config: JepaConfig,
+    action_low: jax.Array,
+    action_high: jax.Array,
+    *,
+    key: jax.Array,
+    stochastic: bool,
+    online_action_fraction: float,
+) -> jax.Array:
+    if slow_policy_state is None:
+        return select_continuous_actions(
+            state,
+            observations,
+            config,
+            action_low,
+            action_high,
+            key=key,
+            stochastic=stochastic,
+        )
+    slow_actions = select_continuous_actions(
+        slow_policy_state,
+        observations,
+        config,
+        action_low,
+        action_high,
+        key=key,
+        stochastic=stochastic,
+    )
+    if online_action_fraction <= 0.0:
+        return slow_actions
+    online_actions = select_continuous_actions(
+        state,
+        observations,
+        config,
+        action_low,
+        action_high,
+        key=key,
+        stochastic=stochastic,
+    )
+    return (
+        1.0 - online_action_fraction
+    ) * slow_actions + online_action_fraction * online_actions
+
+
 def run_one(
     args: argparse.Namespace,
     *,
@@ -1017,7 +1165,7 @@ def run_one(
             "env_backend": _env_backend(args.env),
             "jepa_config": dataclasses.asdict(config),
             "online_recent_replay_requested_fractions": (requested_recent_fractions),
-            "protocol": "reset_rich_interleaved_latest_policy",
+            "protocol": _protocol_name(args),
         }
         logger.write_json("config.json", resolved_config)
         logger.update_config(resolved_config)
@@ -1253,6 +1401,17 @@ def run_one(
             _reproducibility_snapshot(state, phase="initial_policy"),
         )
 
+        policy_bundle_ema = None
+        if (
+            args.policy_bundle_ema_decay > 0.0
+            and train_env_steps >= args.policy_bundle_ema_start_env_steps
+        ):
+            policy_bundle_ema = _update_policy_bundle_ema(
+                None,
+                state.params,
+                decay=args.policy_bundle_ema_decay,
+            )
+
         online_history: list[dict[str, Any]] = []
         curve_evaluations: list[dict[str, Any]] = []
         next_curve_eval_step = (
@@ -1280,6 +1439,11 @@ def run_one(
             collection_replays = [replay, phase_replay]
             if online_recent_replay is not None:
                 collection_replays.append(online_recent_replay)
+            slow_policy_state = (
+                _state_with_policy_bundle(state, policy_bundle_ema)
+                if policy_bundle_ema is not None
+                else None
+            )
             observations, added_env_steps, collection = _collect_policy_steps(
                 adapter,
                 observations,
@@ -1301,6 +1465,8 @@ def run_one(
                 reset_until_env_steps=args.online_reset_until_env_steps,
                 failure_return_threshold=args.failure_return_threshold,
                 success_return_threshold=args.success_return_threshold,
+                slow_policy_state=slow_policy_state,
+                online_action_fraction=(args.policy_bundle_online_action_fraction),
             )
             train_env_steps += added_env_steps
             logger.set_train_env_steps(train_env_steps)
@@ -1482,8 +1648,36 @@ def run_one(
                 reset_start_fraction=args.policy_reset_start_fraction,
                 reset_start_max_age=args.policy_reset_start_max_age,
             )
+            if (
+                args.policy_bundle_ema_decay > 0.0
+                and train_env_steps >= args.policy_bundle_ema_start_env_steps
+            ):
+                policy_bundle_ema = _update_policy_bundle_ema(
+                    policy_bundle_ema,
+                    state.params,
+                    decay=args.policy_bundle_ema_decay,
+                )
+            slow_policy_state = (
+                _state_with_policy_bundle(state, policy_bundle_ema)
+                if policy_bundle_ema is not None
+                else None
+            )
             policy_metrics.update(
                 {
+                    "policy_bundle_ema_enabled": float(
+                        args.policy_bundle_ema_decay > 0.0
+                    ),
+                    "policy_bundle_ema_initialized": float(
+                        policy_bundle_ema is not None
+                    ),
+                    "policy_bundle_ema_decay": args.policy_bundle_ema_decay,
+                    "policy_bundle_ema_rms_delta": _policy_bundle_rms_delta(
+                        policy_bundle_ema,
+                        state.params,
+                    ),
+                    "policy_bundle_online_action_fraction": (
+                        args.policy_bundle_online_action_fraction
+                    ),
                     "policy_online_recent_start_requested_fraction": (
                         active_recent_fractions["policy_start"]
                     ),
@@ -1558,6 +1752,7 @@ def run_one(
                     online_iteration=online_index,
                     train_env_steps=train_env_steps,
                     scheduled_env_steps=next_curve_eval_step,
+                    slow_policy_state=slow_policy_state,
                 )
                 curve_evaluations.append(curve_evaluation)
                 while (
@@ -1575,6 +1770,7 @@ def run_one(
                 phase=phase,
                 recent_replay=phase_replay,
                 full_replay=replay if checkpoint_phase else None,
+                policy_bundle_ema=policy_bundle_ema,
             )
             if online_recent_replay is not None:
                 reproducibility.update(
@@ -1612,8 +1808,14 @@ def run_one(
                     seed=seed,
                     online_iteration=online_index,
                     train_env_steps=train_env_steps,
+                    slow_policy_state=slow_policy_state,
                 )
 
+        slow_policy_state = (
+            _state_with_policy_bundle(state, policy_bundle_ema)
+            if policy_bundle_ema is not None
+            else None
+        )
         logger.write_json("online_history.json", online_history)
         training_score = _dreamer_style_training_score(
             online_history,
@@ -1639,7 +1841,12 @@ def run_one(
         logger.write_json("model_metrics_final.json", final_metrics)
         logger.write_json(
             "reproducibility_final.json",
-            _reproducibility_snapshot(state, phase="final", full_replay=replay),
+            _reproducibility_snapshot(
+                state,
+                phase="final",
+                full_replay=replay,
+                policy_bundle_ema=policy_bundle_ema,
+            ),
         )
 
         checkpoint_dir = run_dir / "checkpoint"
@@ -1657,6 +1864,23 @@ def run_one(
                     "train_replay_env_steps": train_env_steps,
                 },
             )
+            if slow_policy_state is not None:
+                save_checkpoint(
+                    run_dir / "checkpoint_slow_policy",
+                    slow_policy_state,
+                    metadata={
+                        "algorithm": "single_agent_jepa_mbrl",
+                        "checkpoint_kind": "final_slow_policy",
+                        "env": args.env,
+                        "env_backend": _env_backend(args.env),
+                        "jepa_config": dataclasses.asdict(config),
+                        "online_action_fraction": (
+                            args.policy_bundle_online_action_fraction
+                        ),
+                        "seed": seed,
+                        "train_replay_env_steps": train_env_steps,
+                    },
+                )
         except OSError as error:
             warnings.warn(
                 f"Final checkpoint write failed: {error}",
@@ -1695,6 +1919,7 @@ def run_one(
             seed=seed,
             action_low=adapter.action_low,
             action_high=adapter.action_high,
+            slow_policy_state=slow_policy_state,
         )
         world_model_passed = _run_passed(
             initial_metrics,
@@ -1707,7 +1932,12 @@ def run_one(
             "control": CONTROL,
             "run_dir": str(run_dir),
             "checkpoint_dir": str(checkpoint_dir),
-            "protocol": "reset_rich_interleaved_latest_policy",
+            "slow_policy_checkpoint_dir": (
+                str(run_dir / "checkpoint_slow_policy")
+                if slow_policy_state is not None
+                else None
+            ),
+            "protocol": _protocol_name(args),
             "target": (
                 f"{_env_backend(args.env)}:"
                 "p(z_next, reward, continue | z_history, action_history)"
@@ -1810,6 +2040,7 @@ def _save_recovery_checkpoint(
     seed: int,
     online_iteration: int,
     train_env_steps: int,
+    slow_policy_state=None,
 ) -> None:
     try:
         save_checkpoint(
@@ -1826,6 +2057,24 @@ def _save_recovery_checkpoint(
                 "train_replay_env_steps": train_env_steps,
             },
         )
+        if slow_policy_state is not None:
+            save_checkpoint(
+                run_dir / "checkpoint_latest_slow_policy",
+                slow_policy_state,
+                metadata={
+                    "algorithm": "single_agent_jepa_mbrl",
+                    "checkpoint_kind": "online_recovery_slow_policy",
+                    "env": args.env,
+                    "env_backend": _env_backend(args.env),
+                    "jepa_config": dataclasses.asdict(config),
+                    "online_iteration": online_iteration,
+                    "online_action_fraction": (
+                        args.policy_bundle_online_action_fraction
+                    ),
+                    "seed": seed,
+                    "train_replay_env_steps": train_env_steps,
+                },
+            )
     except OSError as error:
         warnings.warn(
             f"Recovery checkpoint write failed; training continues: {error}",
@@ -1926,6 +2175,8 @@ def _collect_policy_steps(
     train_env_step_offset: int,
     failure_return_threshold: float,
     success_return_threshold: float,
+    slow_policy_state=None,
+    online_action_fraction: float = 0.0,
     reset_interval: int | None = None,
     reset_fraction: float = 1.0,
     reset_step_offset: int = 0,
@@ -1948,14 +2199,16 @@ def _collect_policy_steps(
     for step_index in progress:
         action_key, step_action_key = jax.random.split(action_key)
         actions = np.asarray(
-            select_continuous_actions(
+            _select_behavior_actions(
                 state,
+                slow_policy_state,
                 jnp.asarray(observations[:, 0], dtype=jnp.float32),
                 config,
                 action_low_jax,
                 action_high_jax,
                 key=step_action_key,
                 stochastic=stochastic_actions,
+                online_action_fraction=online_action_fraction,
             )
         )
         step = adapter.step(actions[:, None, :])
@@ -2019,6 +2272,10 @@ def _collect_policy_steps(
         "env_steps": steps * adapter.num_envs,
         "steps_per_env": steps,
         "stochastic_actions": stochastic_actions,
+        "policy_bundle_ema_used": slow_policy_state is not None,
+        "policy_bundle_online_action_fraction": (
+            online_action_fraction if slow_policy_state is not None else 1.0
+        ),
         "online_reset_interval": reset_interval,
         "online_reset_fraction": reset_fraction,
         "online_reset_envs_per_event": reset_envs_per_event,
@@ -2867,6 +3124,7 @@ def _final_policy_evaluation(
     seed: int,
     action_low: np.ndarray,
     action_high: np.ndarray,
+    slow_policy_state=None,
 ) -> dict[str, Any] | None:
     if args.final_policy_eval_episodes == 0:
         return None
@@ -2879,6 +3137,9 @@ def _final_policy_evaluation(
         args.num_envs,
         args.final_policy_eval_episodes,
     )
+    policy_label = (
+        "slow behavior policy" if slow_policy_state is not None else "latest policy"
+    )
     evaluation = _evaluate_continuous_policy(
         args,
         state,
@@ -2888,11 +3149,13 @@ def _final_policy_evaluation(
         episodes=args.final_policy_eval_episodes,
         action_low=jnp.asarray(action_low, dtype=jnp.float32),
         action_high=jnp.asarray(action_high, dtype=jnp.float32),
-        desc="evaluate final latest policy",
+        slow_policy_state=slow_policy_state,
+        online_action_fraction=args.policy_bundle_online_action_fraction,
+        desc=f"evaluate final {policy_label}",
         video_logger=logger if args.wandb_videos else None,
         video_filename="videos/final_policy.mp4" if args.wandb_videos else None,
         video_key="videos/final/policy" if args.wandb_videos else None,
-        video_caption="Final latest-policy evaluation",
+        video_caption=f"Final {policy_label} evaluation",
     )
     evaluation = {**evaluation, "evaluation_seed": evaluation_seed}
     logger.write_json("final_policy_evaluation.json", evaluation)
@@ -2913,6 +3176,7 @@ def _curve_policy_evaluation(
     online_iteration: int,
     train_env_steps: int,
     scheduled_env_steps: int,
+    slow_policy_state=None,
 ) -> dict[str, Any]:
     evaluation_seed = (
         args.curve_eval_seed
@@ -2927,6 +3191,9 @@ def _curve_policy_evaluation(
         args.num_envs,
         args.curve_eval_episodes,
     )
+    policy_label = (
+        "slow behavior policy" if slow_policy_state is not None else "latest policy"
+    )
     evaluation = _evaluate_continuous_policy(
         args,
         state,
@@ -2936,7 +3203,9 @@ def _curve_policy_evaluation(
         episodes=args.curve_eval_episodes,
         action_low=jnp.asarray(action_low, dtype=jnp.float32),
         action_high=jnp.asarray(action_high, dtype=jnp.float32),
-        desc=f"evaluate latest policy at {train_env_steps} train steps",
+        slow_policy_state=slow_policy_state,
+        online_action_fraction=args.policy_bundle_online_action_fraction,
+        desc=f"evaluate {policy_label} at {train_env_steps} train steps",
     )
     evaluation = {
         **evaluation,
@@ -2974,6 +3243,8 @@ def _evaluate_continuous_policy(
     action_low: jax.Array,
     action_high: jax.Array,
     desc: str,
+    slow_policy_state=None,
+    online_action_fraction: float = 0.0,
     video_logger: RunLogger | None = None,
     video_filename: str | None = None,
     video_key: str | None = None,
@@ -3021,14 +3292,16 @@ def _evaluate_continuous_policy(
                 before = len(returns)
                 action_key, step_action_key = jax.random.split(action_key)
                 actions = np.asarray(
-                    select_continuous_actions(
+                    _select_behavior_actions(
                         state,
+                        slow_policy_state,
                         jnp.asarray(observations[:, 0], dtype=jnp.float32),
                         config,
                         action_low,
                         action_high,
                         key=step_action_key,
                         stochastic=False,
+                        online_action_fraction=online_action_fraction,
                     )
                 )
                 step = adapter.step(actions[:, None, :])
@@ -3079,6 +3352,10 @@ def _evaluate_continuous_policy(
             "episodes": len(returns),
             "num_envs": num_envs,
             "stochastic_actions": False,
+            "policy_bundle_ema_used": slow_policy_state is not None,
+            "policy_bundle_online_action_fraction": (
+                online_action_fraction if slow_policy_state is not None else 1.0
+            ),
             "env_steps": step_calls * num_envs,
             "completed_episode_steps": int(sum(lengths)),
             "mean_return": float(np.mean(returns)),
@@ -3374,7 +3651,11 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
     passed = bool(outcomes and all(item["passed"] for item in outcomes))
     return {
         "algorithm": "single_agent_jepa_mbrl",
-        "protocol": "reset_rich_interleaved_latest_policy",
+        "protocol": (
+            outcomes[0].get("protocol", "reset_rich_interleaved_latest_policy")
+            if outcomes
+            else "reset_rich_interleaved_latest_policy"
+        ),
         "passed": passed,
         "world_model_passed": passed,
         "runs_passed": sum(bool(item["passed"]) for item in outcomes),

@@ -46,6 +46,21 @@ def test_launcher_serializes_entropy_decay_controls():
     assert tokens[tokens.index("--actor-entropy-decay-end-env-steps") + 1] == "500000"
 
 
+def test_launcher_serializes_slow_policy_bundle_controls():
+    command = params_to_shell_args(
+        {
+            "policy_bundle_ema_decay": 0.995,
+            "policy_bundle_ema_start_env_steps": 50_000,
+            "policy_bundle_online_action_fraction": 0.25,
+        }
+    )
+
+    tokens = command.replace("\\\n", " ").split()
+    assert tokens[tokens.index("--policy-bundle-ema-decay") + 1] == "0.995"
+    assert tokens[tokens.index("--policy-bundle-ema-start-env-steps") + 1] == "50000"
+    assert tokens[tokens.index("--policy-bundle-online-action-fraction") + 1] == "0.25"
+
+
 def test_launcher_serializes_early_sample_efficiency_diagnostic_controls():
     command = params_to_shell_args(
         {
@@ -161,6 +176,9 @@ def test_100k_preset_matches_the_reset_rich_interleaved_contract():
     assert params["policy_actor_kl_coef"] == 1.0
     assert params["policy_actor_kl_target_per_dim"] == 0.1
     assert params["policy_actor_kl_reference_interval"] == 512
+    assert params["policy_bundle_ema_decay"] == 0.0
+    assert params["policy_bundle_ema_start_env_steps"] == 0
+    assert params["policy_bundle_online_action_fraction"] == 0.0
     assert accounting["actor_updates"] == 1_280 + 91 * 256
     assert accounting["critic_updates"] == 1_280 + 91 * 512
 
