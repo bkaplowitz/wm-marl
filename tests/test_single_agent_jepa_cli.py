@@ -563,6 +563,8 @@ def test_cli_accepts_recent_replay_and_curve_evaluation(monkeypatch):
             "0.5",
             "--online-recent-world-model-fraction",
             "0.4",
+            "--online-recent-world-model-until-env-steps",
+            "50000",
             "--online-recent-policy-start-fraction",
             "0.0",
             "--online-recent-critic-fraction",
@@ -596,6 +598,23 @@ def test_cli_accepts_recent_replay_and_curve_evaluation(monkeypatch):
         "policy_start": 0.0,
         "critic": 0.25,
     }
+    assert train_dmc_jepa._scheduled_recent_fractions(
+        args,
+        train_env_steps=49_999,
+    ) == {
+        "world_model": 0.4,
+        "policy_start": 0.0,
+        "critic": 0.25,
+    }
+    assert train_dmc_jepa._scheduled_recent_fractions(
+        args,
+        train_env_steps=50_000,
+    ) == {
+        "world_model": 0.0,
+        "policy_start": 0.0,
+        "critic": 0.25,
+    }
+    assert args.online_recent_world_model_until_env_steps == 50_000
     assert args.online_recent_replay_steps == 128
     assert args.online_recent_replay_max_oversample == 10.0
     assert args.policy_bootstrap_start_fraction == 0.25

@@ -418,6 +418,16 @@ def parse_args() -> argparse.Namespace:
         help="Override recent replay for online world-model batches.",
     )
     online.add_argument(
+        "--online-recent-world-model-until-env-steps",
+        type=int,
+        default=None,
+        help=(
+            "Use the configured recent world-model fraction only while the "
+            "phase starts below this many training environment steps, then "
+            "switch world-model batches to uniform replay."
+        ),
+    )
+    online.add_argument(
         "--online-recent-policy-start-fraction",
         type=float,
         default=None,
@@ -604,6 +614,11 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         and args.online_reset_until_env_steps < 0
     ):
         parser.error("--online-reset-until-env-steps must be >= 0")
+    if (
+        args.online_recent_world_model_until_env_steps is not None
+        and args.online_recent_world_model_until_env_steps < 0
+    ):
+        parser.error("--online-recent-world-model-until-env-steps must be >= 0")
     if not 0.0 < args.online_reset_fraction <= 1.0:
         parser.error("--online-reset-fraction must be in (0, 1]")
     if args.chunk_length < args.context_window:
@@ -953,6 +968,18 @@ def _requested_recent_fractions(args: argparse.Namespace) -> dict[str, float]:
     }
 
 
+def _scheduled_recent_fractions(
+    args: argparse.Namespace,
+    *,
+    train_env_steps: int,
+) -> dict[str, float]:
+    fractions = _requested_recent_fractions(args)
+    until = args.online_recent_world_model_until_env_steps
+    if until is not None and train_env_steps >= until:
+        fractions["world_model"] = 0.0
+    return fractions
+
+
 def run_one(
     args: argparse.Namespace,
     *,
@@ -1240,6 +1267,10 @@ def run_one(
         for online_index in range(1, args.online_iterations + 1):
             phase = f"online_{online_index:03d}"
             phase_start_train_env_steps = train_env_steps
+            active_recent_fractions = _scheduled_recent_fractions(
+                args,
+                train_env_steps=phase_start_train_env_steps,
+            )
             phase_replay = _new_replay_buffer(
                 capacity=args.online_collect_steps,
                 num_envs=args.num_envs,
@@ -1297,9 +1328,7 @@ def run_one(
                     recent_replay_size=recent_replay_size,
                     max_oversample=args.online_recent_replay_max_oversample,
                 )
-                for component, requested_fraction in (
-                    requested_recent_fractions.items()
-                )
+                for component, requested_fraction in (active_recent_fractions.items())
             }
             effective_recent_oversamples = {
                 component: _recent_oversample_ratio(
@@ -1314,10 +1343,10 @@ def run_one(
             collection.update(
                 {
                     "online_recent_replay_fraction": (
-                        args.online_recent_replay_fraction
+                        active_recent_fractions["world_model"]
                     ),
                     "online_recent_replay_requested_fraction": (
-                        args.online_recent_replay_fraction
+                        active_recent_fractions["world_model"]
                     ),
                     "online_recent_replay_effective_fraction": (
                         effective_recent_fractions["world_model"]
@@ -1330,21 +1359,21 @@ def run_one(
                     ),
                     **{
                         f"online_recent_{component}_requested_fraction": (
-                            requested_recent_fractions[component]
+                            active_recent_fractions[component]
                         )
-                        for component in requested_recent_fractions
+                        for component in active_recent_fractions
                     },
                     **{
                         f"online_recent_{component}_effective_fraction": (
                             effective_recent_fractions[component]
                         )
-                        for component in requested_recent_fractions
+                        for component in active_recent_fractions
                     },
                     **{
                         f"online_recent_{component}_effective_oversample": (
                             effective_recent_oversamples[component]
                         )
-                        for component in requested_recent_fractions
+                        for component in active_recent_fractions
                     },
                 }
             )
@@ -1456,13 +1485,13 @@ def run_one(
             policy_metrics.update(
                 {
                     "policy_online_recent_start_requested_fraction": (
-                        requested_recent_fractions["policy_start"]
+                        active_recent_fractions["policy_start"]
                     ),
                     "policy_online_recent_start_effective_oversample": (
                         effective_recent_oversamples["policy_start"]
                     ),
                     "policy_online_recent_critic_requested_fraction": (
-                        requested_recent_fractions["critic"]
+                        active_recent_fractions["critic"]
                     ),
                     "policy_online_recent_critic_effective_oversample": (
                         effective_recent_oversamples["critic"]
