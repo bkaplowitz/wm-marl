@@ -259,6 +259,78 @@ class SequenceReplayBuffer:
                 )
         return starts.astype(np.int64), envs.astype(np.int64)
 
+    def episode_start_indices(
+        self,
+        *,
+        max_age: int,
+        chunk_length: int,
+        max_horizon: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return valid sequence starts near real or collector reset boundaries."""
+
+        if max_age < 0:
+            raise ValueError("max_age must be >= 0")
+        if chunk_length < 1:
+            raise ValueError("chunk_length must be >= 1")
+        if max_horizon < 1:
+            raise ValueError("max_horizon must be >= 1")
+        sequence_length = chunk_length + max_horizon
+        if self._size < sequence_length:
+            raise ValueError(
+                f"need at least {sequence_length} steps to sample, have {self._size}"
+            )
+
+        _, _, _, dones = self._ordered_arrays()
+        cuts = self._ordered_cuts()
+        boundaries = (dones > 0.5) | (cuts > 0.5)
+        max_start = self._size - sequence_length
+        starts: list[np.ndarray] = []
+        envs: list[np.ndarray] = []
+        if self._size < self.capacity:
+            initial_starts = np.arange(min(max_age, max_start) + 1, dtype=np.int64)
+            starts.append(np.repeat(initial_starts, self.num_envs))
+            envs.append(np.tile(np.arange(self.num_envs), initial_starts.size))
+        boundary_steps, boundary_envs = np.nonzero(boundaries)
+        if boundary_steps.size:
+            offsets = np.arange(1, max_age + 2, dtype=np.int64)
+            boundary_starts = (boundary_steps[:, None] + offsets[None, :]).reshape(-1)
+            boundary_start_envs = np.repeat(boundary_envs, offsets.size)
+            retained = boundary_starts <= max_start
+            starts.append(boundary_starts[retained])
+            envs.append(boundary_start_envs[retained])
+        if not starts:
+            return np.empty((0,), dtype=np.int64), np.empty((0,), dtype=np.int64)
+
+        candidate_pairs = np.unique(
+            np.stack([np.concatenate(starts), np.concatenate(envs)], axis=1),
+            axis=0,
+        )
+        candidate_starts = candidate_pairs[:, 0]
+        candidate_envs = candidate_pairs[:, 1]
+        transition_count = sequence_length - 1
+        boundary_prefix = np.concatenate(
+            [
+                np.zeros((1, self.num_envs), dtype=np.int64),
+                np.cumsum(boundaries, axis=0, dtype=np.int64),
+            ],
+            axis=0,
+        )
+        boundary_counts = (
+            boundary_prefix[
+                candidate_starts + transition_count,
+                candidate_envs,
+            ]
+            - boundary_prefix[
+                candidate_starts,
+                candidate_envs,
+            ]
+        )
+        valid = boundary_counts == 0
+        return (
+            candidate_starts[valid].astype(np.int64),
+            candidate_envs[valid].astype(np.int64),
+        )
+
     def _starts_avoid_cuts(
         self,
         starts: np.ndarray,

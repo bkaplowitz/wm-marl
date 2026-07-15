@@ -155,6 +155,50 @@ def test_sequence_replay_does_not_sample_across_collector_cuts():
     assert set(starts.tolist()) <= {0, 5}
 
 
+def test_sequence_replay_finds_valid_starts_near_episode_boundaries():
+    replay = SequenceReplayBuffer(capacity=20, num_envs=1, observation_shape=(1,))
+    for step in range(15):
+        replay.add_step(
+            observations=np.asarray([[step]], dtype=np.float32),
+            actions=np.asarray([step % 2]),
+            rewards=np.asarray([0.0], dtype=np.float32),
+            dones=np.asarray([float(step == 10)], dtype=np.float32),
+            cuts=np.asarray([float(step == 4)], dtype=np.float32),
+        )
+
+    starts, envs = replay.episode_start_indices(
+        max_age=1,
+        chunk_length=2,
+        max_horizon=1,
+    )
+
+    np.testing.assert_array_equal(starts, np.asarray([0, 1, 5, 6, 11, 12]))
+    np.testing.assert_array_equal(envs, np.zeros((6,), dtype=np.int64))
+
+
+def test_sequence_replay_reset_starts_remain_correct_after_ring_wrap():
+    replay = SequenceReplayBuffer(capacity=10, num_envs=1, observation_shape=(1,))
+    for step in range(15):
+        replay.add_step(
+            observations=np.asarray([[step]], dtype=np.float32),
+            actions=np.asarray([step % 2]),
+            rewards=np.asarray([0.0], dtype=np.float32),
+            dones=np.asarray([float(step in {6, 11})], dtype=np.float32),
+        )
+
+    starts, envs = replay.episode_start_indices(
+        max_age=1,
+        chunk_length=2,
+        max_horizon=1,
+    )
+
+    # The retained replay contains global steps 5..14. Its first partial
+    # episode is not a known reset; starts are only admitted after retained
+    # terminal boundaries at global steps 6 and 11.
+    np.testing.assert_array_equal(starts, np.asarray([2, 3, 7]))
+    np.testing.assert_array_equal(envs, np.zeros((3,), dtype=np.int64))
+
+
 def test_sequence_replay_supports_continuous_action_vectors():
     replay = SequenceReplayBuffer(
         capacity=8,

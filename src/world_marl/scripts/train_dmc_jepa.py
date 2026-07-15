@@ -159,6 +159,22 @@ def parse_args() -> argparse.Namespace:
             "does not affect world-model or critic replay."
         ),
     )
+    policy.add_argument(
+        "--policy-reset-start-fraction",
+        type=float,
+        default=0.0,
+        help=(
+            "Fraction of online actor imagination starts sampled near episode "
+            "starts in the growing main replay. This is reward-agnostic and "
+            "does not add environment interactions."
+        ),
+    )
+    policy.add_argument(
+        "--policy-reset-start-max-age",
+        type=int,
+        default=63,
+        help="Largest within-episode observation age eligible for reset starts.",
+    )
     policy.add_argument("--actor-learning-rate", type=float, default=4e-5)
     policy.add_argument("--actor-grad-clip-norm", type=float, default=10.0)
     policy.add_argument("--critic-grad-clip-norm", type=float, default=100.0)
@@ -593,6 +609,10 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
             parser.error(f"--{name.replace('_', '-')} must be in [0, 1]")
     if not 0.0 <= args.policy_bootstrap_start_fraction <= 1.0:
         parser.error("--policy-bootstrap-start-fraction must be in [0, 1]")
+    if not 0.0 <= args.policy_reset_start_fraction <= 1.0:
+        parser.error("--policy-reset-start-fraction must be in [0, 1]")
+    if args.policy_reset_start_max_age < 0:
+        parser.error("--policy-reset-start-max-age must be >= 0")
     if (
         args.online_recent_replay_max_oversample != 0.0
         and args.online_recent_replay_max_oversample < 1.0
@@ -606,12 +626,13 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
     requested_recent_fractions = _requested_recent_fractions(args)
     if (
         args.policy_bootstrap_start_fraction
+        + args.policy_reset_start_fraction
         + requested_recent_fractions["policy_start"]
         > 1.0
     ):
         parser.error(
-            "--policy-bootstrap-start-fraction and the requested online recent "
-            "policy-start fraction must sum to at most 1"
+            "policy bootstrap, reset-start, and requested online recent "
+            "policy-start fractions must sum to at most 1"
         )
     if max(requested_recent_fractions.values()) > 0.0 and (
         args.online_recent_replay_steps < recent_min_steps
@@ -1360,6 +1381,8 @@ def run_one(
                 critic_recent_fraction=effective_recent_fractions["critic"],
                 bootstrap_start_replay=bootstrap_start_replay,
                 bootstrap_start_fraction=args.policy_bootstrap_start_fraction,
+                reset_start_fraction=args.policy_reset_start_fraction,
+                reset_start_max_age=args.policy_reset_start_max_age,
             )
             policy_metrics.update(
                 {
@@ -2188,6 +2211,8 @@ def _train_policy(
     critic_recent_fraction: float = 0.0,
     bootstrap_start_replay: SequenceReplayBuffer | None = None,
     bootstrap_start_fraction: float = 0.0,
+    reset_start_fraction: float = 0.0,
+    reset_start_max_age: int = 63,
 ) -> tuple[Any, jax.Array, dict[str, Any]]:
     if train_steps == 0:
         return (
@@ -2248,6 +2273,17 @@ def _train_policy(
                 )
 
     metrics: dict[str, Any] = {}
+    reset_start_indices = None
+    if reset_start_fraction > 0.0:
+        reset_start_indices = replay.episode_start_indices(
+            max_age=reset_start_max_age,
+            chunk_length=config.context_window,
+            max_horizon=1,
+        )
+        if reset_start_indices[0].size == 0:
+            raise ValueError(
+                "main replay contains no valid reset-aligned policy starts"
+            )
     actor_reference_params = jax.tree_util.tree_map(
         jax.lax.stop_gradient,
         state.params,
@@ -2278,6 +2314,8 @@ def _train_policy(
             recent_fraction=start_recent_fraction,
             bootstrap_replay=bootstrap_start_replay,
             bootstrap_fraction=bootstrap_start_fraction,
+            reset_start_indices=reset_start_indices,
+            reset_start_fraction=reset_start_fraction,
         )
         real_critic_batch = None
         if args.policy_replay_critic_loss_coef > 0.0:
@@ -2375,6 +2413,13 @@ def _train_policy(
             "policy_bootstrap_start_size_per_env": (
                 bootstrap_start_replay.size if bootstrap_start_replay is not None else 0
             ),
+            "policy_reset_start_fraction": reset_start_fraction,
+            "policy_reset_start_max_age": reset_start_max_age,
+            "policy_reset_start_candidate_count": (
+                int(reset_start_indices[0].size)
+                if reset_start_indices is not None
+                else 0
+            ),
             "policy_online_recent_critic_fraction": critic_recent_fraction,
             "policy_target_critic_ema_decay": args.target_critic_ema_decay,
             "policy_actor_kl_coef": args.policy_actor_kl_coef,
@@ -2400,6 +2445,8 @@ def _sample_mixed_policy_starts(
     recent_fraction: float,
     bootstrap_replay: SequenceReplayBuffer | None = None,
     bootstrap_fraction: float = 0.0,
+    reset_start_indices: tuple[np.ndarray, np.ndarray] | None = None,
+    reset_start_fraction: float = 0.0,
 ) -> tuple[jax.Array, jax.Array]:
     bootstrap_size = _recent_batch_size(
         batch_size,
@@ -2411,16 +2458,19 @@ def _sample_mixed_policy_starts(
         recent_replay=recent_replay,
         recent_fraction=recent_fraction,
     )
-    if bootstrap_size + recent_size > batch_size:
+    reset_size = int(round(batch_size * reset_start_fraction))
+    if reset_size > 0 and reset_start_indices is None:
+        raise ValueError("reset_start_indices are required for reset-start sampling")
+    if bootstrap_size + reset_size + recent_size > batch_size:
         raise ValueError("policy-start replay fractions must sum to at most 1")
-    if bootstrap_size == 0 and recent_size == 0:
+    if bootstrap_size == 0 and reset_size == 0 and recent_size == 0:
         return _sample_policy_starts(
             replay,
             rng,
             config=config,
             batch_size=batch_size,
         )
-    full_size = batch_size - bootstrap_size - recent_size
+    full_size = batch_size - bootstrap_size - reset_size - recent_size
     chunks = []
     if full_size:
         chunks.append(
@@ -2439,6 +2489,22 @@ def _sample_mixed_policy_starts(
                 rng,
                 config=config,
                 batch_size=bootstrap_size,
+            )
+        )
+    if reset_size:
+        assert reset_start_indices is not None
+        candidate_starts, candidate_envs = reset_start_indices
+        selected = rng.integers(0, candidate_starts.size, size=(reset_size,))
+        reset_batch = replay.sample_from_indices(
+            candidate_starts[selected],
+            candidate_envs[selected],
+            chunk_length=config.context_window,
+            max_horizon=1,
+        )
+        chunks.append(
+            (
+                reset_batch.observations[:, : config.context_window],
+                reset_batch.actions[:, : config.context_window],
             )
         )
     if recent_size:
