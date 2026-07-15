@@ -113,6 +113,7 @@ def test_100k_preset_matches_the_reset_rich_interleaved_contract():
     assert params["online_collect_steps"] == 64
     assert params["online_train_steps"] == 1_024
     assert params["online_policy_train_steps"] == 512
+    assert params["online_policy_actor_update_interval"] == 1
 
 
 def test_500k_preset_matches_the_current_running_model():

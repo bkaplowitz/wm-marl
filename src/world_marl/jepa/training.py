@@ -547,6 +547,7 @@ def reset_policy_heads(
         "real_critic_return_mode",
         "real_critic_all_steps",
         "slow_value_regularization_coef",
+        "apply_actor_update",
     ),
 )
 def continuous_policy_train_step(
@@ -582,6 +583,7 @@ def continuous_policy_train_step(
     real_critic_return_mode: ReplayCriticReturnMode = "reward-only",
     real_critic_all_steps: bool = False,
     slow_value_regularization_coef: float = 0.0,
+    apply_actor_update: bool = True,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     if config.action_mode != "continuous":
         raise ValueError("continuous_policy_train_step requires continuous actions")
@@ -699,11 +701,7 @@ def continuous_policy_train_step(
             target_per_dim=actor_kl_target_per_dim,
             reference_available=reference_available,
         )
-        actor_loss = (
-            return_loss
-            - actor_entropy_coef * entropy_bonus
-            + actor_kl_penalty
-        )
+        actor_loss = return_loss - actor_entropy_coef * entropy_bonus + actor_kl_penalty
         action_saturation = jnp.mean(
             (
                 jnp.abs(rollout["normalized_actions"]) >= action_saturation_threshold
@@ -887,12 +885,17 @@ def continuous_policy_train_step(
     metrics = {
         **metrics,
         "policy/actor_grad_norm": optax.global_norm(actor_grads),
+        "policy/actor_update_applied": jnp.asarray(
+            float(apply_actor_update),
+            dtype=metrics["policy/actor_loss"].dtype,
+        ),
         "policy/actor_grad_clip_norm": jnp.asarray(
             config.actor_grad_clip_norm,
             dtype=metrics["policy/actor_loss"].dtype,
         ),
     }
-    state = state.apply_actor_gradients(actor_grads)
+    if apply_actor_update:
+        state = state.apply_actor_gradients(actor_grads)
     new_action_means, new_action_log_stds, _ = actor_value_stats_from_latent(
         state.apply_fn,
         state.params,

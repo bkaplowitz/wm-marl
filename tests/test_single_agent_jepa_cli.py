@@ -262,6 +262,7 @@ def test_cli_accepts_recent_replay_and_curve_evaluation(monkeypatch):
     args = train_dmc_jepa.parse_args()
 
     assert args.online_recent_replay_fraction == 0.5
+    assert args.online_policy_actor_update_interval == 1
     assert train_dmc_jepa._requested_recent_fractions(args) == {
         "world_model": 0.4,
         "policy_start": 0.0,

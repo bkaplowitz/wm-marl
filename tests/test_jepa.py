@@ -457,6 +457,49 @@ def test_continuous_policy_update_freezes_world_model_and_bounds_actions():
             np.testing.assert_allclose(np.asarray(left), np.asarray(right))
 
 
+def test_continuous_policy_step_can_update_critic_without_actor():
+    config = JepaConfig(
+        observation_dim=4,
+        action_dim=2,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=2,
+        context_window=1,
+        stochastic_actor=True,
+        actor_hidden_dim=16,
+        critic_hidden_dim=16,
+        actor_num_layers=2,
+        critic_num_layers=2,
+        sigreg_num_proj=8,
+    )
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    before = state.params
+
+    updated, metrics = continuous_policy_train_step(
+        state,
+        jax.random.PRNGKey(1),
+        jax.random.normal(jax.random.PRNGKey(2), (8, 4)),
+        config,
+        -jnp.ones((2,), dtype=jnp.float32),
+        jnp.ones((2,), dtype=jnp.float32),
+        imag_horizon=2,
+        policy_return_mode="lambda",
+        policy_actor_baseline="value",
+        policy_return_normalization="ema-percentile",
+        policy_gradient_mode="reinforce",
+        target_critic_params=state.target_critic_params,
+        target_critic_ema_decay=0.98,
+        apply_actor_update=False,
+    )
+
+    assert metrics["policy/actor_update_applied"] == 0.0
+    assert not _tree_changed(before["actor_head"], updated.params["actor_head"])
+    assert _tree_changed(before["value_head"], updated.params["value_head"])
+
+
 def test_stochastic_continuous_policy_update_reports_entropy_and_samples_actions():
     config = JepaConfig(
         observation_dim=4,

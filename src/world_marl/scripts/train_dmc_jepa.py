@@ -290,6 +290,15 @@ def parse_args() -> argparse.Namespace:
     online.add_argument("--online-collect-steps", type=int, default=64)
     online.add_argument("--online-train-steps", type=int, default=1024)
     online.add_argument("--online-policy-train-steps", type=int, default=512)
+    online.add_argument(
+        "--online-policy-actor-update-interval",
+        type=int,
+        default=1,
+        help=(
+            "Online critic updates per actor update; one preserves the "
+            "standard one-to-one cadence."
+        ),
+    )
     online.add_argument("--online-checkpoint-interval", type=int, default=16)
     online.add_argument(
         "--online-freeze-encoder",
@@ -434,6 +443,7 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         "online_collect_steps",
         "online_recent_replay_steps",
         "online_checkpoint_interval",
+        "online_policy_actor_update_interval",
         "num_runs",
         "wandb_video_frame_stride",
         "wandb_video_size",
@@ -1023,6 +1033,7 @@ def run_one(
             phase="policy",
             train_steps=args.policy_train_steps,
             reset_actor=True,
+            actor_update_interval=1,
             actor_entropy_coef=_scheduled_actor_entropy_coef(
                 args,
                 train_env_steps=train_env_steps,
@@ -1235,6 +1246,7 @@ def run_one(
                 phase=f"{phase}_policy",
                 train_steps=args.online_policy_train_steps,
                 reset_actor=False,
+                actor_update_interval=args.online_policy_actor_update_interval,
                 actor_entropy_coef=_scheduled_actor_entropy_coef(
                     args,
                     train_env_steps=train_env_steps,
@@ -1360,6 +1372,10 @@ def run_one(
                     "reproducibility": reproducibility,
                     "world_model_train_steps": args.online_train_steps,
                     "policy_train_steps": args.online_policy_train_steps,
+                    "policy_actor_updates": (
+                        args.online_policy_train_steps
+                        // args.online_policy_actor_update_interval
+                    ),
                 }
             )
             if checkpoint_phase:
@@ -2011,6 +2027,7 @@ def _train_policy(
     phase: str,
     train_steps: int,
     reset_actor: bool,
+    actor_update_interval: int,
     actor_entropy_coef: float,
     recent_replay: SequenceReplayBuffer | None = None,
     start_recent_fraction: float = 0.0,
@@ -2079,6 +2096,7 @@ def _train_policy(
         jax.lax.stop_gradient,
         state.params,
     )
+    actor_updates = 0
     progress = tqdm(
         range(1, train_steps + 1),
         desc=f"{phase} train actor-critic",
@@ -2086,7 +2104,11 @@ def _train_policy(
         disable=args.quiet,
     )
     for step_index in progress:
-        if (step_index - 1) % args.policy_actor_kl_reference_interval == 0:
+        apply_actor_update = step_index % actor_update_interval == 0
+        if (
+            apply_actor_update
+            and actor_updates % args.policy_actor_kl_reference_interval == 0
+        ):
             actor_reference_params = jax.tree_util.tree_map(
                 jax.lax.stop_gradient,
                 state.params,
@@ -2128,9 +2150,7 @@ def _train_policy(
             value_clip=args.value_clip,
             normalized_advantage_clip=args.policy_normalized_advantage_clip,
             actor_reference_params=(
-                actor_reference_params
-                if args.policy_actor_kl_coef > 0.0
-                else None
+                actor_reference_params if args.policy_actor_kl_coef > 0.0 else None
             ),
             actor_kl_coef=args.policy_actor_kl_coef,
             actor_kl_target_per_dim=args.policy_actor_kl_target_per_dim,
@@ -2151,7 +2171,10 @@ def _train_policy(
             real_critic_return_mode=args.policy_replay_critic_return_mode,
             real_critic_all_steps=args.policy_replay_critic_all_steps,
             slow_value_regularization_coef=(args.policy_slow_value_regularization_coef),
+            apply_actor_update=apply_actor_update,
         )
+        if apply_actor_update:
+            actor_updates += 1
         if (
             step_index == 1
             or step_index == train_steps
@@ -2177,6 +2200,8 @@ def _train_policy(
             "policy_phase": phase,
             "policy_reset_actor": reset_actor,
             "policy_train_steps": train_steps,
+            "policy_actor_update_interval": actor_update_interval,
+            "policy_actor_updates": actor_updates,
             "policy_batch_size": args.policy_batch_size,
             "policy_imag_horizon": args.imag_horizon,
             "policy_return_mode": args.policy_return_mode,
@@ -2382,9 +2407,7 @@ def _policy_interface_drift_metrics(
         f"{prefix}/latent_norm_ratio": float(
             np.mean(after_norm) / max(float(np.mean(before_norm)), 1e-12)
         ),
-        f"{prefix}/policy_kl_per_action_dim_mean": float(
-            np.mean(policy_kl_per_dim)
-        ),
+        f"{prefix}/policy_kl_per_action_dim_mean": float(np.mean(policy_kl_per_dim)),
         f"{prefix}/policy_kl_per_action_dim_p95": float(
             np.percentile(policy_kl_per_dim, 95.0)
         ),
