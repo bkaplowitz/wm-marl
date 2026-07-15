@@ -118,6 +118,12 @@ def test_100k_preset_matches_the_reset_rich_interleaved_contract():
     assert params["online_policy_train_steps"] == 512
     assert params["online_policy_actor_update_interval"] == 1
     assert params["online_policy_actor_update_interval_start_env_steps"] == 0
+    assert params["online_recent_replay_steps"] == 320
+    assert params["online_recent_replay_fraction"] == 0.5
+    assert params["online_recent_world_model_fraction"] == 0.5
+    assert params["online_recent_policy_start_fraction"] == 0.0
+    assert params["online_recent_critic_fraction"] == 0.0
+    assert params["online_recent_replay_max_oversample"] == 10.0
 
 
 def test_actor_update_interval_override_is_accounted_separately(
