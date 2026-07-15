@@ -306,6 +306,15 @@ def parse_args() -> argparse.Namespace:
             "environment step. By default, resets remain active throughout."
         ),
     )
+    online.add_argument(
+        "--online-reset-fraction",
+        type=float,
+        default=1.0,
+        help=(
+            "Fraction of vector environments reset at each periodic reset "
+            "event. Partial resets rotate deterministically across members."
+        ),
+    )
     online.add_argument("--online-train-steps", type=int, default=1024)
     online.add_argument("--online-policy-train-steps", type=int, default=512)
     online.add_argument(
@@ -538,6 +547,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         and args.online_reset_until_env_steps < 0
     ):
         parser.error("--online-reset-until-env-steps must be >= 0")
+    if not 0.0 < args.online_reset_fraction <= 1.0:
+        parser.error("--online-reset-fraction must be in (0, 1]")
     if args.chunk_length < args.context_window:
         parser.error("--chunk-length must be >= --context-window")
     if not (args.env.startswith("dmc:") or args.env.startswith("brax:")):
@@ -1123,6 +1134,7 @@ def run_one(
                 stochastic_actions=args.stochastic_collection,
                 train_env_step_offset=train_env_steps,
                 reset_interval=args.online_reset_interval,
+                reset_fraction=args.online_reset_fraction,
                 reset_step_offset=(train_env_steps - initial_train_env_steps)
                 // args.num_envs,
                 reset_until_env_steps=args.online_reset_until_env_steps,
@@ -1720,6 +1732,7 @@ def _collect_policy_steps(
     failure_return_threshold: float,
     success_return_threshold: float,
     reset_interval: int | None = None,
+    reset_fraction: float = 1.0,
     reset_step_offset: int = 0,
     reset_until_env_steps: int | None = None,
 ) -> tuple[np.ndarray, int, dict[str, Any]]:
@@ -1731,6 +1744,11 @@ def _collect_policy_steps(
     finish_collection_steps: list[int] = []
     finish_train_steps: list[int] = []
     forced_reset_events = 0
+    forced_reset_env_segments = 0
+    reset_envs_per_event = min(
+        adapter.num_envs,
+        max(1, math.ceil(adapter.num_envs * reset_fraction)),
+    )
     progress = tqdm(range(steps), desc=desc, unit="step", disable=quiet)
     for step_index in progress:
         action_key, step_action_key = jax.random.split(action_key)
@@ -1757,15 +1775,25 @@ def _collect_policy_steps(
                 or next_train_env_steps <= reset_until_env_steps
             )
         )
+        reset_indices = np.empty((0,), dtype=np.int64)
+        reset_mask = np.zeros((adapter.num_envs,), dtype=np.float32)
+        if forced_reset:
+            assert reset_interval is not None
+            reset_event_index = (
+                reset_step_offset + step_index + 1
+            ) // reset_interval - 1
+            reset_start = (reset_event_index * reset_envs_per_event) % adapter.num_envs
+            reset_indices = (
+                reset_start + np.arange(reset_envs_per_event, dtype=np.int64)
+            ) % adapter.num_envs
+            reset_mask[reset_indices] = 1.0
         _add_replay_step(
             replay,
             observations=observations[:, 0],
             actions=actions,
             rewards=step.rewards[:, 0],
             dones=step.dones[:, 0],
-            cuts=(
-                np.ones((adapter.num_envs,), dtype=np.float32) if forced_reset else None
-            ),
+            cuts=reset_mask if forced_reset else None,
         )
         completed_count = len(step.completed_returns)
         completed_returns.extend(float(item[0]) for item in step.completed_returns)
@@ -1783,7 +1811,12 @@ def _collect_policy_steps(
             )
         if forced_reset:
             forced_reset_events += 1
-            observations = adapter.reset()
+            forced_reset_env_segments += int(reset_indices.size)
+            if reset_indices.size == adapter.num_envs:
+                observations = adapter.reset()
+            else:
+                observations = np.array(step.observations, copy=True)
+                observations[reset_indices] = adapter.reset_indices(reset_indices)
         else:
             observations = step.observations
 
@@ -1792,10 +1825,12 @@ def _collect_policy_steps(
         "steps_per_env": steps,
         "stochastic_actions": stochastic_actions,
         "online_reset_interval": reset_interval,
+        "online_reset_fraction": reset_fraction,
+        "online_reset_envs_per_event": reset_envs_per_event,
         "online_reset_until_env_steps": reset_until_env_steps,
         "online_reset_step_offset": reset_step_offset,
         "forced_reset_events": forced_reset_events,
-        "forced_reset_env_segments": forced_reset_events * adapter.num_envs,
+        "forced_reset_env_segments": forced_reset_env_segments,
         "completed_episodes": len(completed_returns),
         "mean_return": (
             float(np.mean(completed_returns)) if completed_returns else None

@@ -120,3 +120,27 @@ def test_dmc_adapter_renders_one_vector_member():
     assert frame.shape == (12, 16, 3)
     assert frame.dtype == np.uint8
     assert np.all(frame == 13)
+
+
+def test_dmc_adapter_can_reset_selected_vector_members():
+    adapter = DMCVectorAdapter(
+        "fake/task",
+        num_envs=2,
+        max_cycles=5,
+        seed=10,
+        env_factory=lambda seed: _FakeDMCEnv(seed),
+    )
+    try:
+        adapter.reset()
+        adapter.step(np.zeros((2, 1, 2), dtype=np.float32))
+        reset_observations = adapter.reset_indices(np.asarray([0]))
+        following = adapter.step(np.zeros((2, 1, 2), dtype=np.float32))
+    finally:
+        adapter.close()
+
+    assert reset_observations.shape == (1, 1, 3)
+    np.testing.assert_array_equal(
+        reset_observations[0, 0],
+        np.asarray([10.0, 0.0, 0.5]),
+    )
+    assert following.dones.tolist() == [[0.0], [1.0]]

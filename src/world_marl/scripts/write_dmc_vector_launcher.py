@@ -49,6 +49,7 @@ _JEPA_BASE: dict[str, Any] = {
     "online_collect_steps": 64,
     "online_reset_interval": None,
     "online_reset_until_env_steps": None,
+    "online_reset_fraction": 1.0,
     "online_train_steps": 1_024,
     "online_policy_train_steps": 512,
     "online_policy_actor_update_interval": 1,
@@ -169,6 +170,7 @@ OVERRIDABLE_PARAMS = (
     "online_collect_steps",
     "online_reset_interval",
     "online_reset_until_env_steps",
+    "online_reset_fraction",
     "train_steps",
     "online_train_steps",
     "policy_train_steps",
@@ -492,6 +494,7 @@ def parse_args() -> argparse.Namespace:
         "online_recent_policy_start_fraction",
         "online_recent_critic_fraction",
         "online_recent_replay_max_oversample",
+        "online_reset_fraction",
         "actor_entropy_final_coef",
     ):
         parser.add_argument("--" + name.replace("_", "-"), type=float, default=None)

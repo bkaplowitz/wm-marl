@@ -79,6 +79,8 @@ def test_cli_accepts_bounded_online_reset_diversity(monkeypatch):
             "6",
             "--online-reset-until-env-steps",
             "100",
+            "--online-reset-fraction",
+            "0.25",
         ),
     )
 
@@ -86,6 +88,7 @@ def test_cli_accepts_bounded_online_reset_diversity(monkeypatch):
 
     assert args.online_reset_interval == 6
     assert args.online_reset_until_env_steps == 100
+    assert args.online_reset_fraction == 0.25
 
 
 def test_random_collection_marks_nonterminal_reset_cuts():
@@ -240,6 +243,74 @@ def test_policy_collection_preserves_online_reset_cadence_across_phases(
     )
     np.testing.assert_array_equal(replay.dones[:, 0], np.zeros(6))
     np.testing.assert_array_equal(observations, np.asarray([[[203.0]]]))
+
+
+def test_policy_collection_rotates_partial_resets(monkeypatch):
+    class Adapter:
+        num_envs = 4
+
+        def __init__(self):
+            self.reset_indices_calls = []
+
+        def step(self, actions):
+            del actions
+            return SimpleNamespace(
+                observations=np.zeros((4, 1, 1), dtype=np.float32),
+                rewards=np.zeros((4, 1), dtype=np.float32),
+                dones=np.zeros((4, 1), dtype=np.float32),
+                completed_returns=(),
+                completed_lengths=(),
+            )
+
+        def reset_indices(self, indices):
+            self.reset_indices_calls.append(np.array(indices, copy=True))
+            return np.zeros((len(indices), 1, 1), dtype=np.float32)
+
+    monkeypatch.setattr(
+        train_dmc_jepa,
+        "select_continuous_actions",
+        lambda *args, **kwargs: jnp.zeros((4, 1), dtype=jnp.float32),
+    )
+    adapter = Adapter()
+    replay = SequenceReplayBuffer(
+        capacity=6,
+        num_envs=4,
+        observation_shape=(1,),
+        action_shape=(1,),
+        action_dtype=np.float32,
+    )
+
+    _, _, metrics = train_dmc_jepa._collect_policy_steps(
+        adapter,
+        np.zeros((4, 1, 1), dtype=np.float32),
+        None,
+        SimpleNamespace(),
+        replay,
+        steps=6,
+        action_low=np.asarray([-1.0], dtype=np.float32),
+        action_high=np.asarray([1.0], dtype=np.float32),
+        desc="test",
+        quiet=True,
+        np_rng=np.random.default_rng(0),
+        stochastic_actions=True,
+        train_env_step_offset=0,
+        failure_return_threshold=100.0,
+        success_return_threshold=900.0,
+        reset_interval=3,
+        reset_fraction=0.25,
+    )
+
+    assert metrics["forced_reset_events"] == 2
+    assert metrics["forced_reset_env_segments"] == 2
+    assert metrics["online_reset_envs_per_event"] == 1
+    assert len(adapter.reset_indices_calls) == 2
+    np.testing.assert_array_equal(adapter.reset_indices_calls[0], np.asarray([0]))
+    np.testing.assert_array_equal(adapter.reset_indices_calls[1], np.asarray([1]))
+    expected_cuts = np.zeros((6, 4), dtype=np.float32)
+    expected_cuts[2, 0] = 1.0
+    expected_cuts[5, 1] = 1.0
+    np.testing.assert_array_equal(replay.cuts, expected_cuts)
+    np.testing.assert_array_equal(replay.dones, np.zeros((6, 4)))
 
 
 def test_cli_accepts_wandb_video_controls(monkeypatch):

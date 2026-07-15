@@ -78,12 +78,14 @@ def test_launcher_serializes_online_reset_diversity_controls():
         {
             "online_reset_interval": 320,
             "online_reset_until_env_steps": 50_000,
+            "online_reset_fraction": 0.25,
         }
     )
 
     tokens = command.replace("\\\n", " ").split()
     assert tokens[tokens.index("--online-reset-interval") + 1] == "320"
     assert tokens[tokens.index("--online-reset-until-env-steps") + 1] == "50000"
+    assert tokens[tokens.index("--online-reset-fraction") + 1] == "0.25"
 
 
 def test_launcher_syncs_tracking_extra_when_enabled(tmp_path):
@@ -129,6 +131,7 @@ def test_100k_preset_matches_the_reset_rich_interleaved_contract():
     assert params["online_collect_steps"] == 64
     assert params["online_reset_interval"] is None
     assert params["online_reset_until_env_steps"] is None
+    assert params["online_reset_fraction"] == 1.0
     assert params["online_train_steps"] == 1_024
     assert params["online_policy_train_steps"] == 512
     assert params["online_policy_actor_update_interval"] == 1

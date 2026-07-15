@@ -110,6 +110,29 @@ class DMCVectorAdapter:
         ]
         return np.asarray(observations, dtype=np.float32)[:, None, :]
 
+    def reset_indices(self, indices: np.ndarray) -> np.ndarray:
+        """Reset selected vector members and return their new observations."""
+
+        reset_indices = np.asarray(indices, dtype=np.int64).reshape((-1,))
+        if np.any((reset_indices < 0) | (reset_indices >= self.num_envs)):
+            raise IndexError("reset index is outside the vector environment")
+        if np.unique(reset_indices).size != reset_indices.size:
+            raise ValueError("reset indices must be unique")
+        if reset_indices.size == 0:
+            return np.empty((0, 1, *self.observation_shape), dtype=np.float32)
+
+        self._episode_returns[reset_indices] = 0.0
+        self._episode_lengths[reset_indices] = 0
+        environments = [self._envs[int(index)] for index in reset_indices]
+        if self._executor is None:
+            timesteps = [env.reset() for env in environments]
+        else:
+            timesteps = list(self._executor.map(lambda env: env.reset(), environments))
+        observations = [
+            self._flatten_observation(timestep.observation) for timestep in timesteps
+        ]
+        return np.asarray(observations, dtype=np.float32)[:, None, :]
+
     def step(self, actions: np.ndarray) -> VectorStep:
         action_batch = np.asarray(actions, dtype=np.float32).reshape(
             (self.num_envs, self.action_dim)

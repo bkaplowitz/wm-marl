@@ -85,3 +85,24 @@ def test_default_factory_forwards_episode_length_to_brax():
         assert adapter._env.episode_length == 7
     finally:
         adapter.close()
+
+
+def test_brax_adapter_can_reset_selected_vector_members():
+    adapter = BraxVectorAdapter(
+        "fake",
+        num_envs=2,
+        max_cycles=5,
+        seed=10,
+        env_factory=_FakeBraxEnv,
+    )
+    try:
+        adapter.reset()
+        adapter.step(np.zeros((2, 1, 2), dtype=np.float32))
+        reset_observations = adapter.reset_indices(np.asarray([0]))
+        following = adapter.step(np.zeros((2, 1, 2), dtype=np.float32))
+    finally:
+        adapter.close()
+
+    assert reset_observations.shape == (1, 1, 3)
+    assert reset_observations[0, 0, 1] == 0.0
+    assert following.dones.tolist() == [[0.0], [1.0]]

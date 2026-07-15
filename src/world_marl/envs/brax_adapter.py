@@ -103,6 +103,30 @@ class BraxVectorAdapter:
         self._state = self._reset(self._next_reset_keys())
         return self._observations()
 
+    def reset_indices(self, indices: np.ndarray) -> np.ndarray:
+        """Reset selected vector members and return their new observations."""
+
+        reset_indices = np.asarray(indices, dtype=np.int64).reshape((-1,))
+        if np.any((reset_indices < 0) | (reset_indices >= self.num_envs)):
+            raise IndexError("reset index is outside the vector environment")
+        if np.unique(reset_indices).size != reset_indices.size:
+            raise ValueError("reset indices must be unique")
+        if reset_indices.size == 0:
+            return np.empty((0, 1, *self.observation_shape), dtype=np.float32)
+
+        reset_mask = np.zeros((self.num_envs,), dtype=bool)
+        reset_mask[reset_indices] = True
+        reset_state = self._reset(self._next_reset_keys())
+        self._state = _select_reset_state(
+            reset_state,
+            self._state,
+            jnp.asarray(reset_mask),
+            num_envs=self.num_envs,
+        )
+        self._episode_returns[reset_mask] = 0.0
+        self._episode_lengths[reset_mask] = 0
+        return self._observations()[reset_indices]
+
     def step(self, actions: np.ndarray) -> VectorStep:
         action_batch = np.asarray(actions, dtype=np.float32).reshape(
             (self.num_envs, self.action_dim)
