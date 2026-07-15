@@ -140,17 +140,22 @@ def test_100k_preset_matches_the_reset_rich_interleaved_contract():
     assert params["online_reset_fraction"] == 1.0
     assert params["online_train_steps"] == 1_024
     assert params["online_policy_train_steps"] == 512
-    assert params["online_policy_actor_update_interval"] == 1
+    assert params["online_policy_actor_update_interval"] == 2
     assert params["online_policy_actor_update_interval_start_env_steps"] == 0
     assert params["online_recent_replay_steps"] == 320
-    assert params["online_recent_replay_fraction"] == 0.5
-    assert params["online_recent_world_model_fraction"] == 0.5
+    assert params["online_recent_replay_fraction"] == 0.0
+    assert params["online_recent_world_model_fraction"] == 0.0
     assert params["online_recent_policy_start_fraction"] == 0.0
     assert params["online_recent_critic_fraction"] == 0.0
     assert params["online_recent_replay_max_oversample"] == 10.0
     assert params["policy_bootstrap_start_fraction"] == 0.0
     assert params["policy_reset_start_fraction"] == 0.0
     assert params["policy_reset_start_max_age"] == 63
+    assert params["policy_actor_kl_coef"] == 1.0
+    assert params["policy_actor_kl_target_per_dim"] == 0.1
+    assert params["policy_actor_kl_reference_interval"] == 512
+    assert accounting["actor_updates"] == 1_280 + 91 * 256
+    assert accounting["critic_updates"] == 1_280 + 91 * 512
 
 
 def test_actor_update_interval_override_is_accounted_separately(
@@ -192,16 +197,18 @@ def test_500k_preset_matches_the_current_running_model():
     params = PRESETS["jepa_500k"]
     accounting = step_accounting(params)
 
-    assert accounting["train_replay_env_steps"] == 497_664
+    assert accounting["train_replay_env_steps"] == 499_712
     assert accounting["validation_replay_env_steps"] == 1_280
-    assert accounting["train_plus_validation_env_steps"] == 498_944
-    assert accounting["world_model_updates"] == 493_824
-    assert accounting["policy_updates"] == 247_552
-    assert params["online_iterations"] == 481
+    assert accounting["train_plus_validation_env_steps"] == 500_992
+    assert accounting["world_model_updates"] == 495_872
+    assert accounting["policy_updates"] == 248_576
+    assert accounting["actor_updates"] == 124_928
+    assert accounting["critic_updates"] == 248_576
+    assert params["online_iterations"] == 483
     assert params["online_checkpoint_interval"] == 16
     assert params["validation_seed"] == 1_000_042
     assert params["final_policy_eval_seed"] == 9_000_000
-    assert params["final_policy_eval_episodes"] == 20
+    assert params["final_policy_eval_episodes"] == 100
 
 
 def test_200k_preset_preserves_the_current_model_with_a_fixed_budget():
@@ -272,9 +279,9 @@ def test_500k_preset_locks_current_architecture_and_control_stack():
     assert params["actor_entropy_coef"] == 3e-3
     assert params["value_clip"] == 100.0
     assert params["policy_normalized_advantage_clip"] == 0.0
-    assert params["policy_actor_kl_coef"] == 0.0
-    assert params["policy_actor_kl_target_per_dim"] == 0.01
-    assert params["policy_actor_kl_reference_interval"] == 64
+    assert params["policy_actor_kl_coef"] == 1.0
+    assert params["policy_actor_kl_target_per_dim"] == 0.1
+    assert params["policy_actor_kl_reference_interval"] == 512
     assert params["target_critic_ema_decay"] == 0.98
     assert params["policy_replay_critic_loss_coef"] == 0.3
     assert params["policy_slow_value_regularization_coef"] == 1.0

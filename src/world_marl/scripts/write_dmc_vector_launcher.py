@@ -20,8 +20,9 @@ DEFAULT_TASKS = (
 )
 
 # This is the publication-clean configuration exercised by the July 2026
-# reset-rich/interleaved runs. Keep algorithmic changes explicit and covered by
-# test_dmc_vector_launcher.py; launcher-only settings belong in CLI overrides.
+# uniform-replay, critic-paced runs. Keep algorithmic changes explicit and
+# covered by test_dmc_vector_launcher.py; launcher-only settings belong in CLI
+# overrides.
 _JEPA_BASE: dict[str, Any] = {
     "num_runs": 1,
     "num_envs": 16,
@@ -52,12 +53,12 @@ _JEPA_BASE: dict[str, Any] = {
     "online_reset_fraction": 1.0,
     "online_train_steps": 1_024,
     "online_policy_train_steps": 512,
-    "online_policy_actor_update_interval": 1,
+    "online_policy_actor_update_interval": 2,
     "online_policy_actor_update_interval_start_env_steps": 0,
     "online_checkpoint_interval": 16,
     "online_recent_replay_steps": 320,
-    "online_recent_replay_fraction": 0.5,
-    "online_recent_world_model_fraction": 0.5,
+    "online_recent_replay_fraction": 0.0,
+    "online_recent_world_model_fraction": 0.0,
     "online_recent_policy_start_fraction": 0.0,
     "online_recent_critic_fraction": 0.0,
     "online_recent_replay_max_oversample": 10.0,
@@ -74,9 +75,9 @@ _JEPA_BASE: dict[str, Any] = {
     "policy_return_ema_decay": 0.99,
     "value_clip": 100.0,
     "policy_normalized_advantage_clip": 0.0,
-    "policy_actor_kl_coef": 0.0,
-    "policy_actor_kl_target_per_dim": 0.01,
-    "policy_actor_kl_reference_interval": 64,
+    "policy_actor_kl_coef": 1.0,
+    "policy_actor_kl_target_per_dim": 0.1,
+    "policy_actor_kl_reference_interval": 512,
     "policy_gradient_mode": "reinforce",
     "policy_replay_critic_loss_coef": 0.3,
     "policy_replay_critic_batch_size": 16,
@@ -120,7 +121,7 @@ _JEPA_BASE: dict[str, Any] = {
     "optimizer_epsilon": 1e-8,
     "gamma": 1.0 - 1.0 / 333.0,
     "lambda_return": 0.95,
-    "final_policy_eval_episodes": 20,
+    "final_policy_eval_episodes": 100,
     "final_policy_eval_seed": 9_000_000,
     "failure_return_threshold": 100.0,
     "success_return_threshold": 900.0,
@@ -157,7 +158,7 @@ PRESETS: dict[str, dict[str, Any]] = {
     },
     "jepa_500k": {
         **_JEPA_BASE,
-        "online_iterations": 481,
+        "online_iterations": 483,
         "dreamer_report_budget_env_steps": 500_000,
     },
 }
