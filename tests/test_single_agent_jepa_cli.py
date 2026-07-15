@@ -62,7 +62,9 @@ def test_cli_accepts_slow_policy_bundle(monkeypatch):
             "0.995",
             "--policy-bundle-ema-start-env-steps",
             "50000",
-            "--policy-bundle-online-action-fraction",
+            "--policy-bundle-collection-online-action-fraction",
+            "1.0",
+            "--policy-bundle-eval-online-action-fraction",
             "0.25",
         ),
     )
@@ -71,14 +73,15 @@ def test_cli_accepts_slow_policy_bundle(monkeypatch):
 
     assert args.policy_bundle_ema_decay == pytest.approx(0.995)
     assert args.policy_bundle_ema_start_env_steps == 50_000
-    assert args.policy_bundle_online_action_fraction == pytest.approx(0.25)
+    assert args.policy_bundle_collection_online_action_fraction == pytest.approx(1.0)
+    assert args.policy_bundle_eval_online_action_fraction == pytest.approx(0.25)
 
 
 def test_cli_rejects_policy_bundle_mix_when_bundle_is_disabled(monkeypatch):
     monkeypatch.setattr(
         sys,
         "argv",
-        _minimal_args("--policy-bundle-online-action-fraction", "0.25"),
+        _minimal_args("--policy-bundle-eval-online-action-fraction", "0.25"),
     )
 
     with pytest.raises(SystemExit):
@@ -130,6 +133,39 @@ def test_slow_policy_action_mix_uses_complete_policy_outputs(monkeypatch):
     )
 
     np.testing.assert_allclose(actions, [[-0.5, 0.5]])
+
+
+def test_current_only_collection_does_not_evaluate_slow_policy(monkeypatch):
+    calls = []
+
+    def fake_select(state, *_args, **_kwargs):
+        calls.append(state.name)
+        return state.actions
+
+    monkeypatch.setattr(train_dmc_jepa, "select_continuous_actions", fake_select)
+    online = SimpleNamespace(
+        name="online",
+        actions=jnp.asarray([[0.75, -0.25]]),
+    )
+    slow = SimpleNamespace(
+        name="slow",
+        actions=jnp.asarray([[-1.0, 1.0]]),
+    )
+
+    actions = train_dmc_jepa._select_behavior_actions(
+        online,
+        slow,
+        jnp.zeros((1, 1)),
+        SimpleNamespace(),
+        jnp.asarray([-1.0, -1.0]),
+        jnp.asarray([1.0, 1.0]),
+        key=jax.random.PRNGKey(0),
+        stochastic=True,
+        online_action_fraction=1.0,
+    )
+
+    assert calls == ["online"]
+    np.testing.assert_allclose(actions, online.actions)
 
 
 def test_cli_accepts_reset_rich_bootstrap(monkeypatch):

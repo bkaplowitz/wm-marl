@@ -321,7 +321,7 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help=(
             "Per-online-phase EMA decay for a slow observation-encoder and "
-            "actor-head bundle; 0 disables the slow behavior policy."
+            "actor-head bundle; 0 disables the slow evaluation policy."
         ),
     )
     policy.add_argument(
@@ -334,12 +334,21 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     policy.add_argument(
-        "--policy-bundle-online-action-fraction",
+        "--policy-bundle-collection-online-action-fraction",
+        type=float,
+        default=1.0,
+        help=(
+            "Fraction of current-policy action mixed with the slow-policy "
+            "action during online collection; 1 keeps collection on-policy."
+        ),
+    )
+    policy.add_argument(
+        "--policy-bundle-eval-online-action-fraction",
         type=float,
         default=0.0,
         help=(
-            "Fraction of online-policy action mixed with the slow-policy "
-            "action during collection and evaluation."
+            "Fraction of current-policy action mixed with the slow-policy "
+            "action during deterministic curve and final evaluation."
         ),
     )
     policy.add_argument("--value-output-scale", type=float, default=0.0)
@@ -806,15 +815,18 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--policy-bundle-ema-decay must be in [0, 1)")
     if args.policy_bundle_ema_start_env_steps < 0:
         parser.error("--policy-bundle-ema-start-env-steps must be >= 0")
-    if not 0.0 <= args.policy_bundle_online_action_fraction <= 1.0:
-        parser.error("--policy-bundle-online-action-fraction must be in [0, 1]")
-    if (
-        args.policy_bundle_ema_decay == 0.0
-        and args.policy_bundle_online_action_fraction != 0.0
+    if not 0.0 <= args.policy_bundle_collection_online_action_fraction <= 1.0:
+        parser.error(
+            "--policy-bundle-collection-online-action-fraction must be in [0, 1]"
+        )
+    if not 0.0 <= args.policy_bundle_eval_online_action_fraction <= 1.0:
+        parser.error("--policy-bundle-eval-online-action-fraction must be in [0, 1]")
+    if args.policy_bundle_ema_decay == 0.0 and (
+        args.policy_bundle_collection_online_action_fraction != 1.0
+        or args.policy_bundle_eval_online_action_fraction != 0.0
     ):
         parser.error(
-            "--policy-bundle-online-action-fraction requires "
-            "--policy-bundle-ema-decay > 0"
+            "policy-bundle action mixing requires --policy-bundle-ema-decay > 0"
         )
     if args.optimizer_epsilon <= 0.0:
         parser.error("--optimizer-epsilon must be > 0")
@@ -1028,7 +1040,7 @@ def _scheduled_recent_fractions(
 
 def _protocol_name(args: argparse.Namespace) -> str:
     if args.policy_bundle_ema_decay > 0.0:
-        return "reset_rich_interleaved_slow_policy_bundle"
+        return "reset_rich_interleaved_current_collection_slow_evaluation"
     return "reset_rich_interleaved_latest_policy"
 
 
@@ -1093,7 +1105,7 @@ def _select_behavior_actions(
     stochastic: bool,
     online_action_fraction: float,
 ) -> jax.Array:
-    if slow_policy_state is None:
+    if slow_policy_state is None or online_action_fraction >= 1.0:
         return select_continuous_actions(
             state,
             observations,
@@ -1466,7 +1478,9 @@ def run_one(
                 failure_return_threshold=args.failure_return_threshold,
                 success_return_threshold=args.success_return_threshold,
                 slow_policy_state=slow_policy_state,
-                online_action_fraction=(args.policy_bundle_online_action_fraction),
+                online_action_fraction=(
+                    args.policy_bundle_collection_online_action_fraction
+                ),
             )
             train_env_steps += added_env_steps
             logger.set_train_env_steps(train_env_steps)
@@ -1675,8 +1689,11 @@ def run_one(
                         policy_bundle_ema,
                         state.params,
                     ),
-                    "policy_bundle_online_action_fraction": (
-                        args.policy_bundle_online_action_fraction
+                    "policy_bundle_collection_online_action_fraction": (
+                        args.policy_bundle_collection_online_action_fraction
+                    ),
+                    "policy_bundle_eval_online_action_fraction": (
+                        args.policy_bundle_eval_online_action_fraction
                     ),
                     "policy_online_recent_start_requested_fraction": (
                         active_recent_fractions["policy_start"]
@@ -1874,8 +1891,11 @@ def run_one(
                         "env": args.env,
                         "env_backend": _env_backend(args.env),
                         "jepa_config": dataclasses.asdict(config),
-                        "online_action_fraction": (
-                            args.policy_bundle_online_action_fraction
+                        "collection_online_action_fraction": (
+                            args.policy_bundle_collection_online_action_fraction
+                        ),
+                        "eval_online_action_fraction": (
+                            args.policy_bundle_eval_online_action_fraction
                         ),
                         "seed": seed,
                         "train_replay_env_steps": train_env_steps,
@@ -2068,8 +2088,11 @@ def _save_recovery_checkpoint(
                     "env_backend": _env_backend(args.env),
                     "jepa_config": dataclasses.asdict(config),
                     "online_iteration": online_iteration,
-                    "online_action_fraction": (
-                        args.policy_bundle_online_action_fraction
+                    "collection_online_action_fraction": (
+                        args.policy_bundle_collection_online_action_fraction
+                    ),
+                    "eval_online_action_fraction": (
+                        args.policy_bundle_eval_online_action_fraction
                     ),
                     "seed": seed,
                     "train_replay_env_steps": train_env_steps,
@@ -2272,9 +2295,13 @@ def _collect_policy_steps(
         "env_steps": steps * adapter.num_envs,
         "steps_per_env": steps,
         "stochastic_actions": stochastic_actions,
-        "policy_bundle_ema_used": slow_policy_state is not None,
-        "policy_bundle_online_action_fraction": (
-            online_action_fraction if slow_policy_state is not None else 1.0
+        "policy_bundle_ema_used": (
+            slow_policy_state is not None and online_action_fraction < 1.0
+        ),
+        "policy_bundle_collection_online_action_fraction": (
+            online_action_fraction
+            if slow_policy_state is not None and online_action_fraction < 1.0
+            else 1.0
         ),
         "online_reset_interval": reset_interval,
         "online_reset_fraction": reset_fraction,
@@ -3137,9 +3164,11 @@ def _final_policy_evaluation(
         args.num_envs,
         args.final_policy_eval_episodes,
     )
-    policy_label = (
-        "slow behavior policy" if slow_policy_state is not None else "latest policy"
+    uses_bundle = (
+        slow_policy_state is not None
+        and args.policy_bundle_eval_online_action_fraction < 1.0
     )
+    policy_label = "slow evaluation policy" if uses_bundle else "latest policy"
     evaluation = _evaluate_continuous_policy(
         args,
         state,
@@ -3150,7 +3179,7 @@ def _final_policy_evaluation(
         action_low=jnp.asarray(action_low, dtype=jnp.float32),
         action_high=jnp.asarray(action_high, dtype=jnp.float32),
         slow_policy_state=slow_policy_state,
-        online_action_fraction=args.policy_bundle_online_action_fraction,
+        online_action_fraction=args.policy_bundle_eval_online_action_fraction,
         desc=f"evaluate final {policy_label}",
         video_logger=logger if args.wandb_videos else None,
         video_filename="videos/final_policy.mp4" if args.wandb_videos else None,
@@ -3191,9 +3220,11 @@ def _curve_policy_evaluation(
         args.num_envs,
         args.curve_eval_episodes,
     )
-    policy_label = (
-        "slow behavior policy" if slow_policy_state is not None else "latest policy"
+    uses_bundle = (
+        slow_policy_state is not None
+        and args.policy_bundle_eval_online_action_fraction < 1.0
     )
+    policy_label = "slow evaluation policy" if uses_bundle else "latest policy"
     evaluation = _evaluate_continuous_policy(
         args,
         state,
@@ -3204,7 +3235,7 @@ def _curve_policy_evaluation(
         action_low=jnp.asarray(action_low, dtype=jnp.float32),
         action_high=jnp.asarray(action_high, dtype=jnp.float32),
         slow_policy_state=slow_policy_state,
-        online_action_fraction=args.policy_bundle_online_action_fraction,
+        online_action_fraction=args.policy_bundle_eval_online_action_fraction,
         desc=f"evaluate {policy_label} at {train_env_steps} train steps",
     )
     evaluation = {
@@ -3352,9 +3383,13 @@ def _evaluate_continuous_policy(
             "episodes": len(returns),
             "num_envs": num_envs,
             "stochastic_actions": False,
-            "policy_bundle_ema_used": slow_policy_state is not None,
-            "policy_bundle_online_action_fraction": (
-                online_action_fraction if slow_policy_state is not None else 1.0
+            "policy_bundle_ema_used": (
+                slow_policy_state is not None and online_action_fraction < 1.0
+            ),
+            "policy_bundle_eval_online_action_fraction": (
+                online_action_fraction
+                if slow_policy_state is not None and online_action_fraction < 1.0
+                else 1.0
             ),
             "env_steps": step_calls * num_envs,
             "completed_episode_steps": int(sum(lengths)),
