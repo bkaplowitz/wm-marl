@@ -276,6 +276,10 @@ def step_accounting(params: dict[str, Any]) -> dict[str, int | float | None]:
     online_train_steps = _int_param(params, "online_train_steps")
     policy_train_steps = _int_param(params, "policy_train_steps")
     online_policy_train_steps = _int_param(params, "online_policy_train_steps")
+    online_actor_update_interval = _int_param(
+        params,
+        "online_policy_actor_update_interval",
+    )
 
     train_vector_steps = _sum_optional(
         collect_steps,
@@ -292,6 +296,18 @@ def step_accounting(params: dict[str, Any]) -> dict[str, int | float | None]:
         policy_train_steps,
         online_iterations,
         online_policy_train_steps,
+    )
+    actor_updates = _sum_optional(
+        policy_train_steps,
+        _product_optional(
+            online_iterations,
+            (
+                None
+                if online_policy_train_steps is None
+                or online_actor_update_interval is None
+                else online_policy_train_steps // online_actor_update_interval
+            ),
+        ),
     )
     sampled_transitions = _product_optional(
         world_model_updates,
@@ -319,6 +335,8 @@ def step_accounting(params: dict[str, Any]) -> dict[str, int | float | None]:
         ),
         "world_model_updates": world_model_updates,
         "policy_updates": policy_updates,
+        "critic_updates": policy_updates,
+        "actor_updates": actor_updates,
         "world_model_sampled_transitions": sampled_transitions,
         "world_model_replay_ratio": replay_ratio,
         "final_policy_eval_episodes": _int_param(
@@ -382,6 +400,7 @@ def parse_args() -> argparse.Namespace:
         "online_train_steps",
         "policy_train_steps",
         "online_policy_train_steps",
+        "online_policy_actor_update_interval",
         "online_checkpoint_interval",
         "policy_actor_kl_reference_interval",
         "online_recent_replay_steps",
