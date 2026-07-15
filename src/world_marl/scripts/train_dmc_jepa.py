@@ -149,6 +149,16 @@ def parse_args() -> argparse.Namespace:
     policy = parser.add_argument_group("actor and critic")
     policy.add_argument("--policy-train-steps", type=int, default=1280)
     policy.add_argument("--policy-batch-size", type=int, default=1024)
+    policy.add_argument(
+        "--policy-bootstrap-start-fraction",
+        type=float,
+        default=0.0,
+        help=(
+            "Fraction of online actor imagination starts sampled from the "
+            "frozen reset-rich bootstrap replay. This reuses counted data and "
+            "does not affect world-model or critic replay."
+        ),
+    )
     policy.add_argument("--actor-learning-rate", type=float, default=4e-5)
     policy.add_argument("--actor-grad-clip-norm", type=float, default=10.0)
     policy.add_argument("--critic-grad-clip-norm", type=float, default=100.0)
@@ -581,6 +591,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         value = getattr(args, name)
         if value is not None and not 0.0 <= value <= 1.0:
             parser.error(f"--{name.replace('_', '-')} must be in [0, 1]")
+    if not 0.0 <= args.policy_bootstrap_start_fraction <= 1.0:
+        parser.error("--policy-bootstrap-start-fraction must be in [0, 1]")
     if (
         args.online_recent_replay_max_oversample != 0.0
         and args.online_recent_replay_max_oversample < 1.0
@@ -592,6 +604,15 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         args.policy_replay_critic_horizon + 1,
     )
     requested_recent_fractions = _requested_recent_fractions(args)
+    if (
+        args.policy_bootstrap_start_fraction
+        + requested_recent_fractions["policy_start"]
+        > 1.0
+    ):
+        parser.error(
+            "--policy-bootstrap-start-fraction and the requested online recent "
+            "policy-start fraction must sum to at most 1"
+        )
     if max(requested_recent_fractions.values()) > 0.0 and (
         args.online_recent_replay_steps < recent_min_steps
     ):
@@ -935,6 +956,16 @@ def run_one(
             observation_dim=config.observation_dim,
             action_dim=config.action_dim,
         )
+        bootstrap_start_replay = (
+            _new_replay_buffer(
+                capacity=args.collect_steps,
+                num_envs=args.num_envs,
+                observation_dim=config.observation_dim,
+                action_dim=config.action_dim,
+            )
+            if args.policy_bootstrap_start_fraction > 0.0
+            else None
+        )
         online_recent_replay = (
             _new_replay_buffer(
                 capacity=args.online_recent_replay_steps,
@@ -951,15 +982,16 @@ def run_one(
         # advancing the online environments away from their first reset.
         bootstrap_adapter = _make_vector_adapter(args, seed=seed)
         try:
+            bootstrap_replays = [replay]
+            if online_recent_replay is not None:
+                bootstrap_replays.append(online_recent_replay)
+            if bootstrap_start_replay is not None:
+                bootstrap_replays.append(bootstrap_start_replay)
             _, initial_train_env_steps = _collect_random_steps(
                 bootstrap_adapter,
                 bootstrap_adapter.reset(),
                 numpy_rngs.get("initial_collection"),
-                (
-                    (replay, online_recent_replay)
-                    if online_recent_replay is not None
-                    else replay
-                ),
+                tuple(bootstrap_replays),
                 steps=args.collect_steps,
                 reset_interval=args.initial_reset_interval,
                 desc="collect reset-rich bootstrap replay",
@@ -985,6 +1017,14 @@ def run_one(
                 "observation_dim": config.observation_dim,
                 "action_dim": config.action_dim,
                 "source": "isolated_reset_rich_collection",
+                "policy_bootstrap_start_fraction": (
+                    args.policy_bootstrap_start_fraction
+                ),
+                "policy_bootstrap_start_size_per_env": (
+                    bootstrap_start_replay.size
+                    if bootstrap_start_replay is not None
+                    else 0
+                ),
             },
         )
 
@@ -1014,6 +1054,10 @@ def run_one(
                 "validation_replay_sha256": validation_replay.fingerprint(),
             }
         )
+        if bootstrap_start_replay is not None:
+            initialized_snapshot["policy_bootstrap_start_replay_sha256"] = (
+                bootstrap_start_replay.fingerprint()
+            )
         logger.write_json("reproducibility_initialized.json", initialized_snapshot)
 
         validation_batch = validation_replay.sample(
@@ -1314,6 +1358,8 @@ def run_one(
                 recent_replay=online_recent_replay,
                 start_recent_fraction=effective_recent_fractions["policy_start"],
                 critic_recent_fraction=effective_recent_fractions["critic"],
+                bootstrap_start_replay=bootstrap_start_replay,
+                bootstrap_start_fraction=args.policy_bootstrap_start_fraction,
             )
             policy_metrics.update(
                 {
@@ -2140,6 +2186,8 @@ def _train_policy(
     recent_replay: SequenceReplayBuffer | None = None,
     start_recent_fraction: float = 0.0,
     critic_recent_fraction: float = 0.0,
+    bootstrap_start_replay: SequenceReplayBuffer | None = None,
+    bootstrap_start_fraction: float = 0.0,
 ) -> tuple[Any, jax.Array, dict[str, Any]]:
     if train_steps == 0:
         return (
@@ -2228,6 +2276,8 @@ def _train_policy(
             batch_size=args.policy_batch_size,
             recent_replay=recent_replay,
             recent_fraction=start_recent_fraction,
+            bootstrap_replay=bootstrap_start_replay,
+            bootstrap_fraction=bootstrap_start_fraction,
         )
         real_critic_batch = None
         if args.policy_replay_critic_loss_coef > 0.0:
@@ -2321,6 +2371,10 @@ def _train_policy(
             "policy_actor_entropy_initial_coef": args.actor_entropy_coef,
             "policy_actor_entropy_final_coef": args.actor_entropy_final_coef,
             "policy_online_recent_start_fraction": start_recent_fraction,
+            "policy_bootstrap_start_fraction": bootstrap_start_fraction,
+            "policy_bootstrap_start_size_per_env": (
+                bootstrap_start_replay.size if bootstrap_start_replay is not None else 0
+            ),
             "policy_online_recent_critic_fraction": critic_recent_fraction,
             "policy_target_critic_ema_decay": args.target_critic_ema_decay,
             "policy_actor_kl_coef": args.policy_actor_kl_coef,
@@ -2344,21 +2398,29 @@ def _sample_mixed_policy_starts(
     batch_size: int,
     recent_replay: SequenceReplayBuffer | None,
     recent_fraction: float,
+    bootstrap_replay: SequenceReplayBuffer | None = None,
+    bootstrap_fraction: float = 0.0,
 ) -> tuple[jax.Array, jax.Array]:
+    bootstrap_size = _recent_batch_size(
+        batch_size,
+        recent_replay=bootstrap_replay,
+        recent_fraction=bootstrap_fraction,
+    )
     recent_size = _recent_batch_size(
         batch_size,
         recent_replay=recent_replay,
         recent_fraction=recent_fraction,
     )
-    if recent_size == 0:
+    if bootstrap_size + recent_size > batch_size:
+        raise ValueError("policy-start replay fractions must sum to at most 1")
+    if bootstrap_size == 0 and recent_size == 0:
         return _sample_policy_starts(
             replay,
             rng,
             config=config,
             batch_size=batch_size,
         )
-    assert recent_replay is not None
-    full_size = batch_size - recent_size
+    full_size = batch_size - bootstrap_size - recent_size
     chunks = []
     if full_size:
         chunks.append(
@@ -2369,14 +2431,26 @@ def _sample_mixed_policy_starts(
                 batch_size=full_size,
             )
         )
-    chunks.append(
-        _sample_policy_starts(
-            recent_replay,
-            rng,
-            config=config,
-            batch_size=recent_size,
+    if bootstrap_size:
+        assert bootstrap_replay is not None
+        chunks.append(
+            _sample_policy_starts(
+                bootstrap_replay,
+                rng,
+                config=config,
+                batch_size=bootstrap_size,
+            )
         )
-    )
+    if recent_size:
+        assert recent_replay is not None
+        chunks.append(
+            _sample_policy_starts(
+                recent_replay,
+                rng,
+                config=config,
+                batch_size=recent_size,
+            )
+        )
     return (
         jnp.concatenate([chunk[0] for chunk in chunks], axis=0),
         jnp.concatenate([chunk[1] for chunk in chunks], axis=0),

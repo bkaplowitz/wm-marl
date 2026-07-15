@@ -464,6 +464,8 @@ def test_cli_accepts_recent_replay_and_curve_evaluation(monkeypatch):
             "128",
             "--online-recent-replay-max-oversample",
             "10",
+            "--policy-bootstrap-start-fraction",
+            "0.25",
             "--curve-eval-interval-env-steps",
             "50000",
             "--curve-eval-episodes",
@@ -485,6 +487,7 @@ def test_cli_accepts_recent_replay_and_curve_evaluation(monkeypatch):
     }
     assert args.online_recent_replay_steps == 128
     assert args.online_recent_replay_max_oversample == 10.0
+    assert args.policy_bootstrap_start_fraction == 0.25
     assert args.curve_eval_interval_env_steps == 50_000
     assert args.curve_eval_episodes == 20
     assert args.curve_eval_seed == 9_000_000
@@ -625,6 +628,56 @@ def test_recent_replay_batch_respects_requested_fraction():
 
     np.testing.assert_array_equal(np.asarray(batch.rewards[:7]), 1.0)
     np.testing.assert_array_equal(np.asarray(batch.rewards[7:]), 9.0)
+
+
+def test_policy_start_mixture_reuses_frozen_bootstrap_states():
+    def replay_with_observation(value: float) -> SequenceReplayBuffer:
+        replay = SequenceReplayBuffer(
+            capacity=12,
+            num_envs=1,
+            observation_shape=(1,),
+            action_shape=(1,),
+            action_dtype=np.float32,
+        )
+        for _ in range(10):
+            replay.add_step(
+                observations=np.asarray([[value]], dtype=np.float32),
+                actions=np.zeros((1, 1), dtype=np.float32),
+                rewards=np.zeros((1,), dtype=np.float32),
+                dones=np.zeros((1,), dtype=np.float32),
+            )
+        return replay
+
+    config = train_dmc_jepa.JepaConfig(
+        observation_dim=1,
+        action_dim=1,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=8,
+        num_layers=1,
+        num_heads=2,
+        mlp_ratio=2,
+        max_horizon=2,
+        context_window=2,
+        sigreg_num_proj=4,
+        sigreg_knots=3,
+        twohot_bins=7,
+    )
+    observations, _ = train_dmc_jepa._sample_mixed_policy_starts(
+        replay_with_observation(1.0),
+        np.random.default_rng(0),
+        config=config,
+        batch_size=10,
+        recent_replay=replay_with_observation(3.0),
+        recent_fraction=0.2,
+        bootstrap_replay=replay_with_observation(2.0),
+        bootstrap_fraction=0.3,
+    )
+
+    endpoint_values = np.asarray(observations[:, -1, 0])
+    np.testing.assert_array_equal(endpoint_values[:5], 1.0)
+    np.testing.assert_array_equal(endpoint_values[5:8], 2.0)
+    np.testing.assert_array_equal(endpoint_values[8:], 3.0)
 
 
 def test_recent_replay_oversample_cap_decays_fraction_with_replay_size():

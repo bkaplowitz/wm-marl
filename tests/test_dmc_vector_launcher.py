@@ -53,6 +53,7 @@ def test_launcher_serializes_early_sample_efficiency_diagnostic_controls():
             "online_recent_world_model_fraction": 0.5,
             "online_recent_policy_start_fraction": 0.0,
             "online_recent_critic_fraction": 0.25,
+            "policy_bootstrap_start_fraction": 0.25,
             "online_recent_replay_steps": 320,
             "online_recent_replay_max_oversample": 10.0,
             "curve_eval_interval_env_steps": 50_000,
@@ -66,6 +67,7 @@ def test_launcher_serializes_early_sample_efficiency_diagnostic_controls():
     assert tokens[tokens.index("--online-recent-world-model-fraction") + 1] == "0.5"
     assert tokens[tokens.index("--online-recent-policy-start-fraction") + 1] == "0.0"
     assert tokens[tokens.index("--online-recent-critic-fraction") + 1] == "0.25"
+    assert tokens[tokens.index("--policy-bootstrap-start-fraction") + 1] == "0.25"
     assert tokens[tokens.index("--online-recent-replay-steps") + 1] == "320"
     assert tokens[tokens.index("--online-recent-replay-max-oversample") + 1] == "10.0"
     assert tokens[tokens.index("--curve-eval-interval-env-steps") + 1] == "50000"
@@ -142,6 +144,7 @@ def test_100k_preset_matches_the_reset_rich_interleaved_contract():
     assert params["online_recent_policy_start_fraction"] == 0.0
     assert params["online_recent_critic_fraction"] == 0.0
     assert params["online_recent_replay_max_oversample"] == 10.0
+    assert params["policy_bootstrap_start_fraction"] == 0.0
 
 
 def test_actor_update_interval_override_is_accounted_separately(
