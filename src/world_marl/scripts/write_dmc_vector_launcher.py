@@ -618,11 +618,14 @@ def write_launcher(
         if sync
         else 'echo "Skipping uv sync"\n'
     )
+    project_root = Path.cwd().resolve()
     body = dedent(
         f"""\
         #!/usr/bin/env bash
         set -euo pipefail
-        cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+        DEFAULT_REPO_ROOT={shlex.quote(str(project_root))}
+        REPO_ROOT="${{REPO_ROOT:-$DEFAULT_REPO_ROOT}}"
+        cd "$REPO_ROOT"
         export UV_PROJECT_ENVIRONMENT="${{UV_PROJECT_ENVIRONMENT:-/tmp/wm-marl-venv}}"
         export UV_CACHE_DIR="${{UV_CACHE_DIR:-/tmp/uv-cache-wm-marl}}"
         export UV_LINK_MODE="${{UV_LINK_MODE:-copy}}"

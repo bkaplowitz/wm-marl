@@ -127,6 +127,25 @@ def test_launcher_syncs_tracking_extra_when_enabled(tmp_path):
     assert "--extra dmc --extra cuda12 --extra tracking" in launcher
 
 
+def test_launcher_pins_generation_repo_root(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    out_root = tmp_path / "runs"
+    out_root.mkdir()
+
+    write_launcher(
+        out_root,
+        [{"task": "reacher/easy", "seed": 0, "short": "reacher_easy_seed0"}],
+        ["0"],
+        sync=False,
+        tracking=False,
+    )
+
+    script = (out_root / "launcher.sh").read_text()
+    assert f"DEFAULT_REPO_ROOT={tmp_path}" in script
+    assert 'REPO_ROOT="${REPO_ROOT:-$DEFAULT_REPO_ROOT}"' in script
+    assert 'cd "$REPO_ROOT"' in script
+
+
 def test_maintained_presets_are_small_and_unambiguous():
     assert set(PRESETS) == {"smoke", "jepa_100k", "jepa_200k", "jepa_500k"}
     forbidden = {
