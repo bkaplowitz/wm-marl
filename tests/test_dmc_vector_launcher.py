@@ -133,6 +133,7 @@ def test_100k_preset_matches_the_reset_rich_interleaved_contract():
     assert accounting["policy_updates"] == 47_872
     assert params["collect_steps"] == 320
     assert params["initial_reset_interval"] == 80
+    assert params["initial_random_action_hold_steps"] == 1
     assert params["online_iterations"] == 91
     assert params["online_collect_steps"] == 64
     assert params["online_reset_interval"] is None

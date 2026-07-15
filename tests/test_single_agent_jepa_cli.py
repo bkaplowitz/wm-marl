@@ -70,6 +70,18 @@ def test_cli_accepts_reset_rich_bootstrap(monkeypatch):
     assert args.initial_reset_interval == 6
 
 
+def test_cli_accepts_temporally_coherent_random_bootstrap(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _minimal_args("--initial-random-action-hold-steps", "4"),
+    )
+
+    args = train_dmc_jepa.parse_args()
+
+    assert args.initial_random_action_hold_steps == 4
+
+
 def test_cli_accepts_bounded_online_reset_diversity(monkeypatch):
     monkeypatch.setattr(
         sys,
@@ -148,6 +160,55 @@ def test_random_collection_marks_nonterminal_reset_cuts():
     )
     np.testing.assert_array_equal(replay.dones[:, 0], np.zeros(6))
     np.testing.assert_array_equal(observations, np.asarray([[[300.0]]]))
+
+
+def test_random_collection_holds_actions_and_resamples_after_forced_reset():
+    class Adapter:
+        num_envs = 1
+
+        def __init__(self):
+            self.action = 0
+
+        def reset(self):
+            return np.zeros((1, 1, 1), dtype=np.float32)
+
+        def sample_actions(self, rng):
+            del rng
+            self.action += 1
+            return np.asarray([[[self.action]]], dtype=np.float32)
+
+        def step(self, actions):
+            return SimpleNamespace(
+                observations=np.asarray(actions, dtype=np.float32),
+                rewards=np.zeros((1, 1), dtype=np.float32),
+                dones=np.zeros((1, 1), dtype=np.float32),
+            )
+
+    adapter = Adapter()
+    replay = SequenceReplayBuffer(
+        capacity=6,
+        num_envs=1,
+        observation_shape=(1,),
+        action_shape=(1,),
+        action_dtype=np.float32,
+    )
+
+    train_dmc_jepa._collect_random_steps(
+        adapter,
+        adapter.reset(),
+        np.random.default_rng(0),
+        replay,
+        steps=6,
+        reset_interval=3,
+        action_hold_steps=2,
+        desc="test",
+        quiet=True,
+    )
+
+    np.testing.assert_array_equal(
+        replay.actions[:, 0, 0],
+        np.asarray([1.0, 1.0, 2.0, 3.0, 3.0, 4.0]),
+    )
 
 
 def test_policy_collection_preserves_online_reset_cadence_across_phases(

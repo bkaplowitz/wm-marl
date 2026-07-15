@@ -76,6 +76,15 @@ def parse_args() -> argparse.Namespace:
     environment.add_argument("--max-cycles", type=int, default=1000)
     environment.add_argument("--collect-steps", type=int, default=320)
     environment.add_argument("--initial-reset-interval", type=int, default=80)
+    environment.add_argument(
+        "--initial-random-action-hold-steps",
+        type=int,
+        default=1,
+        help=(
+            "Number of bootstrap environment steps to hold each sampled random "
+            "action; 1 preserves per-step i.i.d. random collection."
+        ),
+    )
     environment.add_argument("--validation-steps", type=int, default=80)
     environment.add_argument("--validation-seed", type=int, default=None)
     environment.add_argument("--replay-capacity", type=int, default=1_000_000)
@@ -500,6 +509,7 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         "env_workers",
         "max_cycles",
         "collect_steps",
+        "initial_random_action_hold_steps",
         "validation_steps",
         "replay_capacity",
         "batch_size",
@@ -1062,6 +1072,7 @@ def run_one(
                 tuple(bootstrap_replays),
                 steps=args.collect_steps,
                 reset_interval=args.initial_reset_interval,
+                action_hold_steps=args.initial_random_action_hold_steps,
                 desc="collect reset-rich bootstrap replay",
                 quiet=args.quiet,
             )
@@ -1077,6 +1088,9 @@ def run_one(
                 "size_per_env": replay.size,
                 "collector_cut_count": replay.cut_count,
                 "initial_reset_interval": args.initial_reset_interval,
+                "initial_random_action_hold_steps": (
+                    args.initial_random_action_hold_steps
+                ),
                 "initial_segments_per_env": (
                     math.ceil(args.collect_steps / args.initial_reset_interval)
                     if args.initial_reset_interval is not None
@@ -1815,12 +1829,26 @@ def _collect_random_steps(
     *,
     steps: int,
     reset_interval: int | None = None,
+    action_hold_steps: int = 1,
     desc: str,
     quiet: bool,
 ) -> tuple[np.ndarray, int]:
+    held_actions = None
+    held_steps = np.zeros((adapter.num_envs,), dtype=np.int64)
     for step_index in tqdm(range(steps), desc=desc, unit="step", disable=quiet):
-        actions = adapter.sample_actions(rng)
+        if held_actions is None:
+            held_actions = adapter.sample_actions(rng)
+            held_steps.fill(0)
+        else:
+            resample_mask = held_steps >= action_hold_steps
+            if np.any(resample_mask):
+                replacement_actions = adapter.sample_actions(rng)
+                held_actions = np.array(held_actions, copy=True)
+                held_actions[resample_mask] = replacement_actions[resample_mask]
+                held_steps[resample_mask] = 0
+        actions = held_actions
         step = adapter.step(actions)
+        held_steps += 1
         forced_reset = (
             reset_interval is not None and (step_index + 1) % reset_interval == 0
         )
@@ -1834,7 +1862,21 @@ def _collect_random_steps(
                 np.ones((adapter.num_envs,), dtype=np.float32) if forced_reset else None
             ),
         )
-        observations = adapter.reset() if forced_reset else step.observations
+        if forced_reset:
+            observations = adapter.reset()
+            held_actions = None
+            held_steps.fill(0)
+        else:
+            observations = step.observations
+            done_mask = np.asarray(step.dones[:, 0]) > 0.0
+            resample_done_mask = done_mask & (held_steps < action_hold_steps)
+            if np.any(resample_done_mask):
+                replacement_actions = adapter.sample_actions(rng)
+                held_actions = np.array(held_actions, copy=True)
+                held_actions[resample_done_mask] = replacement_actions[
+                    resample_done_mask
+                ]
+                held_steps[resample_done_mask] = 0
     return observations, steps * adapter.num_envs
 
 
