@@ -6,7 +6,9 @@ requires = ["setuptools>=69", "wheel"]
 dependencies = [
   "distrax",
   "dm-meltingpot==2.4.0",
+  "dm-pix>=0.4.3",
   "dmlab2d==1.0.0",
+  "einops>=0.8.0",
   "flax",
   "gymnax==0.0.9",
   "imageio>=2.37.3",
