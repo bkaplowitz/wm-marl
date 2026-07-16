@@ -99,6 +99,7 @@ def main() -> None:
         num_envs=1,
         max_cycles=args.max_cycles,
         seed=seed + 8_000_000,
+        auto_reset=False,
         num_workers=1,
     )
     try:
@@ -208,7 +209,6 @@ def collect_diagnostics(
                 episode_actions.append(action)
                 if step.completed_returns:
                     completed_return = float(step.completed_returns[0][0])
-                    continuation = capture_snapshot(adapter, step.observations)
                 else:
                     observations = step.observations
                     episode_observations.append(
@@ -244,8 +244,7 @@ def collect_diagnostics(
                 )
                 rows.extend(branch_rows)
                 context_rows.extend(branch_summary)
-            restore_snapshot(adapter, continuation)
-            observations = np.asarray(continuation["observation"], dtype=np.float32)
+            observations = adapter.reset()
             progress.update(1)
     finally:
         progress.close()
