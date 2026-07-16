@@ -27,19 +27,26 @@ class SequenceReplayBuffer:
         observation_shape: tuple[int, ...],
         action_shape: tuple[int, ...] = (),
         action_dtype: np.dtype | type = np.int32,
+        observation_storage: str = "float32",
     ) -> None:
         if capacity < 2:
             raise ValueError("capacity must be >= 2")
         if num_envs < 1:
             raise ValueError("num_envs must be >= 1")
+        if observation_storage not in ("float32", "uint8"):
+            raise ValueError(
+                "observation_storage must be 'float32' or 'uint8', "
+                f"got {observation_storage!r}"
+            )
         self.capacity = int(capacity)
         self.num_envs = int(num_envs)
         self.observation_shape = tuple(int(dim) for dim in observation_shape)
         self.action_shape = tuple(int(dim) for dim in action_shape)
         self.action_dtype = np.dtype(action_dtype)
+        self.observation_storage = observation_storage
         self.observations = np.zeros(
             (self.capacity, self.num_envs, *self.observation_shape),
-            dtype=np.float32,
+            dtype=np.uint8 if observation_storage == "uint8" else np.float32,
         )
         self.actions = np.zeros(
             (self.capacity, self.num_envs, *self.action_shape),
@@ -65,6 +72,12 @@ class SequenceReplayBuffer:
         obs = np.asarray(observations, dtype=np.float32).reshape(
             (self.num_envs, *self.observation_shape)
         )
+        if self.observation_storage == "uint8":
+            if obs.min() < 0.0 or obs.max() > 1.0:
+                raise ValueError(
+                    "uint8 observation storage requires observations in [0, 1]"
+                )
+            obs = np.round(obs * 255.0).astype(np.uint8)
         self.observations[self._position] = obs
         self.actions[self._position] = np.asarray(
             actions,
@@ -114,6 +127,8 @@ class SequenceReplayBuffer:
             indices = (self._position + indices) % self.capacity
 
         obs_batch = self.observations[indices, envs[:, None]]
+        if self.observation_storage == "uint8":
+            obs_batch = obs_batch.astype(np.float32) / 255.0
         # actions/rewards/dones align with transitions out of obs[t], so one fewer
         # item than the observation sequence is needed.
         trans_indices = indices[:, :-1]

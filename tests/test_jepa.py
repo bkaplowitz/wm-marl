@@ -2029,3 +2029,72 @@ def test_select_display_trajectories_prefers_reset_free_windows():
         np.asarray(chosen.observations),
         np.asarray(observations[jnp.asarray([1, 3])]),
     )
+
+
+def _filled_buffer(storage: str, values: np.ndarray) -> SequenceReplayBuffer:
+    buffer = SequenceReplayBuffer(
+        capacity=values.shape[0],
+        num_envs=1,
+        observation_shape=(values.shape[1],),
+        action_shape=(1,),
+        action_dtype=np.float32,
+        observation_storage=storage,
+    )
+    for row in values:
+        buffer.add_step(
+            observations=row[None, :],
+            actions=np.zeros((1, 1), np.float32),
+            rewards=np.zeros((1,), np.float32),
+            dones=np.zeros((1,), np.float32),
+        )
+    return buffer
+
+
+def test_uint8_replay_round_trip_error_bound():
+    rng = np.random.default_rng(0)
+    values = rng.uniform(0.0, 1.0, size=(8, 16)).astype(np.float32)
+    buffer = _filled_buffer("uint8", values)
+    batch = buffer.sample(
+        np.random.default_rng(1), batch_size=4, chunk_length=4, max_horizon=2
+    )
+    obs = np.asarray(batch.observations)
+    assert obs.dtype == np.float32
+    assert obs.min() >= 0.0 and obs.max() <= 1.0
+    # quantization error of round-to-nearest /255 storage
+    assert np.abs(np.round(obs * 255.0) / 255.0 - obs).max() <= 1.0 / 510.0
+
+
+def test_uint8_replay_exact_for_quantized_values():
+    values = (np.arange(8 * 16).reshape(8, 16) % 256).astype(np.float32) / 255.0
+    buffer = _filled_buffer("uint8", values)
+    batch = buffer.sample(
+        np.random.default_rng(0), batch_size=2, chunk_length=6, max_horizon=2
+    )
+    obs = np.asarray(batch.observations)
+    np.testing.assert_array_equal(obs, np.round(obs * 255.0) / 255.0)
+
+
+def test_uint8_replay_rejects_out_of_range_observations():
+    buffer = SequenceReplayBuffer(
+        capacity=4,
+        num_envs=1,
+        observation_shape=(2,),
+        observation_storage="uint8",
+    )
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        buffer.add_step(
+            observations=np.array([[1.5, 0.0]], np.float32),
+            actions=np.zeros((1,), np.int32),
+            rewards=np.zeros((1,), np.float32),
+            dones=np.zeros((1,), np.float32),
+        )
+
+
+def test_replay_rejects_unknown_storage():
+    with pytest.raises(ValueError, match="observation_storage"):
+        SequenceReplayBuffer(
+            capacity=4,
+            num_envs=1,
+            observation_shape=(2,),
+            observation_storage="float16",
+        )
