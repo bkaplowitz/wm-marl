@@ -724,12 +724,14 @@ def normalize(values: jax.Array) -> jax.Array:
     return values / (jnp.linalg.norm(values, axis=-1, keepdims=True) + 1e-6)
 
 
-def safe_mean(values: list[float]) -> float | None:
-    return float(np.mean(values)) if values else None
+def safe_mean(values: list[float | None]) -> float | None:
+    finite = [float(value) for value in values if value is not None and np.isfinite(value)]
+    return float(np.mean(finite)) if finite else None
 
 
-def safe_std(values: list[float]) -> float | None:
-    return float(np.std(values)) if values else None
+def safe_std(values: list[float | None]) -> float | None:
+    finite = [float(value) for value in values if value is not None and np.isfinite(value)]
+    return float(np.std(finite)) if finite else None
 
 
 def parse_horizons(value: str) -> list[int]:

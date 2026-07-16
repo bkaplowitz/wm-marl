@@ -7,6 +7,7 @@ from world_marl.scripts.diagnose_jepa_outcome_buckets import (
     bucket_contrast,
     evenly_spaced_context_steps,
     outcome_bucket,
+    safe_mean,
     spearman,
 )
 
@@ -60,3 +61,8 @@ def test_bucket_contrast_reports_intermediate_minus_success():
     assert np.isclose(contrast["reward_step_mae_mean"], 0.15)
     assert np.isclose(contrast["latent_cosine_mean"], -0.15)
     assert contrast["top1_regret_mean"] is None
+
+
+def test_safe_mean_ignores_undefined_rank_correlations():
+    assert safe_mean([None, 0.25, None, 0.75]) == 0.5
+    assert safe_mean([None]) is None
