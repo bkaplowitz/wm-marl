@@ -65,6 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--actor-noise-scale", type=float, default=0.20)
     parser.add_argument("--failure-threshold", type=float, default=100.0)
     parser.add_argument("--success-threshold", type=float, default=900.0)
+    parser.add_argument("--gamma", type=float, default=1.0 - 1.0 / 333.0)
     parser.add_argument("--max-cycles", type=int, default=1000)
     parser.add_argument("--action-saturation-threshold", type=float, default=0.95)
     parser.add_argument("--quiet", action="store_true")
@@ -77,6 +78,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("candidate counts must be >= 0")
     if args.failure_threshold >= args.success_threshold:
         parser.error("--failure-threshold must be below --success-threshold")
+    if not (0.0 < args.gamma <= 1.0):
+        parser.error("--gamma must be in (0, 1]")
     args.horizons = parse_horizons(args.horizons)
     return args
 
@@ -135,6 +138,7 @@ def main() -> None:
             "actor_noise_scale": args.actor_noise_scale,
             "failure_threshold": args.failure_threshold,
             "success_threshold": args.success_threshold,
+            "gamma": args.gamma,
             "policy": "deterministic_checkpoint_actor",
         },
         "details_csv": str(details_out),
@@ -176,6 +180,7 @@ def collect_diagnostics(
         for episode in range(args.episodes):
             episode_observations = [np.asarray(observations[0, 0], dtype=np.float32)]
             episode_actions: list[np.ndarray] = []
+            episode_rewards: list[float] = []
             saved_contexts: list[dict[str, Any]] = []
             completed_return = None
             while completed_return is None:
@@ -207,6 +212,7 @@ def collect_diagnostics(
                 )
                 step = adapter.step(action[None, None, :])
                 episode_actions.append(action)
+                episode_rewards.append(float(step.rewards[0, 0]))
                 if step.completed_returns:
                     completed_return = float(step.completed_returns[0][0])
                 else:
@@ -220,12 +226,20 @@ def collect_diagnostics(
                 failure_threshold=args.failure_threshold,
                 success_threshold=args.success_threshold,
             )
+            value_metrics = critic_calibration(
+                state,
+                config,
+                np.asarray(episode_observations, dtype=np.float32),
+                np.asarray(episode_rewards, dtype=np.float32),
+                gamma=args.gamma,
+            )
             episode_rows.append(
                 {
                     "episode": episode,
                     "episode_return": completed_return,
                     "outcome_bucket": bucket,
                     "contexts": len(saved_contexts),
+                    **value_metrics,
                 }
             )
             for saved in saved_contexts:
@@ -460,6 +474,65 @@ def score_futures(
     return {key: np.asarray(value) for key, value in result.items()}
 
 
+def critic_calibration(
+    state,
+    config: JepaConfig,
+    observations: np.ndarray,
+    rewards: np.ndarray,
+    *,
+    gamma: float,
+) -> dict[str, float | None]:
+    values = np.asarray(_critic_values(state, jnp.asarray(observations)))
+    targets = discounted_returns(rewards, gamma=gamma)
+    count = min(values.size, targets.size)
+    values = values[:count]
+    targets = targets[:count]
+    early_count = min(100, count)
+    return {
+        "critic_value_mean": safe_mean(values.tolist()),
+        "critic_target_mean": safe_mean(targets.tolist()),
+        "critic_bias_mean": safe_mean((values - targets).tolist()),
+        "critic_mae_mean": safe_mean(np.abs(values - targets).tolist()),
+        "critic_spearman": spearman(values, targets),
+        "critic_early_value_mean": safe_mean(values[:early_count].tolist()),
+        "critic_early_target_mean": safe_mean(targets[:early_count].tolist()),
+        "critic_early_bias_mean": safe_mean(
+            (values[:early_count] - targets[:early_count]).tolist()
+        ),
+        "critic_early_mae_mean": safe_mean(
+            np.abs(values[:early_count] - targets[:early_count]).tolist()
+        ),
+        "first_positive_reward_step": first_positive_reward_step(rewards),
+    }
+
+
+@jax.jit
+def _critic_values(state, observations: jax.Array) -> jax.Array:
+    latents = state.apply_fn(
+        {"params": state.params}, observations, method=JepaWorldModel.encode
+    )
+    _, values = state.apply_fn(
+        {"params": state.params},
+        latents,
+        method=JepaWorldModel.actor_value_from_latent,
+    )
+    return values
+
+
+def discounted_returns(rewards: np.ndarray, *, gamma: float) -> np.ndarray:
+    result = np.zeros_like(rewards, dtype=np.float64)
+    carry = 0.0
+    for index in range(rewards.size - 1, -1, -1):
+        carry = float(rewards[index]) + gamma * carry
+        result[index] = carry
+    return result
+
+
+def first_positive_reward_step(rewards: np.ndarray) -> float | None:
+    indices = np.flatnonzero(rewards > 0.0)
+    return float(indices[0]) if indices.size else None
+
+
 @partial(jax.jit, static_argnames=("config", "horizon"))
 def _score_futures_jit(
     state,
@@ -619,6 +692,7 @@ def summarize(
             "episode_return_mean": safe_mean(
                 [row["episode_return"] for row in bucket_episodes]
             ),
+            "critic_calibration": summarize_critic_bucket(bucket_episodes),
             "by_horizon": by_horizon,
         }
     return {
@@ -668,6 +742,22 @@ def summarize_bucket_horizon(
             [row["oracle_real_reward"] - row["actor_real_reward"] for row in contexts]
         ),
     }
+
+
+def summarize_critic_bucket(rows: list[dict[str, Any]]) -> dict[str, float | None]:
+    metrics = (
+        "critic_value_mean",
+        "critic_target_mean",
+        "critic_bias_mean",
+        "critic_mae_mean",
+        "critic_spearman",
+        "critic_early_value_mean",
+        "critic_early_target_mean",
+        "critic_early_bias_mean",
+        "critic_early_mae_mean",
+        "first_positive_reward_step",
+    )
+    return {metric: safe_mean([row.get(metric) for row in rows]) for metric in metrics}
 
 
 def bucket_contrast(by_bucket: dict[str, Any]) -> dict[str, Any]:

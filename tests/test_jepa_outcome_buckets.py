@@ -5,6 +5,7 @@ import numpy as np
 from world_marl.scripts.diagnose_jepa_outcome_buckets import (
     average_ranks,
     bucket_contrast,
+    discounted_returns,
     evenly_spaced_context_steps,
     outcome_bucket,
     safe_mean,
@@ -66,3 +67,8 @@ def test_bucket_contrast_reports_intermediate_minus_success():
 def test_safe_mean_ignores_undefined_rank_correlations():
     assert safe_mean([None, 0.25, None, 0.75]) == 0.5
     assert safe_mean([None]) is None
+
+
+def test_discounted_returns_bootstrap_backwards_without_terminal_value():
+    returns = discounted_returns(np.asarray([1.0, 2.0, 3.0]), gamma=0.5)
+    np.testing.assert_allclose(returns, [2.75, 3.5, 3.0])
