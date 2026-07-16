@@ -216,7 +216,7 @@ uv run python -m world_marl.scripts.train_single_genwm \
   --cem-horizon 5 --cem-samples 64 --cem-topk 8 --cem-iters 3
 ```
 
-Key CEM hyperparameters: `--cem-samples` (population per iteration), `--cem-topk` (elite fraction), `--cem-iters` (CEM iterations per solve), `--cem-horizon` (planning horizon in steps), `--cem-receding-horizon` (enable receding-horizon MPC; on by default). The CEM solver is JIT-compiled (`cem_solve`) and exposed in `world_marl.genwm` alongside `CEMConfig`, `CEMPlanner`, `make_genwm_plan_fn`, `discounted_return`, and `sample_candidates`.
+Key CEM hyperparameters: `--cem-samples` (population per iteration), `--cem-topk` (number of top-scoring candidates kept for the refit), `--cem-iters` (CEM iterations per solve), `--cem-horizon` (planning horizon in steps; default: `--imag-horizon`), `--cem-receding-horizon` (execution horizon before replanning; default: `--cem-horizon`). The CEM solver is JIT-compiled (`cem_solve`) and exposed in `world_marl.genwm` alongside `CEMConfig`, `CEMPlanner`, `make_genwm_plan_fn`, `discounted_return`, and `sample_candidates`.
 
 
 ## Tests
