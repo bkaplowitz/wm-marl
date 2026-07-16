@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -206,6 +207,121 @@ class DMCVectorAdapter:
             size=(self.num_envs, self.action_dim),
         ).astype(np.float32)
         return actions[:, None, :]
+
+    def save_state_npz(self, path: str | Path) -> Path:
+        """Save simulator and task RNG state for an exact phase-boundary resume."""
+
+        physics_states = []
+        physics_times = []
+        task_rng_keys = []
+        task_rng_positions = []
+        task_rng_has_gauss = []
+        task_rng_cached_gaussian = []
+        task_rng_algorithms = []
+        environment_step_counts = []
+        environment_reset_next_step = []
+        for env in self._envs:
+            physics_states.append(np.asarray(env.physics.get_state(), dtype=np.float64))
+            physics_times.append(float(env.physics.data.time))
+            task_rng = getattr(getattr(env, "_task", None), "_random", None)
+            if task_rng is None or not hasattr(task_rng, "get_state"):
+                raise RuntimeError("DMC task does not expose a restorable RandomState")
+            algorithm, keys, position, has_gauss, cached_gaussian = task_rng.get_state()
+            task_rng_algorithms.append(str(algorithm))
+            task_rng_keys.append(np.asarray(keys, dtype=np.uint32))
+            task_rng_positions.append(int(position))
+            task_rng_has_gauss.append(int(has_gauss))
+            task_rng_cached_gaussian.append(float(cached_gaussian))
+            environment_step_counts.append(int(getattr(env, "_step_count", 0)))
+            environment_reset_next_step.append(
+                bool(getattr(env, "_reset_next_step", False))
+            )
+
+        snapshot_path = Path(path)
+        snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = snapshot_path.with_name(f".{snapshot_path.name}.tmp")
+        with temporary_path.open("wb") as handle:
+            np.savez_compressed(
+                handle,
+                env_id=np.asarray(self.env_id),
+                num_envs=np.asarray(self.num_envs, dtype=np.int64),
+                physics_states=np.stack(physics_states),
+                physics_times=np.asarray(physics_times, dtype=np.float64),
+                task_rng_algorithms=np.asarray(task_rng_algorithms, dtype="U32"),
+                task_rng_keys=np.stack(task_rng_keys),
+                task_rng_positions=np.asarray(task_rng_positions, dtype=np.int64),
+                task_rng_has_gauss=np.asarray(task_rng_has_gauss, dtype=np.int8),
+                task_rng_cached_gaussian=np.asarray(
+                    task_rng_cached_gaussian,
+                    dtype=np.float64,
+                ),
+                environment_step_counts=np.asarray(
+                    environment_step_counts,
+                    dtype=np.int64,
+                ),
+                environment_reset_next_step=np.asarray(
+                    environment_reset_next_step,
+                    dtype=np.bool_,
+                ),
+                episode_returns=self._episode_returns,
+                episode_lengths=self._episode_lengths,
+            )
+        temporary_path.replace(snapshot_path)
+        return snapshot_path
+
+    def load_state_npz(self, path: str | Path) -> None:
+        """Restore a snapshot produced by :meth:`save_state_npz`."""
+
+        with np.load(Path(path), allow_pickle=False) as data:
+            saved_env_id = str(np.asarray(data["env_id"]).item())
+            saved_num_envs = int(np.asarray(data["num_envs"]).item())
+            if saved_env_id != self.env_id or saved_num_envs != self.num_envs:
+                raise ValueError(
+                    "DMC state snapshot does not match this adapter: "
+                    f"expected {self.env_id} with {self.num_envs} envs, got "
+                    f"{saved_env_id} with {saved_num_envs} envs"
+                )
+            physics_states = np.asarray(data["physics_states"], dtype=np.float64)
+            physics_times = np.asarray(data["physics_times"], dtype=np.float64)
+            task_rng_algorithms = np.asarray(data["task_rng_algorithms"])
+            task_rng_keys = np.asarray(data["task_rng_keys"], dtype=np.uint32)
+            task_rng_positions = np.asarray(data["task_rng_positions"], dtype=np.int64)
+            task_rng_has_gauss = np.asarray(data["task_rng_has_gauss"], dtype=np.int8)
+            task_rng_cached_gaussian = np.asarray(
+                data["task_rng_cached_gaussian"],
+                dtype=np.float64,
+            )
+            environment_step_counts = np.asarray(
+                data["environment_step_counts"],
+                dtype=np.int64,
+            )
+            environment_reset_next_step = np.asarray(
+                data["environment_reset_next_step"],
+                dtype=np.bool_,
+            )
+            episode_returns = np.asarray(data["episode_returns"], dtype=np.float32)
+            episode_lengths = np.asarray(data["episode_lengths"], dtype=np.int32)
+
+        for index, env in enumerate(self._envs):
+            env.physics.set_state(physics_states[index])
+            env.physics.data.time = physics_times[index]
+            env.physics.forward()
+            task_rng = getattr(getattr(env, "_task", None), "_random", None)
+            if task_rng is None or not hasattr(task_rng, "set_state"):
+                raise RuntimeError("DMC task does not expose a restorable RandomState")
+            task_rng.set_state(
+                (
+                    str(task_rng_algorithms[index]),
+                    task_rng_keys[index],
+                    int(task_rng_positions[index]),
+                    int(task_rng_has_gauss[index]),
+                    float(task_rng_cached_gaussian[index]),
+                )
+            )
+            env._step_count = int(environment_step_counts[index])
+            env._reset_next_step = bool(environment_reset_next_step[index])
+        self._episode_returns[...] = episode_returns
+        self._episode_lengths[...] = episode_lengths
 
     def render(
         self,

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 
 
@@ -76,6 +77,35 @@ class JaxRngStreams:
             "jax_stream_ids": dict(JAX_STREAM_IDS) if self.isolated else {},
         }
 
+    def state_dict(self) -> dict[str, Any]:
+        """Return a JSON-compatible snapshot of every JAX RNG stream."""
+
+        return {
+            "seed": self.seed,
+            "isolated": self.isolated,
+            "keys": {
+                name: np.asarray(jax.device_get(key), dtype=np.uint32).tolist()
+                for name, key in self._keys.items()
+            },
+        }
+
+    def restore_state_dict(self, state: Mapping[str, Any]) -> None:
+        """Restore stream keys from :meth:`state_dict`."""
+
+        if int(state["seed"]) != self.seed or bool(state["isolated"]) != self.isolated:
+            raise ValueError("JAX RNG snapshot does not match the configured streams")
+        expected_slots = set(self._keys)
+        restored_slots = set(state["keys"])
+        if restored_slots != expected_slots:
+            raise ValueError(
+                "JAX RNG snapshot slots do not match: "
+                f"expected {sorted(expected_slots)}, got {sorted(restored_slots)}"
+            )
+        self._keys = {
+            name: jnp.asarray(value, dtype=jnp.uint32)
+            for name, value in state["keys"].items()
+        }
+
 
 @dataclass
 class NumpyRngStreams:
@@ -118,6 +148,45 @@ class NumpyRngStreams:
             "numpy_stream_ids": dict(NUMPY_STREAM_IDS) if self.isolated else {},
             "numpy_derived_seeds": derived_seeds,
         }
+
+    def state_dict(self) -> dict[str, Any]:
+        """Return a JSON-compatible snapshot of every NumPy RNG stream."""
+
+        return {
+            "seed": self.seed,
+            "isolated": self.isolated,
+            "bit_generators": {
+                name: _json_compatible(generator.bit_generator.state)
+                for name, generator in self._generators.items()
+            },
+        }
+
+    def restore_state_dict(self, state: Mapping[str, Any]) -> None:
+        """Restore generator states from :meth:`state_dict`."""
+
+        if int(state["seed"]) != self.seed or bool(state["isolated"]) != self.isolated:
+            raise ValueError("NumPy RNG snapshot does not match the configured streams")
+        expected_slots = set(self._generators)
+        restored_slots = set(state["bit_generators"])
+        if restored_slots != expected_slots:
+            raise ValueError(
+                "NumPy RNG snapshot slots do not match: "
+                f"expected {sorted(expected_slots)}, got {sorted(restored_slots)}"
+            )
+        for name, bit_generator_state in state["bit_generators"].items():
+            self._generators[name].bit_generator.state = bit_generator_state
+
+
+def _json_compatible(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _json_compatible(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_json_compatible(item) for item in value]
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
 
 
 def fingerprint_arrays(arrays: Mapping[str, Any]) -> str:

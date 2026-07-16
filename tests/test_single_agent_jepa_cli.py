@@ -53,6 +53,43 @@ def test_cli_accepts_shared_validation_seed(monkeypatch):
     assert args.validation_seed == 1_000_042
 
 
+def test_cli_accepts_phase_aligned_training_snapshot(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _minimal_args(
+            "--num-envs",
+            "2",
+            "--online-collect-steps",
+            "4",
+            "--training-snapshot-env-steps",
+            "24",
+        ),
+    )
+
+    args = train_dmc_jepa.parse_args()
+
+    assert args.training_snapshot_env_steps == [24]
+
+
+def test_cli_rejects_misaligned_training_snapshot(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _minimal_args(
+            "--num-envs",
+            "2",
+            "--online-collect-steps",
+            "4",
+            "--training-snapshot-env-steps",
+            "25",
+        ),
+    )
+
+    with pytest.raises(SystemExit):
+        train_dmc_jepa.parse_args()
+
+
 def test_cli_accepts_slow_policy_bundle(monkeypatch):
     monkeypatch.setattr(
         sys,

@@ -48,6 +48,10 @@ from world_marl.jepa.training import (
     train_model_step,
     train_model_step_scaled_encoder,
 )
+from world_marl.jepa.training_snapshot import (
+    load_training_snapshot,
+    save_training_snapshot,
+)
 from world_marl.logging import (
     RunLogger,
     WandbConfig,
@@ -575,6 +579,22 @@ def parse_args() -> argparse.Namespace:
         default=True,
     )
     reproducibility.add_argument("--out-dir", default="runs/jepa")
+    reproducibility.add_argument(
+        "--training-snapshot-env-steps",
+        type=int,
+        nargs="*",
+        default=(),
+        help=(
+            "Training-step boundaries at which to save complete resumable "
+            "snapshots. Unlike policy checkpoints, these include optimizer, "
+            "replay, RNG, EMA, and DMC simulator state."
+        ),
+    )
+    reproducibility.add_argument(
+        "--resume-training-snapshot",
+        default=None,
+        help="Resume from a complete phase-boundary training snapshot.",
+    )
     reproducibility.add_argument("--quiet", action="store_true")
     reproducibility.add_argument("--allow-fail", action="store_true")
 
@@ -917,6 +937,30 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--wandb-videos requires --wandb-project")
     if args.wandb_videos and not args.env.startswith("dmc:"):
         parser.error("--wandb-videos currently supports DMC only")
+    if args.resume_training_snapshot is not None and args.num_runs != 1:
+        parser.error("--resume-training-snapshot requires --num-runs 1")
+    if args.resume_training_snapshot is not None and not args.env.startswith("dmc:"):
+        parser.error("complete training snapshots currently support DMC only")
+    if args.training_snapshot_env_steps and not args.env.startswith("dmc:"):
+        parser.error("complete training snapshots currently support DMC only")
+    phase_env_steps = args.online_collect_steps * args.num_envs
+    initial_env_steps = args.collect_steps * args.num_envs
+    final_env_steps = initial_env_steps + args.online_iterations * phase_env_steps
+    for snapshot_env_steps in args.training_snapshot_env_steps:
+        if snapshot_env_steps <= initial_env_steps:
+            parser.error(
+                "--training-snapshot-env-steps must be after bootstrap collection"
+            )
+        if (snapshot_env_steps - initial_env_steps) % phase_env_steps:
+            parser.error(
+                "--training-snapshot-env-steps must align with an online phase "
+                f"boundary ({initial_env_steps} + k * {phase_env_steps})"
+            )
+        if snapshot_env_steps > final_env_steps:
+            parser.error(
+                "--training-snapshot-env-steps exceeds the configured training "
+                f"budget of {final_env_steps}"
+            )
 
 
 def main() -> None:
@@ -1219,6 +1263,350 @@ def _select_behavior_actions(
     ) * slow_actions + online_action_fraction * online_actions
 
 
+@dataclasses.dataclass
+class _TrainingPrefix:
+    state: Any
+    observations: np.ndarray
+    replay: SequenceReplayBuffer
+    bootstrap_start_replay: SequenceReplayBuffer | None
+    online_recent_replay: SequenceReplayBuffer | None
+    validation_replay: SequenceReplayBuffer
+    validation_batch: ReplayBatch
+    initial_train_env_steps: int
+    train_env_steps: int
+    validation_env_steps: int
+    initial_metrics: dict[str, Any]
+    initial_policy_metrics: dict[str, Any]
+    policy_bundle_ema: FrozenDict | None
+    online_history: list[dict[str, Any]]
+    curve_evaluations: list[dict[str, Any]]
+    next_curve_eval_step: int | None
+    next_online_iteration: int
+
+
+def _prepare_training_prefix(
+    args: argparse.Namespace,
+    logger: RunLogger,
+    adapter,
+    config: JepaConfig,
+    *,
+    seed: int,
+    validation_seed: int,
+    requested_recent_fractions: dict[str, float],
+    jax_rngs: JaxRngStreams,
+    numpy_rngs: NumpyRngStreams,
+    validation_jax_rngs: JaxRngStreams,
+    validation_numpy_rngs: NumpyRngStreams,
+    validation_sampling_rng: np.random.Generator,
+) -> _TrainingPrefix:
+    state = create_jepa_train_state(jax_rngs.take("initialization"), config)
+    observations = adapter.reset()
+    if args.resume_training_snapshot is not None:
+        loaded = load_training_snapshot(
+            args.resume_training_snapshot,
+            target_train_state=state,
+            target_policy_bundle_ema=_policy_bundle(state.params),
+            adapter=adapter,
+            jax_rng_streams={
+                "training": jax_rngs,
+                "validation": validation_jax_rngs,
+            },
+            numpy_rng_streams={
+                "training": numpy_rngs,
+                "validation": validation_numpy_rngs,
+            },
+        )
+        metadata = loaded.metadata
+        expected_config = dataclasses.asdict(config)
+        if metadata["env"] != args.env:
+            raise ValueError(
+                "training snapshot environment does not match: "
+                f"{metadata['env']} != {args.env}"
+            )
+        if int(metadata["seed"]) != seed:
+            raise ValueError(
+                f"training snapshot seed does not match: {metadata['seed']} != {seed}"
+            )
+        if metadata["jepa_config"] != expected_config:
+            raise ValueError("training snapshot JEPA architecture/config does not match")
+        required_replays = {"main", "bootstrap_start", "online_recent", "validation"}
+        if set(loaded.replays) != required_replays:
+            raise ValueError(
+                "training snapshot replay set does not match: "
+                f"{sorted(loaded.replays)}"
+            )
+        replay = loaded.replays["main"]
+        validation_replay = loaded.replays["validation"]
+        if replay is None or validation_replay is None:
+            raise ValueError("training snapshot is missing required replay")
+        train_env_steps = int(metadata["train_env_steps"])
+        next_online_iteration = int(metadata["next_online_iteration"])
+        if next_online_iteration > args.online_iterations + 1:
+            raise ValueError(
+                "training snapshot is beyond the requested online iteration budget"
+            )
+        logger.set_train_env_steps(train_env_steps)
+        logger.write_json(
+            "resume_training_snapshot.json",
+            {
+                "source": str(Path(args.resume_training_snapshot).resolve()),
+                "train_env_steps": train_env_steps,
+                "next_online_iteration": next_online_iteration,
+                "params_sha256": fingerprint_pytree(loaded.train_state.params),
+                "main_replay_sha256": replay.fingerprint(),
+                "environment_state_restored": True,
+            },
+        )
+        validation_batch = ReplayBatch(
+            observations=jnp.asarray(loaded.arrays["validation_observations"]),
+            actions=jnp.asarray(loaded.arrays["validation_actions"]),
+            rewards=jnp.asarray(loaded.arrays["validation_rewards"]),
+            dones=jnp.asarray(loaded.arrays["validation_dones"]),
+        )
+        return _TrainingPrefix(
+            state=loaded.train_state,
+            observations=loaded.observations,
+            replay=replay,
+            bootstrap_start_replay=loaded.replays["bootstrap_start"],
+            online_recent_replay=loaded.replays["online_recent"],
+            validation_replay=validation_replay,
+            validation_batch=validation_batch,
+            initial_train_env_steps=int(metadata["initial_train_env_steps"]),
+            train_env_steps=train_env_steps,
+            validation_env_steps=int(metadata["validation_env_steps"]),
+            initial_metrics=dict(metadata["initial_metrics"]),
+            initial_policy_metrics=dict(metadata["initial_policy_metrics"]),
+            policy_bundle_ema=loaded.policy_bundle_ema,
+            online_history=list(metadata["online_history"]),
+            curve_evaluations=list(metadata["curve_evaluations"]),
+            next_curve_eval_step=metadata["next_curve_eval_step"],
+            next_online_iteration=next_online_iteration,
+        )
+
+    replay = _new_replay_buffer(
+        capacity=max(2, math.ceil(args.replay_capacity / args.num_envs)),
+        num_envs=args.num_envs,
+        observation_dim=config.observation_dim,
+        action_dim=config.action_dim,
+    )
+    bootstrap_start_replay = (
+        _new_replay_buffer(
+            capacity=args.collect_steps,
+            num_envs=args.num_envs,
+            observation_dim=config.observation_dim,
+            action_dim=config.action_dim,
+        )
+        if args.policy_bootstrap_start_fraction > 0.0
+        else None
+    )
+    online_recent_replay = (
+        _new_replay_buffer(
+            capacity=args.online_recent_replay_steps,
+            num_envs=args.num_envs,
+            observation_dim=config.observation_dim,
+            action_dim=config.action_dim,
+        )
+        if max(requested_recent_fractions.values()) > 0.0
+        else None
+    )
+
+    # Bootstrap collection deliberately uses a separate adapter so the online
+    # simulator remains at its first reset until learned collection starts.
+    bootstrap_adapter = _make_vector_adapter(args, seed=seed)
+    try:
+        bootstrap_replays = [replay]
+        if online_recent_replay is not None:
+            bootstrap_replays.append(online_recent_replay)
+        if bootstrap_start_replay is not None:
+            bootstrap_replays.append(bootstrap_start_replay)
+        _, initial_train_env_steps = _collect_random_steps(
+            bootstrap_adapter,
+            bootstrap_adapter.reset(),
+            numpy_rngs.get("initial_collection"),
+            tuple(bootstrap_replays),
+            steps=args.collect_steps,
+            reset_interval=args.initial_reset_interval,
+            action_hold_steps=args.initial_random_action_hold_steps,
+            desc="collect reset-rich bootstrap replay",
+            quiet=args.quiet,
+        )
+    finally:
+        bootstrap_adapter.close()
+    train_env_steps = initial_train_env_steps
+    logger.set_train_env_steps(train_env_steps)
+    logger.write_json(
+        "train_replay.json",
+        {
+            "env_steps": initial_train_env_steps,
+            "steps_per_env": replay.size,
+            "size_per_env": replay.size,
+            "collector_cut_count": replay.cut_count,
+            "initial_reset_interval": args.initial_reset_interval,
+            "initial_random_action_hold_steps": args.initial_random_action_hold_steps,
+            "initial_segments_per_env": (
+                math.ceil(args.collect_steps / args.initial_reset_interval)
+                if args.initial_reset_interval is not None
+                else 1
+            ),
+            "observation_dim": config.observation_dim,
+            "action_dim": config.action_dim,
+            "source": "isolated_reset_rich_collection",
+            "policy_bootstrap_start_fraction": args.policy_bootstrap_start_fraction,
+            "policy_bootstrap_start_size_per_env": (
+                bootstrap_start_replay.size
+                if bootstrap_start_replay is not None
+                else 0
+            ),
+        },
+    )
+
+    validation_replay = _collect_validation_replay(args, config, seed=validation_seed)
+    validation_env_steps = args.validation_steps * args.num_envs
+    logger.write_json(
+        "validation_replay.json",
+        {
+            "env_steps": validation_env_steps,
+            "steps_per_env": args.validation_steps,
+            "size_per_env": validation_replay.size,
+            "seed": validation_seed,
+        },
+    )
+    initialized_snapshot = _reproducibility_snapshot(
+        state,
+        phase="initialized",
+        full_replay=replay,
+    )
+    initialized_snapshot.update(
+        {
+            "initial_replay_sha256": replay.fingerprint(),
+            "validation_replay_sha256": validation_replay.fingerprint(),
+        }
+    )
+    if bootstrap_start_replay is not None:
+        initialized_snapshot["policy_bootstrap_start_replay_sha256"] = (
+            bootstrap_start_replay.fingerprint()
+        )
+    logger.write_json("reproducibility_initialized.json", initialized_snapshot)
+
+    validation_batch = validation_replay.sample(
+        validation_sampling_rng,
+        batch_size=args.batch_size,
+        chunk_length=args.chunk_length,
+        max_horizon=max(args.model_horizon, args.open_loop_horizon),
+    )
+    initial_metrics = _evaluate_model(
+        state,
+        validation_jax_rngs.take("evaluation"),
+        validation_batch,
+        config,
+        chunk_length=args.chunk_length,
+        open_loop_horizon=args.open_loop_horizon,
+        action_low=adapter.action_low,
+        action_high=adapter.action_high,
+    )
+    logger.write_json("model_metrics_initial.json", initial_metrics)
+
+    model_rng = jax_rngs.current("world_model")
+    state, model_rng, _, initial_model_losses = _fit_world_model(
+        args,
+        logger,
+        state,
+        model_rng,
+        replay,
+        config,
+        np_rng=numpy_rngs.get("world_model_replay"),
+        steps=args.train_steps,
+        phase="world_model",
+        desc="fit initial world model",
+        train_env_steps=train_env_steps,
+    )
+    jax_rngs.update("world_model", model_rng)
+    logger.plot_world_model_loss(
+        initial_model_losses,
+        filename="world_model_initial_loss.png",
+    )
+    initial_fit_metrics = _evaluate_model(
+        state,
+        validation_jax_rngs.take("evaluation"),
+        validation_batch,
+        config,
+        chunk_length=args.chunk_length,
+        open_loop_horizon=args.open_loop_horizon,
+        action_low=adapter.action_low,
+        action_high=adapter.action_high,
+    )
+    logger.write_json("model_metrics_initial_fit.json", initial_fit_metrics)
+    logger.write_json(
+        "reproducibility_initial_world_model.json",
+        _reproducibility_snapshot(state, phase="initial_world_model"),
+    )
+
+    policy_rng = jax_rngs.current("policy")
+    state, policy_rng, initial_policy_metrics = _train_policy(
+        args,
+        logger,
+        state,
+        config,
+        replay,
+        np_rng=numpy_rngs.get("policy_replay"),
+        rng=policy_rng,
+        action_low=adapter.action_low,
+        action_high=adapter.action_high,
+        phase="policy",
+        train_steps=args.policy_train_steps,
+        reset_actor=True,
+        actor_update_interval=1,
+        actor_entropy_coef=_scheduled_actor_entropy_coef(
+            args,
+            train_env_steps=train_env_steps,
+        ),
+        value_clip=_scheduled_value_clip(args, train_env_steps=train_env_steps),
+    )
+    jax_rngs.update("policy", policy_rng)
+    logger.write_json("policy_initial_fit.json", initial_policy_metrics)
+    logger.write_json(
+        "reproducibility_initial_policy.json",
+        _reproducibility_snapshot(state, phase="initial_policy"),
+    )
+
+    policy_bundle_ema = None
+    if (
+        args.policy_bundle_ema_decay > 0.0
+        and train_env_steps >= args.policy_bundle_ema_start_env_steps
+    ):
+        policy_bundle_ema = _update_policy_bundle_ema(
+            None,
+            state.params,
+            decay=args.policy_bundle_ema_decay,
+        )
+    next_curve_eval_step = (
+        args.curve_eval_interval_env_steps
+        if args.curve_eval_interval_env_steps > 0
+        else None
+    )
+    while next_curve_eval_step is not None and next_curve_eval_step <= train_env_steps:
+        next_curve_eval_step += args.curve_eval_interval_env_steps
+    return _TrainingPrefix(
+        state=state,
+        observations=observations,
+        replay=replay,
+        bootstrap_start_replay=bootstrap_start_replay,
+        online_recent_replay=online_recent_replay,
+        validation_replay=validation_replay,
+        validation_batch=validation_batch,
+        initial_train_env_steps=initial_train_env_steps,
+        train_env_steps=train_env_steps,
+        validation_env_steps=validation_env_steps,
+        initial_metrics=initial_metrics,
+        initial_policy_metrics=initial_policy_metrics,
+        policy_bundle_ema=policy_bundle_ema,
+        online_history=[],
+        curve_evaluations=[],
+        next_curve_eval_step=next_curve_eval_step,
+        next_online_iteration=1,
+    )
+
+
 def run_one(
     args: argparse.Namespace,
     *,
@@ -1292,229 +1680,41 @@ def run_one(
             },
         )
 
-        state = create_jepa_train_state(jax_rngs.take("initialization"), config)
-        observations = adapter.reset()
-        replay = _new_replay_buffer(
-            capacity=max(2, math.ceil(args.replay_capacity / args.num_envs)),
-            num_envs=args.num_envs,
-            observation_dim=config.observation_dim,
-            action_dim=config.action_dim,
-        )
-        bootstrap_start_replay = (
-            _new_replay_buffer(
-                capacity=args.collect_steps,
-                num_envs=args.num_envs,
-                observation_dim=config.observation_dim,
-                action_dim=config.action_dim,
-            )
-            if args.policy_bootstrap_start_fraction > 0.0
-            else None
-        )
-        online_recent_replay = (
-            _new_replay_buffer(
-                capacity=args.online_recent_replay_steps,
-                num_envs=args.num_envs,
-                observation_dim=config.observation_dim,
-                action_dim=config.action_dim,
-            )
-            if max(requested_recent_fractions.values()) > 0.0
-            else None
-        )
-
-        # Bootstrap collection uses its own adapter. This reproduces the
-        # cache-loaded reference protocol without relying on an external NPZ or
-        # advancing the online environments away from their first reset.
-        bootstrap_adapter = _make_vector_adapter(args, seed=seed)
-        try:
-            bootstrap_replays = [replay]
-            if online_recent_replay is not None:
-                bootstrap_replays.append(online_recent_replay)
-            if bootstrap_start_replay is not None:
-                bootstrap_replays.append(bootstrap_start_replay)
-            _, initial_train_env_steps = _collect_random_steps(
-                bootstrap_adapter,
-                bootstrap_adapter.reset(),
-                numpy_rngs.get("initial_collection"),
-                tuple(bootstrap_replays),
-                steps=args.collect_steps,
-                reset_interval=args.initial_reset_interval,
-                action_hold_steps=args.initial_random_action_hold_steps,
-                desc="collect reset-rich bootstrap replay",
-                quiet=args.quiet,
-            )
-        finally:
-            bootstrap_adapter.close()
-        train_env_steps = initial_train_env_steps
-        logger.set_train_env_steps(train_env_steps)
-        logger.write_json(
-            "train_replay.json",
-            {
-                "env_steps": initial_train_env_steps,
-                "steps_per_env": replay.size,
-                "size_per_env": replay.size,
-                "collector_cut_count": replay.cut_count,
-                "initial_reset_interval": args.initial_reset_interval,
-                "initial_random_action_hold_steps": (
-                    args.initial_random_action_hold_steps
-                ),
-                "initial_segments_per_env": (
-                    math.ceil(args.collect_steps / args.initial_reset_interval)
-                    if args.initial_reset_interval is not None
-                    else 1
-                ),
-                "observation_dim": config.observation_dim,
-                "action_dim": config.action_dim,
-                "source": "isolated_reset_rich_collection",
-                "policy_bootstrap_start_fraction": (
-                    args.policy_bootstrap_start_fraction
-                ),
-                "policy_bootstrap_start_size_per_env": (
-                    bootstrap_start_replay.size
-                    if bootstrap_start_replay is not None
-                    else 0
-                ),
-            },
-        )
-
-        validation_replay = _collect_validation_replay(
-            args,
-            config,
-            seed=validation_seed,
-        )
-        validation_env_steps = args.validation_steps * args.num_envs
-        logger.write_json(
-            "validation_replay.json",
-            {
-                "env_steps": validation_env_steps,
-                "steps_per_env": args.validation_steps,
-                "size_per_env": validation_replay.size,
-                "seed": validation_seed,
-            },
-        )
-        initialized_snapshot = _reproducibility_snapshot(
-            state,
-            phase="initialized",
-            full_replay=replay,
-        )
-        initialized_snapshot.update(
-            {
-                "initial_replay_sha256": replay.fingerprint(),
-                "validation_replay_sha256": validation_replay.fingerprint(),
-            }
-        )
-        if bootstrap_start_replay is not None:
-            initialized_snapshot["policy_bootstrap_start_replay_sha256"] = (
-                bootstrap_start_replay.fingerprint()
-            )
-        logger.write_json("reproducibility_initialized.json", initialized_snapshot)
-
-        validation_batch = validation_replay.sample(
-            validation_sampling_rng,
-            batch_size=args.batch_size,
-            chunk_length=args.chunk_length,
-            max_horizon=max(args.model_horizon, args.open_loop_horizon),
-        )
-        initial_metrics = _evaluate_model(
-            state,
-            validation_jax_rngs.take("evaluation"),
-            validation_batch,
-            config,
-            chunk_length=args.chunk_length,
-            open_loop_horizon=args.open_loop_horizon,
-            action_low=adapter.action_low,
-            action_high=adapter.action_high,
-        )
-        logger.write_json("model_metrics_initial.json", initial_metrics)
-
-        model_rng = jax_rngs.current("world_model")
-        state, model_rng, _, initial_model_losses = _fit_world_model(
+        prefix = _prepare_training_prefix(
             args,
             logger,
-            state,
-            model_rng,
-            replay,
+            adapter,
             config,
-            np_rng=numpy_rngs.get("world_model_replay"),
-            steps=args.train_steps,
-            phase="world_model",
-            desc="fit initial world model",
-            train_env_steps=train_env_steps,
+            seed=seed,
+            validation_seed=validation_seed,
+            requested_recent_fractions=requested_recent_fractions,
+            jax_rngs=jax_rngs,
+            numpy_rngs=numpy_rngs,
+            validation_jax_rngs=validation_jax_rngs,
+            validation_numpy_rngs=validation_numpy_rngs,
+            validation_sampling_rng=validation_sampling_rng,
         )
-        jax_rngs.update("world_model", model_rng)
-        logger.plot_world_model_loss(
-            initial_model_losses,
-            filename="world_model_initial_loss.png",
-        )
-        initial_fit_metrics = _evaluate_model(
-            state,
-            validation_jax_rngs.take("evaluation"),
-            validation_batch,
-            config,
-            chunk_length=args.chunk_length,
-            open_loop_horizon=args.open_loop_horizon,
-            action_low=adapter.action_low,
-            action_high=adapter.action_high,
-        )
-        logger.write_json("model_metrics_initial_fit.json", initial_fit_metrics)
-        logger.write_json(
-            "reproducibility_initial_world_model.json",
-            _reproducibility_snapshot(state, phase="initial_world_model"),
-        )
-
-        policy_rng = jax_rngs.current("policy")
-        state, policy_rng, initial_policy_metrics = _train_policy(
-            args,
-            logger,
-            state,
-            config,
-            replay,
-            np_rng=numpy_rngs.get("policy_replay"),
-            rng=policy_rng,
-            action_low=adapter.action_low,
-            action_high=adapter.action_high,
-            phase="policy",
-            train_steps=args.policy_train_steps,
-            reset_actor=True,
-            actor_update_interval=1,
-            actor_entropy_coef=_scheduled_actor_entropy_coef(
-                args,
-                train_env_steps=train_env_steps,
-            ),
-            value_clip=_scheduled_value_clip(
-                args,
-                train_env_steps=train_env_steps,
-            ),
-        )
-        jax_rngs.update("policy", policy_rng)
-        logger.write_json("policy_initial_fit.json", initial_policy_metrics)
-        logger.write_json(
-            "reproducibility_initial_policy.json",
-            _reproducibility_snapshot(state, phase="initial_policy"),
-        )
-
-        policy_bundle_ema = None
-        if (
-            args.policy_bundle_ema_decay > 0.0
-            and train_env_steps >= args.policy_bundle_ema_start_env_steps
+        state = prefix.state
+        observations = prefix.observations
+        replay = prefix.replay
+        bootstrap_start_replay = prefix.bootstrap_start_replay
+        online_recent_replay = prefix.online_recent_replay
+        validation_replay = prefix.validation_replay
+        validation_batch = prefix.validation_batch
+        initial_train_env_steps = prefix.initial_train_env_steps
+        train_env_steps = prefix.train_env_steps
+        validation_env_steps = prefix.validation_env_steps
+        initial_metrics = prefix.initial_metrics
+        initial_policy_metrics = prefix.initial_policy_metrics
+        policy_bundle_ema = prefix.policy_bundle_ema
+        online_history = prefix.online_history
+        curve_evaluations = prefix.curve_evaluations
+        next_curve_eval_step = prefix.next_curve_eval_step
+        training_snapshot_targets = set(args.training_snapshot_env_steps)
+        for online_index in range(
+            prefix.next_online_iteration,
+            args.online_iterations + 1,
         ):
-            policy_bundle_ema = _update_policy_bundle_ema(
-                None,
-                state.params,
-                decay=args.policy_bundle_ema_decay,
-            )
-
-        online_history: list[dict[str, Any]] = []
-        curve_evaluations: list[dict[str, Any]] = []
-        next_curve_eval_step = (
-            args.curve_eval_interval_env_steps
-            if args.curve_eval_interval_env_steps > 0
-            else None
-        )
-        while (
-            next_curve_eval_step is not None and next_curve_eval_step <= train_env_steps
-        ):
-            next_curve_eval_step += args.curve_eval_interval_env_steps
-        for online_index in range(1, args.online_iterations + 1):
             phase = f"online_{online_index:03d}"
             phase_start_train_env_steps = train_env_steps
             active_recent_fractions = _scheduled_recent_fractions(
@@ -1920,6 +2120,43 @@ def run_one(
                     "policy_actor_updates": policy_metrics["policy_actor_updates"],
                 }
             )
+            if train_env_steps in training_snapshot_targets:
+                snapshot_dir = _save_branch_training_snapshot(
+                    run_dir,
+                    state,
+                    args=args,
+                    config=config,
+                    seed=seed,
+                    adapter=adapter,
+                    observations=observations,
+                    replay=replay,
+                    bootstrap_start_replay=bootstrap_start_replay,
+                    online_recent_replay=online_recent_replay,
+                    validation_replay=validation_replay,
+                    validation_batch=validation_batch,
+                    jax_rngs=jax_rngs,
+                    numpy_rngs=numpy_rngs,
+                    validation_jax_rngs=validation_jax_rngs,
+                    validation_numpy_rngs=validation_numpy_rngs,
+                    policy_bundle_ema=policy_bundle_ema,
+                    initial_train_env_steps=initial_train_env_steps,
+                    train_env_steps=train_env_steps,
+                    validation_env_steps=validation_env_steps,
+                    initial_metrics=initial_metrics,
+                    initial_policy_metrics=initial_policy_metrics,
+                    online_history=online_history,
+                    curve_evaluations=curve_evaluations,
+                    next_curve_eval_step=next_curve_eval_step,
+                    next_online_iteration=online_index + 1,
+                )
+                logger.write_json(
+                    f"{phase}_training_snapshot.json",
+                    {
+                        "path": str(snapshot_dir),
+                        "train_env_steps": train_env_steps,
+                        "next_online_iteration": online_index + 1,
+                    },
+                )
             if checkpoint_phase:
                 _save_recovery_checkpoint(
                     run_dir,
@@ -2153,6 +2390,100 @@ def run_one(
                 adapter.close()
         finally:
             logger.close(exit_code=0 if completed else 1)
+
+
+def _save_branch_training_snapshot(
+    run_dir: Path,
+    state,
+    *,
+    args: argparse.Namespace,
+    config: JepaConfig,
+    seed: int,
+    adapter,
+    observations: np.ndarray,
+    replay: SequenceReplayBuffer,
+    bootstrap_start_replay: SequenceReplayBuffer | None,
+    online_recent_replay: SequenceReplayBuffer | None,
+    validation_replay: SequenceReplayBuffer,
+    validation_batch: ReplayBatch,
+    jax_rngs: JaxRngStreams,
+    numpy_rngs: NumpyRngStreams,
+    validation_jax_rngs: JaxRngStreams,
+    validation_numpy_rngs: NumpyRngStreams,
+    policy_bundle_ema: FrozenDict | None,
+    initial_train_env_steps: int,
+    train_env_steps: int,
+    validation_env_steps: int,
+    initial_metrics: dict[str, Any],
+    initial_policy_metrics: dict[str, Any],
+    online_history: list[dict[str, Any]],
+    curve_evaluations: list[dict[str, Any]],
+    next_curve_eval_step: int | None,
+    next_online_iteration: int,
+) -> Path:
+    snapshot_dir = (
+        run_dir / "training_snapshots" / f"env_{train_env_steps:09d}"
+    )
+    return save_training_snapshot(
+        snapshot_dir,
+        train_state=state,
+        policy_bundle_ema=policy_bundle_ema,
+        replays={
+            "main": replay,
+            "bootstrap_start": bootstrap_start_replay,
+            "online_recent": online_recent_replay,
+            "validation": validation_replay,
+        },
+        observations=observations,
+        arrays={
+            "validation_observations": jax.device_get(
+                validation_batch.observations
+            ),
+            "validation_actions": jax.device_get(validation_batch.actions),
+            "validation_rewards": jax.device_get(validation_batch.rewards),
+            "validation_dones": jax.device_get(validation_batch.dones),
+        },
+        adapter=adapter,
+        jax_rng_streams={
+            "training": jax_rngs,
+            "validation": validation_jax_rngs,
+        },
+        numpy_rng_streams={
+            "training": numpy_rngs,
+            "validation": validation_numpy_rngs,
+        },
+        metadata={
+            "algorithm": "single_agent_jepa_mbrl",
+            "checkpoint_kind": "complete_phase_boundary_training_snapshot",
+            "env": args.env,
+            "jepa_config": dataclasses.asdict(config),
+            "seed": seed,
+            "initial_train_env_steps": initial_train_env_steps,
+            "train_env_steps": train_env_steps,
+            "validation_env_steps": validation_env_steps,
+            "initial_metrics": initial_metrics,
+            "initial_policy_metrics": initial_policy_metrics,
+            "online_history": online_history,
+            "curve_evaluations": curve_evaluations,
+            "next_curve_eval_step": next_curve_eval_step,
+            "next_online_iteration": next_online_iteration,
+            "params_sha256": fingerprint_pytree(state.params),
+            "target_critic_sha256": fingerprint_pytree(
+                state.target_critic_params
+            ),
+            "main_replay_sha256": replay.fingerprint(),
+            "online_recent_replay_sha256": (
+                online_recent_replay.fingerprint()
+                if online_recent_replay is not None
+                else None
+            ),
+            "policy_bundle_ema_sha256": (
+                fingerprint_pytree(policy_bundle_ema)
+                if policy_bundle_ema is not None
+                else None
+            ),
+        },
+    )
 
 
 def _save_recovery_checkpoint(

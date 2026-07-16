@@ -144,3 +144,83 @@ def test_dmc_adapter_can_reset_selected_vector_members():
         np.asarray([10.0, 0.0, 0.5]),
     )
     assert following.dones.tolist() == [[0.0], [1.0]]
+
+
+class _FakePhysicsData:
+    def __init__(self):
+        self.time = 0.0
+
+
+class _StatefulFakePhysics(_FakePhysics):
+    def __init__(self, seed: int):
+        super().__init__(seed)
+        self.data = _FakePhysicsData()
+        self.state = np.asarray([float(seed), 0.0], dtype=np.float64)
+
+    def get_state(self):
+        return self.state.copy()
+
+    def set_state(self, state):
+        self.state = np.asarray(state, dtype=np.float64).copy()
+
+    def forward(self):
+        return None
+
+
+class _StatefulFakeDMCEnv(_FakeDMCEnv):
+    def __init__(self, seed: int):
+        super().__init__(seed)
+        self.physics = _StatefulFakePhysics(seed)
+        self._task = type("Task", (), {})()
+        self._task._random = np.random.RandomState(seed)
+        self._step_count = 0
+        self._reset_next_step = False
+
+
+def test_dmc_adapter_state_snapshot_round_trip(tmp_path):
+    adapter = DMCVectorAdapter(
+        "fake/task",
+        num_envs=2,
+        max_cycles=5,
+        seed=10,
+        env_factory=lambda seed: _StatefulFakeDMCEnv(seed),
+    )
+    restored = DMCVectorAdapter(
+        "fake/task",
+        num_envs=2,
+        max_cycles=5,
+        seed=10,
+        env_factory=lambda seed: _StatefulFakeDMCEnv(seed),
+    )
+    try:
+        adapter.reset()
+        adapter._envs[0].physics.state[:] = [3.0, 4.0]
+        adapter._envs[0].physics.data.time = 7.5
+        adapter._envs[0]._step_count = 13
+        adapter._envs[0]._reset_next_step = True
+        adapter._episode_returns[0, 0] = 42.0
+        adapter._episode_lengths[0] = 17
+        adapter._envs[0]._task._random.uniform()
+        expected_random = adapter._envs[0]._task._random.uniform()
+        adapter._envs[0]._task._random.set_state(
+            np.random.RandomState(10).get_state()
+        )
+        adapter._envs[0]._task._random.uniform()
+        snapshot = tmp_path / "dmc_state.npz"
+        adapter.save_state_npz(snapshot)
+
+        restored.load_state_npz(snapshot)
+
+        np.testing.assert_array_equal(
+            restored._envs[0].physics.state,
+            adapter._envs[0].physics.state,
+        )
+        assert restored._envs[0].physics.data.time == 7.5
+        assert restored._envs[0]._step_count == 13
+        assert restored._envs[0]._reset_next_step is True
+        assert restored._episode_returns[0, 0] == 42.0
+        assert restored._episode_lengths[0] == 17
+        assert restored._envs[0]._task._random.uniform() == expected_random
+    finally:
+        adapter.close()
+        restored.close()

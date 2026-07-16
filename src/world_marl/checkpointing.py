@@ -37,6 +37,43 @@ def load_params(checkpoint_file: str | Path, target_params):
     return serialization.from_bytes(target_params, Path(checkpoint_file).read_bytes())
 
 
+def save_train_state(checkpoint_file: str | Path, train_state: Any) -> Path:
+    """Persist a complete learner state, including optimizer and target state."""
+
+    checkpoint_path = Path(checkpoint_file)
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = checkpoint_path.with_name(f".{checkpoint_path.name}.tmp")
+    temporary_path.write_bytes(serialization.to_bytes(train_state))
+    temporary_path.replace(checkpoint_path)
+    return checkpoint_path
+
+
+def load_train_state(checkpoint_file: str | Path, target_train_state: Any):
+    """Restore a complete learner state into a matching initialized template."""
+
+    return serialization.from_bytes(
+        target_train_state,
+        Path(checkpoint_file).read_bytes(),
+    )
+
+
+def save_pytree(checkpoint_file: str | Path, tree: Any) -> Path:
+    """Persist an auxiliary pytree such as an EMA policy bundle."""
+
+    checkpoint_path = Path(checkpoint_file)
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = checkpoint_path.with_name(f".{checkpoint_path.name}.tmp")
+    temporary_path.write_bytes(serialization.to_bytes(tree))
+    temporary_path.replace(checkpoint_path)
+    return checkpoint_path
+
+
+def load_pytree(checkpoint_file: str | Path, target_tree: Any):
+    """Restore an auxiliary pytree into a matching template."""
+
+    return serialization.from_bytes(target_tree, Path(checkpoint_file).read_bytes())
+
+
 def load_metadata(checkpoint_dir: str | Path) -> dict[str, Any]:
     """Load checkpoint metadata."""
     metadata_path = Path(checkpoint_dir) / "metadata.json"
