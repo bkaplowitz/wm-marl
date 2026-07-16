@@ -86,12 +86,15 @@ def test_cli_accepts_slow_policy_actor_kl_reference(monkeypatch):
             "0.98",
             "--policy-actor-kl-reference-mode",
             "slow-policy",
+            "--policy-actor-slow-kl-target-per-dim",
+            "0.02",
         ),
     )
 
     args = train_dmc_jepa.parse_args()
 
     assert args.policy_actor_kl_reference_mode == "slow-policy"
+    assert args.policy_actor_slow_kl_target_per_dim == pytest.approx(0.02)
 
 
 def test_cli_rejects_slow_policy_actor_kl_reference_without_bundle(monkeypatch):
@@ -99,6 +102,17 @@ def test_cli_rejects_slow_policy_actor_kl_reference_without_bundle(monkeypatch):
         sys,
         "argv",
         _minimal_args("--policy-actor-kl-reference-mode", "slow-policy"),
+    )
+
+    with pytest.raises(SystemExit):
+        train_dmc_jepa.parse_args()
+
+
+def test_cli_rejects_slow_actor_kl_target_with_phase_reference(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _minimal_args("--policy-actor-slow-kl-target-per-dim", "0.02"),
     )
 
     with pytest.raises(SystemExit):

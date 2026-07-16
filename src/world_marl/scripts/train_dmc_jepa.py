@@ -326,6 +326,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     policy.add_argument(
+        "--policy-actor-slow-kl-target-per-dim",
+        type=float,
+        default=None,
+        help=(
+            "Optional KL budget used only when the slow-policy reference is "
+            "available; otherwise the standard actor KL target is used."
+        ),
+    )
+    policy.add_argument(
         "--policy-bundle-ema-decay",
         type=float,
         default=0.0,
@@ -858,6 +867,11 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--policy-actor-kl-coef must be >= 0")
     if args.policy_actor_kl_target_per_dim < 0.0:
         parser.error("--policy-actor-kl-target-per-dim must be >= 0")
+    if (
+        args.policy_actor_slow_kl_target_per_dim is not None
+        and args.policy_actor_slow_kl_target_per_dim < 0.0
+    ):
+        parser.error("--policy-actor-slow-kl-target-per-dim must be >= 0")
     if args.policy_actor_kl_reference_interval < 1:
         parser.error("--policy-actor-kl-reference-interval must be >= 1")
     if not 0.0 <= args.policy_bundle_ema_decay < 1.0:
@@ -884,6 +898,14 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error(
             "--policy-actor-kl-reference-mode slow-policy requires "
             "--policy-bundle-ema-decay > 0"
+        )
+    if (
+        args.policy_actor_slow_kl_target_per_dim is not None
+        and args.policy_actor_kl_reference_mode != "slow-policy"
+    ):
+        parser.error(
+            "--policy-actor-slow-kl-target-per-dim requires "
+            "--policy-actor-kl-reference-mode slow-policy"
         )
     if args.optimizer_epsilon <= 0.0:
         parser.error("--optimizer-epsilon must be > 0")
@@ -1722,6 +1744,14 @@ def run_one(
                 ),
                 fixed_actor_reference_params=(
                     _state_with_policy_bundle(state, policy_bundle_ema).params
+                    if (
+                        args.policy_actor_kl_reference_mode == "slow-policy"
+                        and policy_bundle_ema is not None
+                    )
+                    else None
+                ),
+                fixed_actor_kl_target_per_dim=(
+                    args.policy_actor_slow_kl_target_per_dim
                     if (
                         args.policy_actor_kl_reference_mode == "slow-policy"
                         and policy_bundle_ema is not None
@@ -2707,6 +2737,7 @@ def _train_policy(
     actor_entropy_coef: float,
     value_clip: float,
     fixed_actor_reference_params: FrozenDict | None = None,
+    fixed_actor_kl_target_per_dim: float | None = None,
     recent_replay: SequenceReplayBuffer | None = None,
     start_recent_fraction: float = 0.0,
     critic_recent_fraction: float = 0.0,
@@ -2786,6 +2817,11 @@ def _train_policy(
                 "main replay contains no valid reset-aligned policy starts"
             )
     slow_actor_reference_used = fixed_actor_reference_params is not None
+    actor_kl_target_per_dim = (
+        args.policy_actor_kl_target_per_dim
+        if fixed_actor_kl_target_per_dim is None
+        else fixed_actor_kl_target_per_dim
+    )
     actor_reference_params = jax.tree_util.tree_map(
         jax.lax.stop_gradient,
         (fixed_actor_reference_params if slow_actor_reference_used else state.params),
@@ -2852,7 +2888,7 @@ def _train_policy(
                 actor_reference_params if args.policy_actor_kl_coef > 0.0 else None
             ),
             actor_kl_coef=args.policy_actor_kl_coef,
-            actor_kl_target_per_dim=args.policy_actor_kl_target_per_dim,
+            actor_kl_target_per_dim=actor_kl_target_per_dim,
             action_saturation_threshold=0.95,
             start_actions=start_actions,
             actor_entropy_coef=actor_entropy_coef,
@@ -2929,7 +2965,13 @@ def _train_policy(
             "policy_online_recent_critic_fraction": critic_recent_fraction,
             "policy_target_critic_ema_decay": args.target_critic_ema_decay,
             "policy_actor_kl_coef": args.policy_actor_kl_coef,
-            "policy_actor_kl_target_per_dim": args.policy_actor_kl_target_per_dim,
+            "policy_actor_kl_target_per_dim": actor_kl_target_per_dim,
+            "policy_actor_kl_phase_target_per_dim": (
+                args.policy_actor_kl_target_per_dim
+            ),
+            "policy_actor_slow_kl_target_per_dim": (
+                args.policy_actor_slow_kl_target_per_dim
+            ),
             "policy_actor_kl_reference_interval": (
                 args.policy_actor_kl_reference_interval
             ),
