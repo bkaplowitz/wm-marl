@@ -441,6 +441,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     online.add_argument(
+        "--online-freeze-encoder-after-env-steps",
+        type=int,
+        default=None,
+        help=(
+            "Freeze the observation encoder once this many counted training "
+            "environment steps have been collected. The predictor and heads "
+            "continue training."
+        ),
+    )
+    online.add_argument(
         "--online-recent-replay-fraction",
         type=float,
         default=0.0,
@@ -657,6 +667,11 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         and args.online_recent_world_model_until_env_steps < 0
     ):
         parser.error("--online-recent-world-model-until-env-steps must be >= 0")
+    if (
+        args.online_freeze_encoder_after_env_steps is not None
+        and args.online_freeze_encoder_after_env_steps < 0
+    ):
+        parser.error("--online-freeze-encoder-after-env-steps must be >= 0")
     if not 0.0 < args.online_reset_fraction <= 1.0:
         parser.error("--online-reset-fraction must be in (0, 1]")
     if args.chunk_length < args.context_window:
@@ -1586,6 +1601,10 @@ def run_one(
                 )
 
             model_rng = jax_rngs.current("world_model")
+            freeze_online_encoder = _scheduled_online_encoder_freeze(
+                args,
+                train_env_steps=train_env_steps,
+            )
             state, model_rng, _, online_model_losses = _fit_world_model(
                 args,
                 logger,
@@ -1600,7 +1619,7 @@ def run_one(
                 train_env_steps=train_env_steps,
                 recent_replay=online_recent_replay,
                 recent_fraction=effective_recent_fractions["world_model"],
-                freeze_encoder=args.online_freeze_encoder,
+                freeze_encoder=freeze_online_encoder,
             )
             jax_rngs.update("world_model", model_rng)
             logger.plot_world_model_loss(
@@ -3140,6 +3159,17 @@ def _scheduled_online_actor_update_interval(
     if train_env_steps < args.online_policy_actor_update_interval_start_env_steps:
         return 1
     return int(args.online_policy_actor_update_interval)
+
+
+def _scheduled_online_encoder_freeze(
+    args: argparse.Namespace,
+    *,
+    train_env_steps: int,
+) -> bool:
+    if args.online_freeze_encoder:
+        return True
+    start = args.online_freeze_encoder_after_env_steps
+    return start is not None and train_env_steps >= start
 
 
 def _final_policy_evaluation(

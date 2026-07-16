@@ -670,6 +670,28 @@ def test_online_actor_update_interval_can_start_after_warmup(monkeypatch):
     )
 
 
+def test_online_encoder_can_freeze_after_budget_threshold(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _minimal_args(
+            "--online-freeze-encoder-after-env-steps",
+            "100000",
+        ),
+    )
+
+    args = train_dmc_jepa.parse_args()
+
+    assert not train_dmc_jepa._scheduled_online_encoder_freeze(
+        args,
+        train_env_steps=99_999,
+    )
+    assert train_dmc_jepa._scheduled_online_encoder_freeze(
+        args,
+        train_env_steps=100_000,
+    )
+
+
 def test_cli_accepts_recent_replay_and_curve_evaluation(monkeypatch):
     monkeypatch.setattr(
         sys,

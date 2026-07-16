@@ -122,6 +122,19 @@ def test_launcher_serializes_online_reset_diversity_controls():
     assert tokens[tokens.index("--online-reset-fraction") + 1] == "0.25"
 
 
+def test_launcher_serializes_budget_relative_encoder_freeze():
+    command = params_to_shell_args(
+        {
+            "online_freeze_encoder_after_env_steps": 100_000,
+        }
+    )
+
+    assert command.replace("\\\n", " ").split() == [
+        "--online-freeze-encoder-after-env-steps",
+        "100000",
+    ]
+
+
 def test_launcher_syncs_tracking_extra_when_enabled(tmp_path):
     write_launcher(
         tmp_path,
