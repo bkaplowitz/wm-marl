@@ -1576,7 +1576,10 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                     data = {
                         name: np.concatenate([data[name], fresh[name]]) for name in data
                     }
-                key, fit_key = jax.random.split(key)
+                if args.policy_optimizer == "ppo":
+                    key, fit_key, policy_fit_key = jax.random.split(key, 3)
+                else:
+                    key, fit_key = jax.random.split(key)
                 wm_state, head_state, wm_loss, head_metrics = _fit_models(
                     wm_state,
                     head_state,
@@ -1595,7 +1598,6 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                     wandb_metrics=wandb_metrics,
                 )
                 if args.policy_optimizer == "ppo":
-                    key, policy_fit_key = jax.random.split(key)
                     policy_state, ppo_metrics = _train_policy(
                         policy_state,
                         wm_state,
