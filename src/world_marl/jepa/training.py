@@ -90,15 +90,24 @@ class JepaTrainState:
             self.model_opt_state,
             self.params,
         )
-        effective_encoder_scale = 0.0 if freeze_encoder else encoder_update_scale
-        updates = updates.copy(
-            add_or_replace={
-                "encoder": jax.tree_util.tree_map(
-                    lambda update: update * effective_encoder_scale,
-                    updates["encoder"],
-                )
-            }
-        )
+        if freeze_encoder:
+            updates = updates.copy(
+                add_or_replace={
+                    "encoder": jax.tree_util.tree_map(
+                        jnp.zeros_like,
+                        updates["encoder"],
+                    )
+                }
+            )
+        elif encoder_update_scale != 1.0:
+            updates = updates.copy(
+                add_or_replace={
+                    "encoder": jax.tree_util.tree_map(
+                        lambda update: update * encoder_update_scale,
+                        updates["encoder"],
+                    )
+                }
+            )
         return self.replace(
             step=self.step + 1,
             params=optax.apply_updates(self.params, updates),
@@ -236,6 +245,7 @@ def _update_target_critic_params(
         "chunk_length",
         "control",
         "freeze_encoder",
+        "encoder_update_scale",
     ),
 )
 def train_model_step(
