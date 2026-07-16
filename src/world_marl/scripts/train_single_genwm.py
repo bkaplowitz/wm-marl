@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import functools
 import json
 import shutil
 import sys
@@ -241,8 +240,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--cem-horizon",
         type=int,
-        default=5,
-        help="CEM: MPC planning horizon (steps).",
+        default=None,
+        help="CEM: MPC planning horizon (default: --imag-horizon).",
     )
     parser.add_argument(
         "--cem-receding-horizon",
@@ -262,6 +261,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         )
     if args.arm == MODEL_FREE_ARM and args.env.startswith("dmc:"):
         parser.error("the model-free arm needs a scan_rollout adapter (gymnax/brax)")
+    if args.policy_optimizer == "cem":
+        if args.arm == MODEL_FREE_ARM:
+            parser.error("--policy-optimizer cem requires a world-model arm")
+        if args.env.startswith("gymnax:"):
+            parser.error("--policy-optimizer cem supports continuous actions only")
     return args
 
 
@@ -672,23 +676,16 @@ def _collect_replay(
     policy_state,
     action_mode: str,
     planner: "CEMPlanner | None" = None,
-    wm_state=None,
-    head_state=None,
-    obs_tokenizer=None,
-    action_tokenizer=None,
-    gamma: float = 0.99,
 ) -> dict[str, np.ndarray]:
     if planner is not None:
-        return _cem_collect_transitions(
+        planner.reset()
+        return _collect_transitions(
             adapter,
-            planner,
-            wm_state,
-            head_state,
-            obs_tokenizer,
-            action_tokenizer,
-            steps_per_env=steps_per_env,
-            key=collect_key,
-            gamma=gamma,
+            num_steps=steps_per_env,
+            rng=rng,
+            policy_state=None,
+            action_mode=action_mode,
+            act_fn=planner.act,
         )
     if action_fns is not None:
         fn = action_fns["random"] if policy_state is None else action_fns["sample"]
@@ -715,23 +712,16 @@ def _eval_return(
     policy_state,
     action_mode: str,
     planner: "CEMPlanner | None" = None,
-    wm_state=None,
-    head_state=None,
-    obs_tokenizer=None,
-    action_tokenizer=None,
-    gamma: float = 0.99,
 ) -> float:
     if planner is not None:
-        return _cem_evaluate(
+        planner.reset()
+        return _evaluate_policy(
             adapter,
-            planner,
-            wm_state,
-            head_state,
-            obs_tokenizer,
-            action_tokenizer,
+            None,
             episodes=episodes,
-            key=eval_key,
-            gamma=gamma,
+            action_mode=action_mode,
+            rng=rng,
+            act_fn=planner.act,
         )
     if action_fns is not None:
         fn = action_fns["random"] if policy_state is None else action_fns["mode"]
@@ -755,6 +745,7 @@ def _collect_transitions(
     policy_state=None,
     policy_key: jax.Array | None = None,
     action_mode: str,
+    act_fn=None,
 ) -> dict[str, np.ndarray]:
     """Collect ``num_steps`` per-env steps on the host (random when state is None)."""
     num_envs = adapter.num_envs
@@ -769,7 +760,10 @@ def _collect_transitions(
     }
     for _ in range(iterations):
         flat = _flat_observations(observations, num_envs)
-        if policy_state is None:
+        if act_fn is not None:
+            actions = act_fn(flat)
+            step_actions = _shape_for_step(actions, action_mode)
+        elif policy_state is None:
             step_actions = adapter.sample_actions(rng)
             actions = step_actions[:, 0]
         else:
@@ -803,13 +797,18 @@ def _evaluate_policy(
     episodes: int,
     action_mode: str,
     rng: np.random.Generator,
+    act_fn=None,
 ) -> float:
     """Mean return over completed episodes (random policy when state is None)."""
     returns: list[float] = []
     observations = adapter.reset()
     step_limit = max(1, episodes * adapter.max_cycles * 4 // adapter.num_envs)
     for _ in range(step_limit):
-        if policy_state is None:
+        if act_fn is not None:
+            flat = _flat_observations(observations, adapter.num_envs)
+            actions = act_fn(flat)
+            step_actions = _shape_for_step(actions, action_mode)
+        elif policy_state is None:
             step_actions = adapter.sample_actions(rng)
         else:
             flat = _flat_observations(observations, adapter.num_envs)
@@ -825,106 +824,6 @@ def _evaluate_policy(
         step = adapter.step(step_actions)
         returns.extend(float(total[0]) for total in step.completed_returns)
         observations = step.observations
-        if len(returns) >= episodes:
-            break
-    if not returns:
-        return float("nan")
-    return float(np.mean(returns[:episodes]))
-
-
-def _cem_collect_transitions(
-    adapter,
-    planner: "CEMPlanner",
-    wm_state,
-    head_state,
-    obs_tokenizer,
-    action_tokenizer,
-    *,
-    steps_per_env: int,
-    key: jax.Array,
-    gamma: float,
-) -> dict[str, np.ndarray]:
-    """Host-loop data collection using CEM planner actions (no scan_rollout)."""
-    num_envs = adapter.num_envs
-    observations = adapter.reset()
-    planner.reset()
-    records: dict[str, list[np.ndarray]] = {
-        "observations": [],
-        "actions": [],
-        "rewards": [],
-        "dones": [],
-        "next_observations": [],
-    }
-    for _ in range(max(1, steps_per_env)):
-        flat = _flat_observations(observations, num_envs)
-        flat_jax = jnp.asarray(flat)
-        key, act_key = jax.random.split(key)
-        actions = np.asarray(
-            planner.act(
-                flat_jax,
-                act_key,
-                wm_state,
-                head_state,
-                flat_jax,
-                obs_tokenizer,
-                action_tokenizer,
-                gamma,
-            )
-        )
-        step_actions = actions[:, None, :]
-        step = adapter.step(step_actions)
-        records["observations"].append(flat)
-        records["actions"].append(actions)
-        records["rewards"].append(np.asarray(step.rewards[:, 0], dtype=np.float32))
-        records["dones"].append(np.asarray(step.dones[:, 0], dtype=np.float32))
-        records["next_observations"].append(
-            _flat_observations(step.observations, num_envs)
-        )
-        observations = step.observations
-        if np.any(step.dones[:, 0]):
-            planner.reset()
-    return {name: np.concatenate(chunks) for name, chunks in records.items()}
-
-
-def _cem_evaluate(
-    adapter,
-    planner: "CEMPlanner",
-    wm_state,
-    head_state,
-    obs_tokenizer,
-    action_tokenizer,
-    *,
-    episodes: int,
-    key: jax.Array,
-    gamma: float,
-) -> float:
-    """Mean return over completed episodes using CEM planner actions."""
-    returns: list[float] = []
-    observations = adapter.reset()
-    planner.reset()
-    step_limit = max(1, episodes * adapter.max_cycles * 4 // adapter.num_envs)
-    for _ in range(step_limit):
-        flat = _flat_observations(observations, adapter.num_envs)
-        flat_jax = jnp.asarray(flat)
-        key, act_key = jax.random.split(key)
-        actions = np.asarray(
-            planner.act(
-                flat_jax,
-                act_key,
-                wm_state,
-                head_state,
-                flat_jax,
-                obs_tokenizer,
-                action_tokenizer,
-                gamma,
-            )
-        )
-        step_actions = actions[:, None, :]
-        step = adapter.step(step_actions)
-        returns.extend(float(total[0]) for total in step.completed_returns)
-        observations = step.observations
-        if np.any(step.dones[:, 0]):
-            planner.reset()
         if len(returns) >= episodes:
             break
     if not returns:
@@ -1238,6 +1137,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
     wandb_metrics = _WandbPhaseMetrics(wandb_run) if wandb_run is not None else None
     metrics_logger = RunLogger(run_dir)
     eval_points: list[dict[str, Any]] = []
+    planners: list[CEMPlanner] = []
 
     def record_eval(tag: str, steps_per_env: int, value: float) -> None:
         real_steps = steps_per_env * num_envs
@@ -1292,36 +1192,22 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
             update_epochs=args.ppo_update_epochs,
             num_minibatches=args.ppo_num_minibatches,
         )
-        if args.policy_optimizer == "cem":
-            if args.arm == MODEL_FREE_ARM:
-                raise ValueError(
-                    "--policy-optimizer cem cannot be used with the model-free arm "
-                    "(CEM requires a learned world model)"
-                )
-            if action_mode == "discrete":
-                raise ValueError(
-                    f"--policy-optimizer cem only supports continuous-action envs; "
-                    f"{args.env!r} is discrete"
-                )
+        use_cem = args.policy_optimizer == "cem"
         cem_config: CEMConfig | None = None
-        if args.policy_optimizer == "cem":
-            cem_receding = (
-                args.cem_receding_horizon
-                if args.cem_receding_horizon is not None
-                else args.cem_horizon
-            )
-            action_low_scalar = float(np.asarray(adapter.action_low).min())
-            action_high_scalar = float(np.asarray(adapter.action_high).max())
+        cem_plan_fn = None
+        if use_cem:
+            cem_horizon = args.cem_horizon or args.imag_horizon
             cem_config = CEMConfig(
                 num_samples=args.cem_samples,
                 topk=args.cem_topk,
                 num_iters=args.cem_iters,
-                horizon=args.cem_horizon,
-                receding_horizon=cem_receding,
+                horizon=cem_horizon,
+                receding_horizon=args.cem_receding_horizon or cem_horizon,
                 init_std=1.0,
-                action_low=action_low_scalar,
-                action_high=action_high_scalar,
+                action_low=float(np.asarray(adapter.action_low).min()),
+                action_high=float(np.asarray(adapter.action_high).max()),
             )
+            cem_plan_fn = make_genwm_plan_fn(config, cem_config, gamma=args.gamma)
         key = jax.random.PRNGKey(seed)
         key, wm_key, head_key, policy_key = jax.random.split(key, 4)
         wm_state = head_state = None
@@ -1330,7 +1216,9 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
             head_state = create_head_state(
                 head_key, config, learning_rate=args.head_learning_rate
             )
-        policy_state = create_policy_state(policy_key, config, ppo_config)
+        policy_state = (
+            None if use_cem else create_policy_state(policy_key, config, ppo_config)
+        )
         genie_state = None
         genie_metrics: dict[str, Any] = {}
         if genie_module is not None:
@@ -1350,6 +1238,23 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
             params = genie_state.params
             return _encode_replay(lambda obs: genie_encode(params, obs), replay)
 
+        def make_planner() -> CEMPlanner:
+            nonlocal key
+            key, planner_key = jax.random.split(key)
+            planner = CEMPlanner(
+                cem_plan_fn,
+                wm_state=wm_state,
+                head_state=head_state,
+                obs_tokenizer=obs_tokenizer,
+                action_tokenizer=action_tokenizer,
+                cem_config=cem_config,
+                num_envs=num_envs,
+                action_dim=int(adapter.action_dim),
+                key=planner_key,
+            )
+            planners.append(planner)
+            return planner
+
         key, random_eval_key, initial_eval_key = jax.random.split(key, 3)
         random_return = _eval_return(
             adapter,
@@ -1360,7 +1265,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
             policy_state=None,
             action_mode=action_mode,
         )
-        if args.policy_optimizer == "cem":
+        if use_cem:
             # Under CEM the policy network is uninitialised and the WM is not yet
             # fit, so use random_return as the pre-training baseline instead of
             # evaluating the untrained policy.
@@ -1491,25 +1396,6 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                 wandb_metrics=wandb_metrics,
             )
 
-        planner: CEMPlanner | None = None
-        if args.policy_optimizer == "cem":
-            assert cem_config is not None
-            # Pre-bind config and cem_config; wm_state/head_state/start_observations/
-            # obs_tokenizer/action_tokenizer/gamma are passed by CEMPlanner.act() at
-            # each solve so the planner uses current model weights.
-            plan_fn = functools.partial(
-                make_genwm_plan_fn,
-                config=config,
-                cem_config=cem_config,
-            )
-            key, planner_key = jax.random.split(key)
-            planner = CEMPlanner(
-                make_plan_fn=plan_fn,
-                key=planner_key,
-                cem_config=cem_config,
-                action_dim=int(adapter.action_dim),
-            )
-
         key, offline_eval_key = jax.random.split(key)
         offline_return = _eval_return(
             adapter,
@@ -1519,12 +1405,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
             action_fns=action_fns,
             policy_state=policy_carry(policy_state),
             action_mode=action_mode,
-            planner=planner,
-            wm_state=wm_state,
-            head_state=head_state,
-            obs_tokenizer=obs_tokenizer,
-            action_tokenizer=action_tokenizer,
-            gamma=args.gamma,
+            planner=make_planner() if use_cem else None,
         )
         record_eval("offline", args.collect_steps, offline_return)
         if not args.quiet:
@@ -1542,12 +1423,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                     action_fns=action_fns,
                     policy_state=policy_carry(policy_state),
                     action_mode=action_mode,
-                    planner=planner,
-                    wm_state=wm_state,
-                    head_state=head_state,
-                    obs_tokenizer=obs_tokenizer,
-                    action_tokenizer=action_tokenizer,
-                    gamma=args.gamma,
+                    planner=make_planner() if use_cem else None,
                 )
                 if encode_fn is not None:
                     fresh = _encode_replay(encode_fn, fresh)
@@ -1642,12 +1518,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                 action_fns=action_fns,
                 policy_state=policy_carry(policy_state),
                 action_mode=action_mode,
-                planner=planner,
-                wm_state=wm_state,
-                head_state=head_state,
-                obs_tokenizer=obs_tokenizer,
-                action_tokenizer=action_tokenizer,
-                gamma=args.gamma,
+                planner=make_planner() if use_cem else None,
             )
             iteration_returns.append(iteration_return)
             record_eval(
@@ -1673,27 +1544,28 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
             action_fns=action_fns,
             policy_state=policy_carry(policy_state),
             action_mode=action_mode,
-            planner=planner,
-            wm_state=wm_state,
-            head_state=head_state,
-            obs_tokenizer=obs_tokenizer,
-            action_tokenizer=action_tokenizer,
-            gamma=args.gamma,
+            planner=make_planner() if use_cem else None,
         )
         record_eval("final", total_steps_per_env, trained_return)
-        _save_policy_checkpoint(
-            run_dir,
-            policy_state,
-            args=args,
-            config=config,
-            ppo_config=ppo_config,
-            genie_module=genie_module,
-            genie_state=genie_state,
-            action_mode=action_mode,
-            obs_dim=obs_dim,
-            action_dim=int(adapter.action_dim),
-            seed=seed,
-        )
+        if use_cem:
+            assert cem_config is not None
+            (run_dir / "planner.json").write_text(
+                json.dumps(dataclasses.asdict(cem_config), indent=2)
+            )
+        else:
+            _save_policy_checkpoint(
+                run_dir,
+                policy_state,
+                args=args,
+                config=config,
+                ppo_config=ppo_config,
+                genie_module=genie_module,
+                genie_state=genie_state,
+                action_mode=action_mode,
+                obs_dim=obs_dim,
+                action_dim=int(adapter.action_dim),
+                seed=seed,
+            )
         if wandb_run is not None:
             wandb_run.summary.update(
                 {
@@ -1717,6 +1589,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
         "obs_dim": obs_dim,
         "action_dim": int(adapter.action_dim),
         "policy_optimizer": args.policy_optimizer,
+        "initial_is_random": use_cem,
         "policy_random_mean": random_return,
         "policy_initial_mean": initial_return,
         "policy_offline_mean": offline_return,
@@ -1734,26 +1607,22 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
             int(data["observations"].shape[0]) if data is not None else real_env_steps
         ),
         "runtime_seconds": time.time() - started,
+        "planner_metrics": (
+            {
+                "num_solves": sum(len(p.solve_seconds) for p in planners),
+                "mean_solve_seconds": float(
+                    np.mean([s for p in planners for s in p.solve_seconds])
+                ),
+                "mean_final_topk_cost": float(
+                    np.mean([c for p in planners for c in p.topk_costs])
+                ),
+            }
+            if use_cem and any(p.solve_seconds for p in planners)
+            else None
+        ),
     }
-    if planner is not None:
-        assert cem_config is not None
-        assert planner._topk_costs is not None
-        outcome["planner_topk_costs_mean"] = float(planner._topk_costs.mean())
-        outcome["planner_solve_seconds_total"] = float(planner._solve_seconds)
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "outcome.json").write_text(json.dumps(outcome, indent=2))
-    if planner is not None:
-        assert cem_config is not None
-        assert planner._topk_costs is not None
-        planner_stats = {
-            "topk_costs_mean": float(planner._topk_costs.mean()),
-            "solve_seconds_total": float(planner._solve_seconds),
-            "horizon": cem_config.horizon,
-            "receding_horizon": cem_config.receding_horizon,
-            "num_samples": cem_config.num_samples,
-            "topk": cem_config.topk,
-        }
-        (run_dir / "planner.json").write_text(json.dumps(planner_stats, indent=2))
     return outcome
 
 
