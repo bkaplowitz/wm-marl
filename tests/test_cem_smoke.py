@@ -1,50 +1,55 @@
 """End-to-end CLI smoke test for CEM-MPC (brax:reacher, minimal budgets).
 
 Skipped automatically when brax is not importable (pytest.importorskip).
-Verifies that the full train_single_genwm pipeline:
-  1. Exits 0 with --allow-fail
-  2. Writes planner.json with the expected structure
+Calls ``main(argv)`` in-process and asserts on the written artifacts.
 """
 
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
-import tempfile
-from pathlib import Path
 
+import numpy as np
 import pytest
 
 
-def test_cem_smoke_e2e():
+def test_cem_end_to_end_smoke(tmp_path):
     pytest.importorskip("brax")
+    from world_marl.scripts.train_single_genwm import main
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        out_dir = Path(tmpdir)
-
-        cmd = [
-            sys.executable,
-            "-m",
-            "world_marl.scripts.train_single_genwm",
+    exit_code = main(
+        [
             "--env",
             "brax:reacher",
             "--arm",
-            "discrete-transformer",
+            "continuous-transformer",
             "--policy-optimizer",
             "cem",
             "--num-envs",
             "2",
+            "--max-cycles",
+            "20",
             "--collect-steps",
-            "4",
+            "8",
             "--train-steps",
             "2",
+            "--policy-train-steps",
+            "1",
             "--online-iterations",
             "0",
             "--eval-episodes",
             "1",
-            "--max-cycles",
-            "50",
+            "--batch-size",
+            "4",
+            "--model-dim",
+            "16",
+            "--num-layers",
+            "1",
+            "--num-heads",
+            "2",
+            "--obs-bins",
+            "5",
+            "--integration-steps",
+            "2",
             "--cem-samples",
             "6",
             "--cem-topk",
@@ -54,54 +59,17 @@ def test_cem_smoke_e2e():
             "--cem-horizon",
             "2",
             "--allow-fail",
+            "--quiet",
             "--out-dir",
-            str(out_dir),
-            "--seed",
-            "42",
+            str(tmp_path),
         ]
-
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        print(result.stdout)
-        print(result.stderr)
-
-        assert result.returncode == 0, (
-            f"Train exited {result.returncode}; stderr: {result.stderr[-2000:]}"
-        )
-
-        # Locate experiment dir from stdout ("experiment dir: <path>")
-        experiment_dir: Path | None = None
-        for line in result.stdout.splitlines():
-            if line.startswith("experiment dir:"):
-                experiment_dir = Path(line.split("experiment dir:", 1)[1].strip())
-                break
-
-        assert experiment_dir is not None, (
-            f"'experiment dir:' not found in stdout:\n{result.stdout}"
-        )
-
-        run_dir = experiment_dir / "run_00"
-        planner_json = run_dir / "planner.json"
-        assert planner_json.exists(), f"planner.json not found at {planner_json}"
-
-        with open(planner_json) as f:
-            planner_stats = json.load(f)
-
-        expected_keys = {
-            "topk_costs_mean",
-            "solve_seconds_total",
-            "horizon",
-            "receding_horizon",
-            "num_samples",
-            "topk",
-        }
-        missing = expected_keys - set(planner_stats.keys())
-        assert not missing, f"planner.json missing keys: {missing}"
-
-        assert isinstance(planner_stats["topk_costs_mean"], float), (
-            "topk_costs_mean must be a float"
-        )
-        assert planner_stats["solve_seconds_total"] >= 0, (
-            "solve time should be non-negative"
-        )
-        assert planner_stats["horizon"] == 2
-        assert planner_stats["topk"] == 2
+    )
+    assert exit_code == 0
+    run_dirs = sorted(tmp_path.glob("genwm_*/run_00"))
+    assert run_dirs, "run directory not created"
+    outcome = json.loads((run_dirs[0] / "outcome.json").read_text())
+    assert outcome["policy_optimizer"] == "cem"
+    assert outcome["planner_metrics"]["num_solves"] > 0
+    assert np.isfinite(outcome["policy_trained_mean"])
+    assert (run_dirs[0] / "planner.json").exists()
+    assert outcome["ppo_final_metrics"] == {}
