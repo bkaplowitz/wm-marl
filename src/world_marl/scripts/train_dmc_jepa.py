@@ -46,6 +46,7 @@ from world_marl.jepa.training import (
     reset_policy_heads,
     select_continuous_actions,
     train_model_step,
+    train_model_step_scaled_encoder,
 )
 from world_marl.logging import (
     RunLogger,
@@ -2617,16 +2618,26 @@ def _fit_world_model(
             max_horizon=max(args.model_horizon, args.open_loop_horizon),
         )
         rng, train_key = jax.random.split(rng)
-        state, metrics = train_model_step(
-            state,
-            train_key,
-            batch,
-            config,
-            chunk_length=args.chunk_length,
-            control=CONTROL,
-            freeze_encoder=freeze_encoder,
-            encoder_update_scale=encoder_update_scale,
-        )
+        if encoder_update_scale == 1.0 or freeze_encoder:
+            state, metrics = train_model_step(
+                state,
+                train_key,
+                batch,
+                config,
+                chunk_length=args.chunk_length,
+                control=CONTROL,
+                freeze_encoder=freeze_encoder,
+            )
+        else:
+            state, metrics = train_model_step_scaled_encoder(
+                state,
+                train_key,
+                batch,
+                config,
+                chunk_length=args.chunk_length,
+                control=CONTROL,
+                encoder_update_scale=encoder_update_scale,
+            )
         loss_history.append(metrics["model/total_loss"])
         if (
             step_index == 1

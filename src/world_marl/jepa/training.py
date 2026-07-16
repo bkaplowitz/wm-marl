@@ -83,7 +83,6 @@ class JepaTrainState:
         grads,
         *,
         freeze_encoder: bool = False,
-        encoder_update_scale: float = 1.0,
     ) -> "JepaTrainState":
         updates, opt_state = self.model_tx.update(
             grads,
@@ -95,15 +94,6 @@ class JepaTrainState:
                 add_or_replace={
                     "encoder": jax.tree_util.tree_map(
                         jnp.zeros_like,
-                        updates["encoder"],
-                    )
-                }
-            )
-        elif encoder_update_scale != 1.0:
-            updates = updates.copy(
-                add_or_replace={
-                    "encoder": jax.tree_util.tree_map(
-                        lambda update: update * encoder_update_scale,
                         updates["encoder"],
                     )
                 }
@@ -245,7 +235,6 @@ def _update_target_critic_params(
         "chunk_length",
         "control",
         "freeze_encoder",
-        "encoder_update_scale",
     ),
 )
 def train_model_step(
@@ -257,7 +246,6 @@ def train_model_step(
     chunk_length: int,
     control: ControlMode = "none",
     freeze_encoder: bool = False,
-    encoder_update_scale: float = 1.0,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     def loss_fn(params):
         loss, metrics = world_model_loss(
@@ -288,10 +276,6 @@ def train_model_step(
             float(freeze_encoder),
             dtype=metrics["model/total_loss"].dtype,
         ),
-        "model/encoder_update_scale": jnp.asarray(
-            0.0 if freeze_encoder else encoder_update_scale,
-            dtype=metrics["model/total_loss"].dtype,
-        ),
         "model/grad_clip_norm": jnp.asarray(
             config.model_grad_clip_norm,
             dtype=metrics["model/total_loss"].dtype,
@@ -300,7 +284,79 @@ def train_model_step(
     return state.apply_model_gradients(
         grads,
         freeze_encoder=freeze_encoder,
-        encoder_update_scale=encoder_update_scale,
+    ), metrics
+
+
+@partial(
+    jax.jit,
+    static_argnames=(
+        "config",
+        "chunk_length",
+        "control",
+        "encoder_update_scale",
+    ),
+)
+def train_model_step_scaled_encoder(
+    state: JepaTrainState,
+    key: jax.Array,
+    batch: ReplayBatch,
+    config: JepaConfig,
+    *,
+    chunk_length: int,
+    control: ControlMode = "none",
+    encoder_update_scale: float,
+) -> tuple[JepaTrainState, dict[str, jax.Array]]:
+    """Train the world model while damping only encoder parameter updates."""
+
+    def loss_fn(params):
+        loss, metrics = world_model_loss(
+            params,
+            state.apply_fn,
+            key,
+            batch,
+            config,
+            chunk_length=chunk_length,
+            control=control,
+        )
+        return loss, metrics
+
+    (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
+    del loss
+    encoder_grad_norm = optax.global_norm(grads["encoder"])
+    updates, opt_state = state.model_tx.update(
+        grads,
+        state.model_opt_state,
+        state.params,
+    )
+    updates = updates.copy(
+        add_or_replace={
+            "encoder": jax.tree_util.tree_map(
+                lambda update: update * encoder_update_scale,
+                updates["encoder"],
+            )
+        }
+    )
+    metrics = {
+        **metrics,
+        "model/grad_norm": optax.global_norm(grads),
+        "model/encoder_grad_norm_unmasked": encoder_grad_norm,
+        "model/encoder_frozen": jnp.asarray(
+            0.0,
+            dtype=metrics["model/total_loss"].dtype,
+        ),
+        "model/encoder_update_scale": jnp.asarray(
+            encoder_update_scale,
+            dtype=metrics["model/total_loss"].dtype,
+        ),
+        "model/grad_clip_norm": jnp.asarray(
+            config.model_grad_clip_norm,
+            dtype=metrics["model/total_loss"].dtype,
+        ),
+    }
+    return state.replace(
+        step=state.step + 1,
+        params=optax.apply_updates(state.params, updates),
+        model_opt_state=opt_state,
     ), metrics
 
 

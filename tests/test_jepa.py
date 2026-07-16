@@ -27,6 +27,7 @@ from world_marl.jepa.training import (
     select_continuous_actions,
     tanh_normal_entropy_sample,
     train_model_step,
+    train_model_step_scaled_encoder,
     transition_start_validity,
     winsorize_normalized_advantages,
 )
@@ -338,7 +339,6 @@ def test_model_step_can_freeze_only_the_observation_encoder():
         )
     )
     assert metrics["model/encoder_frozen"] == 1.0
-    assert metrics["model/encoder_update_scale"] == 0.0
     assert metrics["model/encoder_grad_norm_unmasked"] > 0.0
 
 
@@ -359,7 +359,7 @@ def test_model_step_can_scale_only_observation_encoder_updates():
         config,
         chunk_length=2,
     )
-    scaled_state, metrics = train_model_step(
+    scaled_state, metrics = train_model_step_scaled_encoder(
         state,
         jax.random.PRNGKey(2),
         _batch(config),
