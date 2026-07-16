@@ -134,7 +134,7 @@ def main() -> None:
             "actor_noise_scale": args.actor_noise_scale,
             "failure_threshold": args.failure_threshold,
             "success_threshold": args.success_threshold,
-            "policy": "deterministic_latest_checkpoint_actor",
+            "policy": "deterministic_checkpoint_actor",
         },
         "details_csv": str(details_out),
         "summary": summary,
