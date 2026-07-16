@@ -136,6 +136,8 @@ _JEPA_BASE: dict[str, Any] = {
     "final_policy_eval_seed": 9_000_000,
     "failure_return_threshold": 100.0,
     "success_return_threshold": 900.0,
+    "training_snapshot_env_steps": None,
+    "resume_training_snapshot": None,
     "allow_fail": True,
 }
 
@@ -241,6 +243,8 @@ OVERRIDABLE_PARAMS = (
     "curve_eval_seed",
     "final_policy_eval_episodes",
     "final_policy_eval_seed",
+    "training_snapshot_env_steps",
+    "resume_training_snapshot",
     "wandb_project",
     "wandb_entity",
     "wandb_name",
@@ -549,6 +553,13 @@ def parse_args() -> argparse.Namespace:
         "actor_entropy_final_coef",
     ):
         parser.add_argument("--" + name.replace("_", "-"), type=float, default=None)
+    parser.add_argument(
+        "--training-snapshot-env-steps",
+        nargs="*",
+        type=int,
+        default=None,
+    )
+    parser.add_argument("--resume-training-snapshot", default=None)
     parser.add_argument("--wandb-project", default=None)
     parser.add_argument(
         "--policy-actor-kl-reference-mode",

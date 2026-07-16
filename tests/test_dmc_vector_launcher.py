@@ -375,6 +375,23 @@ def test_launcher_serializes_value_clip_schedule():
     ]
 
 
+def test_launcher_serializes_training_snapshot_controls():
+    command = params_to_shell_args(
+        {
+            "training_snapshot_env_steps": [150_528, 200_704],
+            "resume_training_snapshot": "/tmp/snapshot_150528",
+        }
+    )
+
+    assert command.replace("\\\n", " ").split() == [
+        "--training-snapshot-env-steps",
+        "150528",
+        "200704",
+        "--resume-training-snapshot",
+        "/tmp/snapshot_150528",
+    ]
+
+
 def test_launcher_serializes_actor_kl_controls():
     command = params_to_shell_args(
         {
