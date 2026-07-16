@@ -7,6 +7,7 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
+from types import FunctionType
 from typing import Any, Callable
 
 import numpy as np
@@ -81,6 +82,13 @@ REPLAY_REQUEST_KEYS = {
     "source_spec",
     "uuid_mode",
 }
+
+
+def _malformed_oracle_resolver(*args, **kwargs):
+    del args, kwargs
+    return object()
+
+
 REPLAY_COMMAND_DESCRIPTOR = (
     "python:current",
     "module:world_marl.dreamer_v3_baseline.replay_oracle",
@@ -235,14 +243,19 @@ def test_replay_manifest_load_is_source_free(
         raise AssertionError("public manifest load inspected live source")
 
     monkeypatch.setattr(replay_oracle_module.inspect, "getsource", unavailable)
-    monkeypatch.setattr(
-        replay_oracle_module,
-        "_live_generator_file_hashes",
-        unavailable,
-        raising=False,
-    )
+    live_hash_code = replay_oracle_module._live_generator_file_hashes.__code__
+    previous_profile = sys.getprofile()
 
-    manifest = OracleManifest.load(REPLAY_MANIFEST, fixture_path=REPLAY_FIXTURE)
+    def reject_live_hash_call(frame, event, arg):
+        del arg
+        if event == "call" and frame.f_code is live_hash_code:
+            raise AssertionError("public manifest load inspected live source")
+
+    sys.setprofile(reject_live_hash_call)
+    try:
+        manifest = OracleManifest.load(REPLAY_MANIFEST, fixture_path=REPLAY_FIXTURE)
+    finally:
+        sys.setprofile(previous_profile)
 
     assert manifest.source_spec == "replay"
 
@@ -420,10 +433,144 @@ def test_registry_rejects_forged_callbacks_with_copied_contract_ids(
         oracle_module._ORACLE_SOURCE_SPECS["replay"] = original
 
 
+def test_registry_rejects_a_bound_forged_validator_with_the_same_identity(
+    tmp_path: Path,
+) -> None:
+    original_spec = oracle_module.oracle_source_spec("replay")
+    callback_name = "_validate_replay_generator_provenance"
+    original_callback = getattr(replay_oracle_module, callback_name)
+
+    def forged_validator(*args, **kwargs):
+        del args, kwargs
+
+    forged_validator.__module__ = replay_oracle_module.__name__
+    forged_validator.__qualname__ = callback_name
+    forged_spec = replace(
+        original_spec,
+        generator_validator=forged_validator,
+    )
+    setattr(replay_oracle_module, callback_name, forged_validator)
+    try:
+        with pytest.raises(ValueError, match="callback|registered"):
+            oracle_module.register_oracle_source_spec(forged_spec)
+        assert oracle_module.oracle_source_spec("replay") is original_spec
+    finally:
+        setattr(replay_oracle_module, callback_name, original_callback)
+        oracle_module._ORACLE_SOURCE_SPECS["replay"] = original_spec
+
+    def mutate(request: dict[str, Any]) -> None:
+        request["uuid_mode"] = "forged-acceptance"
+
+    path = _write_tampered_replay_request(tmp_path, request_mutation=mutate)
+    with pytest.raises(ValueError, match="runtime coordinate"):
+        _load_tampered_replay(path)
+
+
+@pytest.mark.parametrize("dependency", ("defaults", "globals"))
+def test_registry_fingerprint_rejects_same_code_with_changed_dependencies(
+    dependency: str,
+) -> None:
+    original_spec = oracle_module.oracle_source_spec("replay")
+    callback_name = "_validate_replay_generator_provenance"
+    original_callback = getattr(replay_oracle_module, callback_name)
+    globals_ = dict(original_callback.__globals__)
+    defaults = original_callback.__defaults__
+    if dependency == "globals":
+
+        def accept_every_contract(*args, **kwargs):
+            del args, kwargs
+            return True
+
+        globals_["_same_contract"] = accept_every_contract
+    else:
+        defaults = (None,)
+    forged_callback = FunctionType(
+        original_callback.__code__,
+        globals_,
+        original_callback.__name__,
+        defaults,
+        original_callback.__closure__,
+    )
+    forged_callback.__module__ = original_callback.__module__
+    forged_callback.__qualname__ = original_callback.__qualname__
+    forged_callback.__kwdefaults__ = original_callback.__kwdefaults__
+    forged_spec = replace(
+        original_spec,
+        generator_validator=forged_callback,
+    )
+    setattr(replay_oracle_module, callback_name, forged_callback)
+    try:
+        with pytest.raises(ValueError, match="callback|registered"):
+            oracle_module.register_oracle_source_spec(forged_spec)
+        assert oracle_module.oracle_source_spec("replay") is original_spec
+    finally:
+        setattr(replay_oracle_module, callback_name, original_callback)
+        oracle_module._ORACLE_SOURCE_SPECS["replay"] = original_spec
+
+
+def test_callback_fingerprint_does_not_trust_dependency_logical_identity() -> None:
+    original_callback = replay_oracle_module._validate_replay_generator_provenance
+
+    def reject_contract(*args, **kwargs):
+        del args, kwargs
+        return False
+
+    def accept_contract(*args, **kwargs):
+        del args, kwargs
+        return True
+
+    for dependency in (reject_contract, accept_contract):
+        dependency.__module__ = original_callback.__module__
+        dependency.__qualname__ = original_callback.__qualname__
+    globals_ = dict(original_callback.__globals__)
+    globals_["_same_contract"] = reject_contract
+    callback = FunctionType(
+        original_callback.__code__,
+        globals_,
+        original_callback.__name__,
+        original_callback.__defaults__,
+        original_callback.__closure__,
+    )
+    callback.__module__ = original_callback.__module__
+    callback.__qualname__ = original_callback.__qualname__
+    before = oracle_module._callback_implementation_fingerprint(callback)
+
+    globals_["_same_contract"] = accept_contract
+
+    assert oracle_module._callback_implementation_fingerprint(callback) != before
+
+
+def test_manifest_validation_rejects_post_registration_callback_mutation() -> None:
+    source_spec = oracle_module.oracle_source_spec("replay")
+    callback = source_spec.generator_validator
+    assert callback is not None
+    original_defaults = callback.__defaults__
+    callback.__defaults__ = (None,)
+    try:
+        with pytest.raises(ValueError, match="callback implementation"):
+            OracleManifest.load(REPLAY_MANIFEST, fixture_path=REPLAY_FIXTURE)
+    finally:
+        callback.__defaults__ = original_defaults
+
+
+def test_manifest_validation_rejects_post_registration_module_dependency_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_loads = replay_oracle_module.json.loads
+
+    def wrapped_loads(*args, **kwargs):
+        return original_loads(*args, **kwargs)
+
+    monkeypatch.setattr(replay_oracle_module.json, "loads", wrapped_loads)
+
+    with pytest.raises(ValueError, match="callback implementation"):
+        OracleManifest.load(REPLAY_MANIFEST, fixture_path=REPLAY_FIXTURE)
+
+
 def test_resolver_rejects_a_malformed_callback_result() -> None:
     manifest = OracleManifest.load(REPLAY_MANIFEST, fixture_path=REPLAY_FIXTURE)
     original = oracle_module.oracle_source_spec("replay")
-    malformed = replace(original, generator_resolver=lambda *args: object())
+    malformed = replace(original, generator_resolver=_malformed_oracle_resolver)
     oracle_module._ORACLE_SOURCE_SPECS["replay"] = malformed
     try:
         with pytest.raises((TypeError, ValueError), match="invocation"):

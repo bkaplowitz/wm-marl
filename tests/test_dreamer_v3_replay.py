@@ -3452,6 +3452,248 @@ def test_add_preflight_never_scans_lifetime_chunk_history() -> None:
     assert "writer.chunk_history[-1]" in source
 
 
+@pytest.mark.parametrize(
+    "corruption",
+    ("duplicate", "reversed", "cursor", "cadence"),
+)
+def test_add_preflights_bounded_pending_cadence_transactionally(
+    corruption: str,
+) -> None:
+    replay = _replay(
+        capacity=20,
+        chunk_size=8,
+        sequence_length=3,
+        context=0,
+        online=False,
+    )
+    initial_rows = 4
+    _add_rows(replay, initial_rows)
+    writer = replay.writers[0]
+    if corruption == "duplicate":
+        writer.pending[1] = writer.pending[0]
+    elif corruption == "reversed":
+        writer.pending = type(writer.pending)(reversed(writer.pending))
+    elif corruption == "cursor":
+        chunk_id = writer.chunk_history[0]
+        writer.pending = type(writer.pending)(
+            (ReplayKey(chunk_id, 0), ReplayKey(chunk_id, 1))
+        )
+    else:
+        writer.emitted_count += 1
+    before = replay.state_dict()
+
+    with pytest.raises((TypeError, ValueError, RuntimeError), match="pending|cadence"):
+        replay.validate()
+    _assert_tree_equal(replay.state_dict(), before)
+
+    with pytest.raises((TypeError, ValueError, RuntimeError), match="pending|cadence"):
+        replay.add(_row(initial_rows, first=False))
+    _assert_tree_equal(replay.state_dict(), before)
+
+
+def test_add_preflights_last_is_last_against_live_tail_transactionally() -> None:
+    replay = _replay(
+        capacity=20,
+        chunk_size=8,
+        sequence_length=3,
+        context=0,
+        online=False,
+    )
+    replay.add(_row(0, last=True))
+    writer = replay.writers[0]
+    writer.last_is_last = False
+    before = replay.state_dict()
+
+    with pytest.raises((TypeError, ValueError, RuntimeError), match="chronology"):
+        replay.validate()
+    _assert_tree_equal(replay.state_dict(), before)
+
+    with pytest.raises((TypeError, ValueError, RuntimeError), match="chronology"):
+        replay.add(_row(1, first=False))
+    _assert_tree_equal(replay.state_dict(), before)
+
+
+def test_add_preflights_pending_chunk_ownership_transactionally() -> None:
+    replay = _replay(
+        capacity=20,
+        chunk_size=2,
+        sequence_length=3,
+        context=0,
+        online=False,
+    )
+    for index in range(3):
+        replay.add(_row(index, first=index == 0), worker=0)
+    for index in range(2):
+        replay.add(_row(100 + index, first=index == 0), worker=1)
+    writer = replay.writers[0]
+    foreign_writer = replay.writers[1]
+    foreign_chunk_id = foreign_writer.chunk_history[-2]
+    current_chunk_id = writer.current_chunk_id
+    assert current_chunk_id is not None
+    foreign_chunk = replay.chunks[foreign_chunk_id]
+    foreign_chunk.successor_id = current_chunk_id
+    writer.chunk_history[-2] = foreign_chunk_id
+    writer.pending = type(writer.pending)(
+        (
+            ReplayKey(foreign_chunk_id, foreign_chunk.length - 1),
+            ReplayKey(current_chunk_id, 0),
+        )
+    )
+    before = replay.state_dict()
+
+    with pytest.raises((TypeError, ValueError, RuntimeError), match="ownership"):
+        replay.validate()
+    _assert_tree_equal(replay.state_dict(), before)
+
+    with pytest.raises((TypeError, ValueError, RuntimeError), match="ownership"):
+        replay.add(_row(3, first=False), worker=0)
+    _assert_tree_equal(replay.state_dict(), before)
+
+
+def test_add_preflights_same_writer_pending_cycle_transactionally() -> None:
+    replay = _replay(
+        capacity=20,
+        chunk_size=2,
+        sequence_length=4,
+        context=0,
+        online=False,
+    )
+    _add_rows(replay, 3)
+    writer = replay.writers[0]
+    current_chunk_id = writer.current_chunk_id
+    assert current_chunk_id is not None
+    current_chunk = replay.chunks[current_chunk_id]
+    assert current_chunk.length == 1
+    current_chunk.successor_id = current_chunk_id
+    live_key = ReplayKey(current_chunk_id, 0)
+    writer.pending = type(writer.pending)((live_key, live_key, live_key))
+    before = replay.state_dict()
+
+    with pytest.raises((TypeError, ValueError, RuntimeError), match="cycle|chunk"):
+        replay.validate()
+    _assert_tree_equal(replay.state_dict(), before)
+
+    with pytest.raises((TypeError, ValueError, RuntimeError), match="cycle|chunk"):
+        replay.add(_row(3, first=False))
+    _assert_tree_equal(replay.state_dict(), before)
+
+
+def test_add_preflights_pending_chunk_self_identity_transactionally() -> None:
+    replay = _replay(
+        capacity=20,
+        chunk_size=2,
+        sequence_length=3,
+        context=0,
+        online=False,
+    )
+    _add_rows(replay, 3)
+    writer = replay.writers[0]
+    sealed_chunk_id = writer.chunk_history[-2]
+    replay.chunks[sealed_chunk_id].chunk_id = (999).to_bytes(16, "big")
+    before = replay.state_dict()
+
+    with pytest.raises((TypeError, ValueError, RuntimeError), match="chunk"):
+        replay.validate()
+    _assert_tree_equal(replay.state_dict(), before)
+
+    with pytest.raises((TypeError, ValueError, RuntimeError), match="chunk"):
+        replay.add(_row(3, first=False))
+    _assert_tree_equal(replay.state_dict(), before)
+
+
+@pytest.mark.parametrize(
+    "target_alias",
+    (False, np.int64(0)),
+    ids=("bool", "numpy-int"),
+)
+def test_evict_preflights_exact_selector_target_transactionally(
+    target_alias,
+) -> None:
+    replay = _replay(
+        capacity=2,
+        chunk_size=4,
+        sequence_length=1,
+        context=0,
+        online=False,
+    )
+    _add_rows(replay, 2)
+    item_id = replay.fifo[0]
+    target_index = replay.selector.indices[item_id]
+    assert target_index != len(replay.selector.keys) - 1
+    replay.selector.keys[target_index] = target_alias
+    before = replay.state_dict()
+
+    with pytest.raises((TypeError, ValueError, RuntimeError), match="selector"):
+        replay.validate()
+    _assert_tree_equal(replay.state_dict(), before)
+
+    with pytest.raises((TypeError, ValueError, RuntimeError), match="selector"):
+        replay._evict_item()
+    _assert_tree_equal(replay.state_dict(), before)
+
+    with pytest.raises((TypeError, ValueError, RuntimeError), match="selector"):
+        replay.add(_row(2, first=False))
+    _assert_tree_equal(replay.state_dict(), before)
+
+
+@pytest.mark.parametrize(
+    "key_alias",
+    (False, np.int64(0)),
+    ids=("bool", "numpy-int"),
+)
+def test_evict_preflights_exact_selector_index_key_transactionally(
+    key_alias,
+) -> None:
+    replay = _replay(
+        capacity=2,
+        chunk_size=4,
+        sequence_length=1,
+        context=0,
+        online=False,
+    )
+    _add_rows(replay, 2)
+    replay.selector.indices = {key_alias: 0, 1: 1}
+    before = replay.state_dict()
+
+    with pytest.raises((TypeError, ValueError, RuntimeError), match="selector"):
+        replay.validate()
+    _assert_tree_equal(replay.state_dict(), before)
+
+    with pytest.raises((TypeError, ValueError, RuntimeError), match="selector"):
+        replay._evict_item()
+    _assert_tree_equal(replay.state_dict(), before)
+
+    with pytest.raises((TypeError, ValueError, RuntimeError), match="selector"):
+        replay.add(_row(2, first=False))
+    _assert_tree_equal(replay.state_dict(), before)
+
+
+def test_evict_preflights_chunk_self_identity_transactionally() -> None:
+    replay = _replay(
+        capacity=1,
+        chunk_size=1,
+        sequence_length=1,
+        context=0,
+        online=False,
+    )
+    replay.add(_row(0))
+    item_key = replay.items[replay.fifo[0]]
+    replay.chunks[item_key.chunk_id].chunk_id = (999).to_bytes(16, "big")
+    before = replay.state_dict()
+
+    with pytest.raises((TypeError, ValueError, RuntimeError), match="chunk"):
+        replay.validate()
+    _assert_tree_equal(replay.state_dict(), before)
+
+    with pytest.raises((TypeError, ValueError, RuntimeError), match="chunk"):
+        replay._evict_item()
+    _assert_tree_equal(replay.state_dict(), before)
+
+    with pytest.raises((TypeError, ValueError, RuntimeError), match="chunk"):
+        replay.add(_row(1, first=False))
+    _assert_tree_equal(replay.state_dict(), before)
+
+
 def test_restore_rejects_numpy_bytes_current_chunk_id_without_mutation() -> None:
     replay = _replay(chunk_size=3, sequence_length=1, context=0, online=False)
     _add_rows(replay, 4)

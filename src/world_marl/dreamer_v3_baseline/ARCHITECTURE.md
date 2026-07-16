@@ -404,6 +404,22 @@ discontinuities. On restore an empty current chunk may legitimately have no
 retained predecessor when capacity eviction removed it; the persisted final
 `is_last` flag still controls the next append.
 
+Before each append, the aggregate replay requires
+`len(pending)=min(row_count,R-1)`,
+`emitted_count=max(0,row_count-R+1)`, and `has_rows==(row_count>0)`. The
+pending keys must resolve as one consecutive suffix ending at the current
+cursor: the final populated offset of the open chunk, or the final offset of
+the directly indexed predecessor when the open successor is empty. Every live
+resolved chunk and predecessor must be an exact `ReplayChunk` whose self id
+equals its dictionary lookup id and whose owner is that writer. When the live
+tail is retained, its stored `is_last` bit must equal `last_is_last`; if an idle
+`R=1` writer's predecessor was legitimately evicted, the persisted flag remains
+the chronology authority. The active open chunk must have no successor. Within
+the bounded suffix, offsets increase by one inside a chunk; a chunk transition
+resets to offset zero, strictly increases the chunk id, and never revisits a
+chunk. This check may resolve at most `R-1` keys and inspect
+`chunk_history[-2]`; it never walks the lifetime history.
+
 ### OnlineQueue
 
 FIFO fresh sequences, drained before uniform replay fill, fully checkpointed.
@@ -458,7 +474,9 @@ exact active writer, and runs a mutation-local preflight before changing a
 chunk, pending suffix, item, counter, or selector. The preflight checks exact
 top-level container types, scans only the bounded writer map to reject Python
 equality aliases, inspects only the active writer's history boundary and
-bounded pending suffix, reserves every needed id, and constructs an O(1)
+bounded pending suffix. It proves the exact pending length, emitted counter,
+row/current-chunk geometry, owner-bound consecutiveness, cursor alignment, and
+retained-tail chronology before reserving every needed id, then constructs an O(1)
 FIFO/item/selector swap-pop plan plus the successor ref-decrement chain for an
 impending eviction. It never calls exhaustive public validation or scans
 capacity, chunks, selector contents, or the writer's lifetime history on every
@@ -482,12 +500,15 @@ against the configured bounds before chunk construction or NumPy allocation.
 The live item map is an exact dictionary from exact Python integers to exact
 `ReplayKey` values; both eviction preflight and public validation reject
 Python-equal aliases before equality or membership checks. The FIFO is a list
-of exact Python integers and equals retained item-id order.
+of exact Python integers and equals retained item-id order. Restored selector
+index maps are canonicalized by monotonically increasing item id, matching FIFO
+retention order at their boundaries.
 Each writer's nonempty item-key projection, read in global item-id order, is
 the exact step-one suffix of every emitted valid start and ends at
 `row_count-R`; a writer may have an empty projection after global capacity
 eviction, and no global ordering is imposed across writers. Eviction validates
-the exact FIFO/item containers, head item, selector target/index and swap-pop
+the exact FIFO/item containers, head item, exact-Python-integer selector
+target/index, exact index-map boundary keys, and swap-pop
 tail, and every recursively triggered reference decrement before any selector,
 FIFO, item, chunk, or refcount mutation begins. Public validation is the
 deliberately exhaustive O(capacity+chunks) path: it checks every exact selector
@@ -605,14 +626,33 @@ generator-provenance validator and a live invocation resolver. Each callback
 has a stable contract id, and each may be marked required. Construction and
 registration independently reject a required source without its callable.
 Registry equality compares hashes, dtypes, required flags, callback ids, and
-each callback's stable module-plus-qualified-name identity. Registration also
-resolves that identity from the live module and requires the exact bound object,
-so a forged callback cannot copy the ids or spoof `__module__`/`__qualname__`.
-Re-importing a module refreshes equal callbacks, while a changed id, logical
-identity, or bound object fails closed. Reloading `oracle.py` rehydrates
-every preserved entry into the new `OracleSourceSpec` class while retaining
-its callbacks and ids. An object created before reload is accepted by creation
-APIs only when its name and complete structural signature equal the current
+each callback's stable module-plus-qualified-name identity and implementation
+fingerprint. Construction computes that fingerprint from path-independent
+bytecode and exception tables, recursively canonicalized code constants,
+defaults, keyword defaults, closure cells, and every referenced global or
+builtin. Referenced Python functions are fingerprinted recursively; modules,
+classes, builtins, typing descriptors, and regular expressions otherwise use
+stable logical representations. A referenced module is not trusted by name:
+the fingerprint derives every statically loaded attribute chain from callback
+bytecode and seals its current binding. Python-function attributes additionally
+seal binding identity, code, defaults, keyword defaults, and closure cells;
+absent conditional attributes use an explicit missing sentinel, and bytecode
+that passes the module object directly seals that live binding. The fingerprint
+does not recurse into an external function's private mutable module caches.
+Filenames, source paths, source text, line numbers, and line tables are excluded
+so relocation and unchanged reloads remain equal. Registration resolves each
+identity from the live module, requires the exact bound object, and recomputes
+both callback fingerprints. Ordinary manifest validation repeats those checks
+for the provenance validator only; `resolve_generator_invocation()` re-attests
+the resolver immediately before dispatch. A forged callback therefore cannot
+copy ids or spoof `__module__`/`__qualname__`, and changing code, defaults,
+closures, referenced globals, or referenced module bindings after construction
+fails closed before the affected callback runs. Re-importing a module refreshes
+behaviorally equal callbacks, while a changed id, logical identity, bound
+object, or implementation fails closed. Reloading `oracle.py` rehydrates every
+preserved entry into the new `OracleSourceSpec` class while retaining its
+callbacks and ids. An object created before reload is accepted by creation APIs
+only when its name and complete structural signature equal the current
 registered entry; the current entry performs all subsequent work.
 
 ### OracleInvocation
@@ -634,8 +674,9 @@ checks official object bytes and fixture bytes/schema.
 
 `resolve_generator_invocation()` first repeats ordinary source-free manifest
 validation, so a manually constructed or subsequently replaced manifest cannot
-bypass generic authority/config/device/command checks. It then dispatches the
-registered source resolver. Sources without a resolver retain their recorded
+bypass generic authority/config/device/command checks. It then revalidates the
+registered resolver's exact module binding and live implementation fingerprint
+before dispatch. Sources without a resolver retain their recorded
 command/request behavior; a source that requires resolution fails if its
 resolver is unavailable. Resolver results are reconstructed as the current
 `OracleInvocation` class after structural field validation, so reloading

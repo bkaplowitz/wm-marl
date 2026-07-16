@@ -8,7 +8,7 @@ REPLAY_COMMAND_DESCRIPTOR = (
 )
 
 REPLAY_CONTRACT_SELF_SHA256 = (
-    "fb2b6cf6152a5123cafbc9d0d5ff6cb077ad3e298e748cbe5d32a478e4f19a8f"
+    "d99c435c1d43672e1980afd7226827adaade88075e4ebe6b81bb37dbf58649c4"
 )
 
 REPLAY_GENERATOR_FILE_HASHES = {
@@ -16,7 +16,7 @@ REPLAY_GENERATOR_FILE_HASHES = {
         "c2cc207718776bc975f5740d92f8e79c7c3ae103940b199a6abf80b5a21d5615"
     ),
     "world_marl/dreamer_v3_baseline/oracle.py": (
-        "d02a618a4ea36f05b96b2ca4271c091788731dd7002ed3cf534f59b0bdeb602c"
+        "151a5291795a39383886089c6e952f6aa4165025afffff999719d6e4511aa867"
     ),
     "world_marl/dreamer_v3_baseline/replay_oracle.py": (
         "2d6ac3d951623db086f91123770da1f1e64702ab3477a6d9af5eadff5622be4a"

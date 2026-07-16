@@ -51,6 +51,16 @@ Git objects. A copied source tree therefore resolves its copied worker without
 changing the manifest, while any byte change to the generator closure fails
 before execution.
 
+The replay source registry separately seals validator and resolver behavior.
+Each callback must be the exact live module binding and match a
+path-independent implementation fingerprint covering bytecode, defaults,
+closures, and referenced globals. Referenced module globals seal their exact
+bytecode-visible attribute bindings rather than trusting only the module name.
+Registration attests both callbacks, source-free manifest validation re-attests
+the validator, and invocation resolution re-attests the resolver immediately
+before dispatch. Copied callback ids and qualified names therefore cannot admit
+changed validation behavior; unchanged module reloads remain valid.
+
 Elements locations are never inferred from a machine-specific default. Every
 resolution, direct worker test, and regeneration command must provide absolute
 coordinates. Tests read the following environment variables, with local test
@@ -68,7 +78,7 @@ that changes `config.py`, `oracle.py`, `replay_oracle.py`, or
 `replay_oracle_contract.py` must recompute the affected frozen contracts,
 regenerate both replay manifests through `OracleHarness`, prove the two replay
 NPZ files remain byte-identical unless their arrays were intentionally changed,
-and rerun the complete 265-test oracle-manifest plus replay gate in that same
+and rerun the complete 308-test oracle-manifest plus replay gate in that same
 task. Committing a closure or contract edit with stale manifests is invalid.
 
 Distribution fixtures persist fixed Gumbel tensors together with the exact

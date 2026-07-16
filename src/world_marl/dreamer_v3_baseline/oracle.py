@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import dis
 import hashlib
 import io
 import json
@@ -12,7 +13,14 @@ import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import MappingProxyType, ModuleType, SimpleNamespace
+from types import (
+    BuiltinFunctionType,
+    CodeType,
+    FunctionType,
+    MappingProxyType,
+    ModuleType,
+    SimpleNamespace,
+)
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
 import jax
@@ -74,6 +82,279 @@ GeneratorInvocationResolver = Callable[
 ]
 
 
+def _callback_implementation_fingerprint(
+    callback: Callable[..., Any] | None,
+) -> str | None:
+    if callback is None:
+        return None
+    if type(callback) is not FunctionType:
+        raise ValueError("oracle source callback must be a Python function")
+    payload = _fingerprint_component(callback, set())
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _referenced_global_names(code: CodeType) -> tuple[str, ...]:
+    names = {
+        instruction.argval
+        for instruction in dis.get_instructions(code)
+        if instruction.opname in {"LOAD_GLOBAL", "LOAD_NAME"}
+        and type(instruction.argval) is str
+    }
+    for constant in code.co_consts:
+        if type(constant) is CodeType:
+            names.update(_referenced_global_names(constant))
+    return tuple(sorted(names))
+
+
+def _referenced_module_attribute_chains(
+    code: CodeType,
+    module_name: str,
+) -> tuple[tuple[str, ...], ...]:
+    chains: set[tuple[str, ...]] = set()
+    instructions = tuple(dis.get_instructions(code))
+    for index, instruction in enumerate(instructions):
+        if (
+            instruction.opname not in {"LOAD_GLOBAL", "LOAD_NAME"}
+            or instruction.argval != module_name
+        ):
+            continue
+        chain: list[str] = []
+        for following in instructions[index + 1 :]:
+            if following.opname not in {"LOAD_ATTR", "LOAD_METHOD"}:
+                break
+            if type(following.argval) is not str:
+                break
+            chain.append(following.argval)
+        chains.add(tuple(chain))
+    for constant in code.co_consts:
+        if type(constant) is CodeType:
+            chains.update(_referenced_module_attribute_chains(constant, module_name))
+    return tuple(sorted(chains))
+
+
+def _fingerprint_module_dependency(
+    module: ModuleType,
+    chains: tuple[tuple[str, ...], ...],
+    stack: set[int],
+) -> Any:
+    if not chains:
+        raise ValueError("oracle callback module dependency is not referenced")
+    attributes = []
+    for chain in chains:
+        if not chain:
+            attributes.append([[], ["module-binding", id(module)]])
+            continue
+        dependency: Any = module
+        try:
+            for name in chain:
+                dependency = getattr(dependency, name)
+        except AttributeError:
+            attributes.append([list(chain), ["missing"]])
+            continue
+        attributes.append(
+            [list(chain), _fingerprint_module_attribute_binding(dependency, stack)]
+        )
+    return ["module", module.__name__, attributes]
+
+
+def _fingerprint_module_attribute_binding(value: Any, stack: set[int]) -> Any:
+    if value is None or type(value) in {bool, int, str}:
+        return [type(value).__name__, value]
+    if type(value) is float:
+        return ["float", value.hex()]
+    if type(value) is complex:
+        return ["complex", value.real.hex(), value.imag.hex()]
+    if type(value) is bytes:
+        return ["bytes", value.hex()]
+    if type(value) is FunctionType:
+        closure = []
+        for cell in value.__closure__ or ():
+            try:
+                contents = cell.cell_contents
+            except ValueError:
+                closure.append(["empty-cell"])
+            else:
+                closure.append(_fingerprint_module_attribute_binding(contents, stack))
+        return [
+            "function-binding",
+            id(value),
+            getattr(value, "__module__", None),
+            getattr(value, "__qualname__", None),
+            _fingerprint_component(value.__code__, stack),
+            _fingerprint_component(value.__defaults__, stack),
+            _fingerprint_component(value.__kwdefaults__, stack),
+            closure,
+        ]
+    return [
+        "object-binding",
+        type(value).__module__,
+        type(value).__qualname__,
+        id(value),
+    ]
+
+
+def _fingerprint_component(value: Any, stack: set[int]) -> Any:
+    if value is None or type(value) in {bool, int, str}:
+        return [type(value).__name__, value]
+    if type(value) is float:
+        return ["float", value.hex()]
+    if type(value) is complex:
+        return ["complex", value.real.hex(), value.imag.hex()]
+    if type(value) is bytes:
+        return ["bytes", value.hex()]
+    if value is Ellipsis:
+        return ["ellipsis"]
+    if value is NotImplemented:
+        return ["not-implemented"]
+    identity = id(value)
+    if identity in stack:
+        return [
+            "cycle",
+            type(value).__module__,
+            type(value).__qualname__,
+            getattr(value, "__module__", None),
+            getattr(value, "__qualname__", None),
+        ]
+    if type(value) in {tuple, list}:
+        stack.add(identity)
+        try:
+            return [
+                type(value).__name__,
+                [_fingerprint_component(item, stack) for item in value],
+            ]
+        finally:
+            stack.remove(identity)
+    if type(value) in {set, frozenset}:
+        stack.add(identity)
+        try:
+            items = [_fingerprint_component(item, stack) for item in value]
+            return [
+                type(value).__name__,
+                sorted(
+                    items,
+                    key=lambda item: json.dumps(
+                        item, sort_keys=True, separators=(",", ":")
+                    ),
+                ),
+            ]
+        finally:
+            stack.remove(identity)
+    if isinstance(value, Mapping):
+        stack.add(identity)
+        try:
+            items = [
+                (
+                    _fingerprint_component(key, stack),
+                    _fingerprint_component(item, stack),
+                )
+                for key, item in value.items()
+            ]
+            items.sort(
+                key=lambda pair: json.dumps(
+                    pair[0], sort_keys=True, separators=(",", ":")
+                )
+            )
+            return ["mapping", items]
+        finally:
+            stack.remove(identity)
+    if type(value) is CodeType:
+        stack.add(identity)
+        try:
+            return [
+                "code",
+                value.co_name,
+                value.co_qualname,
+                value.co_argcount,
+                value.co_posonlyargcount,
+                value.co_kwonlyargcount,
+                value.co_nlocals,
+                value.co_stacksize,
+                value.co_flags,
+                value.co_code.hex(),
+                value.co_exceptiontable.hex(),
+                list(value.co_names),
+                list(value.co_varnames),
+                list(value.co_freevars),
+                list(value.co_cellvars),
+                [_fingerprint_component(item, stack) for item in value.co_consts],
+            ]
+        finally:
+            stack.remove(identity)
+    if type(value) is FunctionType:
+        module_name = getattr(value, "__module__", None)
+        qualified_name = getattr(value, "__qualname__", None)
+        if type(module_name) is not str or type(qualified_name) is not str:
+            raise ValueError("oracle callback dependency has no stable identity")
+        stack.add(identity)
+        try:
+            globals_payload = []
+            globals_ = value.__globals__
+            builtins_ = globals_.get("__builtins__", {})
+            if isinstance(builtins_, ModuleType):
+                builtins_ = vars(builtins_)
+            for name in _referenced_global_names(value.__code__):
+                if name in globals_:
+                    dependency = globals_[name]
+                    scope = "global"
+                elif isinstance(builtins_, Mapping) and name in builtins_:
+                    dependency = builtins_[name]
+                    scope = "builtin"
+                else:
+                    globals_payload.append([name, "missing"])
+                    continue
+                if isinstance(dependency, ModuleType):
+                    component = _fingerprint_module_dependency(
+                        dependency,
+                        _referenced_module_attribute_chains(value.__code__, name),
+                        stack,
+                    )
+                else:
+                    component = _fingerprint_component(dependency, stack)
+                globals_payload.append([name, scope, component])
+            closure = []
+            for cell in value.__closure__ or ():
+                try:
+                    contents = cell.cell_contents
+                except ValueError:
+                    closure.append(["empty-cell"])
+                else:
+                    closure.append(_fingerprint_component(contents, stack))
+            return [
+                "function",
+                module_name,
+                qualified_name,
+                _fingerprint_component(value.__code__, stack),
+                _fingerprint_component(value.__defaults__, stack),
+                _fingerprint_component(value.__kwdefaults__, stack),
+                closure,
+                globals_payload,
+            ]
+        finally:
+            stack.remove(identity)
+    if isinstance(value, ModuleType):
+        return ["module", value.__name__]
+    if isinstance(value, type):
+        return ["type", value.__module__, value.__qualname__]
+    if isinstance(value, BuiltinFunctionType):
+        return [
+            "builtin-function",
+            getattr(value, "__module__", None),
+            getattr(value, "__qualname__", getattr(value, "__name__", None)),
+        ]
+    if isinstance(value, re.Pattern):
+        pattern = value.pattern
+        if type(pattern) is bytes:
+            pattern = ["bytes", pattern.hex()]
+        return ["regex", pattern, value.flags]
+    if type(value).__module__ == "typing":
+        return ["typing", repr(value)]
+    raise ValueError(
+        f"oracle callback dependency has unsupported type: {type(value).__name__}"
+    )
+
+
 @dataclass(frozen=True)
 class OracleInvocation:
     command: tuple[str, ...]
@@ -104,10 +385,20 @@ class OracleSourceSpec:
         repr=False,
         compare=False,
     )
+    generator_validator_fingerprint: str | None = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
     generator_resolution_required: bool = False
     generator_resolver_id: str | None = None
     generator_resolver: GeneratorInvocationResolver | None = field(
         default=None,
+        repr=False,
+        compare=False,
+    )
+    generator_resolver_fingerprint: str | None = field(
+        init=False,
         repr=False,
         compare=False,
     )
@@ -172,6 +463,16 @@ class OracleSourceSpec:
             self.generator_resolver_id
         ):
             raise ValueError("invalid oracle generator resolver contract id")
+        object.__setattr__(
+            self,
+            "generator_validator_fingerprint",
+            _callback_implementation_fingerprint(self.generator_validator),
+        )
+        object.__setattr__(
+            self,
+            "generator_resolver_fingerprint",
+            _callback_implementation_fingerprint(self.generator_resolver),
+        )
 
     def hashes_for(self, revision: str) -> Mapping[str, str]:
         try:
@@ -227,9 +528,11 @@ def _oracle_source_spec_signature(source_spec: OracleSourceSpec) -> tuple[Any, .
         source_spec.generator_validation_required,
         source_spec.generator_validator_id,
         _callback_logical_identity(source_spec.generator_validator),
+        source_spec.generator_validator_fingerprint,
         source_spec.generator_resolution_required,
         source_spec.generator_resolver_id,
         _callback_logical_identity(source_spec.generator_resolver),
+        source_spec.generator_resolver_fingerprint,
     )
 
 
@@ -263,6 +566,30 @@ def _validate_bound_callback(callback: Callable[..., Any] | None) -> None:
         raise ValueError("oracle source callback does not match its bound object")
 
 
+def _validate_source_spec_callbacks(
+    source_spec: OracleSourceSpec,
+    *,
+    include_resolver: bool = True,
+) -> None:
+    callbacks = [
+        (
+            source_spec.generator_validator,
+            source_spec.generator_validator_fingerprint,
+        )
+    ]
+    if include_resolver:
+        callbacks.append(
+            (
+                source_spec.generator_resolver,
+                source_spec.generator_resolver_fingerprint,
+            )
+        )
+    for callback, expected_fingerprint in callbacks:
+        _validate_bound_callback(callback)
+        if _callback_implementation_fingerprint(callback) != expected_fingerprint:
+            raise ValueError("oracle source callback implementation changed")
+
+
 def register_oracle_source_spec(source_spec: OracleSourceSpec) -> None:
     if (
         source_spec.generator_validation_required
@@ -274,8 +601,7 @@ def register_oracle_source_spec(source_spec: OracleSourceSpec) -> None:
         and source_spec.generator_resolver is None
     ):
         raise ValueError("oracle source requires a generator resolver")
-    _validate_bound_callback(source_spec.generator_validator)
-    _validate_bound_callback(source_spec.generator_resolver)
+    _validate_source_spec_callbacks(source_spec)
     existing = _ORACLE_SOURCE_SPECS.get(source_spec.name)
     if existing is not None and _oracle_source_spec_signature(
         existing
@@ -576,6 +902,7 @@ class OracleManifest:
         if self.official_commit != expected_commit:
             raise ValueError("official commit does not match profile authority")
         source_spec = oracle_source_spec(self.source_spec)
+        _validate_source_spec_callbacks(source_spec, include_resolver=False)
         expected_source_hashes = dict(source_spec.hashes_for(expected_commit))
         if dict(self.official_file_hashes) != expected_source_hashes:
             raise ValueError(
@@ -691,6 +1018,7 @@ class OracleManifest:
     ) -> OracleInvocation:
         self.validate()
         source_spec = oracle_source_spec(self.source_spec)
+        _validate_source_spec_callbacks(source_spec)
         resolver = source_spec.generator_resolver
         if source_spec.generator_resolution_required and resolver is None:
             raise ValueError("oracle source generator resolver is unavailable")

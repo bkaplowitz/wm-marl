@@ -468,7 +468,7 @@ class UniformSelector:
             raise ValueError("invalid selector key/index state")
         result = cls()
         result.keys = list(keys)
-        result.indices = dict(indices)
+        result.indices = {item_id: indices[item_id] for item_id in sorted(indices)}
         rng_state = copy.deepcopy(state["rng_state"])
         if rng_state.get("bit_generator") != "PCG64":
             raise ValueError("invalid selector RNG state")
@@ -954,9 +954,15 @@ class DreamerReplay:
         else:
             first_id = next(iter(self.items))
             last_id = next(reversed(self.items))
+            first_selector_id = next(iter(self.selector.indices))
+            last_selector_id = next(reversed(self.selector.indices))
             if (
                 type(first_id) is not int
                 or type(last_id) is not int
+                or type(first_selector_id) is not int
+                or type(last_selector_id) is not int
+                or first_selector_id != first_id
+                or last_selector_id != last_id
                 or type(self.items[first_id]) is not ReplayKey
                 or type(self.items[last_id]) is not ReplayKey
                 or type(self.fifo[0]) is not int
@@ -965,7 +971,9 @@ class DreamerReplay:
                 or self.fifo[-1] != last_id
                 or self.next_item_id != last_id + 1
             ):
-                raise RuntimeError("replay item boundary state is inconsistent")
+                raise RuntimeError(
+                    "replay item/selector boundary state is inconsistent"
+                )
         if (
             self.next_item_id in self.items
             or self.next_item_id in self.selector.indices
@@ -1034,6 +1042,7 @@ class DreamerReplay:
             or chunk.chunk_id != current
             or chunk.owner_id != writer.worker_id
             or chunk.sealed
+            or chunk.successor_id is not None
             or type(chunk.length) is not int
             or not 0 <= chunk.length < chunk.size
             or chunk.size != self.config.chunk_size
@@ -1067,6 +1076,117 @@ class DreamerReplay:
                             "replay chunk tensor storage is inconsistent"
                         )
 
+    def _preflight_writer_cadence(self, writer: ReplayWriter) -> None:
+        expected_pending = min(writer.row_count, self.raw_length - 1)
+        expected_emitted = max(0, writer.row_count - self.raw_length + 1)
+        expected_chunks = (
+            0
+            if writer.row_count == 0
+            else writer.row_count // self.config.chunk_size + 1
+        )
+        if (
+            len(writer.pending) != expected_pending
+            or writer.emitted_count != expected_emitted
+            or writer.has_rows != (writer.row_count > 0)
+            or len(writer.chunk_history) != expected_chunks
+        ):
+            raise RuntimeError("replay writer pending cadence is inconsistent")
+        current = writer.current_chunk_id
+        if current is None:
+            if (
+                writer.row_count
+                or writer.emitted_count
+                or writer.pending
+                or writer.has_rows
+                or writer.last_is_last
+            ):
+                raise RuntimeError("replay writer pending cadence is inconsistent")
+            return
+        chunk = self.chunks[current]
+        if chunk.length != writer.row_count % self.config.chunk_size:
+            raise RuntimeError("replay writer pending cadence is inconsistent")
+        pending = list(writer.pending)
+        if pending:
+            try:
+                resolved = self._resolve(pending[0], len(pending))
+            except KeyError as error:
+                raise RuntimeError(
+                    "replay writer pending keys are not resolvable"
+                ) from error
+            if resolved != pending:
+                raise RuntimeError("replay writer pending keys are not consecutive")
+            for key in resolved:
+                resolved_chunk = self.chunks.get(key.chunk_id)
+                if (
+                    type(resolved_chunk) is not ReplayChunk
+                    or resolved_chunk.chunk_id != key.chunk_id
+                ):
+                    raise RuntimeError(
+                        "replay writer pending chunk identity is inconsistent"
+                    )
+                if resolved_chunk.owner_id != writer.worker_id:
+                    raise RuntimeError(
+                        "replay writer pending chunk ownership is inconsistent"
+                    )
+            seen_chunks: set[bytes] = set()
+            previous: ReplayKey | None = None
+            for key in resolved:
+                if previous is None:
+                    seen_chunks.add(key.chunk_id)
+                elif key.chunk_id == previous.chunk_id:
+                    if key.offset != previous.offset + 1:
+                        raise RuntimeError(
+                            "replay writer pending chronology is inconsistent"
+                        )
+                else:
+                    if (
+                        key.offset != 0
+                        or key.chunk_id <= previous.chunk_id
+                        or key.chunk_id in seen_chunks
+                    ):
+                        raise RuntimeError(
+                            "replay writer pending chronology is inconsistent"
+                        )
+                    seen_chunks.add(key.chunk_id)
+                previous = key
+        tail: ReplayKey | None = None
+        if chunk.length:
+            tail = ReplayKey(current, chunk.length - 1)
+        elif writer.row_count:
+            if len(writer.chunk_history) < 2:
+                raise RuntimeError("replay writer pending cursor is inconsistent")
+            predecessor_id = writer.chunk_history[-2]
+            predecessor = self.chunks.get(predecessor_id)
+            if predecessor is None:
+                if pending:
+                    raise RuntimeError("replay writer pending cursor is inconsistent")
+            elif type(predecessor) is not ReplayChunk:
+                raise RuntimeError("replay writer pending cursor is inconsistent")
+            elif predecessor.chunk_id != predecessor_id:
+                raise RuntimeError(
+                    "replay writer pending chunk identity is inconsistent"
+                )
+            elif predecessor.owner_id != writer.worker_id:
+                raise RuntimeError(
+                    "replay writer pending chunk ownership is inconsistent"
+                )
+            elif (
+                not predecessor.sealed
+                or predecessor.length != predecessor.size
+                or predecessor.successor_id != current
+            ):
+                raise RuntimeError("replay writer pending cursor is inconsistent")
+            else:
+                tail = ReplayKey(predecessor_id, predecessor.length - 1)
+        if pending and pending[-1] != tail:
+            raise RuntimeError("replay writer pending cursor is inconsistent")
+        if tail is not None:
+            tail_chunk = self.chunks[tail.chunk_id]
+            if writer.last_is_last != bool(
+                tail_chunk.transition_data["is_last"][tail.offset]
+            ):
+                raise RuntimeError("replay writer episode chronology is inconsistent")
+
     def _preflight_add(
         self,
         writer: ReplayWriter,
@@ -1075,6 +1195,7 @@ class DreamerReplay:
     ) -> tuple[int, ReplayKey] | None:
         self._preflight_active_writer(writer)
         self._preflight_active_chunk(writer)
+        self._preflight_writer_cadence(writer)
         self._preflight_item_mutation_containers()
         if (
             type(self.online_queue) is not OnlineQueue
@@ -1278,14 +1399,21 @@ class DreamerReplay:
             raise TypeError("replay FIFO item ids must be Python integers")
         key = self.items[item_id]
         index = self.selector.indices.get(item_id)
-        final_id = self.selector.keys[-1]
         if (
             type(key) is not ReplayKey
             or type(index) is not int
             or not 0 <= index < len(self.selector.keys)
-            or self.selector.keys[index] != item_id
+        ):
+            raise RuntimeError("replay eviction selector plan is inconsistent")
+        target_id = self.selector.keys[index]
+        final_id = self.selector.keys[-1]
+        final_index = self.selector.indices.get(final_id)
+        if (
+            type(target_id) is not int
+            or target_id != item_id
             or type(final_id) is not int
-            or self.selector.indices.get(final_id) != len(self.selector.keys) - 1
+            or type(final_index) is not int
+            or final_index != len(self.selector.keys) - 1
         ):
             raise RuntimeError("replay eviction selector plan is inconsistent")
         self._preflight_ref_decrement(key.chunk_id)
@@ -1315,8 +1443,9 @@ class DreamerReplay:
                 or type(reference_count) is not int
                 or reference_count <= 0
                 or type(chunk) is not ReplayChunk
+                or chunk.chunk_id != chunk_id
             ):
-                raise RuntimeError("invalid replay reference decrement")
+                raise RuntimeError("invalid replay chunk reference decrement")
             if reference_count > 1 or chunk.successor_id is None:
                 return
             chunk_id = chunk.successor_id

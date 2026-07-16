@@ -246,7 +246,17 @@ Eviction preflights the complete FIFO/item/selector/ref-decrement operation
 before its first mutation. The per-row add path is mutation-local: it may scan
 the bounded writer map to reject equality aliases, but it must not call public
 validation or scan capacity, chunks, selector contents, or lifetime chunk
-history. It plans the FIFO head, selector target/swap-pop tail, and successor
+history. Before append it proves the exact bounded pending length, emitted
+cadence, `has_rows` state, row/current-chunk geometry, consecutive pending
+resolution with exact writer ownership, pending-tail cursor, and retained-tail
+`is_last` equality. The open chunk has no successor; the bounded suffix must
+increase offsets within a chunk and use strictly increasing, nonrecurrent chunk
+ids across boundaries. Every touched pending, predecessor, and ref-decrement
+chunk must be an exact `ReplayChunk` whose self id equals its dictionary lookup
+id. Selector index-map boundary keys are exact Python
+integers in retained item-id order. The only history lookbehind is
+`chunk_history[-2]` when the current successor is empty, and pending resolution
+is bounded by `raw_length-1`. It plans the FIFO head, selector target/swap-pop tail, and successor
 ref-decrement chain before append and consumes that plan after emission. Public
 validation retains the exhaustive exact live selector container,
 Python-integer key/index, uniqueness, bijection, complete FIFO/item agreement,
@@ -280,7 +290,17 @@ transactional.
 Replay fixture provenance is source-dispatched and fail closed. The registered
 replay source requires both its validator and invocation resolver under stable
 callback contract ids plus module-qualified callback identities that resolve to
-the exact bound objects. Public manifest load is source-free: it accepts only the
+the exact bound objects. Each source spec also stores a path-independent
+implementation fingerprint over callback bytecode, constants, defaults,
+keyword defaults, closures, and recursively represented referenced globals.
+Module globals additionally seal every statically loaded attribute chain,
+including missing/direct-use bindings, without hashing mutable private caches
+inside external functions. Registration attests validator and resolver;
+source-free manifest validation re-attests the validator, and invocation
+resolution re-attests the resolver immediately before dispatch. Same-id,
+same-identity callbacks with altered code or module dependencies must fail,
+while behaviorally unchanged module/oracle reloads must retain equal digests.
+Public manifest load is source-free: it accepts only the
 portable three-element command descriptor and stable request, which binds
 replay/7, manifest coordinates, cases, row schema, runtime/shim semantics, raw
 hashes for `replay_oracle.py`, `oracle.py`, and `config.py`, and the normalized
@@ -307,7 +327,7 @@ Downstream handoff invariant: every later task that changes `config.py`,
 same task, recompute every affected frozen replay contract, regenerate both
 profile replay manifests through `OracleHarness`, prove both replay NPZ files
 remain byte-identical unless the array contract was intentionally changed, and
-rerun the 265-test gate consisting of `test_dreamer_v3_oracle_manifest.py` and
+rerun the 308-test gate consisting of `test_dreamer_v3_oracle_manifest.py` and
 `test_dreamer_v3_replay.py`. A later task is not complete with a stale replay
 manifest or an unreviewed NPZ change.
 
