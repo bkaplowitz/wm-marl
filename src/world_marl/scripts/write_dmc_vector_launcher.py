@@ -227,6 +227,7 @@ OVERRIDABLE_PARAMS = (
     "online_recent_policy_start_fraction",
     "online_recent_critic_fraction",
     "online_recent_replay_max_oversample",
+    "dreamer_report_budget_env_steps",
     "actor_entropy_final_coef",
     "actor_entropy_decay_start_env_steps",
     "actor_entropy_decay_end_env_steps",
@@ -516,6 +517,7 @@ def parse_args() -> argparse.Namespace:
         "curve_eval_episodes",
         "curve_eval_num_envs",
         "curve_eval_seed",
+        "dreamer_report_budget_env_steps",
     ):
         parser.add_argument("--" + name.replace("_", "-"), type=int, default=None)
     for name in (

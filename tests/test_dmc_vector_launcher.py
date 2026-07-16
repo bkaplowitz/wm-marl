@@ -151,6 +151,19 @@ def test_launcher_serializes_budget_relative_encoder_update_scale():
     )
 
 
+def test_launcher_serializes_explicit_reporting_budget():
+    command = params_to_shell_args(
+        {
+            "dreamer_report_budget_env_steps": 150_000,
+        }
+    )
+
+    assert command.replace("\\\n", " ").split() == [
+        "--dreamer-report-budget-env-steps",
+        "150000",
+    ]
+
+
 def test_launcher_syncs_tracking_extra_when_enabled(tmp_path):
     write_launcher(
         tmp_path,
