@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import functools
 import json
 import shutil
 import sys
@@ -45,6 +46,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import numpy as np
+
 
 from world_marl.genwm import (
     GENWM_ARMS,
@@ -65,6 +67,7 @@ from world_marl.genwm import (
     make_genie_encode,
     ppo_update,
 )
+from world_marl.genwm.cem import CEMConfig, CEMPlanner, make_genwm_plan_fn
 from world_marl.checkpointing import save_checkpoint
 from world_marl.genwm.imagination import ImaginedBatch
 from world_marl.jepa.training import load_frozen_encoder
@@ -210,6 +213,43 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--wandb-project", default=None)
     parser.add_argument("--wandb-entity", default=None)
     parser.add_argument("--wandb-group", default=None)
+    # CEM-MPC planning (alternative to PPO).
+    parser.add_argument(
+        "--policy-optimizer",
+        choices=["ppo", "cem"],
+        default="ppo",
+        help="Policy optimizer: ppo (amortized) or cem (planning via CEM-MPC).",
+    )
+    parser.add_argument(
+        "--cem-samples",
+        type=int,
+        default=300,
+        help="CEM: number of action candidates per iteration.",
+    )
+    parser.add_argument(
+        "--cem-topk",
+        type=int,
+        default=30,
+        help="CEM: number of top-k candidates kept for the refit.",
+    )
+    parser.add_argument(
+        "--cem-iters",
+        type=int,
+        default=30,
+        help="CEM: number of CEM iterations per solve.",
+    )
+    parser.add_argument(
+        "--cem-horizon",
+        type=int,
+        default=5,
+        help="CEM: MPC planning horizon (steps).",
+    )
+    parser.add_argument(
+        "--cem-receding-horizon",
+        type=int,
+        default=None,
+        help="CEM: execution horizon before replanning (default: same as --cem-horizon).",
+    )
     args = parser.parse_args(argv)
     tuned = ARM_TUNED_DEFAULTS.get(args.arm, {})
     for key, base in BASE_DEFAULTS.items():
@@ -631,7 +671,25 @@ def _collect_replay(
     action_fns: dict[str, Any] | None,
     policy_state,
     action_mode: str,
+    planner: "CEMPlanner | None" = None,
+    wm_state=None,
+    head_state=None,
+    obs_tokenizer=None,
+    action_tokenizer=None,
+    gamma: float = 0.99,
 ) -> dict[str, np.ndarray]:
+    if planner is not None:
+        return _cem_collect_transitions(
+            adapter,
+            planner,
+            wm_state,
+            head_state,
+            obs_tokenizer,
+            action_tokenizer,
+            steps_per_env=steps_per_env,
+            key=collect_key,
+            gamma=gamma,
+        )
     if action_fns is not None:
         fn = action_fns["random"] if policy_state is None else action_fns["sample"]
         return _scan_collect_transitions(
@@ -656,7 +714,25 @@ def _eval_return(
     action_fns: dict[str, Any] | None,
     policy_state,
     action_mode: str,
+    planner: "CEMPlanner | None" = None,
+    wm_state=None,
+    head_state=None,
+    obs_tokenizer=None,
+    action_tokenizer=None,
+    gamma: float = 0.99,
 ) -> float:
+    if planner is not None:
+        return _cem_evaluate(
+            adapter,
+            planner,
+            wm_state,
+            head_state,
+            obs_tokenizer,
+            action_tokenizer,
+            episodes=episodes,
+            key=eval_key,
+            gamma=gamma,
+        )
     if action_fns is not None:
         fn = action_fns["random"] if policy_state is None else action_fns["mode"]
         return _scan_eval_return(
@@ -749,6 +825,106 @@ def _evaluate_policy(
         step = adapter.step(step_actions)
         returns.extend(float(total[0]) for total in step.completed_returns)
         observations = step.observations
+        if len(returns) >= episodes:
+            break
+    if not returns:
+        return float("nan")
+    return float(np.mean(returns[:episodes]))
+
+
+def _cem_collect_transitions(
+    adapter,
+    planner: "CEMPlanner",
+    wm_state,
+    head_state,
+    obs_tokenizer,
+    action_tokenizer,
+    *,
+    steps_per_env: int,
+    key: jax.Array,
+    gamma: float,
+) -> dict[str, np.ndarray]:
+    """Host-loop data collection using CEM planner actions (no scan_rollout)."""
+    num_envs = adapter.num_envs
+    observations = adapter.reset()
+    planner.reset()
+    records: dict[str, list[np.ndarray]] = {
+        "observations": [],
+        "actions": [],
+        "rewards": [],
+        "dones": [],
+        "next_observations": [],
+    }
+    for _ in range(max(1, steps_per_env)):
+        flat = _flat_observations(observations, num_envs)
+        flat_jax = jnp.asarray(flat)
+        key, act_key = jax.random.split(key)
+        actions = np.asarray(
+            planner.act(
+                flat_jax,
+                act_key,
+                wm_state,
+                head_state,
+                flat_jax,
+                obs_tokenizer,
+                action_tokenizer,
+                gamma,
+            )
+        )
+        step_actions = actions[:, None, :]
+        step = adapter.step(step_actions)
+        records["observations"].append(flat)
+        records["actions"].append(actions)
+        records["rewards"].append(np.asarray(step.rewards[:, 0], dtype=np.float32))
+        records["dones"].append(np.asarray(step.dones[:, 0], dtype=np.float32))
+        records["next_observations"].append(
+            _flat_observations(step.observations, num_envs)
+        )
+        observations = step.observations
+        if np.any(step.dones[:, 0]):
+            planner.reset()
+    return {name: np.concatenate(chunks) for name, chunks in records.items()}
+
+
+def _cem_evaluate(
+    adapter,
+    planner: "CEMPlanner",
+    wm_state,
+    head_state,
+    obs_tokenizer,
+    action_tokenizer,
+    *,
+    episodes: int,
+    key: jax.Array,
+    gamma: float,
+) -> float:
+    """Mean return over completed episodes using CEM planner actions."""
+    returns: list[float] = []
+    observations = adapter.reset()
+    planner.reset()
+    step_limit = max(1, episodes * adapter.max_cycles * 4 // adapter.num_envs)
+    for _ in range(step_limit):
+        flat = _flat_observations(observations, adapter.num_envs)
+        flat_jax = jnp.asarray(flat)
+        key, act_key = jax.random.split(key)
+        actions = np.asarray(
+            planner.act(
+                flat_jax,
+                act_key,
+                wm_state,
+                head_state,
+                flat_jax,
+                obs_tokenizer,
+                action_tokenizer,
+                gamma,
+            )
+        )
+        step_actions = actions[:, None, :]
+        step = adapter.step(step_actions)
+        returns.extend(float(total[0]) for total in step.completed_returns)
+        observations = step.observations
+        if np.any(step.dones[:, 0]):
+            planner.reset()
         if len(returns) >= episodes:
             break
     if not returns:
@@ -1116,6 +1292,36 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
             update_epochs=args.ppo_update_epochs,
             num_minibatches=args.ppo_num_minibatches,
         )
+        if args.policy_optimizer == "cem":
+            if args.arm == MODEL_FREE_ARM:
+                raise ValueError(
+                    "--policy-optimizer cem cannot be used with the model-free arm "
+                    "(CEM requires a learned world model)"
+                )
+            if action_mode == "discrete":
+                raise ValueError(
+                    f"--policy-optimizer cem only supports continuous-action envs; "
+                    f"{args.env!r} is discrete"
+                )
+        cem_config: CEMConfig | None = None
+        if args.policy_optimizer == "cem":
+            cem_receding = (
+                args.cem_receding_horizon
+                if args.cem_receding_horizon is not None
+                else args.cem_horizon
+            )
+            action_low_scalar = float(np.asarray(adapter.action_low).min())
+            action_high_scalar = float(np.asarray(adapter.action_high).max())
+            cem_config = CEMConfig(
+                num_samples=args.cem_samples,
+                topk=args.cem_topk,
+                num_iters=args.cem_iters,
+                horizon=args.cem_horizon,
+                receding_horizon=cem_receding,
+                init_std=1.0,
+                action_low=action_low_scalar,
+                action_high=action_high_scalar,
+            )
         key = jax.random.PRNGKey(seed)
         key, wm_key, head_key, policy_key = jax.random.split(key, 4)
         wm_state = head_state = None
@@ -1154,15 +1360,21 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
             policy_state=None,
             action_mode=action_mode,
         )
-        initial_return = _eval_return(
-            adapter,
-            episodes=args.eval_episodes,
-            rng=rng,
-            eval_key=initial_eval_key,
-            action_fns=action_fns,
-            policy_state=policy_carry(policy_state),
-            action_mode=action_mode,
-        )
+        if args.policy_optimizer == "cem":
+            # Under CEM the policy network is uninitialised and the WM is not yet
+            # fit, so use random_return as the pre-training baseline instead of
+            # evaluating the untrained policy.
+            initial_return = random_return
+        else:
+            initial_return = _eval_return(
+                adapter,
+                episodes=args.eval_episodes,
+                rng=rng,
+                eval_key=initial_eval_key,
+                action_fns=action_fns,
+                policy_state=policy_carry(policy_state),
+                action_mode=action_mode,
+            )
         record_eval("initial", 0, initial_return)
         if not args.quiet:
             print(
@@ -1172,6 +1384,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
 
         wm_loss: float | None = None
         head_metrics: dict[str, Any] = {}
+        ppo_metrics: dict[str, Any] = {}
         data = None
         obs_tokenizer = action_tokenizer = None
         if model_based:
@@ -1238,27 +1451,28 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                 metrics_logger=metrics_logger,
                 wandb_metrics=wandb_metrics,
             )
-            key, policy_fit_key = jax.random.split(key)
-            policy_state, ppo_metrics = _train_policy(
-                policy_state,
-                wm_state,
-                head_state,
-                obs_tokenizer,
-                action_tokenizer,
-                data["observations"],
-                policy_fit_key,
-                config,
-                ppo_config,
-                steps=args.policy_train_steps,
-                batch_size=args.policy_batch_size,
-                horizon=args.imag_horizon,
-                rng=rng,
-                log_every=args.log_every,
-                quiet=args.quiet,
-                label=f"run {run_index} policy",
-                metrics_logger=metrics_logger,
-                wandb_metrics=wandb_metrics,
-            )
+            if args.policy_optimizer == "ppo":
+                key, policy_fit_key = jax.random.split(key)
+                policy_state, ppo_metrics = _train_policy(
+                    policy_state,
+                    wm_state,
+                    head_state,
+                    obs_tokenizer,
+                    action_tokenizer,
+                    data["observations"],
+                    policy_fit_key,
+                    config,
+                    ppo_config,
+                    steps=args.policy_train_steps,
+                    batch_size=args.policy_batch_size,
+                    horizon=args.imag_horizon,
+                    rng=rng,
+                    log_every=args.log_every,
+                    quiet=args.quiet,
+                    label=f"run {run_index} policy",
+                    metrics_logger=metrics_logger,
+                    wandb_metrics=wandb_metrics,
+                )
         else:
             assert action_fns is not None
             key, offline_key = jax.random.split(key)
@@ -1277,6 +1491,25 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                 wandb_metrics=wandb_metrics,
             )
 
+        planner: CEMPlanner | None = None
+        if args.policy_optimizer == "cem":
+            assert cem_config is not None
+            # Pre-bind config and cem_config; wm_state/head_state/start_observations/
+            # obs_tokenizer/action_tokenizer/gamma are passed by CEMPlanner.act() at
+            # each solve so the planner uses current model weights.
+            plan_fn = functools.partial(
+                make_genwm_plan_fn,
+                config=config,
+                cem_config=cem_config,
+            )
+            key, planner_key = jax.random.split(key)
+            planner = CEMPlanner(
+                make_plan_fn=plan_fn,
+                key=planner_key,
+                cem_config=cem_config,
+                action_dim=int(adapter.action_dim),
+            )
+
         key, offline_eval_key = jax.random.split(key)
         offline_return = _eval_return(
             adapter,
@@ -1286,6 +1519,12 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
             action_fns=action_fns,
             policy_state=policy_carry(policy_state),
             action_mode=action_mode,
+            planner=planner,
+            wm_state=wm_state,
+            head_state=head_state,
+            obs_tokenizer=obs_tokenizer,
+            action_tokenizer=action_tokenizer,
+            gamma=args.gamma,
         )
         record_eval("offline", args.collect_steps, offline_return)
         if not args.quiet:
@@ -1303,6 +1542,12 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                     action_fns=action_fns,
                     policy_state=policy_carry(policy_state),
                     action_mode=action_mode,
+                    planner=planner,
+                    wm_state=wm_state,
+                    head_state=head_state,
+                    obs_tokenizer=obs_tokenizer,
+                    action_tokenizer=action_tokenizer,
+                    gamma=args.gamma,
                 )
                 if encode_fn is not None:
                     fresh = _encode_replay(encode_fn, fresh)
@@ -1331,7 +1576,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                     data = {
                         name: np.concatenate([data[name], fresh[name]]) for name in data
                     }
-                key, fit_key, policy_fit_key = jax.random.split(key, 3)
+                key, fit_key = jax.random.split(key)
                 wm_state, head_state, wm_loss, head_metrics = _fit_models(
                     wm_state,
                     head_state,
@@ -1349,26 +1594,28 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                     metrics_logger=metrics_logger,
                     wandb_metrics=wandb_metrics,
                 )
-                policy_state, ppo_metrics = _train_policy(
-                    policy_state,
-                    wm_state,
-                    head_state,
-                    obs_tokenizer,
-                    action_tokenizer,
-                    data["observations"],
-                    policy_fit_key,
-                    config,
-                    ppo_config,
-                    steps=args.online_policy_train_steps,
-                    batch_size=args.policy_batch_size,
-                    horizon=args.imag_horizon,
-                    rng=rng,
-                    log_every=args.log_every,
-                    quiet=args.quiet,
-                    label=f"run {run_index} online {iteration} policy",
-                    metrics_logger=metrics_logger,
-                    wandb_metrics=wandb_metrics,
-                )
+                if args.policy_optimizer == "ppo":
+                    key, policy_fit_key = jax.random.split(key)
+                    policy_state, ppo_metrics = _train_policy(
+                        policy_state,
+                        wm_state,
+                        head_state,
+                        obs_tokenizer,
+                        action_tokenizer,
+                        data["observations"],
+                        policy_fit_key,
+                        config,
+                        ppo_config,
+                        steps=args.online_policy_train_steps,
+                        batch_size=args.policy_batch_size,
+                        horizon=args.imag_horizon,
+                        rng=rng,
+                        log_every=args.log_every,
+                        quiet=args.quiet,
+                        label=f"run {run_index} online {iteration} policy",
+                        metrics_logger=metrics_logger,
+                        wandb_metrics=wandb_metrics,
+                    )
             else:
                 policy_state, ppo_metrics = _train_policy_real(
                     policy_state,
@@ -1393,6 +1640,12 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
                 action_fns=action_fns,
                 policy_state=policy_carry(policy_state),
                 action_mode=action_mode,
+                planner=planner,
+                wm_state=wm_state,
+                head_state=head_state,
+                obs_tokenizer=obs_tokenizer,
+                action_tokenizer=action_tokenizer,
+                gamma=args.gamma,
             )
             iteration_returns.append(iteration_return)
             record_eval(
@@ -1418,6 +1671,12 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
             action_fns=action_fns,
             policy_state=policy_carry(policy_state),
             action_mode=action_mode,
+            planner=planner,
+            wm_state=wm_state,
+            head_state=head_state,
+            obs_tokenizer=obs_tokenizer,
+            action_tokenizer=action_tokenizer,
+            gamma=args.gamma,
         )
         record_eval("final", total_steps_per_env, trained_return)
         _save_policy_checkpoint(
@@ -1447,7 +1706,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
             wandb_run.finish()
 
     real_env_steps = total_steps_per_env * num_envs
-    outcome = {
+    outcome: dict[str, Any] = {
         "run_index": run_index,
         "seed": seed,
         "arm": args.arm,
@@ -1455,6 +1714,7 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
         "action_mode": action_mode,
         "obs_dim": obs_dim,
         "action_dim": int(adapter.action_dim),
+        "policy_optimizer": args.policy_optimizer,
         "policy_random_mean": random_return,
         "policy_initial_mean": initial_return,
         "policy_offline_mean": offline_return,
@@ -1473,8 +1733,25 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
         ),
         "runtime_seconds": time.time() - started,
     }
+    if planner is not None:
+        assert cem_config is not None
+        assert planner._topk_costs is not None
+        outcome["planner_topk_costs_mean"] = float(planner._topk_costs.mean())
+        outcome["planner_solve_seconds_total"] = float(planner._solve_seconds)
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "outcome.json").write_text(json.dumps(outcome, indent=2))
+    if planner is not None:
+        assert cem_config is not None
+        assert planner._topk_costs is not None
+        planner_stats = {
+            "topk_costs_mean": float(planner._topk_costs.mean()),
+            "solve_seconds_total": float(planner._solve_seconds),
+            "horizon": cem_config.horizon,
+            "receding_horizon": cem_config.receding_horizon,
+            "num_samples": cem_config.num_samples,
+            "topk": cem_config.topk,
+        }
+        (run_dir / "planner.json").write_text(json.dumps(planner_stats, indent=2))
     return outcome
 
 
