@@ -15,6 +15,7 @@ import argparse
 import dataclasses
 import json
 import math
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -72,6 +73,7 @@ from world_marl.jepa.validation import (
     summarize,
 )
 from world_marl.logging import RunLogger, dependency_versions, timestamp, to_jsonable
+from world_marl.world_model_training import _replay_scan_episode_bookkeeping
 from world_marl.scripts.plot_jepa_decoder import (
     FRAMES_FILENAME,
     TRACES_FILENAME,
@@ -1517,6 +1519,215 @@ def run_one(
             wandb_run.finish()
 
 
+# Fixed scan-block length so adapter.scan_rollout compiles at most two program
+# sizes (full block + remainder) per action fn instead of one per phase length.
+_SCAN_COLLECT_BLOCK = 256
+
+# adapter.scan_rollout caches compiled programs by id(get_action_and_value), so
+# the closures below must be built once per (config, stochastic) / action space
+# and reused across every collection and evaluation call.
+_POLICY_SCAN_ACTION_FNS: dict[tuple[JepaConfig, bool], Callable] = {}
+_RANDOM_SCAN_ACTION_FNS: dict[tuple[bool, int], Callable] = {}
+
+
+def _policy_scan_action_fn(config: JepaConfig, *, stochastic: bool) -> Callable:
+    """``get_action_and_value`` wrapper around the jitted JEPA action selectors.
+
+    The scan carry threads ``(state,)`` for discrete actions and
+    ``(state, action_low, action_high)`` for continuous ones, so the closure
+    itself depends only on hashable statics and stays cacheable.
+    """
+    cache_key = (config, bool(stochastic))
+    cached = _POLICY_SCAN_ACTION_FNS.get(cache_key)
+    if cached is not None:
+        return cached
+    if config.action_mode == "discrete":
+
+        def action_fn(carry, action_key, obs_flat):
+            (state,) = carry
+            actions = select_discrete_actions(
+                state,
+                obs_flat,
+                config,
+                key=action_key,
+                stochastic=stochastic,
+            )
+            zeros = jnp.zeros((obs_flat.shape[0],), dtype=jnp.float32)
+            return actions, zeros, zeros, zeros
+
+    else:
+
+        def action_fn(carry, action_key, obs_flat):
+            state, action_low, action_high = carry
+            actions = select_continuous_actions(
+                state,
+                obs_flat,
+                config,
+                action_low,
+                action_high,
+                key=action_key,
+                stochastic=stochastic,
+            )
+            zeros = jnp.zeros((obs_flat.shape[0],), dtype=jnp.float32)
+            return actions, zeros, zeros, zeros
+
+    _POLICY_SCAN_ACTION_FNS[cache_key] = action_fn
+    return action_fn
+
+
+def _random_scan_action_fn(*, discrete: bool, action_dim: int) -> Callable:
+    """On-device uniform action sampler matching ``adapter.sample_actions``.
+
+    Draws from the jax PRNG stream instead of the numpy ``Generator``, so the
+    scanned collectors are distribution-equivalent — not bit-for-bit — with the
+    host loop, mirroring ``collect_random_transition_batch_scan``.
+    """
+    cache_key = (bool(discrete), int(action_dim))
+    cached = _RANDOM_SCAN_ACTION_FNS.get(cache_key)
+    if cached is not None:
+        return cached
+    if discrete:
+
+        def action_fn(carry, action_key, obs_flat):
+            del carry
+            rows = obs_flat.shape[0]
+            actions = jax.random.randint(action_key, (rows,), 0, action_dim).astype(
+                jnp.int32
+            )
+            zeros = jnp.zeros((rows,), dtype=jnp.float32)
+            return actions, zeros, zeros, zeros
+
+    else:
+
+        def action_fn(carry, action_key, obs_flat):
+            action_low, action_high = carry
+            rows = obs_flat.shape[0]
+            actions = jax.random.uniform(
+                action_key,
+                (rows, action_dim),
+                minval=action_low,
+                maxval=action_high,
+            )
+            zeros = jnp.zeros((rows,), dtype=jnp.float32)
+            return actions, zeros, zeros, zeros
+
+    _RANDOM_SCAN_ACTION_FNS[cache_key] = action_fn
+    return action_fn
+
+
+def _scan_collect_steps(
+    adapter,
+    observations: np.ndarray,
+    action_fn: Callable,
+    carry,
+    replay: SequenceReplayBuffer | tuple[SequenceReplayBuffer, ...] | None,
+    *,
+    steps: int,
+    policy_key: jax.Array,
+    desc: str,
+    quiet: bool,
+) -> tuple[np.ndarray, list[tuple[float, ...]], list[int]]:
+    """Drive ``adapter.scan_rollout`` in blocks and bulk-write replay.
+
+    Device-native twin of the per-step collectors: each block is one jitted
+    ``lax.scan`` over env steps, and the only per-block host work is the replay
+    write plus the episode-accumulator replay from the recorded dones.
+    """
+    completed_returns: list[tuple[float, ...]] = []
+    completed_lengths: list[int] = []
+    buffers = (
+        () if replay is None else replay if isinstance(replay, tuple) else (replay,)
+    )
+    remaining = steps
+    progress = tqdm(total=steps, desc=desc, unit="step", disable=quiet)
+    while remaining > 0:
+        block = min(_SCAN_COLLECT_BLOCK, remaining)
+        policy_key, block_key = jax.random.split(policy_key)
+        ys, last_obs_flat = adapter.scan_rollout(
+            action_fn,
+            carry,
+            block,
+            policy_key=block_key,
+            observations=observations,
+        )
+        obs_seq, action_seq, _lp, _values, _ent, reward_seq, done_seq = ys
+        block_returns, block_lengths = _replay_scan_episode_bookkeeping(
+            adapter, ys, block
+        )
+        completed_returns.extend(block_returns)
+        completed_lengths.extend(block_lengths)
+        for buffer in buffers:
+            buffer.add_steps(
+                observations=np.asarray(obs_seq, dtype=np.float32),
+                actions=np.asarray(action_seq),
+                rewards=np.asarray(reward_seq, dtype=np.float32),
+                dones=np.asarray(done_seq, dtype=np.float32),
+            )
+        observations = np.asarray(last_obs_flat, dtype=np.float32).reshape(
+            (adapter.num_envs, adapter.num_agents, -1)
+        )
+        remaining -= block
+        progress.update(block)
+        if completed_returns:
+            progress.set_postfix(
+                episodes=len(completed_returns),
+                mean_return=(f"{np.mean([item[0] for item in completed_returns]):.3g}"),
+            )
+    progress.close()
+    return observations, completed_returns, completed_lengths
+
+
+def _scan_evaluate_episodes(
+    adapter,
+    action_fn: Callable,
+    carry,
+    *,
+    target_episodes: int,
+    policy_key: jax.Array,
+    desc: str,
+    quiet: bool,
+) -> tuple[list[float], list[int], int]:
+    """Blocked ``scan_rollout`` evaluation until ``target_episodes`` complete.
+
+    Episode counts are host state, so the loop scans ``max_cycles``-length
+    blocks and replays the recorded dones between blocks; truncation bounds
+    every episode by ``max_cycles``, so each block finishes at least one
+    episode per env and the loop terminates.
+    """
+    observations = adapter.reset()
+    block = int(getattr(adapter, "max_cycles", None) or _SCAN_COLLECT_BLOCK)
+    returns: list[float] = []
+    lengths: list[int] = []
+    steps_run = 0
+    with tqdm(
+        total=target_episodes,
+        desc=desc,
+        unit="episode",
+        disable=quiet,
+    ) as progress:
+        while len(returns) < target_episodes:
+            before = len(returns)
+            policy_key, block_key = jax.random.split(policy_key)
+            ys, last_obs_flat = adapter.scan_rollout(
+                action_fn,
+                carry,
+                block,
+                policy_key=block_key,
+                observations=observations,
+            )
+            steps_run += block
+            block_returns, block_lengths = _replay_scan_episode_bookkeeping(
+                adapter, ys, block
+            )
+            returns.extend(float(item[0]) for item in block_returns)
+            lengths.extend(int(item) for item in block_lengths)
+            observations = np.asarray(last_obs_flat, dtype=np.float32).reshape(
+                (adapter.num_envs, adapter.num_agents, -1)
+            )
+            _update_episode_progress(progress, before, len(returns), target_episodes)
+    return returns, lengths, steps_run * adapter.num_envs
+
+
 def _collect_random_steps(
     adapter,
     observations: np.ndarray,
@@ -1527,6 +1738,31 @@ def _collect_random_steps(
     desc: str,
     quiet: bool,
 ) -> tuple[np.ndarray, int]:
+    if hasattr(adapter, "scan_rollout"):
+        discrete = getattr(adapter, "action_low", None) is None
+        action_fn = _random_scan_action_fn(
+            discrete=discrete, action_dim=adapter.action_dim
+        )
+        carry = (
+            None
+            if discrete
+            else (
+                jnp.asarray(adapter.action_low, dtype=jnp.float32),
+                jnp.asarray(adapter.action_high, dtype=jnp.float32),
+            )
+        )
+        observations, _returns, _lengths = _scan_collect_steps(
+            adapter,
+            observations,
+            action_fn,
+            carry,
+            replay,
+            steps=steps,
+            policy_key=jax.random.PRNGKey(int(rng.integers(0, 2**31 - 1))),
+            desc=desc,
+            quiet=quiet,
+        )
+        return observations, steps * adapter.num_envs
     for _ in tqdm(range(steps), desc=desc, unit="step", disable=quiet):
         actions = adapter.sample_actions(rng)
         step = adapter.step(actions)
@@ -1557,53 +1793,82 @@ def _collect_policy_steps(
     stochastic_actions: bool = False,
 ) -> tuple[np.ndarray, int, dict[str, Any]]:
     discrete = config.action_mode == "discrete"
-    action_low_jax = None if discrete else jnp.asarray(action_low, dtype=jnp.float32)
-    action_high_jax = None if discrete else jnp.asarray(action_high, dtype=jnp.float32)
-    action_key = jax.random.PRNGKey(int(np_rng.integers(0, 2**31 - 1)))
-    completed_returns: list[float] = []
-    completed_lengths: list[int] = []
-    progress = tqdm(range(steps), desc=desc, unit="step", disable=quiet)
-    for _ in progress:
-        action_key, step_action_key = jax.random.split(action_key)
-        if discrete:
-            actions = np.asarray(
-                select_discrete_actions(
-                    state,
-                    jnp.asarray(observations[:, 0], dtype=jnp.float32),
-                    config,
-                    key=step_action_key,
-                    stochastic=stochastic_actions,
-                )
+    if hasattr(adapter, "scan_rollout"):
+        action_fn = _policy_scan_action_fn(config, stochastic=stochastic_actions)
+        carry = (
+            (state,)
+            if discrete
+            else (
+                state,
+                jnp.asarray(action_low, dtype=jnp.float32),
+                jnp.asarray(action_high, dtype=jnp.float32),
             )
-            step = adapter.step(actions[:, None])
-        else:
-            actions = np.asarray(
-                select_continuous_actions(
-                    state,
-                    jnp.asarray(observations[:, 0], dtype=jnp.float32),
-                    config,
-                    action_low_jax,
-                    action_high_jax,
-                    key=step_action_key,
-                    stochastic=stochastic_actions,
-                )
-            )
-            step = adapter.step(actions[:, None, :])
-        _add_replay_step(
-            replay,
-            observations=observations[:, 0],
-            actions=actions,
-            rewards=step.rewards[:, 0],
-            dones=step.dones[:, 0],
         )
-        completed_returns.extend(float(item[0]) for item in step.completed_returns)
-        completed_lengths.extend(int(item) for item in step.completed_lengths)
-        if completed_returns:
-            progress.set_postfix(
-                episodes=len(completed_returns),
-                mean_return=f"{np.mean(completed_returns):.3g}",
+        observations, scan_returns, scan_lengths = _scan_collect_steps(
+            adapter,
+            observations,
+            action_fn,
+            carry,
+            replay,
+            steps=steps,
+            policy_key=jax.random.PRNGKey(int(np_rng.integers(0, 2**31 - 1))),
+            desc=desc,
+            quiet=quiet,
+        )
+        completed_returns = [float(item[0]) for item in scan_returns]
+        completed_lengths = [int(item) for item in scan_lengths]
+    else:
+        action_low_jax = (
+            None if discrete else jnp.asarray(action_low, dtype=jnp.float32)
+        )
+        action_high_jax = (
+            None if discrete else jnp.asarray(action_high, dtype=jnp.float32)
+        )
+        action_key = jax.random.PRNGKey(int(np_rng.integers(0, 2**31 - 1)))
+        completed_returns = []
+        completed_lengths = []
+        progress = tqdm(range(steps), desc=desc, unit="step", disable=quiet)
+        for _ in progress:
+            action_key, step_action_key = jax.random.split(action_key)
+            if discrete:
+                actions = np.asarray(
+                    select_discrete_actions(
+                        state,
+                        jnp.asarray(observations[:, 0], dtype=jnp.float32),
+                        config,
+                        key=step_action_key,
+                        stochastic=stochastic_actions,
+                    )
+                )
+                step = adapter.step(actions[:, None])
+            else:
+                actions = np.asarray(
+                    select_continuous_actions(
+                        state,
+                        jnp.asarray(observations[:, 0], dtype=jnp.float32),
+                        config,
+                        action_low_jax,
+                        action_high_jax,
+                        key=step_action_key,
+                        stochastic=stochastic_actions,
+                    )
+                )
+                step = adapter.step(actions[:, None, :])
+            _add_replay_step(
+                replay,
+                observations=observations[:, 0],
+                actions=actions,
+                rewards=step.rewards[:, 0],
+                dones=step.dones[:, 0],
             )
-        observations = step.observations
+            completed_returns.extend(float(item[0]) for item in step.completed_returns)
+            completed_lengths.extend(int(item) for item in step.completed_lengths)
+            if completed_returns:
+                progress.set_postfix(
+                    episodes=len(completed_returns),
+                    mean_return=f"{np.mean(completed_returns):.3g}",
+                )
+            observations = step.observations
 
     metrics = {
         "env_steps": steps * adapter.num_envs,
@@ -2781,35 +3046,59 @@ def _evaluate_random_policy(
     adapter = _make_vector_adapter(args, seed=seed, num_envs=num_envs)
     try:
         rng = np.random.default_rng(seed)
-        observations = adapter.reset()
-        del observations
-        returns = []
-        lengths = []
-        step_calls = 0
-        with tqdm(
-            total=target_episodes,
-            desc=desc,
-            unit="episode",
-            disable=args.quiet,
-        ) as progress:
-            while len(returns) < target_episodes:
-                before = len(returns)
-                step = adapter.step(adapter.sample_actions(rng))
-                step_calls += 1
-                returns.extend(float(item[0]) for item in step.completed_returns)
-                lengths.extend(int(item) for item in step.completed_lengths)
-                _update_episode_progress(
-                    progress,
-                    before,
-                    len(returns),
-                    target_episodes,
+        if hasattr(adapter, "scan_rollout"):
+            discrete = getattr(adapter, "action_low", None) is None
+            action_fn = _random_scan_action_fn(
+                discrete=discrete, action_dim=adapter.action_dim
+            )
+            carry = (
+                None
+                if discrete
+                else (
+                    jnp.asarray(adapter.action_low, dtype=jnp.float32),
+                    jnp.asarray(adapter.action_high, dtype=jnp.float32),
                 )
+            )
+            returns, lengths, env_steps = _scan_evaluate_episodes(
+                adapter,
+                action_fn,
+                carry,
+                target_episodes=target_episodes,
+                policy_key=jax.random.PRNGKey(int(rng.integers(0, 2**31 - 1))),
+                desc=desc,
+                quiet=args.quiet,
+            )
+        else:
+            observations = adapter.reset()
+            del observations
+            returns = []
+            lengths = []
+            step_calls = 0
+            with tqdm(
+                total=target_episodes,
+                desc=desc,
+                unit="episode",
+                disable=args.quiet,
+            ) as progress:
+                while len(returns) < target_episodes:
+                    before = len(returns)
+                    step = adapter.step(adapter.sample_actions(rng))
+                    step_calls += 1
+                    returns.extend(float(item[0]) for item in step.completed_returns)
+                    lengths.extend(int(item) for item in step.completed_lengths)
+                    _update_episode_progress(
+                        progress,
+                        before,
+                        len(returns),
+                        target_episodes,
+                    )
+            env_steps = step_calls * num_envs
         returns = returns[:target_episodes]
         lengths = lengths[:target_episodes]
         return {
             "episodes": len(returns),
             "num_envs": num_envs,
-            "env_steps": step_calls * num_envs,
+            "env_steps": env_steps,
             "completed_episode_steps": int(sum(lengths)),
             "mean_return": float(np.mean(returns)),
             "std_return": float(np.std(returns)),
@@ -2837,54 +3126,76 @@ def _evaluate_policy(
     target_episodes = args.policy_eval_episodes if episodes is None else episodes
     adapter = _make_vector_adapter(args, seed=seed, num_envs=num_envs)
     try:
-        observations = adapter.reset()
-        returns = []
-        lengths = []
-        step_calls = 0
-        with tqdm(
-            total=target_episodes,
-            desc=desc,
-            unit="episode",
-            disable=args.quiet,
-        ) as progress:
-            while len(returns) < target_episodes:
-                before = len(returns)
-                if discrete:
-                    actions = np.asarray(
-                        select_discrete_actions(
-                            state,
-                            jnp.asarray(observations[:, 0], dtype=jnp.float32),
-                            config,
-                        )
-                    )
-                    step = adapter.step(actions[:, None])
-                else:
-                    actions = np.asarray(
-                        select_continuous_actions(
-                            state,
-                            jnp.asarray(observations[:, 0], dtype=jnp.float32),
-                            config,
-                            action_low,
-                            action_high,
-                        )
-                    )
-                    step = adapter.step(actions[:, None, :])
-                step_calls += 1
-                returns.extend(float(item[0]) for item in step.completed_returns)
-                lengths.extend(int(item) for item in step.completed_lengths)
-                observations = step.observations
-                _update_episode_progress(
-                    progress,
-                    before,
-                    len(returns),
-                    target_episodes,
+        if hasattr(adapter, "scan_rollout"):
+            action_fn = _policy_scan_action_fn(config, stochastic=False)
+            carry = (
+                (state,)
+                if discrete
+                else (
+                    state,
+                    jnp.asarray(action_low, dtype=jnp.float32),
+                    jnp.asarray(action_high, dtype=jnp.float32),
                 )
+            )
+            returns, lengths, env_steps = _scan_evaluate_episodes(
+                adapter,
+                action_fn,
+                carry,
+                target_episodes=target_episodes,
+                policy_key=jax.random.PRNGKey(seed),
+                desc=desc,
+                quiet=args.quiet,
+            )
+        else:
+            observations = adapter.reset()
+            returns = []
+            lengths = []
+            step_calls = 0
+            with tqdm(
+                total=target_episodes,
+                desc=desc,
+                unit="episode",
+                disable=args.quiet,
+            ) as progress:
+                while len(returns) < target_episodes:
+                    before = len(returns)
+                    if discrete:
+                        actions = np.asarray(
+                            select_discrete_actions(
+                                state,
+                                jnp.asarray(observations[:, 0], dtype=jnp.float32),
+                                config,
+                            )
+                        )
+                        step = adapter.step(actions[:, None])
+                    else:
+                        actions = np.asarray(
+                            select_continuous_actions(
+                                state,
+                                jnp.asarray(observations[:, 0], dtype=jnp.float32),
+                                config,
+                                action_low,
+                                action_high,
+                            )
+                        )
+                        step = adapter.step(actions[:, None, :])
+                    step_calls += 1
+                    returns.extend(float(item[0]) for item in step.completed_returns)
+                    lengths.extend(int(item) for item in step.completed_lengths)
+                    observations = step.observations
+                    _update_episode_progress(
+                        progress,
+                        before,
+                        len(returns),
+                        target_episodes,
+                    )
+            env_steps = step_calls * num_envs
         returns = returns[:target_episodes]
         lengths = lengths[:target_episodes]
         return {
             "episodes": len(returns),
             "num_envs": num_envs,
-            "env_steps": step_calls * num_envs,
+            "env_steps": env_steps,
             "completed_episode_steps": int(sum(lengths)),
             "mean_return": float(np.mean(returns)),
             "std_return": float(np.std(returns)),

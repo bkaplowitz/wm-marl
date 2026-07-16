@@ -79,6 +79,37 @@ class SequenceReplayBuffer:
         self._position = (self._position + 1) % self.capacity
         self._size = min(self._size + 1, self.capacity)
 
+    def add_steps(
+        self,
+        *,
+        observations: np.ndarray,
+        actions: np.ndarray,
+        rewards: np.ndarray,
+        dones: np.ndarray,
+    ) -> None:
+        """Bulk write a ``[T, num_envs, ...]`` block, equivalent to T ``add_step`` calls."""
+        obs = np.asarray(observations, dtype=np.float32).reshape(
+            (-1, self.num_envs, *self.observation_shape)
+        )
+        steps = obs.shape[0]
+        if steps == 0:
+            return
+        acts = np.asarray(actions, dtype=self.action_dtype).reshape(
+            (steps, self.num_envs, *self.action_shape)
+        )
+        rews = np.asarray(rewards, dtype=np.float32).reshape((steps, self.num_envs))
+        dons = np.asarray(dones, dtype=np.float32).reshape((steps, self.num_envs))
+        # Only the trailing ``capacity`` rows survive a longer block; skip the
+        # overwritten prefix so the fancy-indexed write has unique indices.
+        offset = max(0, steps - self.capacity)
+        indices = (self._position + np.arange(offset, steps)) % self.capacity
+        self.observations[indices] = obs[offset:]
+        self.actions[indices] = acts[offset:]
+        self.rewards[indices] = rews[offset:]
+        self.dones[indices] = dons[offset:]
+        self._position = (self._position + steps) % self.capacity
+        self._size = min(self._size + steps, self.capacity)
+
     def can_sample(self, *, chunk_length: int, max_horizon: int) -> bool:
         return self._size >= chunk_length + max_horizon
 
