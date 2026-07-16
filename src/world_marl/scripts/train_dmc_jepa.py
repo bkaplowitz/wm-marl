@@ -317,6 +317,15 @@ def parse_args() -> argparse.Namespace:
         help="Actor updates between KL reference-policy refreshes.",
     )
     policy.add_argument(
+        "--policy-actor-kl-reference-mode",
+        choices=("phase", "slow-policy"),
+        default="phase",
+        help=(
+            "Use a periodically refreshed within-phase actor reference or, once "
+            "available, the cross-phase slow policy bundle as the KL anchor."
+        ),
+    )
+    policy.add_argument(
         "--policy-bundle-ema-decay",
         type=float,
         default=0.0,
@@ -867,6 +876,14 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
     ):
         parser.error(
             "policy-bundle action mixing requires --policy-bundle-ema-decay > 0"
+        )
+    if (
+        args.policy_actor_kl_reference_mode == "slow-policy"
+        and args.policy_bundle_ema_decay == 0.0
+    ):
+        parser.error(
+            "--policy-actor-kl-reference-mode slow-policy requires "
+            "--policy-bundle-ema-decay > 0"
         )
     if args.optimizer_epsilon <= 0.0:
         parser.error("--optimizer-epsilon must be > 0")
@@ -1702,6 +1719,14 @@ def run_one(
                 value_clip=_scheduled_value_clip(
                     args,
                     train_env_steps=train_env_steps,
+                ),
+                fixed_actor_reference_params=(
+                    _state_with_policy_bundle(state, policy_bundle_ema).params
+                    if (
+                        args.policy_actor_kl_reference_mode == "slow-policy"
+                        and policy_bundle_ema is not None
+                    )
+                    else None
                 ),
                 recent_replay=online_recent_replay,
                 start_recent_fraction=effective_recent_fractions["policy_start"],
@@ -2681,6 +2706,7 @@ def _train_policy(
     actor_update_interval: int,
     actor_entropy_coef: float,
     value_clip: float,
+    fixed_actor_reference_params: FrozenDict | None = None,
     recent_replay: SequenceReplayBuffer | None = None,
     start_recent_fraction: float = 0.0,
     critic_recent_fraction: float = 0.0,
@@ -2759,9 +2785,10 @@ def _train_policy(
             raise ValueError(
                 "main replay contains no valid reset-aligned policy starts"
             )
+    slow_actor_reference_used = fixed_actor_reference_params is not None
     actor_reference_params = jax.tree_util.tree_map(
         jax.lax.stop_gradient,
-        state.params,
+        (fixed_actor_reference_params if slow_actor_reference_used else state.params),
     )
     actor_updates = 0
     progress = tqdm(
@@ -2773,7 +2800,8 @@ def _train_policy(
     for step_index in progress:
         apply_actor_update = step_index % actor_update_interval == 0
         if (
-            apply_actor_update
+            not slow_actor_reference_used
+            and apply_actor_update
             and actor_updates % args.policy_actor_kl_reference_interval == 0
         ):
             actor_reference_params = jax.tree_util.tree_map(
@@ -2905,6 +2933,8 @@ def _train_policy(
             "policy_actor_kl_reference_interval": (
                 args.policy_actor_kl_reference_interval
             ),
+            "policy_actor_kl_reference_mode": args.policy_actor_kl_reference_mode,
+            "policy_actor_kl_slow_reference_used": slow_actor_reference_used,
             "policy_replay_critic_loss_coef": args.policy_replay_critic_loss_coef,
             "critic_warmup_steps": args.critic_warmup_steps,
             "critic_final_metrics": to_jsonable(critic_metrics),

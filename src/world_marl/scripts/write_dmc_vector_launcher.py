@@ -83,6 +83,7 @@ _JEPA_BASE: dict[str, Any] = {
     "policy_actor_kl_coef": 1.0,
     "policy_actor_kl_target_per_dim": 0.1,
     "policy_actor_kl_reference_interval": 512,
+    "policy_actor_kl_reference_mode": "phase",
     "policy_bundle_ema_decay": 0.0,
     "policy_bundle_ema_start_env_steps": 0,
     "policy_bundle_collection_online_action_fraction": 1.0,
@@ -214,6 +215,7 @@ OVERRIDABLE_PARAMS = (
     "policy_actor_kl_coef",
     "policy_actor_kl_target_per_dim",
     "policy_actor_kl_reference_interval",
+    "policy_actor_kl_reference_mode",
     "policy_bundle_ema_decay",
     "policy_bundle_ema_start_env_steps",
     "policy_bundle_collection_online_action_fraction",
@@ -545,6 +547,11 @@ def parse_args() -> argparse.Namespace:
     ):
         parser.add_argument("--" + name.replace("_", "-"), type=float, default=None)
     parser.add_argument("--wandb-project", default=None)
+    parser.add_argument(
+        "--policy-actor-kl-reference-mode",
+        choices=("phase", "slow-policy"),
+        default=None,
+    )
     parser.add_argument("--wandb-entity", default=None)
     parser.add_argument("--wandb-name", default=None)
     parser.add_argument("--wandb-group", default=None)

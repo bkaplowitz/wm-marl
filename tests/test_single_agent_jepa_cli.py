@@ -77,6 +77,34 @@ def test_cli_accepts_slow_policy_bundle(monkeypatch):
     assert args.policy_bundle_eval_online_action_fraction == pytest.approx(0.25)
 
 
+def test_cli_accepts_slow_policy_actor_kl_reference(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _minimal_args(
+            "--policy-bundle-ema-decay",
+            "0.98",
+            "--policy-actor-kl-reference-mode",
+            "slow-policy",
+        ),
+    )
+
+    args = train_dmc_jepa.parse_args()
+
+    assert args.policy_actor_kl_reference_mode == "slow-policy"
+
+
+def test_cli_rejects_slow_policy_actor_kl_reference_without_bundle(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _minimal_args("--policy-actor-kl-reference-mode", "slow-policy"),
+    )
+
+    with pytest.raises(SystemExit):
+        train_dmc_jepa.parse_args()
+
+
 def test_cli_rejects_policy_bundle_mix_when_bundle_is_disabled(monkeypatch):
     monkeypatch.setattr(
         sys,
