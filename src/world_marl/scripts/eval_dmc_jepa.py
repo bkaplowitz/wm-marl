@@ -33,6 +33,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--env-workers", type=int, default=16)
     parser.add_argument("--max-cycles", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=9_000_000)
+    parser.add_argument(
+        "--stochastic-actions",
+        action="store_true",
+        help=(
+            "Sample from the saved actor distribution instead of using its "
+            "deterministic mean. Run deterministic and stochastic evaluations "
+            "with the same --seed to pair initial states."
+        ),
+    )
+    parser.add_argument(
+        "--action-seed",
+        type=int,
+        default=None,
+        help="Action-sampling seed. Defaults to --seed.",
+    )
     parser.add_argument("--failure-return-threshold", type=float, default=100.0)
     parser.add_argument("--success-return-threshold", type=float, default=900.0)
     parser.add_argument("--out", type=Path, default=None)
@@ -48,6 +63,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--max-cycles must be >= 1")
     if args.seed < 0:
         parser.error("--seed must be >= 0")
+    if args.action_seed is not None and args.action_seed < 0:
+        parser.error("--action-seed must be >= 0")
     return args
 
 
@@ -59,7 +76,10 @@ def main() -> None:
             "episodes": args.episodes,
             "num_envs": args.num_envs,
             "seed": args.seed,
-            "stochastic_actions": False,
+            "stochastic_actions": args.stochastic_actions,
+            "action_seed": (
+                args.seed if args.action_seed is None else args.action_seed
+            ),
             "checkpoint_selection": False,
         },
         "evaluations": evaluations,
@@ -83,6 +103,10 @@ def evaluate_checkpoint(path: Path, args: argparse.Namespace) -> dict[str, Any]:
             "--env is required unless checkpoint metadata contains a DMC env"
         )
     config, ignored_keys = jepa_config_from_metadata(metadata)
+    if args.stochastic_actions and not config.stochastic_actor:
+        raise ValueError(
+            "--stochastic-actions requires a checkpoint with a stochastic actor"
+        )
     state = create_jepa_train_state(jax.random.PRNGKey(0), config)
     state = state.replace(
         params=load_params(path / "checkpoint.msgpack", state.params)
@@ -102,6 +126,8 @@ def evaluate_checkpoint(path: Path, args: argparse.Namespace) -> dict[str, Any]:
         returns: list[float] = []
         lengths: list[int] = []
         step_calls = 0
+        action_seed = args.seed if args.action_seed is None else args.action_seed
+        action_key = jax.random.PRNGKey(action_seed)
         with tqdm(
             total=args.episodes,
             desc=f"evaluate {path.name}",
@@ -110,6 +136,7 @@ def evaluate_checkpoint(path: Path, args: argparse.Namespace) -> dict[str, Any]:
         ) as progress:
             while len(returns) < args.episodes:
                 before = len(returns)
+                action_key, step_action_key = jax.random.split(action_key)
                 actions = np.asarray(
                     select_continuous_actions(
                         state,
@@ -117,7 +144,8 @@ def evaluate_checkpoint(path: Path, args: argparse.Namespace) -> dict[str, Any]:
                         config,
                         action_low,
                         action_high,
-                        stochastic=False,
+                        key=step_action_key,
+                        stochastic=args.stochastic_actions,
                     )
                 )
                 step = adapter.step(actions[:, None, :])
@@ -147,7 +175,8 @@ def evaluate_checkpoint(path: Path, args: argparse.Namespace) -> dict[str, Any]:
         "episodes": len(returns),
         "num_envs": args.num_envs,
         "evaluation_seed": args.seed,
-        "stochastic_actions": False,
+        "stochastic_actions": args.stochastic_actions,
+        "action_seed": action_seed,
         "env_steps": step_calls * args.num_envs,
         "completed_episode_steps": int(sum(lengths)),
         "mean_return": float(np.mean(returns)),

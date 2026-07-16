@@ -1,9 +1,35 @@
 from __future__ import annotations
 
+import sys
+
 from world_marl.scripts.eval_dmc_jepa import (
     compare_evaluations,
+    parse_args,
     return_tail_metrics,
 )
+
+
+def test_parse_args_supports_paired_stochastic_evaluation(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "world-marl-eval-dmc-jepa",
+            "--checkpoint",
+            "checkpoint",
+            "--seed",
+            "42",
+            "--stochastic-actions",
+            "--action-seed",
+            "314",
+        ],
+    )
+
+    args = parse_args()
+
+    assert args.seed == 42
+    assert args.stochastic_actions is True
+    assert args.action_seed == 314
 
 
 def test_return_tail_metrics_matches_training_protocol():
