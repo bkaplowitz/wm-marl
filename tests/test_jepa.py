@@ -338,7 +338,56 @@ def test_model_step_can_freeze_only_the_observation_encoder():
         )
     )
     assert metrics["model/encoder_frozen"] == 1.0
+    assert metrics["model/encoder_update_scale"] == 0.0
     assert metrics["model/encoder_grad_norm_unmasked"] > 0.0
+
+
+def test_model_step_can_scale_only_observation_encoder_updates():
+    config = _config()
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    state, _ = train_model_step(
+        state,
+        jax.random.PRNGKey(1),
+        _batch(config),
+        config,
+        chunk_length=2,
+    )
+    full_state, _ = train_model_step(
+        state,
+        jax.random.PRNGKey(2),
+        _batch(config),
+        config,
+        chunk_length=2,
+    )
+    scaled_state, metrics = train_model_step(
+        state,
+        jax.random.PRNGKey(2),
+        _batch(config),
+        config,
+        chunk_length=2,
+        encoder_update_scale=0.1,
+    )
+
+    for before, full_after, scaled_after in zip(
+        jax.tree_util.tree_leaves(state.params["encoder"]),
+        jax.tree_util.tree_leaves(full_state.params["encoder"]),
+        jax.tree_util.tree_leaves(scaled_state.params["encoder"]),
+    ):
+        assert jnp.allclose(
+            scaled_after - before,
+            0.1 * (full_after - before),
+            rtol=1e-4,
+            atol=1e-7,
+        )
+    assert all(
+        jnp.array_equal(full_after, scaled_after)
+        for full_after, scaled_after in zip(
+            jax.tree_util.tree_leaves(full_state.params["predictor"]),
+            jax.tree_util.tree_leaves(scaled_state.params["predictor"]),
+        )
+    )
+    assert metrics["model/encoder_frozen"] == 0.0
+    assert metrics["model/encoder_update_scale"] == 0.1
 
 
 def test_dynamics_ensemble_model_step_and_policy_metrics_are_finite():

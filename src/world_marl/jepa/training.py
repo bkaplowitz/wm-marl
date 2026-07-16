@@ -83,21 +83,22 @@ class JepaTrainState:
         grads,
         *,
         freeze_encoder: bool = False,
+        encoder_update_scale: float = 1.0,
     ) -> "JepaTrainState":
         updates, opt_state = self.model_tx.update(
             grads,
             self.model_opt_state,
             self.params,
         )
-        if freeze_encoder:
-            updates = updates.copy(
-                add_or_replace={
-                    "encoder": jax.tree_util.tree_map(
-                        jnp.zeros_like,
-                        updates["encoder"],
-                    )
-                }
-            )
+        effective_encoder_scale = 0.0 if freeze_encoder else encoder_update_scale
+        updates = updates.copy(
+            add_or_replace={
+                "encoder": jax.tree_util.tree_map(
+                    lambda update: update * effective_encoder_scale,
+                    updates["encoder"],
+                )
+            }
+        )
         return self.replace(
             step=self.step + 1,
             params=optax.apply_updates(self.params, updates),
@@ -246,6 +247,7 @@ def train_model_step(
     chunk_length: int,
     control: ControlMode = "none",
     freeze_encoder: bool = False,
+    encoder_update_scale: float = 1.0,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     def loss_fn(params):
         loss, metrics = world_model_loss(
@@ -276,6 +278,10 @@ def train_model_step(
             float(freeze_encoder),
             dtype=metrics["model/total_loss"].dtype,
         ),
+        "model/encoder_update_scale": jnp.asarray(
+            0.0 if freeze_encoder else encoder_update_scale,
+            dtype=metrics["model/total_loss"].dtype,
+        ),
         "model/grad_clip_norm": jnp.asarray(
             config.model_grad_clip_norm,
             dtype=metrics["model/total_loss"].dtype,
@@ -284,6 +290,7 @@ def train_model_step(
     return state.apply_model_gradients(
         grads,
         freeze_encoder=freeze_encoder,
+        encoder_update_scale=encoder_update_scale,
     ), metrics
 
 

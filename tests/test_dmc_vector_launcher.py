@@ -135,6 +135,22 @@ def test_launcher_serializes_budget_relative_encoder_freeze():
     ]
 
 
+def test_launcher_serializes_budget_relative_encoder_update_scale():
+    command = params_to_shell_args(
+        {
+            "online_encoder_update_scale": 0.1,
+            "online_encoder_update_scale_start_env_steps": 50_000,
+        }
+    )
+    tokens = command.replace("\\\n", " ").split()
+
+    assert tokens[tokens.index("--online-encoder-update-scale") + 1] == "0.1"
+    assert (
+        tokens[tokens.index("--online-encoder-update-scale-start-env-steps") + 1]
+        == "50000"
+    )
+
+
 def test_launcher_syncs_tracking_extra_when_enabled(tmp_path):
     write_launcher(
         tmp_path,

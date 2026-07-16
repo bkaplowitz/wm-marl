@@ -692,6 +692,36 @@ def test_online_encoder_can_freeze_after_budget_threshold(monkeypatch):
     )
 
 
+def test_online_encoder_update_scale_can_start_at_budget_threshold(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _minimal_args(
+            "--online-encoder-update-scale",
+            "0.1",
+            "--online-encoder-update-scale-start-env-steps",
+            "50000",
+        ),
+    )
+
+    args = train_dmc_jepa.parse_args()
+
+    assert (
+        train_dmc_jepa._scheduled_online_encoder_update_scale(
+            args,
+            train_env_steps=49_999,
+        )
+        == 1.0
+    )
+    assert (
+        train_dmc_jepa._scheduled_online_encoder_update_scale(
+            args,
+            train_env_steps=50_000,
+        )
+        == 0.1
+    )
+
+
 def test_cli_accepts_recent_replay_and_curve_evaluation(monkeypatch):
     monkeypatch.setattr(
         sys,

@@ -57,6 +57,8 @@ _JEPA_BASE: dict[str, Any] = {
     "online_policy_actor_update_interval": 2,
     "online_policy_actor_update_interval_start_env_steps": 0,
     "online_freeze_encoder_after_env_steps": None,
+    "online_encoder_update_scale": 1.0,
+    "online_encoder_update_scale_start_env_steps": 0,
     "online_checkpoint_interval": 16,
     "online_recent_replay_steps": 320,
     "online_recent_replay_fraction": 0.0,
@@ -190,6 +192,8 @@ OVERRIDABLE_PARAMS = (
     "online_policy_actor_update_interval",
     "online_policy_actor_update_interval_start_env_steps",
     "online_freeze_encoder_after_env_steps",
+    "online_encoder_update_scale",
+    "online_encoder_update_scale_start_env_steps",
     "online_checkpoint_interval",
     "online_recent_replay_steps",
     "latent_dim",
@@ -488,6 +492,7 @@ def parse_args() -> argparse.Namespace:
         "online_policy_actor_update_interval",
         "online_policy_actor_update_interval_start_env_steps",
         "online_freeze_encoder_after_env_steps",
+        "online_encoder_update_scale_start_env_steps",
         "online_checkpoint_interval",
         "policy_actor_kl_reference_interval",
         "policy_bundle_ema_start_env_steps",
@@ -533,6 +538,7 @@ def parse_args() -> argparse.Namespace:
         "online_recent_critic_fraction",
         "online_recent_replay_max_oversample",
         "online_reset_fraction",
+        "online_encoder_update_scale",
         "actor_entropy_final_coef",
     ):
         parser.add_argument("--" + name.replace("_", "-"), type=float, default=None)
