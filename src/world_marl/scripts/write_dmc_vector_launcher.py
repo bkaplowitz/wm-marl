@@ -279,6 +279,7 @@ def main() -> None:
         args.gpus,
         sync=args.sync,
         tracking=bool(params.get("wandb_project")),
+        repo_root=_source_checkout_root(),
     )
     write_tail(out_root)
     write_summarize(out_root)
@@ -609,6 +610,7 @@ def write_launcher(
     *,
     sync: bool,
     tracking: bool,
+    repo_root: Path | None = None,
 ) -> None:
     jobs_block = "\n".join(
         f"  {shlex.quote(job['task'] + '|' + str(job['seed']) + '|' + job['short'])}"
@@ -621,7 +623,7 @@ def write_launcher(
         if sync
         else 'echo "Skipping uv sync"\n'
     )
-    project_root = Path.cwd().resolve()
+    project_root = (repo_root or Path.cwd()).resolve()
     body = dedent(
         f"""\
         #!/usr/bin/env bash
@@ -660,6 +662,14 @@ def write_launcher(
         """
     )
     write_executable(out_root / "launcher.sh", body)
+
+
+def _source_checkout_root() -> Path:
+    """Return the source checkout when this module is run by absolute path."""
+    for candidate in Path(__file__).resolve().parents:
+        if (candidate / "pyproject.toml").is_file():
+            return candidate
+    return Path.cwd().resolve()
 
 
 def write_tail(out_root: Path) -> None:

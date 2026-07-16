@@ -154,6 +154,25 @@ def test_launcher_pins_generation_repo_root(tmp_path, monkeypatch):
     assert 'cd "$REPO_ROOT"' in script
 
 
+def test_launcher_can_pin_an_explicit_repo_root(tmp_path):
+    out_root = tmp_path / "runs"
+    repo_root = tmp_path / "checkout"
+    out_root.mkdir()
+    repo_root.mkdir()
+
+    write_launcher(
+        out_root,
+        [{"task": "reacher/easy", "seed": 0, "short": "reacher_easy_seed0"}],
+        ["0"],
+        sync=False,
+        tracking=False,
+        repo_root=repo_root,
+    )
+
+    script = (out_root / "launcher.sh").read_text()
+    assert f"DEFAULT_REPO_ROOT={repo_root}" in script
+
+
 def test_maintained_presets_are_small_and_unambiguous():
     assert set(PRESETS) == {"smoke", "jepa_100k", "jepa_200k", "jepa_500k"}
     forbidden = {
