@@ -115,6 +115,9 @@ def test_dmc_pixel_adapter_preserves_environment_semantics(num_workers):
             "image_height": 6,
             "image_width": 8,
             "camera_id": 0,
+            "frame_stack": 1,
+            "action_repeat": 1,
+            "flatten": False,
         }
     finally:
         adapter.close()
@@ -138,6 +141,95 @@ def test_dmc_pixel_adapter_marks_adapter_time_limit_as_truncation():
         assert step.infos[0]["truncated"] is True
     finally:
         adapter.close()
+
+
+def test_frame_stack_orders_newest_last_and_fills_on_reset():
+    adapter = DMCPixelAdapter(
+        "point_mass/easy",
+        num_envs=1,
+        seed=10,
+        env_factory=lambda seed: _FakePixelDMCEnv(seed),
+        frame_stack=2,
+    )
+    obs = adapter.reset()
+    assert adapter.raw_observation_shape == (6, 8, 6)
+    assert adapter.observation_shape == (6, 8, 6)
+    assert obs.shape == (1, 1, 6, 8, 6)
+    np.testing.assert_array_equal(obs[0, 0, ..., :3], obs[0, 0, ..., 3:])
+    assert float(obs[0, 0, 0, 0, 0]) == pytest.approx(10 / 255.0)
+
+    step = adapter.step(np.zeros((1, 1, 2), np.float32))
+    stacked = step.observations[0, 0]
+    assert float(stacked[0, 0, 0]) == pytest.approx(10 / 255.0)  # oldest first
+    assert float(stacked[0, 0, 3]) == pytest.approx(11 / 255.0)  # newest last
+
+
+def test_action_repeat_sums_rewards_and_stops_at_episode_end():
+    adapter = DMCPixelAdapter(
+        "point_mass/easy",
+        num_envs=1,
+        seed=0,
+        env_factory=lambda seed: _FakePixelDMCEnv(seed),
+        action_repeat=3,
+        auto_reset=False,
+    )
+    adapter.reset()
+    actions = np.full((1, 1, 2), 0.5, np.float32)
+    step = adapter.step(actions)
+    # fake env ends at count >= 2, so only 2 of the 3 sub-steps run
+    assert step.rewards[0, 0] == pytest.approx(2.0)
+    assert step.dones[0, 0] == 1.0
+    assert adapter._envs[0].count == 2
+
+
+def test_auto_reset_refills_frame_stack_with_reset_frame():
+    adapter = DMCPixelAdapter(
+        "point_mass/easy",
+        num_envs=1,
+        seed=10,
+        env_factory=lambda seed: _FakePixelDMCEnv(seed),
+        frame_stack=2,
+        action_repeat=2,
+    )
+    adapter.reset()
+    step = adapter.step(np.zeros((1, 1, 2), np.float32))  # episode done, auto-reset
+    assert step.dones[0, 0] == 1.0
+    stacked = step.observations[0, 0]
+    np.testing.assert_array_equal(stacked[..., :3], stacked[..., 3:])
+    assert float(stacked[0, 0, 0]) == pytest.approx(10 / 255.0)  # reset frame
+
+
+def test_flatten_emits_flat_float_observations():
+    adapter = DMCPixelAdapter(
+        "point_mass/easy",
+        num_envs=2,
+        seed=0,
+        env_factory=lambda seed: _FakePixelDMCEnv(seed),
+        frame_stack=2,
+        flatten=True,
+    )
+    assert adapter.observation_shape == (6 * 8 * 6,)
+    assert adapter.raw_observation_shape == (6, 8, 6)
+    obs = adapter.reset()
+    assert obs.shape == (2, 1, 6 * 8 * 6)
+    assert obs.dtype == np.float32
+    step = adapter.step(np.zeros((2, 1, 2), np.float32))
+    assert step.observations.shape == (2, 1, 6 * 8 * 6)
+
+
+def test_invalid_stack_and_repeat_rejected():
+    with pytest.raises(ValueError, match="frame_stack"):
+        DMCPixelAdapter(
+            "point_mass/easy",
+            env_factory=lambda seed: _FakePixelDMCEnv(seed),
+            frame_stack=0,
+        )
+    with pytest.raises(ValueError, match="action_repeat"):
+        DMCPixelAdapter(
+            "point_mass/easy",
+            env_factory=lambda seed: _FakePixelDMCEnv(seed),
+            action_repeat=0,
+        )
 
 
 @pytest.mark.integration

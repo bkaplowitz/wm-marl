@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -59,6 +60,9 @@ class DMCPixelAdapter:
         env_factory: DMCPixelEnvFactory | None = None,
         auto_reset: bool = True,
         num_workers: int = 1,
+        frame_stack: int = 1,
+        action_repeat: int = 1,
+        flatten: bool = False,
     ) -> None:
         if num_envs < 1:
             raise ValueError("num_envs must be >= 1")
@@ -68,6 +72,10 @@ class DMCPixelAdapter:
             raise ValueError("image_size must be >= 1")
         if num_workers < 1:
             raise ValueError("num_workers must be >= 1")
+        if frame_stack < 1:
+            raise ValueError("frame_stack must be >= 1")
+        if action_repeat < 1:
+            raise ValueError("action_repeat must be >= 1")
 
         domain_name, task_name = _split_env_id(env_id)
         self.env_id = env_id
@@ -76,6 +84,9 @@ class DMCPixelAdapter:
         self.max_cycles = int(max_cycles)
         self.auto_reset = bool(auto_reset)
         self.num_workers = int(num_workers)
+        self.frame_stack = int(frame_stack)
+        self.action_repeat = int(action_repeat)
+        self.flatten = bool(flatten)
         self.agents = ("agent_0",)
         self.num_agents = 1
 
@@ -96,8 +107,14 @@ class DMCPixelAdapter:
         )
 
         first_env = self._envs[0]
-        self.observation_shape = _pixel_observation_shape(first_env.observation_spec())
-        self.raw_observation_shape = self.observation_shape
+        frame_shape = _pixel_observation_shape(first_env.observation_spec())
+        height, width, channels = frame_shape
+        self.raw_observation_shape = (height, width, channels * self.frame_stack)
+        self.observation_shape = (
+            (int(np.prod(self.raw_observation_shape)),)
+            if self.flatten
+            else self.raw_observation_shape
+        )
         self.observation_size = None
         self.include_observation_scalars = False
         self.scalar_observation_keys: tuple[str, ...] = ()
@@ -120,12 +137,36 @@ class DMCPixelAdapter:
             "observation_mode": "pixels",
             "dmc_domain": domain_name,
             "dmc_task": task_name,
-            "image_height": self.observation_shape[0],
-            "image_width": self.observation_shape[1],
+            "image_height": height,
+            "image_width": width,
             "camera_id": int(camera_id),
+            "frame_stack": self.frame_stack,
+            "action_repeat": self.action_repeat,
+            "flatten": self.flatten,
         }
         self._episode_returns = np.zeros((self.num_envs, 1), dtype=np.float32)
         self._episode_lengths = np.zeros((self.num_envs,), dtype=np.int32)
+        self._frames: list[deque] = [
+            deque(maxlen=self.frame_stack) for _ in range(self.num_envs)
+        ]
+
+    def _reset_stack(self, env_index: int, frame: np.ndarray) -> np.ndarray:
+        stack = self._frames[env_index]
+        stack.clear()
+        for _ in range(self.frame_stack):
+            stack.append(frame)
+        return self._stacked(env_index)
+
+    def _push_frame(self, env_index: int, frame: np.ndarray) -> np.ndarray:
+        self._frames[env_index].append(frame)
+        return self._stacked(env_index)
+
+    def _stacked(self, env_index: int) -> np.ndarray:
+        frames = list(self._frames[env_index])
+        stacked = (
+            frames[0] if self.frame_stack == 1 else np.concatenate(frames, axis=-1)
+        )
+        return stacked.reshape((-1,)) if self.flatten else stacked
 
     def reset(self) -> np.ndarray:
         self._episode_returns[:] = 0.0
@@ -134,22 +175,37 @@ class DMCPixelAdapter:
             timesteps = [env.reset() for env in self._envs]
         else:
             timesteps = list(self._executor.map(lambda env: env.reset(), self._envs))
-        observations = [_normalize_pixels(step.observation) for step in timesteps]
+        observations = [
+            self._reset_stack(index, _normalize_pixels(step.observation))
+            for index, step in enumerate(timesteps)
+        ]
         return np.asarray(observations, dtype=np.float32)[:, None, ...]
 
     def step(self, actions: np.ndarray) -> VectorStep:
         action_batch = np.asarray(actions, dtype=np.float32).reshape(
             (self.num_envs, self.action_dim)
         )
+
+        def step_env(env, flat_action):
+            action = flat_action.reshape(self.action_shape)
+            reward_sum = 0.0
+            timestep = None
+            for _ in range(self.action_repeat):
+                timestep = env.step(action)
+                reward_sum += 0.0 if timestep.reward is None else float(timestep.reward)
+                if timestep.last():
+                    break
+            return timestep, reward_sum
+
         if self._executor is None:
-            timesteps = [
-                env.step(flat_action.reshape(self.action_shape))
+            results = [
+                step_env(env, flat_action)
                 for env, flat_action in zip(self._envs, action_batch, strict=True)
             ]
         else:
-            timesteps = list(
+            results = list(
                 self._executor.map(
-                    lambda item: item[0].step(item[1].reshape(self.action_shape)),
+                    lambda item: step_env(item[0], item[1]),
                     zip(self._envs, action_batch, strict=True),
                 )
             )
@@ -161,10 +217,9 @@ class DMCPixelAdapter:
         completed_lengths: list[int] = []
         infos: list[dict[str, Any]] = []
 
-        for env_index, (env, timestep) in enumerate(
-            zip(self._envs, timesteps, strict=True)
+        for env_index, (env, (timestep, reward)) in enumerate(
+            zip(self._envs, results, strict=True)
         ):
-            reward = 0.0 if timestep.reward is None else float(timestep.reward)
             self._episode_returns[env_index, 0] += reward
             self._episode_lengths[env_index] += 1
             terminated = bool(timestep.last())
@@ -186,10 +241,23 @@ class DMCPixelAdapter:
                 )
                 if self.auto_reset:
                     timestep = env.reset()
+                    observations.append(
+                        self._reset_stack(
+                            env_index, _normalize_pixels(timestep.observation)
+                        )
+                    )
+                else:
+                    observations.append(
+                        self._push_frame(
+                            env_index, _normalize_pixels(timestep.observation)
+                        )
+                    )
                 self._episode_returns[env_index] = 0.0
                 self._episode_lengths[env_index] = 0
-
-            observations.append(_normalize_pixels(timestep.observation))
+            else:
+                observations.append(
+                    self._push_frame(env_index, _normalize_pixels(timestep.observation))
+                )
 
         return VectorStep(
             observations=np.asarray(observations, dtype=np.float32)[:, None, ...],
