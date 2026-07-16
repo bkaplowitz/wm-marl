@@ -18,7 +18,7 @@ repository.
 | `utils/nn.py` | position encoding, ST blocks, transformer, VQ | spatial non-causal attention, temporal causal mask, residual order, remat, cosine VQ, initializers | packaged Linen names and explicit scan-compatible interfaces |
 | `models/tokenizer.py` | `TokenizerVQVAE` | patch 4, 512/32 widths, 1,024 codes, 8 blocks/heads, sigmoid decoder | configuration dataclass and artifact-facing methods |
 | `models/lam.py` | discrete `LatentActionModel` | action-token layout, future-frame state selection, 6x32 cosine VQ, patch 16, 8 blocks/heads | configuration dataclass; reusable encoder interface |
-| `models/dynamics.py` | `DynamicsMaskGIT` | first-frame protection, random mask below 0.5, action alignment, 1,024 logits | pure functions for mask/schedule testing |
+| `models/dynamics.py` | `DynamicsMaskGIT` | first-frame protection, random mask up to 0.5, action alignment, 1,024 logits | pure functions for mask/schedule testing; `mask_limit` is treated as the approved upper bound rather than the pinned call's `minval` argument |
 | `genie.py` | composition and MaskGIT sampler | frozen tokenizer/LAM boundary, cosine refinement schedule, confidence masking | `jax.lax.scan` replaces Linen/Python loop orchestration; no Genie public name |
 | `train_tokenizer.py` | tokenizer loss/defaults | MSE + codebook + 0.25 commitment; 300k/48/10k/3e-4 | repository train state, JSONL metrics, checkpoints |
 | `train_lam.py` | LAM loss/defaults/reset | next-frame loss; 200k/36/5k/3e-5; reset at 50 | functional immutable codebook update under JIT/scan |
@@ -38,6 +38,12 @@ The local arm must retain:
   and batch sizes;
 - the first-frame masking exclusion and masked-only CE denominator;
 - source MaskGIT confidence ranking and cosine schedule.
+
+The pinned `models/dynamics.py` calls
+`jax.random.uniform(..., minval=mask_limit)`. The approved conformance contract
+requires masking *up to* 0.5, so the port uses `maxval=mask_limit`. This single
+correction is explicit, tested, and is not represented as byte-for-byte source
+behavior.
 
 ## Repository-only behavior
 
