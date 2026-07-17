@@ -693,7 +693,7 @@ def test_dreamer_style_policy_update_is_finite_and_keeps_world_model_frozen():
             maxval=1.0,
         ),
         rewards=jax.random.uniform(jax.random.PRNGKey(3), (4, 4)),
-        dones=jnp.zeros((4, 4), dtype=jnp.float32),
+        dones=jnp.zeros((4, 4), dtype=jnp.float32).at[0, 0].set(1.0),
     )
 
     updated, metrics = continuous_policy_train_step(
@@ -718,6 +718,9 @@ def test_dreamer_style_policy_update_is_finite_and_keeps_world_model_frozen():
         real_critic_horizon=4,
         real_critic_return_mode="lambda",
         real_critic_all_steps=True,
+        predicted_latent_critic_enabled=True,
+        predicted_latent_critic_coef=0.25,
+        predicted_latent_critic_horizon=2,
         slow_value_regularization_coef=1.0,
         value_clip=0.0,
         normalized_advantage_clip=5.0,
@@ -747,6 +750,11 @@ def test_dreamer_style_policy_update_is_finite_and_keeps_world_model_frozen():
     assert metrics["policy/return_normalization_ema_percentile"] == 1.0
     assert metrics["policy/replay_critic_lambda_return"] == 1.0
     assert metrics["policy/replay_critic_all_steps"] == 1.0
+    assert metrics["policy/predicted_latent_critic_enabled"] == 1.0
+    assert metrics["policy/predicted_latent_critic_coef"] == pytest.approx(0.25)
+    assert jnp.isfinite(metrics["policy/predicted_latent_critic_loss"])
+    assert jnp.isfinite(metrics["policy/predicted_latent_encoded_value_mae"])
+    assert metrics["policy/predicted_latent_valid_fraction"] == pytest.approx(0.75)
     assert jnp.isfinite(metrics["policy/slow_value_loss"])
     assert jnp.isfinite(metrics["policy/replay_critic_loss"])
     assert bool(updated.return_range_initialized)

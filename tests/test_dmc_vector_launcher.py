@@ -445,6 +445,8 @@ def test_500k_preset_locks_current_architecture_and_control_stack():
     assert params["policy_actor_slow_kl_target_per_dim"] is None
     assert params["target_critic_ema_decay"] == 0.98
     assert params["policy_replay_critic_loss_coef"] == 0.3
+    assert params["policy_predicted_latent_critic_coef"] == 0.0
+    assert params["policy_predicted_latent_critic_horizon"] == 15
     assert params["policy_slow_value_regularization_coef"] == 1.0
     assert params["model_grad_clip_norm"] == 0.0
     assert params["actor_grad_clip_norm"] == 10.0

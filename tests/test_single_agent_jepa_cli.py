@@ -630,6 +630,10 @@ def test_cli_exposes_current_dreamer_stabilizers(monkeypatch):
             "0.98",
             "--policy-replay-critic-loss-coef",
             "0.3",
+            "--policy-predicted-latent-critic-coef",
+            "0.25",
+            "--policy-predicted-latent-critic-horizon",
+            "8",
             "--policy-slow-value-regularization-coef",
             "1.0",
         ),
@@ -642,6 +646,8 @@ def test_cli_exposes_current_dreamer_stabilizers(monkeypatch):
     assert args.policy_return_normalization == "ema-percentile"
     assert args.target_critic_ema_decay == 0.98
     assert args.policy_replay_critic_loss_coef == 0.3
+    assert args.policy_predicted_latent_critic_coef == 0.25
+    assert args.policy_predicted_latent_critic_horizon == 8
     assert args.policy_slow_value_regularization_coef == 1.0
 
 
