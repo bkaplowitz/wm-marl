@@ -13,6 +13,7 @@ import numpy as np
 from world_marl.envs.meltingpot_adapter import VectorStep
 
 BraxEnvFactory = Callable[[], Any]
+BraxObservationFn = Callable[[Any], jax.Array]
 
 
 def _uniform_random_policy(policy_state, key, obs_flat, is_first):
@@ -81,6 +82,7 @@ class BraxVectorAdapter:
         max_cycles: int = 1000,
         seed: int = 0,
         env_factory: BraxEnvFactory | None = None,
+        observation_fn: BraxObservationFn | None = None,
         auto_reset: bool = True,
         backend: str | None = None,
     ) -> None:
@@ -94,6 +96,7 @@ class BraxVectorAdapter:
         self.num_envs = int(num_envs)
         self.max_cycles = int(max_cycles)
         self.auto_reset = auto_reset
+        self._observation_fn = observation_fn or (lambda state: state.obs)
         self.backend = backend or ("generalized" if env_factory is None else "unknown")
         self.environment_metadata = {
             "environment_backend": "brax",
@@ -115,7 +118,9 @@ class BraxVectorAdapter:
         self._reset_counter = 0
         self._state = self._reset(self._next_reset_keys())
 
-        observations = np.asarray(jax.device_get(self._state.obs), dtype=np.float32)
+        observations = np.asarray(
+            jax.device_get(self._observation_fn(self._state)), dtype=np.float32
+        )
         self.observation_shape = tuple(observations.shape[1:]) or (1,)
         self.raw_observation_shape = self.observation_shape
         self.observation_size = None
@@ -293,7 +298,7 @@ class BraxVectorAdapter:
                         (state_n, reset_keys),
                     )
                     lengths_n = jnp.where(done_mask, 0, lengths_n)
-                obs_flat_n = state_n.obs.reshape((num_envs, -1)).astype(jnp.float32)
+                obs_flat_n = self._observation_fn(state_n).astype(jnp.float32)
                 ys = (
                     obs_flat,
                     actions,
@@ -329,7 +334,7 @@ class BraxVectorAdapter:
             self._recurrent_rollout_scan_jit[cache_key] = run
 
         obs_flat0 = jnp.asarray(observations, dtype=jnp.float32).reshape(
-            (self.num_envs, -1)
+            (self.num_envs, *self.observation_shape)
         )
         reset_key = jax.random.fold_in(self._base_key, self._reset_counter)
         self._reset_counter += 1
@@ -402,7 +407,7 @@ class BraxVectorAdapter:
                 else:
                     state_n = stepped_state
                     is_first_n = jnp.zeros_like(is_last)
-                obs_flat_n = state_n.obs.reshape((num_envs, -1)).astype(jnp.float32)
+                obs_flat_n = self._observation_fn(state_n).astype(jnp.float32)
                 reward = state.reward.reshape((num_envs,)).astype(jnp.float32)
                 outputs = (obs_flat, actions, reward, is_terminal, is_last)
                 carry = (
@@ -515,7 +520,7 @@ class BraxVectorAdapter:
                 else:
                     state_n = stepped_state
                     is_first_n = jnp.zeros_like(is_last)
-                obs_flat_n = state_n.obs.reshape((num_envs, -1)).astype(jnp.float32)
+                obs_flat_n = self._observation_fn(state_n).astype(jnp.float32)
                 outputs = (
                     obs_flat,
                     actions,
@@ -583,8 +588,10 @@ class BraxVectorAdapter:
         return jax.random.split(key, self.num_envs)
 
     def _observations(self) -> np.ndarray:
-        observations = np.asarray(jax.device_get(self._state.obs), dtype=np.float32)
-        return observations.reshape((self.num_envs, -1))[:, None, :]
+        observations = np.asarray(
+            jax.device_get(self._observation_fn(self._state)), dtype=np.float32
+        )
+        return observations.reshape((self.num_envs, *self.observation_shape))[:, None]
 
 
 def is_brax_substrate(substrate: str) -> bool:

@@ -2,7 +2,7 @@
 
 ## Goal
 
-Replace `world_marl.genie2_continuous_jax` completely with two independent,
+Replace the previous experimental visual-world-model arm completely with two independent,
 source-derived pixel world-model arms:
 
 - `jafar`: VQ-VAE tokenizer, discrete VQ LAM, MaskGIT dynamics.
@@ -11,7 +11,7 @@ source-derived pixel world-model arms:
 
 Shared replay, reward/continuation, bridge, simulator, PPO, artifact, and
 evaluation behavior belongs to `world_marl.latent_action_world_model`. There
-will be no Genie2 compatibility alias and no new Genie2 or Genie3 claim.
+will be no compatibility alias and no unsupported third-party implementation claim.
 
 ## Pinned sources
 
@@ -47,7 +47,7 @@ changes in its module docstring.
 Create and commit this plan, the two architecture documents, the two source
 conformance maps, `CHANGES.md`, and `THIRD_PARTY_NOTICES.md` before any code,
 test, or dependency edit. Verify the files contain both pinned commits and no
-unsupported Genie2/Genie3 claims.
+unsupported third-party implementation claims.
 
 ### 2. Dependency transaction
 
@@ -184,7 +184,7 @@ metadata, model and optimizer checkpoints, per-stage JSONL metrics, code
 usage, bridge/provenance artifacts, PPO metrics, rollout media, real evaluation,
 `outcome.json`, and normalized `summary.json`.
 
-Remove the `world_marl.genie2_continuous_jax` package, its training script and
+Remove the predecessor package, its training script and
 entry point, its dedicated tests and docs, and every reference from README,
 comparison tools, quality tools, Runpod jobs, and tests. Do not leave import,
 CLI, arm-name, or config aliases.

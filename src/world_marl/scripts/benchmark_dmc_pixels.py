@@ -67,6 +67,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", action="append", type=int)
     parser.add_argument("--summary", action="append", type=Path, default=[])
     parser.add_argument("--baseline-summary", action="append", type=Path, default=[])
+    parser.add_argument("--expert-calibration", type=Path)
     parser.add_argument("--out-dir", type=Path, default=Path("runs/dmc_pixels"))
     parser.add_argument("--collect-steps", type=int, default=1000)
     parser.add_argument("--num-envs", type=int, default=4)
@@ -103,6 +104,7 @@ def build_benchmark_runs(
     dmc_camera_id: int,
     dmc_workers: int,
     allow_fail: bool,
+    expert_calibration: Path | None,
 ) -> list[dict[str, Any]]:
     runs = []
     for task in tasks:
@@ -123,6 +125,7 @@ def build_benchmark_runs(
                     policy_train_steps=policy_train_steps,
                     eval_episodes=eval_episodes,
                     allow_fail=allow_fail,
+                    expert_calibration=expert_calibration,
                     seed=seed,
                     image_size=image_size,
                     dmc_camera_id=dmc_camera_id,
@@ -288,6 +291,7 @@ def main(argv: list[str] | None = None) -> int:
         dmc_camera_id=args.dmc_camera_id,
         dmc_workers=args.dmc_workers,
         allow_fail=args.allow_fail,
+        expert_calibration=args.expert_calibration,
     )
     args.out_dir.mkdir(parents=True, exist_ok=True)
     _write_json(args.out_dir / "commands.json", runs)

@@ -139,33 +139,42 @@ def test_benchmark_policy_puts_own_flags_before_train_args(tmp_path):
     assert "--out-dir" not in job.command[separator + 1 :]
 
 
-def test_frontier_quality_job_uses_managed_output_directory(tmp_path):
-    args = _compare_args(
-        tmp_path,
-        job="frontier-world-model-quality",
-        job_args=["--seed", "3"],
+def test_jafar_jasmine_quality_job_is_accepted(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["world-marl-runpod", "--job", "jafar-jasmine-quality"],
     )
 
-    job = runpod.build_job_spec(args, "20260710T120000Z")
+    args = runpod.parse_args()
+
+    assert args.job == "jafar-jasmine-quality"
+
+
+def test_jafar_jasmine_quality_job_uses_managed_output_directory(tmp_path):
+    args = _compare_args(
+        tmp_path,
+        job="jafar-jasmine-quality",
+        job_args=["--expert-calibration", "/workspace/expert.npz"],
+    )
+
+    job = runpod.build_job_spec(args, "20260716T120000Z")
 
     assert job.command[:4] == [
         "env",
         "XLA_FLAGS=--xla_gpu_enable_triton_gemm=false",
         "MUJOCO_GL=egl",
-        "uv",
+        ".venv/bin/world-marl-jafar-jasmine-quality",
     ]
-    assert job.command[4:6] == ["run", "world-marl-frontier-wm-quality"]
-    assert job.command[-4:] == [
-        "--seed",
-        "3",
+    assert job.command[-2:] == [
         "--out-dir",
-        "/workspace/outputs/wm_marl/frontier-world-model-quality/20260710T120000Z",
+        "/workspace/outputs/wm_marl/jafar-jasmine-quality/20260716T120000Z",
     ]
 
 
-def test_frontier_quality_job_installs_dmc_extra_without_duplicates() -> None:
+def test_jafar_jasmine_quality_job_installs_dmc_extra_without_duplicates() -> None:
     args = argparse.Namespace(
-        job="frontier-world-model-quality",
+        job="jafar-jasmine-quality",
         sync_extra=["brax", "dmc"],
     )
 
@@ -190,6 +199,25 @@ def test_remote_job_script_skips_unused_menagerie_download_for_dmc_extra() -> No
     assert script.index('mkdir -p "$MENAGERIE_DIR"') < script.index(
         "uv run world-marl-verify-install"
     )
+
+
+def test_jafar_jasmine_quality_bootstraps_warp_vision_without_changing_jax() -> None:
+    script = runpod.remote_job_script(
+        "/root/wm-marl",
+        [".venv/bin/world-marl-jafar-jasmine-quality"],
+        skip_uv_sync=False,
+        sync_extras=["dmc"],
+    )
+
+    bootstrap = (
+        "uv pip install --python .venv/bin/python --upgrade --no-deps "
+        "playground==0.2.0 mujoco==3.6.0 mujoco-mjx==3.6.0 warp-lang==1.11.0"
+    )
+    assert bootstrap in script
+    assert script.index(bootstrap) < script.index(".venv/bin/world-marl-verify-install")
+    assert ".venv/bin/python -c" in script
+    assert "jax==" not in bootstrap
+    assert "flax==" not in bootstrap
 
 
 def test_loads_runpod_api_key_from_dotenv_when_missing(tmp_path, monkeypatch):

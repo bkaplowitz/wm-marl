@@ -9,30 +9,17 @@ def world_model_sources() -> dict[str, dict[str, Any]]:
             "paper": "DreamerV3: Mastering Diverse Domains through World Models",
             "paper_url": "https://arxiv.org/abs/2301.04104",
         },
-        "genie_2": {
-            "announcement": "Genie 2: A large-scale foundation world model",
-            "announcement_url": "https://deepmind.google/blog/genie-2-a-large-scale-foundation-world-model/",
-            "role": "primary continuous latent diffusion target",
-        },
-        "genie": {
-            "paper": "Genie: Generative Interactive Environments",
-            "paper_url": "https://arxiv.org/abs/2402.15391",
-            "role": "genie1_vq_maskgit_ablation",
-        },
-        "genie_3": {
-            "announcement": "Genie 3: A new frontier for world models",
-            "announcement_url": "https://deepmind.google/blog/genie-3-a-new-frontier-for-world-models/",
-            "role": "capability target; complete architecture is not public",
-        },
         "jasmine": {
             "paper": "Jasmine",
             "paper_url": "https://arxiv.org/abs/2510.27002",
             "repo_url": "https://github.com/p-doom/jasmine",
-            "role": "implementation reference",
+            "commit": "420859bc99eecf6b07a7e9edf65d5d145935f1e1",
+            "role": "continuous MAE and diffusion-forcing implementation source",
         },
         "jafar": {
             "repo_url": "https://github.com/FLAIROx/jafar",
-            "role": "implementation reference",
+            "commit": "5ff9fc7d5d744c8c2797ba3ad0a095ed7f2e2665",
+            "role": "VQ-VAE and MaskGIT implementation source",
         },
         "dm_control": {
             "repo_url": "https://github.com/google-deepmind/dm_control",
@@ -42,9 +29,10 @@ def world_model_sources() -> dict[str, dict[str, Any]]:
         },
         "mujoco_playground": {
             "repo_url": "https://github.com/google-deepmind/mujoco_playground",
-            "role": "JAX-native DMC-style control adapter",
-            "physics_backend": "mjx",
-            "observation_mode": "vector",
+            "role": "JAX-native Cartpole vision evaluation",
+            "physics_backend": "mjx_warp",
+            "renderer_backend": "mjwarp_batch_renderer",
+            "observation_mode": "pixels",
         },
     }
 

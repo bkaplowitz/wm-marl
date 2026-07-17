@@ -3,13 +3,13 @@
 ## Scope
 
 `world_marl.jafar` is a source-derived JAX/Flax Linen port of the Jafar
-tokenizer, latent-action model (LAM), and MaskGIT dynamics stack. The source is
+Jafar VQ-VAE tokenizer, latent-action model (LAM), and MaskGIT dynamics stack. The source is
 `FLAIROx/jafar` at commit `5ff9fc7d5d744c8c2797ba3ad0a095ed7f2e2665`.
 The port preserves the model equations, tensor layouts, initializers,
 straight-through boundaries, losses, schedules, and source-sized defaults.
 
-The package is one independent world-model arm. It is not a Genie2
-compatibility layer and does not make Genie2 or Genie3 implementation claims.
+The package is one independent world-model arm. It is not a compatibility
+layer and makes only the source-conformance claims documented here.
 
 ## Source model
 

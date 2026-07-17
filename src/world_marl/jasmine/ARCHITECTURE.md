@@ -3,14 +3,15 @@
 ## Scope
 
 `world_marl.jasmine` is a source-derived JAX/Flax Linen port of the Jasmine
-continuous-tokenizer diffusion baseline. The source is `p-doom/jasmine` at
+Jasmine continuous MAE tokenizer and diffusion-forcing baseline. The source is
+`p-doom/jasmine` at
 commit `420859bc99eecf6b07a7e9edf65d5d145935f1e1`. The upstream implementation
 uses Flax NNX; this repository translates it to Linen on JAX 0.4.36 and Flax
 0.10.4 without changing equations, layouts, initializers, dtypes, or
 stop-gradient boundaries.
 
 Jasmine is an independent world-model arm. It is not an alias for Jafar or the
-removed `genie2_continuous_jax` package.
+removed predecessor package.
 
 ## Shared axial transformer
 

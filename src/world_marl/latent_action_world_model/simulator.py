@@ -101,6 +101,56 @@ def _jasmine_features(
     return jnp.concatenate([latent_features, jax.nn.one_hot(action_codes, 6)], axis=-1)
 
 
+def infer_jafar_codes(
+    model: JafarWorldModel,
+    params,
+    videos: jax.Array,
+) -> jax.Array:
+    outputs = model.apply(
+        {"params": _frozen_params(params)},
+        videos,
+        method=lambda module, values: module.lam.vq_encode(values, training=False),
+    )
+    return jax.lax.stop_gradient(outputs["indices"]).reshape(
+        videos.shape[0], videos.shape[1] - 1
+    )
+
+
+def infer_jasmine_codes(
+    model: JasmineWorldModel,
+    params,
+    videos: jax.Array,
+) -> jax.Array:
+    outputs = model.apply(
+        {"params": _frozen_params(params)},
+        videos,
+        method=lambda module, values: module.lam.vq_encode(values, training=False),
+    )
+    return jax.lax.stop_gradient(outputs["indices"]).reshape(
+        videos.shape[0], videos.shape[1] - 1
+    )
+
+
+def jafar_transition_features(
+    model: JafarWorldModel,
+    params,
+    videos: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    codes = infer_jafar_codes(model, params, videos)[:, 0]
+    tokens = _jafar_tokens(model, params, videos[:, 1:])
+    return _jafar_features(model, params, tokens, codes), codes
+
+
+def jasmine_transition_features(
+    model: JasmineWorldModel,
+    params,
+    videos: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    codes = infer_jasmine_codes(model, params, videos)[:, 0]
+    latents = _jasmine_latents(model, params, videos[:, 1:])
+    return _jasmine_features(latents, codes), codes
+
+
 def initialize_jafar_state(
     model: JafarWorldModel,
     params,

@@ -36,9 +36,22 @@ transformer and attention, vector quantization, MAE tokenizer, latent action
 model, diffusion-forcing dynamics, WSD scheduling, training loss, and sampling
 logic.
 
+## MuJoCo Playground
+
+- Project: MuJoCo Playground
+- Repository: `https://github.com/google-deepmind/mujoco_playground`
+- GPU validation package: `playground==0.2.0`
+- License: Apache License, Version 2.0.
+
+The `playground-vision:CartpoleBalance` adapter uses the upstream registry,
+MJX/Warp implementation, MJWarp batch renderer, and `pixels/view_0`
+observation contract. The local adapter only converts the upstream grayscale
+frame stack from `[-0.5, 0.5]` to the repository pixel contract `[0, 1]` and
+adds scan-compatible environment metadata.
+
 ## Apache License 2.0
 
-Both projects are distributed under the Apache License, Version 2.0. A copy of
+These projects are distributed under the Apache License, Version 2.0. A copy of
 that license is available at `https://www.apache.org/licenses/LICENSE-2.0`.
 Unless required by applicable law or agreed to in writing, software distributed
 under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR

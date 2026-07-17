@@ -34,6 +34,16 @@ def make_single_agent_adapter(
     image_size: int = 64,
     dmc_camera_id: int = 0,
 ) -> Any:
+    if env_name.startswith("playground-vision:"):
+        from world_marl.envs.playground_dmc_adapter import PlaygroundVisionAdapter
+
+        return PlaygroundVisionAdapter(
+            env_name.split(":", 1)[1],
+            num_envs=num_envs,
+            max_cycles=max_cycles,
+            seed=seed,
+            image_size=image_size,
+        )
     if env_name.startswith("dmc-pixels:"):
         from world_marl.envs.dmc_pixel_adapter import (
             DMCPixelAdapter,
@@ -91,8 +101,8 @@ def make_single_agent_adapter(
         )
     raise ValueError(
         "--env must be formatted as synthetic:<name>, brax:<env>, "
-        "gymnax:<env_id>, pixels:<env_id>, dmc:<domain>/<task>, or "
-        "dmc-pixels:<domain>/<task>"
+        "gymnax:<env_id>, pixels:<env_id>, dmc:<domain>/<task>, "
+        "dmc-pixels:<domain>/<task>, or playground-vision:<env_id>"
     )
 
 
@@ -222,6 +232,7 @@ def collect_adapter_sequence(
         "brax": "brax",
         "dmc": "mujoco_playground",
         "dmc-pixels": "dm_control",
+        "playground-vision": "mujoco_playground",
         "gymnax": "gymnax",
         "pixels": "synthetic",
         "synthetic": "synthetic",

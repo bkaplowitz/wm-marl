@@ -9,7 +9,8 @@ from typing import Any
 
 ARM_COMMANDS = {
     "dreamer_v3_baseline": "world-marl-train-dreamer-v3-baseline",
-    "genie2_continuous_jax": "world-marl-train-genie2-continuous-jax",
+    "jafar": "world-marl-train-jafar",
+    "jasmine": "world-marl-train-jasmine",
 }
 
 FIELDS = (
@@ -17,15 +18,10 @@ FIELDS = (
     "env",
     "seed",
     "status",
-    "environment_backend",
-    "observation_mode",
-    "final_loss",
-    "real_env_return",
-    "real_env_bridged_return",
-    "real_env_transitions",
-    "model_updates",
-    "imagined_transitions",
-    "learning_gate_passed",
+    "random_return",
+    "learned_simulator_return",
+    "bridged_real_return",
+    "final_dynamics_loss",
     "summary_path",
 )
 
@@ -45,6 +41,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Visual/world-model arm to launch before aggregation.",
     )
     parser.add_argument("--env", default="synthetic:image-grid")
+    parser.add_argument("--expert-calibration", type=Path)
     parser.add_argument("--out-dir", type=Path, default=Path("runs/visual_wm_compare"))
     parser.add_argument("--collect-steps", type=int, default=6)
     parser.add_argument("--num-envs", type=int, default=4)
@@ -64,20 +61,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def load_summary(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text())
+    metrics = payload.get("metrics", {})
     return {
         "model": payload.get("model", path.parent.name),
         "env": payload.get("env"),
         "seed": payload.get("seed"),
         "status": payload.get("status", "unknown"),
-        "environment_backend": payload.get("environment_backend"),
-        "observation_mode": payload.get("observation_mode"),
-        "final_loss": payload.get("final_loss"),
-        "real_env_return": payload.get("real_env_return"),
-        "real_env_bridged_return": payload.get("real_env_bridged_return"),
-        "real_env_transitions": payload.get("real_env_transitions"),
-        "model_updates": payload.get("model_updates"),
-        "imagined_transitions": payload.get("imagined_transitions"),
-        "learning_gate_passed": payload.get("learning_gate_passed"),
+        "random_return": metrics.get("random_return"),
+        "learned_simulator_return": metrics.get("learned_simulator_return"),
+        "bridged_real_return": metrics.get("bridged_real_return"),
+        "final_dynamics_loss": metrics.get("final_dynamics_loss"),
         "summary_path": str(path),
     }
 
@@ -103,6 +96,7 @@ def build_arm_command(
     policy_train_steps: int,
     eval_episodes: int,
     allow_fail: bool,
+    expert_calibration: Path | None = None,
     seed: int | None = None,
     image_size: int | None = None,
     dmc_camera_id: int | None = None,
@@ -122,19 +116,34 @@ def build_arm_command(
         env,
         "--out-dir",
         str(out_dir),
-        "--collect-steps",
+        "--time-steps",
         str(collect_steps),
         "--num-envs",
         str(num_envs),
         "--max-cycles",
         str(max_cycles),
-        "--train-steps",
-        str(train_steps),
         "--policy-train-steps",
         str(policy_train_steps),
         "--eval-episodes",
         str(eval_episodes),
     ]
+    if arm in {"jafar", "jasmine"}:
+        if expert_calibration is None:
+            raise ValueError(f"{arm} requires --expert-calibration")
+        command.extend(
+            (
+                "--expert-calibration",
+                str(expert_calibration),
+                "--tokenizer-steps",
+                str(train_steps),
+                "--lam-steps",
+                str(train_steps),
+                "--dynamics-steps",
+                str(train_steps),
+            )
+        )
+    else:
+        command.extend(("--train-steps", str(train_steps)))
     if allow_fail:
         command.append("--allow-fail")
     if seed is not None:
@@ -166,6 +175,7 @@ def _dispatch_arms(args: argparse.Namespace) -> list[Path]:
             policy_train_steps=args.policy_train_steps,
             eval_episodes=args.eval_episodes,
             allow_fail=args.allow_fail,
+            expert_calibration=args.expert_calibration,
             seed=args.seed,
             image_size=args.image_size,
             dmc_camera_id=args.dmc_camera_id,

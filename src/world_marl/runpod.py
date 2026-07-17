@@ -138,7 +138,7 @@ def parse_args() -> argparse.Namespace:
             "compare-world-models",
             "benchmark-policy",
             "compare-single-wm",
-            "frontier-world-model-quality",
+            "jafar-jasmine-quality",
             "optuna-single-genwm",
         ),
         default="compare-world-models",
@@ -252,7 +252,7 @@ def utc_stamp() -> str:
 
 def required_sync_extras(args: argparse.Namespace) -> list[str]:
     extras = list(args.sync_extra)
-    if args.job == "frontier-world-model-quality" and "dmc" not in extras:
+    if args.job == "jafar-jasmine-quality" and "dmc" not in extras:
         extras.append("dmc")
     return extras
 
@@ -484,7 +484,7 @@ def build_job_spec(args: argparse.Namespace, run_id: str) -> JobSpec:
                 *job_args,
             ],
         )
-    if args.job == "frontier-world-model-quality":
+    if args.job == "jafar-jasmine-quality":
         job_args = [*args.job_args, "--out-dir", remote_out_dir]
         return JobSpec(
             remote_out_dir=remote_out_dir,
@@ -493,9 +493,7 @@ def build_job_spec(args: argparse.Namespace, run_id: str) -> JobSpec:
                 "env",
                 f"XLA_FLAGS={DEFAULT_XLA_FLAGS}",
                 "MUJOCO_GL=egl",
-                "uv",
-                "run",
-                "world-marl-frontier-wm-quality",
+                ".venv/bin/world-marl-jafar-jasmine-quality",
                 *job_args,
             ],
         )
@@ -835,25 +833,49 @@ def remote_job_script(
         f"cd {shlex.quote(remote_repo_dir)}",
         "python -m pip install -U uv",
     ]
+    quality_job = any(
+        item.endswith("world-marl-jafar-jasmine-quality") for item in job_command
+    )
     if not skip_uv_sync:
         extras = "".join(
             f" --extra {extra}" for extra in ("dev", "cuda12", *sync_extras)
         )
         commands.append(f"uv sync --python 3.11{extras}")
+    if quality_job:
+        commands.extend(
+            [
+                "uv pip install --python .venv/bin/python --upgrade --no-deps "
+                "playground==0.2.0 mujoco==3.6.0 mujoco-mjx==3.6.0 "
+                "warp-lang==1.11.0",
+                '.venv/bin/python -c "import flax, importlib.metadata as m, jax; '
+                "assert jax.__version__ == '0.4.36', jax.__version__; "
+                "assert flax.__version__ == '0.10.4', flax.__version__; "
+                "assert m.version('playground') == '0.2.0'; "
+                "assert m.version('mujoco') == '3.6.0'; "
+                "assert m.version('mujoco-mjx') == '3.6.0'; "
+                "assert m.version('warp-lang') == '1.11.0'\"",
+            ]
+        )
+    python = ".venv/bin/python" if quality_job else "uv run python"
     if "dmc" in sync_extras:
         commands.extend(
             [
-                'PLAYGROUND_SITE=$(uv run python -c "import sysconfig; '
+                f'PLAYGROUND_SITE=$({python} -c "import sysconfig; '
                 "print(sysconfig.get_path('purelib'))\")",
                 'MENAGERIE_DIR="$PLAYGROUND_SITE/mujoco_playground/'
                 'external_deps/mujoco_menagerie"',
                 'mkdir -p "$MENAGERIE_DIR"',
             ]
         )
+    verify_install = (
+        ".venv/bin/world-marl-verify-install"
+        if quality_job
+        else "uv run world-marl-verify-install"
+    )
     commands.extend(
         [
-            "uv run world-marl-verify-install",
-            'uv run python -c "import jax; devs = jax.devices(); '
+            verify_install,
+            f'{python} -c "import jax; devs = jax.devices(); '
             "assert any(d.platform == 'gpu' for d in devs), "
             "f'no GPU visible to JAX (silent CPU fallback): {devs}'; "
             "print('jax devices:', devs)\"",

@@ -15,7 +15,8 @@ from world_marl.scripts.benchmark_dmc_pixels import (
 )
 
 
-def test_build_benchmark_runs_covers_two_arms_four_tasks_five_seeds(tmp_path):
+def test_build_benchmark_runs_covers_three_arms_four_tasks_five_seeds(tmp_path):
+    calibration = tmp_path / "expert.npz"
     runs = build_benchmark_runs(
         arms=DEFAULT_ARMS,
         tasks=DEFAULT_TASKS,
@@ -31,10 +32,11 @@ def test_build_benchmark_runs_covers_two_arms_four_tasks_five_seeds(tmp_path):
         dmc_camera_id=0,
         dmc_workers=4,
         allow_fail=False,
+        expert_calibration=calibration,
     )
 
-    assert len(runs) == 40
-    assert len({run["summary_path"] for run in runs}) == 40
+    assert len(runs) == 60
+    assert len({run["summary_path"] for run in runs}) == 60
     assert {run["env"] for run in runs} == {
         f"dmc-pixels:{task}" for task in DEFAULT_TASKS
     }
@@ -46,6 +48,10 @@ def test_build_benchmark_runs_covers_two_arms_four_tasks_five_seeds(tmp_path):
         assert command[command.index("--image-size") + 1] == "64"
         assert command[command.index("--dmc-camera-id") + 1] == "0"
         assert command[command.index("--dmc-workers") + 1] == "4"
+        if run["arm"] in {"jafar", "jasmine"}:
+            assert command[command.index("--expert-calibration") + 1] == str(
+                calibration
+            )
 
 
 def test_aggregate_benchmark_summaries_reports_five_seed_interval(tmp_path):
@@ -149,9 +155,20 @@ def test_privileged_state_baseline_is_explicit_and_never_pooled(tmp_path):
 
 
 def test_benchmark_dry_run_writes_default_matrix_without_launching(tmp_path):
-    assert main(["--out-dir", str(tmp_path), "--dry-run"]) == 0
+    assert (
+        main(
+            [
+                "--out-dir",
+                str(tmp_path),
+                "--expert-calibration",
+                str(tmp_path / "expert.npz"),
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
     commands = json.loads((tmp_path / "commands.json").read_text())
-    assert len(commands) == 40
+    assert len(commands) == 60
     assert not (tmp_path / "aggregate.json").exists()
 
 
@@ -159,7 +176,7 @@ def test_aggregate_only_combines_separate_branch_summaries(tmp_path):
     summaries = []
     for model, observation_mode, env in (
         (
-            "genie2_continuous_jax",
+            "jafar",
             "pixels",
             "dmc-pixels:point_mass/easy",
         ),

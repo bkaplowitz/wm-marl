@@ -187,6 +187,43 @@ uv sync --extra brax   # brax
 uv sync --extra dmc    # dm-control
 ```
 
+### Jafar and Jasmine latent-action world models
+
+The source-derived Jafar arm combines a VQ-VAE tokenizer, discrete VQ latent
+actions, and MaskGIT dynamics. The independent Jasmine arm combines a
+continuous MAE tokenizer, discrete VQ latent actions, and diffusion-forcing
+dynamics. Their source pins, exact behavior, and repository-only RL extensions
+are documented in `src/world_marl/jafar/SOURCE_CONFORMANCE.md` and
+`src/world_marl/jasmine/SOURCE_CONFORMANCE.md`.
+
+Both training commands require a separate expert-calibration NPZ. The file
+must contain observations, actions, episode starts, environment identity, and
+provenance metadata, and all six inferred latent-action codes must be covered.
+There is no replay fallback or default action.
+
+```bash
+uv run world-marl-train-jafar \
+  --env synthetic:image-grid \
+  --expert-calibration artifacts/expert_calibration.npz \
+  --out-dir runs/jafar
+
+uv run world-marl-train-jasmine \
+  --env synthetic:image-grid \
+  --expert-calibration artifacts/expert_calibration.npz \
+  --out-dir runs/jasmine
+```
+
+The GPU acceptance job uses the JAX-native
+`playground-vision:CartpoleBalance` environment with MJX/Warp physics and the
+MJWarp batch renderer. It runs both source-sized arms at three fixed seeds with
+equal budgets and records random, learned-simulator, and bridged-real returns.
+
+```bash
+uv run world-marl-runpod \
+  --job jafar-jasmine-quality \
+  -- --expert-calibration /workspace/expert_calibration.npz
+```
+
 `world_marl.jepa` is a SIGReg-JEPA latent world model for continuous control:
 a shared-encoder self-predictive transformer that fits
 `p(z_next, reward, continue | z, continuous_action)` with a sketched

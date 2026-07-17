@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -530,3 +531,124 @@ def test_scanned_simulator_uses_existing_cnn_ppo_update_unchanged() -> None:
         )
     )
     assert str(update_jaxpr).count("scan[") >= 5
+
+
+@pytest.mark.parametrize(
+    ("arm", "entry_module"),
+    [
+        ("jafar", "world_marl.scripts.train_jafar"),
+        ("jasmine", "world_marl.scripts.train_jasmine"),
+    ],
+)
+def test_synthetic_pixel_cli_smoke_emits_complete_artifacts(
+    tmp_path, monkeypatch, arm: str, entry_module: str
+) -> None:
+    import importlib
+
+    from world_marl.latent_action_world_model.bridge import ExpertActionBridge
+    from world_marl.latent_action_world_model import runner
+
+    calibration_path = tmp_path / "expert-calibration.npz"
+    calibration_path.touch()
+    monkeypatch.setattr(
+        runner,
+        "load_expert_bridge",
+        lambda path, infer_codes: ExpertActionBridge(
+            actions=jnp.arange(6, dtype=jnp.int32)[:, None],
+            counts=jnp.ones((6,), dtype=jnp.int32),
+            environment="synthetic:image-grid",
+            provenance={"collector": "test-expert", "seed": 0},
+        ),
+    )
+    out_dir = tmp_path / arm
+    main = importlib.import_module(entry_module).main
+    exit_code = main(
+        [
+            "--env",
+            "synthetic:image-grid",
+            "--out-dir",
+            str(out_dir),
+            "--model-size",
+            "debug",
+            "--time-steps",
+            "3",
+            "--batch-size",
+            "2",
+            "--sequence-length",
+            "3",
+            "--image-size",
+            "4",
+            "--tokenizer-steps",
+            "2",
+            "--lam-steps",
+            "2",
+            "--dynamics-steps",
+            "2",
+            "--reward-continue-steps",
+            "2",
+            "--policy-train-steps",
+            "1",
+            "--imagination-horizon",
+            "2",
+            "--expert-calibration",
+            str(calibration_path),
+            "--allow-fail",
+        ]
+    )
+
+    assert exit_code == 0
+    expected_files = {
+        "config.json",
+        "sources.json",
+        "replay_metadata.json",
+        "tokenizer_metrics.jsonl",
+        "lam_metrics.jsonl",
+        "dynamics_metrics.jsonl",
+        "reward_continue_metrics.jsonl",
+        "ppo_metrics.jsonl",
+        "code_usage.json",
+        "bridge.json",
+        "real_evaluation.jsonl",
+        "rollout.png",
+        "outcome.json",
+        "summary.json",
+    }
+    assert expected_files.issubset(
+        {path.name for path in out_dir.iterdir() if path.is_file()}
+    )
+    assert {
+        "tokenizer",
+        "lam",
+        "world_model",
+        "reward_continue",
+        "ppo",
+    }.issubset({path.name for path in (out_dir / "checkpoints").iterdir()})
+
+    summary = json.loads((out_dir / "summary.json").read_text())
+    assert summary["schema_version"] == 1
+    assert summary["model"] == arm
+    assert summary["env"] == "synthetic:image-grid"
+    assert summary["bridge"]["coverage"] == 6
+    assert "genie" not in json.dumps(summary).lower()
+
+
+def test_source_arm_entry_points_are_registered() -> None:
+    root = Path(__file__).parents[1]
+    pyproject = (root / "pyproject.toml").read_text()
+
+    assert "world-marl-train-jafar" in pyproject
+    assert "world-marl-train-jasmine" in pyproject
+    assert "world-marl-jafar-jasmine-quality" in pyproject
+
+
+def test_source_training_uses_stage_specific_batch_defaults() -> None:
+    from world_marl.jafar.config import JafarConfig
+    from world_marl.latent_action_world_model.runner import _stage_videos
+
+    videos = jnp.zeros((4, 16, 64, 64, 3), dtype=jnp.float32)
+
+    tokenizer, lam, dynamics = _stage_videos(JafarConfig(), videos)
+
+    assert tokenizer.shape[0] == 48
+    assert lam.shape[0] == 36
+    assert dynamics.shape[0] == 36

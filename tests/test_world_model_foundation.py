@@ -341,18 +341,10 @@ def test_metric_keys_and_sources_cover_world_model_foundation() -> None:
 
     sources = world_model_sources()
     assert sources["dreamer_v3"]["paper_url"] == "https://arxiv.org/abs/2301.04104"
-    assert (
-        sources["genie_2"]["announcement_url"]
-        == "https://deepmind.google/blog/genie-2-a-large-scale-foundation-world-model/"
-    )
-    assert sources["genie"]["paper_url"] == "https://arxiv.org/abs/2402.15391"
-    assert sources["genie"]["role"] == "genie1_vq_maskgit_ablation"
-    assert (
-        sources["genie_3"]["announcement_url"]
-        == "https://deepmind.google/blog/genie-3-a-new-frontier-for-world-models/"
-    )
     assert sources["jasmine"]["repo_url"] == "https://github.com/p-doom/jasmine"
+    assert sources["jasmine"]["commit"] == ("420859bc99eecf6b07a7e9edf65d5d145935f1e1")
     assert sources["jafar"]["repo_url"] == "https://github.com/FLAIROx/jafar"
+    assert sources["jafar"]["commit"] == ("5ff9fc7d5d744c8c2797ba3ad0a095ed7f2e2665")
     assert sources["dm_control"]["repo_url"] == (
         "https://github.com/google-deepmind/dm_control"
     )
@@ -360,22 +352,24 @@ def test_metric_keys_and_sources_cover_world_model_foundation() -> None:
     assert sources["mujoco_playground"]["repo_url"] == (
         "https://github.com/google-deepmind/mujoco_playground"
     )
-    assert sources["mujoco_playground"]["physics_backend"] == "mjx"
-    assert sources["mujoco_playground"]["observation_mode"] == "vector"
+    assert sources["mujoco_playground"]["physics_backend"] == "mjx_warp"
+    assert sources["mujoco_playground"]["observation_mode"] == "pixels"
 
 
 def test_architecture_docs_lock_source_papers_and_boundaries() -> None:
     dreamer_doc = (
         ROOT / "src/world_marl/dreamer_v3_baseline/ARCHITECTURE.md"
     ).read_text()
-    genie_doc = (
-        ROOT / "src/world_marl/genie2_continuous_jax/ARCHITECTURE.md"
-    ).read_text()
+    jafar_doc = (ROOT / "src/world_marl/jafar/ARCHITECTURE.md").read_text()
+    jasmine_doc = (ROOT / "src/world_marl/jasmine/ARCHITECTURE.md").read_text()
     dreamer_conformance = (
         ROOT / "src/world_marl/dreamer_v3_baseline/CONFORMANCE.md"
     ).read_text()
-    genie_conformance = (
-        ROOT / "src/world_marl/genie2_continuous_jax/CONFORMANCE.md"
+    jafar_conformance = (
+        ROOT / "src/world_marl/jafar/SOURCE_CONFORMANCE.md"
+    ).read_text()
+    jasmine_conformance = (
+        ROOT / "src/world_marl/jasmine/SOURCE_CONFORMANCE.md"
     ).read_text()
 
     assert "https://arxiv.org/abs/2301.04104" in dreamer_doc
@@ -387,21 +381,14 @@ def test_architecture_docs_lock_source_papers_and_boundaries() -> None:
     assert "fixed offline dataset" not in dreamer_conformance
     assert "not a DreamerV3 benchmark run" in dreamer_conformance
 
-    assert (
-        "https://deepmind.google/blog/genie-2-a-large-scale-foundation-world-model/"
-        in genie_doc
-    )
-    assert "primary specification is Google DeepMind's public" in genie_doc
-    assert "There is no public Genie2 paper or code" in genie_doc
-    assert "continuous latent frame grid" in genie_doc
-    assert "actual user/environment actions" in genie_doc
-    assert "Classifier-free" in genie_doc
-    assert "primary dynamics is not conditioned on an inferred LAM code" in genie_doc
-    assert "VQ/MaskGIT is a Genie1 ablation" in genie_doc
-    assert "https://github.com/p-doom/jasmine" in genie_doc
-    assert "LeWM/LeJEPA additions remain separately named ablations" in genie_doc
-    assert "Exact reproduction is therefore not a defensible claim" in genie_conformance
-    assert "Jasmine Appendix C" in genie_conformance
+    assert "Jafar VQ-VAE" in jafar_doc
+    assert "MaskGIT" in jafar_doc
+    assert "5ff9fc7d5d744c8c2797ba3ad0a095ed7f2e2665" in jafar_conformance
+    assert "reward and continuation heads" in jafar_conformance
+    assert "Jasmine continuous MAE tokenizer" in jasmine_doc
+    assert "diffusion-forcing" in jasmine_doc
+    assert "420859bc99eecf6b07a7e9edf65d5d145935f1e1" in jasmine_conformance
+    assert "reward/continuation heads" in jasmine_conformance
 
 
 def test_synthetic_collector_and_artifact_writers(tmp_path: Path) -> None:
@@ -607,6 +594,40 @@ def test_make_single_agent_adapter_dispatches_jax_native_dmc(monkeypatch):
         "num_envs": 2,
         "max_cycles": 100,
         "seed": 7,
+    }
+
+
+def test_make_single_agent_adapter_dispatches_playground_vision(monkeypatch):
+    from world_marl.envs import playground_dmc_adapter
+
+    captured = {}
+
+    class _FakePlaygroundVisionAdapter:
+        def __init__(self, env_id, **kwargs):
+            captured["env_id"] = env_id
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        playground_dmc_adapter,
+        "PlaygroundVisionAdapter",
+        _FakePlaygroundVisionAdapter,
+    )
+
+    adapter = make_single_agent_adapter(
+        "playground-vision:CartpoleBalance",
+        num_envs=2,
+        max_cycles=100,
+        seed=7,
+        image_size=64,
+    )
+
+    assert isinstance(adapter, _FakePlaygroundVisionAdapter)
+    assert captured == {
+        "env_id": "CartpoleBalance",
+        "num_envs": 2,
+        "max_cycles": 100,
+        "seed": 7,
+        "image_size": 64,
     }
 
 
