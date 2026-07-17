@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from flax import struct
+from numpy.typing import ArrayLike
 
 
 @struct.dataclass
@@ -82,10 +83,10 @@ class SequenceReplayBuffer:
     def add_steps(
         self,
         *,
-        observations: np.ndarray,
-        actions: np.ndarray,
-        rewards: np.ndarray,
-        dones: np.ndarray,
+        observations: ArrayLike,
+        actions: ArrayLike,
+        rewards: ArrayLike,
+        dones: ArrayLike,
     ) -> None:
         """Bulk write a ``[T, num_envs, ...]`` block, equivalent to T ``add_step`` calls."""
         obs = np.asarray(observations, dtype=np.float32).reshape(

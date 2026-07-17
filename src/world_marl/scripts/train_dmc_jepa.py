@@ -23,6 +23,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import numpy as np
+from numpy.typing import NDArray
 from tqdm.auto import tqdm
 
 from world_marl.checkpointing import load_params, save_checkpoint
@@ -1526,11 +1527,15 @@ _SCAN_COLLECT_BLOCK = 256
 # adapter.scan_rollout caches compiled programs by id(get_action_and_value), so
 # the closures below must be built once per (config, stochastic) / action space
 # and reused across every collection and evaluation call.
-_POLICY_SCAN_ACTION_FNS: dict[tuple[JepaConfig, bool], Callable] = {}
-_RANDOM_SCAN_ACTION_FNS: dict[tuple[bool, int], Callable] = {}
+ScanActionFn = Callable[
+    [Any, jax.Array, jax.Array],
+    tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+]
+_POLICY_SCAN_ACTION_FNS: dict[tuple[JepaConfig, bool], ScanActionFn] = {}
+_RANDOM_SCAN_ACTION_FNS: dict[tuple[bool, int], ScanActionFn] = {}
 
 
-def _policy_scan_action_fn(config: JepaConfig, *, stochastic: bool) -> Callable:
+def _policy_scan_action_fn(config: JepaConfig, *, stochastic: bool) -> ScanActionFn:
     """``get_action_and_value`` wrapper around the jitted JEPA action selectors.
 
     The scan carry threads ``(state,)`` for discrete actions and
@@ -1575,7 +1580,7 @@ def _policy_scan_action_fn(config: JepaConfig, *, stochastic: bool) -> Callable:
     return action_fn
 
 
-def _random_scan_action_fn(*, discrete: bool, action_dim: int) -> Callable:
+def _random_scan_action_fn(*, discrete: bool, action_dim: int) -> ScanActionFn:
     """On-device uniform action sampler matching ``adapter.sample_actions``.
 
     Draws from the jax PRNG stream instead of the numpy ``Generator``, so the
@@ -1617,8 +1622,8 @@ def _random_scan_action_fn(*, discrete: bool, action_dim: int) -> Callable:
 
 def _scan_collect_steps(
     adapter,
-    observations: np.ndarray,
-    action_fn: Callable,
+    observations: NDArray[np.float32],
+    action_fn: ScanActionFn,
     carry,
     replay: SequenceReplayBuffer | tuple[SequenceReplayBuffer, ...] | None,
     *,
@@ -1626,7 +1631,7 @@ def _scan_collect_steps(
     policy_key: jax.Array,
     desc: str,
     quiet: bool,
-) -> tuple[np.ndarray, list[tuple[float, ...]], list[int]]:
+) -> tuple[NDArray[np.float32], list[tuple[float, ...]], list[int]]:
     """Drive ``adapter.scan_rollout`` in blocks and bulk-write replay.
 
     Device-native twin of the per-step collectors: each block is one jitted
@@ -1650,7 +1655,7 @@ def _scan_collect_steps(
             policy_key=block_key,
             observations=observations,
         )
-        obs_seq, action_seq, _lp, _values, _ent, reward_seq, done_seq = ys
+        obs_seq, action_seq, _, _, _, reward_seq, done_seq = ys
         block_returns, block_lengths = _replay_scan_episode_bookkeeping(
             adapter, ys, block
         )
@@ -1679,7 +1684,7 @@ def _scan_collect_steps(
 
 def _scan_evaluate_episodes(
     adapter,
-    action_fn: Callable,
+    action_fn: ScanActionFn,
     carry,
     *,
     target_episodes: int,
@@ -1751,7 +1756,7 @@ def _collect_random_steps(
                 jnp.asarray(adapter.action_high, dtype=jnp.float32),
             )
         )
-        observations, _returns, _lengths = _scan_collect_steps(
+        observations, _, _ = _scan_collect_steps(
             adapter,
             observations,
             action_fn,
