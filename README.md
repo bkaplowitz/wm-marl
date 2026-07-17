@@ -217,11 +217,14 @@ The GPU acceptance job uses the JAX-native
 `playground-vision:CartpoleBalance` environment with MJX/Warp physics and the
 MJWarp batch renderer. It runs both source-sized arms at three fixed seeds with
 equal budgets and records random, learned-simulator, and bridged-real returns.
+Place the separately generated calibration file at
+`artifacts/expert_calibration.npz`; the Runpod wrapper syncs that ignored local
+artifact with the rest of the worktree to `/root/wm-marl`.
 
 ```bash
 uv run world-marl-runpod \
   --job jafar-jasmine-quality \
-  -- --expert-calibration /workspace/expert_calibration.npz
+  -- --expert-calibration /root/wm-marl/artifacts/expert_calibration.npz
 ```
 
 `world_marl.jepa` is a SIGReg-JEPA latent world model for continuous control:
