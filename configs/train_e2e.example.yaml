@@ -8,7 +8,6 @@
 #   world-marl-train-e2e --config configs/train_e2e.example.yaml --wm-fit-steps 5000
 #
 # An unknown key is a hard error, so typos surface immediately.
-
 algorithm: ippo
 substrate: coins
 num_envs: 4
@@ -17,7 +16,6 @@ total_env_steps: 100000
 eval_episodes: 50
 num_runs: 3
 seed: 0
-
 prefit_world_model: true
 wm_flow_type: transformer
 wm_fit_steps: 10000

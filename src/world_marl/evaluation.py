@@ -119,9 +119,7 @@ def evaluate_policy_scan(
 
     if algorithm == "ippo":
 
-        def action_fn(
-            observations: jnp.ndarray, action_key: jax.Array
-        ) -> jnp.ndarray:
+        def action_fn(observations: jnp.ndarray, action_key: jax.Array) -> jnp.ndarray:
             flat_obs = observations.reshape((num_envs * num_agents, -1))
             actions = select_actions(
                 train_state, action_key, flat_obs, deterministic=deterministic
@@ -130,9 +128,7 @@ def evaluate_policy_scan(
 
     elif algorithm == "mappo":
 
-        def action_fn(
-            observations: jnp.ndarray, action_key: jax.Array
-        ) -> jnp.ndarray:
+        def action_fn(observations: jnp.ndarray, action_key: jax.Array) -> jnp.ndarray:
             observations = observations.astype(jnp.float32)
             flat_obs = observations.reshape((num_envs * num_agents, -1))
             flat_central = build_vector_central(observations, jnp).reshape(
@@ -173,9 +169,7 @@ def evaluate_random_policy_scan(
 
     def action_fn(observations: jnp.ndarray, action_key: jax.Array) -> jnp.ndarray:
         del observations
-        return jax.random.randint(
-            action_key, (num_envs, num_agents), 0, action_dim
-        )
+        return jax.random.randint(action_key, (num_envs, num_agents), 0, action_dim)
 
     return _scan_eval(
         adapter, action_fn, episodes=episodes, policy_key=jax.random.PRNGKey(seed)

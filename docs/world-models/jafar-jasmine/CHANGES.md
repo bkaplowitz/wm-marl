@@ -64,6 +64,12 @@ documentation-first commit.
 - Optional local MuJoCo Playground vector regression also passed after its
   one-time external asset initialization.
 - Ruff checks for all migration files passed.
+- Repository-wide non-integration suite: 433 passed, 9 deselected; exit 0;
+  486.25 seconds.
+- `pre-commit run --all-files`: yamlfmt, keep-sorted, Ruff check, and Ruff
+  format passed. Its first pass made only mechanical formatting changes in the
+  example training YAML and existing evaluation signatures; the second pass
+  was clean.
 
 ### Pending acceptance evidence
 
