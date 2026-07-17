@@ -603,60 +603,6 @@ def reset_policy_heads(
     )
 
 
-def predict_replay_latents(
-    apply_fn,
-    model_params: FrozenDict,
-    observations: jax.Array,
-    actions: jax.Array,
-    config: JepaConfig,
-    *,
-    horizon: int,
-) -> jax.Array:
-    """Roll replay actions through the model from an encoded real context."""
-
-    context = apply_fn(
-        {"params": model_params},
-        observations[:, : config.context_window],
-        method=JepaWorldModel.encode,
-    )
-    action_context = actions[:, : config.context_window]
-    future_actions = actions[
-        :, config.context_window - 1 : config.context_window - 1 + horizon
-    ]
-
-    def step(carry, action_t):
-        latent_context, previous_actions = carry
-        model_actions = replace_last_action_context(
-            previous_actions,
-            action_t,
-            config,
-        )
-        z_ensemble, _, _ = apply_fn(
-            {"params": model_params},
-            latent_context,
-            model_actions,
-            method=JepaWorldModel.predict_next_ensemble_from_history,
-        )
-        next_z = jnp.mean(z_ensemble, axis=0)
-        next_context = jnp.concatenate(
-            [latent_context[:, 1:], next_z[:, None]],
-            axis=1,
-        )
-        next_actions = append_action_context(
-            model_actions,
-            jnp.zeros_like(action_t),
-            config,
-        )
-        return (next_context, next_actions), next_z
-
-    _, predicted = jax.lax.scan(
-        step,
-        (context, action_context),
-        jnp.swapaxes(future_actions, 0, 1),
-    )
-    return jnp.swapaxes(predicted, 0, 1)
-
-
 @partial(
     jax.jit,
     static_argnames=(
@@ -673,8 +619,6 @@ def predict_replay_latents(
         "real_critic_horizon",
         "real_critic_return_mode",
         "real_critic_all_steps",
-        "predicted_latent_critic_enabled",
-        "predicted_latent_critic_horizon",
         "slow_value_regularization_coef",
         "apply_actor_update",
     ),
@@ -711,9 +655,6 @@ def continuous_policy_train_step(
     real_critic_horizon: int = 32,
     real_critic_return_mode: ReplayCriticReturnMode = "reward-only",
     real_critic_all_steps: bool = False,
-    predicted_latent_critic_enabled: bool = False,
-    predicted_latent_critic_coef: float = 0.0,
-    predicted_latent_critic_horizon: int = 8,
     slow_value_regularization_coef: float = 0.0,
     apply_actor_update: bool = True,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
@@ -1099,22 +1040,6 @@ def continuous_policy_train_step(
             dtype=imagined_value_loss.dtype,
         )
         real_finite_fraction = jnp.asarray(1.0, dtype=imagined_value_loss.dtype)
-        predicted_latent_value_loss = jnp.asarray(
-            0.0,
-            dtype=imagined_value_loss.dtype,
-        )
-        predicted_latent_value_mean = jnp.asarray(
-            0.0,
-            dtype=imagined_value_loss.dtype,
-        )
-        predicted_latent_encoded_value_mae = jnp.asarray(
-            0.0,
-            dtype=imagined_value_loss.dtype,
-        )
-        predicted_latent_valid_fraction = jnp.asarray(
-            0.0,
-            dtype=imagined_value_loss.dtype,
-        )
         if real_critic_loss_enabled:
             if real_critic_batch is None:
                 raise ValueError(
@@ -1195,78 +1120,6 @@ def continuous_policy_train_step(
                 real_targets,
                 real_value_loss,
             )
-            if predicted_latent_critic_enabled:
-                if not real_critic_all_steps:
-                    raise ValueError(
-                        "predicted latent critic anchoring requires "
-                        "real_critic_all_steps=True"
-                    )
-                if (
-                    config.context_window + predicted_latent_critic_horizon
-                    > real_critic_horizon
-                ):
-                    raise ValueError(
-                        "predicted latent critic horizon exceeds the available "
-                        "real critic future"
-                    )
-                predicted_latents = predict_replay_latents(
-                    state.apply_fn,
-                    model_params,
-                    real_critic_batch.observations,
-                    real_critic_batch.actions,
-                    config,
-                    horizon=predicted_latent_critic_horizon,
-                )
-                predicted_targets = real_targets[
-                    :,
-                    config.context_window : config.context_window
-                    + predicted_latent_critic_horizon,
-                ]
-                _, predicted_value_logits = actor_value_logits_from_latent(
-                    state.apply_fn,
-                    params,
-                    predicted_latents,
-                )
-                predicted_values = value_predictions_from_logits(
-                    predicted_value_logits,
-                    config,
-                )
-                predicted_validity = jnp.cumprod(
-                    1.0
-                    - real_critic_batch.dones[
-                        :,
-                        config.context_window - 1 : config.context_window
-                        - 1
-                        + predicted_latent_critic_horizon,
-                    ],
-                    axis=1,
-                )
-                predicted_latent_valid_fraction = jnp.mean(predicted_validity)
-                predicted_latent_value_loss = masked_mean(
-                    value_prediction_loss(
-                        predicted_value_logits,
-                        predicted_targets,
-                        config,
-                    ),
-                    predicted_validity,
-                )
-                encoded_values = real_values[
-                    :,
-                    config.context_window : config.context_window
-                    + predicted_latent_critic_horizon,
-                ]
-                predicted_latent_encoded_value_mae = masked_mean(
-                    jnp.abs(predicted_values - jax.lax.stop_gradient(encoded_values)),
-                    predicted_validity,
-                )
-                predicted_latent_value_mean = masked_mean(
-                    predicted_values,
-                    predicted_validity,
-                )
-                value_loss = (
-                    value_loss
-                    + predicted_latent_critic_coef * predicted_latent_value_loss
-                )
         finite_fraction = _all_finite_fraction(values, critic_targets, value_loss)
         critic_metrics = {
             "policy/value_loss": value_loss,
@@ -1298,24 +1151,6 @@ def continuous_policy_train_step(
             "policy/replay_critic_target_abs_mean": real_target_abs_mean,
             "policy/replay_critic_target_clip_fraction": (real_target_clip_fraction),
             "policy/replay_critic_finite_fraction": real_finite_fraction,
-            "policy/predicted_latent_critic_loss": predicted_latent_value_loss,
-            "policy/predicted_latent_critic_coef": jnp.asarray(
-                predicted_latent_critic_coef,
-                dtype=value_loss.dtype,
-            ),
-            "policy/predicted_latent_critic_enabled": jnp.asarray(
-                float(predicted_latent_critic_enabled),
-                dtype=value_loss.dtype,
-            ),
-            "policy/predicted_latent_critic_horizon": jnp.asarray(
-                predicted_latent_critic_horizon,
-                dtype=value_loss.dtype,
-            ),
-            "policy/predicted_latent_critic_value_mean": (predicted_latent_value_mean),
-            "policy/predicted_latent_encoded_value_mae": (
-                predicted_latent_encoded_value_mae
-            ),
-            "policy/predicted_latent_valid_fraction": (predicted_latent_valid_fraction),
             "policy/value_finite_fraction": finite_fraction,
         }
         return value_loss, critic_metrics

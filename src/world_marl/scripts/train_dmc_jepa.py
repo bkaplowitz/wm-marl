@@ -385,21 +385,6 @@ def parse_args() -> argparse.Namespace:
     policy.add_argument("--policy-replay-critic-batch-size", type=int, default=16)
     policy.add_argument("--policy-replay-critic-horizon", type=int, default=64)
     policy.add_argument(
-        "--policy-predicted-latent-critic-coef",
-        type=float,
-        default=0.0,
-        help=(
-            "Anchor critic predictions on model-predicted replay latents to "
-            "the corresponding real replay returns; 0 disables the loss."
-        ),
-    )
-    policy.add_argument(
-        "--policy-predicted-latent-critic-horizon",
-        type=int,
-        default=15,
-        help="Replay future steps used by predicted-latent critic anchoring.",
-    )
-    policy.add_argument(
         "--policy-replay-critic-return-mode",
         choices=("reward-only", "lambda"),
         default="lambda",
@@ -666,7 +651,6 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         "imag_horizon",
         "policy_replay_critic_batch_size",
         "policy_replay_critic_horizon",
-        "policy_predicted_latent_critic_horizon",
         "online_collect_steps",
         "online_recent_replay_steps",
         "online_checkpoint_interval",
@@ -709,7 +693,6 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         "reward_output_scale",
         "actor_entropy_coef",
         "policy_replay_critic_loss_coef",
-        "policy_predicted_latent_critic_coef",
         "policy_slow_value_regularization_coef",
     )
     for name in nonnegative_float:
@@ -792,25 +775,6 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--policy-reset-start-fraction must be in [0, 1]")
     if args.policy_reset_start_max_age < 0:
         parser.error("--policy-reset-start-max-age must be >= 0")
-    if args.policy_predicted_latent_critic_coef > 0.0:
-        if args.policy_replay_critic_loss_coef <= 0.0:
-            parser.error(
-                "--policy-predicted-latent-critic-coef requires a positive "
-                "--policy-replay-critic-loss-coef"
-            )
-        if not args.policy_replay_critic_all_steps:
-            parser.error(
-                "--policy-predicted-latent-critic-coef requires "
-                "--policy-replay-critic-all-steps"
-            )
-        if (
-            args.context_window + args.policy_predicted_latent_critic_horizon
-            > args.policy_replay_critic_horizon
-        ):
-            parser.error(
-                "context window plus predicted-latent critic horizon must not "
-                "exceed --policy-replay-critic-horizon"
-            )
     if (
         args.online_recent_replay_max_oversample != 0.0
         and args.online_recent_replay_max_oversample < 1.0
@@ -3265,13 +3229,6 @@ def _train_policy(
             real_critic_horizon=args.policy_replay_critic_horizon,
             real_critic_return_mode=args.policy_replay_critic_return_mode,
             real_critic_all_steps=args.policy_replay_critic_all_steps,
-            predicted_latent_critic_enabled=(
-                args.policy_predicted_latent_critic_coef > 0.0
-            ),
-            predicted_latent_critic_coef=(args.policy_predicted_latent_critic_coef),
-            predicted_latent_critic_horizon=(
-                args.policy_predicted_latent_critic_horizon
-            ),
             slow_value_regularization_coef=(args.policy_slow_value_regularization_coef),
             apply_actor_update=apply_actor_update,
         )
@@ -3345,12 +3302,6 @@ def _train_policy(
             "policy_actor_kl_reference_mode": args.policy_actor_kl_reference_mode,
             "policy_actor_kl_slow_reference_used": slow_actor_reference_used,
             "policy_replay_critic_loss_coef": args.policy_replay_critic_loss_coef,
-            "policy_predicted_latent_critic_coef": (
-                args.policy_predicted_latent_critic_coef
-            ),
-            "policy_predicted_latent_critic_horizon": (
-                args.policy_predicted_latent_critic_horizon
-            ),
             "critic_warmup_steps": args.critic_warmup_steps,
             "critic_final_metrics": to_jsonable(critic_metrics),
             "policy_final_metrics": to_jsonable(metrics),
