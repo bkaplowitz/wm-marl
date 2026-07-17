@@ -12,12 +12,12 @@ from world_marl.jepa.reproducibility import (
 
 
 def test_isolated_jax_streams_do_not_depend_on_other_stream_consumption():
-    interleaved = JaxRngStreams.create(7, isolated=True)
+    interleaved = JaxRngStreams.create(7)
     model_first = interleaved.take("world_model")
     interleaved.take("evaluation")
     model_second = interleaved.take("world_model")
 
-    model_only = JaxRngStreams.create(7, isolated=True)
+    model_only = JaxRngStreams.create(7)
     expected_first = model_only.take("world_model")
     expected_second = model_only.take("world_model")
 
@@ -26,12 +26,12 @@ def test_isolated_jax_streams_do_not_depend_on_other_stream_consumption():
 
 
 def test_isolated_numpy_streams_do_not_depend_on_other_stream_consumption():
-    interleaved = NumpyRngStreams.create(11, isolated=True)
+    interleaved = NumpyRngStreams.create(11)
     model_first = interleaved.get("world_model_replay").integers(0, 10_000)
     interleaved.get("online_collection").integers(0, 10_000, size=100)
     model_second = interleaved.get("world_model_replay").integers(0, 10_000)
 
-    model_only = NumpyRngStreams.create(11, isolated=True)
+    model_only = NumpyRngStreams.create(11)
     expected_first = model_only.get("world_model_replay").integers(0, 10_000)
     expected_second = model_only.get("world_model_replay").integers(0, 10_000)
 
