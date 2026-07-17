@@ -35,6 +35,8 @@ class DecoderConfig:
     hidden_dim: int = 256
     learning_rate: float = 1e-3
     grad_clip_norm: float = 100.0
+    arch: str = "mlp"
+    image_shape: tuple[int, int, int] | None = None
 
     def __post_init__(self) -> None:
         if self.latent_dim < 1:
@@ -47,6 +49,22 @@ class DecoderConfig:
             raise ValueError("learning_rate must be > 0")
         if self.grad_clip_norm < 0.0:
             raise ValueError("grad_clip_norm must be >= 0")
+        if self.arch not in ("mlp", "conv"):
+            raise ValueError(f"arch must be 'mlp' or 'conv', got {self.arch!r}")
+        if self.arch == "conv":
+            if self.image_shape is None:
+                raise ValueError("conv decoder requires image_shape")
+            height, width, channels = self.image_shape
+            if height % 16 != 0 or width % 16 != 0:
+                raise ValueError(
+                    "conv decoder requires image height/width divisible by 16, "
+                    f"got {self.image_shape}"
+                )
+            if height * width * channels != self.observation_dim:
+                raise ValueError(
+                    f"image_shape {self.image_shape} must flatten to "
+                    f"observation_dim {self.observation_dim}"
+                )
 
 
 class ObservationDecoder(nn.Module):
@@ -65,11 +83,44 @@ class ObservationDecoder(nn.Module):
         return nn.Dense(self.observation_dim)(x)
 
 
+class ConvObservationDecoder(nn.Module):
+    """Conv-transpose probe for image observations, flattened on output.
+
+    Latents may carry arbitrary leading batch dims; the output flattens back
+    to ``(..., observation_dim)`` so the MSE/rollout code stays arch-agnostic.
+    """
+
+    observation_dim: int
+    image_shape: tuple[int, int, int]
+    base_channels: int = 256
+
+    @nn.compact
+    def __call__(self, latents: jax.Array) -> jax.Array:
+        height, width, channels = self.image_shape
+        base_h, base_w = height // 16, width // 16
+        x = latents.astype(jnp.float32)
+        batch_shape = x.shape[:-1]
+        x = x.reshape((-1, x.shape[-1]))
+        x = nn.Dense(base_h * base_w * self.base_channels)(x)
+        x = x.reshape((-1, base_h, base_w, self.base_channels))
+        for features in (128, 64, 32):
+            x = nn.ConvTranspose(features, kernel_size=(4, 4), strides=(2, 2))(x)
+            x = nn.gelu(x)
+        x = nn.ConvTranspose(channels, kernel_size=(4, 4), strides=(2, 2))(x)
+        return x.reshape((*batch_shape, self.observation_dim))
+
+
 def create_decoder_train_state(key: jax.Array, config: DecoderConfig) -> TrainState:
-    module = ObservationDecoder(
-        observation_dim=config.observation_dim,
-        hidden_dim=config.hidden_dim,
-    )
+    if config.arch == "conv":
+        module = ConvObservationDecoder(
+            observation_dim=config.observation_dim,
+            image_shape=config.image_shape,
+        )
+    else:
+        module = ObservationDecoder(
+            observation_dim=config.observation_dim,
+            hidden_dim=config.hidden_dim,
+        )
     params = module.init(
         key,
         jnp.zeros((1, config.latent_dim), dtype=jnp.float32),

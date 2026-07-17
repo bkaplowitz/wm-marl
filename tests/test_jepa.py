@@ -1030,6 +1030,41 @@ def _tree_changed(left, right) -> bool:
     )
 
 
+def _conv_decoder_config(stack: int) -> DecoderConfig:
+    image_shape = (16, 16, 3 * stack)
+    return DecoderConfig(
+        latent_dim=8,
+        observation_dim=int(np.prod(image_shape)),
+        arch="conv",
+        image_shape=image_shape,
+    )
+
+
+@pytest.mark.parametrize("stack", [1, 2])
+def test_conv_decoder_shape_round_trip(stack):
+    config = _conv_decoder_config(stack)
+    state = create_decoder_train_state(jax.random.PRNGKey(0), config)
+    flat = state.apply_fn({"params": state.params}, jnp.ones((5, 8)))
+    assert flat.shape == (5, config.observation_dim)
+    nested = state.apply_fn({"params": state.params}, jnp.ones((4, 3, 8)))
+    assert nested.shape == (4, 3, config.observation_dim)
+
+
+def test_conv_decoder_config_validation():
+    with pytest.raises(ValueError, match="image_shape"):
+        DecoderConfig(latent_dim=8, observation_dim=768, arch="conv")
+    with pytest.raises(ValueError, match="divisible by 16"):
+        DecoderConfig(
+            latent_dim=8, observation_dim=8 * 8 * 3, arch="conv", image_shape=(8, 8, 3)
+        )
+    with pytest.raises(ValueError, match="observation_dim"):
+        DecoderConfig(
+            latent_dim=8, observation_dim=100, arch="conv", image_shape=(16, 16, 3)
+        )
+    with pytest.raises(ValueError, match="arch"):
+        DecoderConfig(latent_dim=8, observation_dim=4, arch="transformer")
+
+
 def test_online_candidate_batch_mixes_anchor_and_recent_replay():
     anchor = SequenceReplayBuffer(
         capacity=8,
