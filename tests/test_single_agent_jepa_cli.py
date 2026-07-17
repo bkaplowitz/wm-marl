@@ -828,6 +828,8 @@ def test_cli_accepts_recent_replay_and_curve_evaluation(monkeypatch):
             "0.25",
             "--policy-reset-start-fraction",
             "0.05",
+            "--policy-reset-start-fraction-start-env-steps",
+            "200000",
             "--policy-reset-start-max-age",
             "63",
             "--curve-eval-interval-env-steps",
@@ -870,6 +872,18 @@ def test_cli_accepts_recent_replay_and_curve_evaluation(monkeypatch):
     assert args.online_recent_replay_max_oversample == 10.0
     assert args.policy_bootstrap_start_fraction == 0.25
     assert args.policy_reset_start_fraction == 0.05
+    assert args.policy_reset_start_fraction_start_env_steps == 200_000
+    assert (
+        train_dmc_jepa._scheduled_policy_reset_start_fraction(
+            args,
+            train_env_steps=199_999,
+        )
+        == 0.0
+    )
+    assert train_dmc_jepa._scheduled_policy_reset_start_fraction(
+        args,
+        train_env_steps=200_000,
+    ) == pytest.approx(0.05)
     assert args.policy_reset_start_max_age == 63
     assert args.curve_eval_interval_env_steps == 50_000
     assert args.curve_eval_episodes == 20

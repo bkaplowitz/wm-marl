@@ -456,11 +456,13 @@ Two reward-agnostic corrections are used:
    from the most recent 320 transitions per environment. After 50,000 steps,
    world-model sampling becomes fully uniform. This gives the rapidly changing
    early policy prompt model adaptation without sacrificing long-run coverage.
-2. Ten percent of actor imagination contexts are sampled from the first 64
-   observations after real episode starts. The remaining 90% are uniform valid
-   replay contexts. This keeps reset geometries represented in policy training
-   without using rewards, failure labels, task coordinates, or additional
-   environment interactions.
+2. Actor imagination starts are fully uniform through 201,727 training
+   transitions, preserving fast early policy learning. From 201,728
+   transitions onward, 10% of contexts are sampled from the first 64
+   observations after real episode starts and the remaining 90% are uniform
+   valid replay contexts. The late mixture keeps reset geometries represented
+   once a competent policy exists, without using rewards, failure labels, task
+   coordinates, or additional environment interactions.
 
 The real replay-critic loss remains uniformly sampled. There is no
 failure-conditioned, reward-conditioned, or task-specific replay rule.
@@ -523,7 +525,7 @@ The complete stabilization stack is:
 | Early 1:1, later 2:1 critic-to-actor cadence | Learns control quickly, then slows policy movement once returns are high. |
 | Reset-rich bootstrap | Covers multiple initial-state regions with a small random dataset. |
 | Early recent world-model replay | Adapts dynamics quickly during the first 50k transitions. |
-| Reset-aligned actor starts | Keeps independently sampled initial-state regions in the actor objective. |
+| Delayed reset-aligned actor starts | Preserves fast early learning, then keeps initial-state regions in the mature actor objective. |
 | Encoder freeze after 101,376 steps | Prevents late latent-coordinate drift at the actor-critic interface. |
 | Uniform long-run replay | Preserves broad dynamics coverage after the early adaptation stage. |
 | Optimizer warmup and adaptive clipping | Reduces early and parameter-relative gradient shocks. |

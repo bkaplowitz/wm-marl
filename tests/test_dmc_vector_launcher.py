@@ -261,6 +261,7 @@ def test_100k_preset_matches_the_reset_rich_interleaved_contract():
     assert params["online_recent_replay_max_oversample"] == 10.0
     assert params["policy_bootstrap_start_fraction"] == 0.0
     assert params["policy_reset_start_fraction"] == 0.1
+    assert params["policy_reset_start_fraction_start_env_steps"] == 201_728
     assert params["policy_reset_start_max_age"] == 63
     assert params["policy_actor_kl_coef"] == 1.0
     assert params["policy_actor_kl_target_per_dim"] == 0.1
@@ -454,6 +455,7 @@ def test_500k_preset_locks_current_architecture_and_control_stack():
     assert params["online_recent_world_model_fraction"] == 0.5
     assert params["online_recent_world_model_until_env_steps"] == 50_000
     assert params["policy_reset_start_fraction"] == 0.1
+    assert params["policy_reset_start_fraction_start_env_steps"] == 201_728
     assert params["model_grad_clip_norm"] == 0.0
     assert params["actor_grad_clip_norm"] == 10.0
     assert params["critic_grad_clip_norm"] == 100.0

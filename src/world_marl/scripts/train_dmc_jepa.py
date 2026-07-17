@@ -186,6 +186,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     policy.add_argument(
+        "--policy-reset-start-fraction-start-env-steps",
+        type=int,
+        default=0,
+        help=(
+            "Training-transition threshold at which reset-aligned actor "
+            "starts become active. Before this threshold their effective "
+            "fraction is zero."
+        ),
+    )
+    policy.add_argument(
         "--policy-reset-start-max-age",
         type=int,
         default=63,
@@ -773,6 +783,10 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--policy-bootstrap-start-fraction must be in [0, 1]")
     if not 0.0 <= args.policy_reset_start_fraction <= 1.0:
         parser.error("--policy-reset-start-fraction must be in [0, 1]")
+    if args.policy_reset_start_fraction_start_env_steps < 0:
+        parser.error(
+            "--policy-reset-start-fraction-start-env-steps must be >= 0"
+        )
     if args.policy_reset_start_max_age < 0:
         parser.error("--policy-reset-start-max-age must be >= 0")
     if (
@@ -1159,6 +1173,16 @@ def _scheduled_recent_fractions(
     if until is not None and train_env_steps >= until:
         fractions["world_model"] = 0.0
     return fractions
+
+
+def _scheduled_policy_reset_start_fraction(
+    args: argparse.Namespace,
+    *,
+    train_env_steps: int,
+) -> float:
+    if train_env_steps < args.policy_reset_start_fraction_start_env_steps:
+        return 0.0
+    return float(args.policy_reset_start_fraction)
 
 
 def _protocol_name(args: argparse.Namespace) -> str:
@@ -1962,7 +1986,10 @@ def run_one(
                 critic_recent_fraction=effective_recent_fractions["critic"],
                 bootstrap_start_replay=bootstrap_start_replay,
                 bootstrap_start_fraction=args.policy_bootstrap_start_fraction,
-                reset_start_fraction=args.policy_reset_start_fraction,
+                reset_start_fraction=_scheduled_policy_reset_start_fraction(
+                    args,
+                    train_env_steps=train_env_steps,
+                ),
                 reset_start_max_age=args.policy_reset_start_max_age,
             )
             if (
