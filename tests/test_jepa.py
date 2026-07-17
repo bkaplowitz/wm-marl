@@ -2051,27 +2051,31 @@ def _filled_buffer(storage: str, values: np.ndarray) -> SequenceReplayBuffer:
 
 
 def test_uint8_replay_round_trip_error_bound():
+    # capacity == chunk_length + max_horizon forces max_start == 0, so every
+    # sampled window reproduces the original add_step order starting at step 0.
     rng = np.random.default_rng(0)
     values = rng.uniform(0.0, 1.0, size=(8, 16)).astype(np.float32)
     buffer = _filled_buffer("uint8", values)
     batch = buffer.sample(
-        np.random.default_rng(1), batch_size=4, chunk_length=4, max_horizon=2
+        np.random.default_rng(1), batch_size=4, chunk_length=6, max_horizon=2
     )
     obs = np.asarray(batch.observations)
     assert obs.dtype == np.float32
     assert obs.min() >= 0.0 and obs.max() <= 1.0
-    # quantization error of round-to-nearest /255 storage
-    assert np.abs(np.round(obs * 255.0) / 255.0 - obs).max() <= 1.0 / 510.0
+    # quantization error of round-to-nearest /255 storage, vs. the original values
+    assert np.abs(obs - values[None, :, :]).max() <= 1.0 / 510.0 + 1e-6
 
 
 def test_uint8_replay_exact_for_quantized_values():
+    # capacity == chunk_length + max_horizon forces max_start == 0, so every
+    # sampled window reproduces the original add_step order starting at step 0.
     values = (np.arange(8 * 16).reshape(8, 16) % 256).astype(np.float32) / 255.0
     buffer = _filled_buffer("uint8", values)
     batch = buffer.sample(
         np.random.default_rng(0), batch_size=2, chunk_length=6, max_horizon=2
     )
     obs = np.asarray(batch.observations)
-    np.testing.assert_array_equal(obs, np.round(obs * 255.0) / 255.0)
+    np.testing.assert_array_equal(obs, np.broadcast_to(values, obs.shape))
 
 
 def test_uint8_replay_rejects_out_of_range_observations():
