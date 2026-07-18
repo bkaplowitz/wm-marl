@@ -16,6 +16,12 @@ The exact resolved configuration and update accounting are preserved in
 `manifest.json`. The five final evaluations and aggregate are preserved in
 `results.json`.
 
+The post-cleanup scientific review is split into:
+
+- `CODE_INVENTORY.md`: maintained and retired code paths;
+- `ALGORITHM_AUDIT.md`: core model, stabilization, and remaining complexity;
+- `IMPROVEMENT_ROADMAP.md`: ordered, publication-suitable next changes.
+
 ## Final Results
 
 | Seed | Mean | Episode std | p10 | CVaR10 | Failure rate | Success rate |
