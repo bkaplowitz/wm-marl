@@ -1,0 +1,79 @@
+{
+  "name": "jepa_reacher_easy_500k_five_seed_baseline",
+  "baseline_commit": "a73f577e06a040caed7257880f49dc7875f6d12d",
+  "preset": "jepa_500k",
+  "protocol": "reset_rich_interleaved_latest_policy",
+  "environment": "dmc:reacher/easy",
+  "training_budget": {
+    "train_replay_env_steps": 499712,
+    "validation_replay_env_steps": 1280,
+    "train_plus_validation_env_steps": 500992,
+    "periodic_policy_eval_env_steps": 288000,
+    "final_policy_eval_env_steps": 112000,
+    "total_eval_env_steps": 400000,
+    "total_real_env_steps_including_eval": 900992
+  },
+  "evaluation": {
+    "episodes_per_seed": 100,
+    "seed": 9000000,
+    "stochastic_actions": false,
+    "success_return_threshold": 900.0,
+    "failure_return_threshold": 100.0
+  },
+  "runs": [
+    {
+      "seed": 0,
+      "mean_return": 895.94,
+      "std_return": 223.3661039638736,
+      "return_p10": 888.7,
+      "return_cvar10": 331.70001220703125,
+      "failure_rate": 0.05,
+      "success_rate": 0.89
+    },
+    {
+      "seed": 1,
+      "mean_return": 954.09,
+      "std_return": 64.49807671551146,
+      "return_p10": 925.0,
+      "return_cvar10": 858.4000244140625,
+      "failure_rate": 0.0,
+      "success_rate": 0.97
+    },
+    {
+      "seed": 2,
+      "mean_return": 848.0,
+      "std_return": 277.9266090175606,
+      "return_p10": 260.00000000000006,
+      "return_cvar10": 47.0,
+      "failure_rate": 0.09,
+      "success_rate": 0.78
+    },
+    {
+      "seed": 3,
+      "mean_return": 936.23,
+      "std_return": 111.89243540114767,
+      "return_p10": 899.1,
+      "return_cvar10": 719.2999877929688,
+      "failure_rate": 0.01,
+      "success_rate": 0.9
+    },
+    {
+      "seed": 4,
+      "mean_return": 933.27,
+      "std_return": 162.34973698777586,
+      "return_p10": 906.4,
+      "return_cvar10": 586.9000244140625,
+      "failure_rate": 0.02,
+      "success_rate": 0.91
+    }
+  ],
+  "aggregate_across_seed_summaries": {
+    "mean_return": 913.506,
+    "population_std_of_seed_means": 37.82501109054696,
+    "sample_std_of_seed_means": 42.28964802407322,
+    "min_seed_mean_return": 848.0,
+    "max_seed_mean_return": 954.09,
+    "mean_failure_rate": 0.034,
+    "mean_success_rate": 0.89
+  }
+}

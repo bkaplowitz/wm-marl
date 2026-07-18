@@ -31,10 +31,7 @@ from world_marl.jepa.training import (
     transition_start_validity,
     winsorize_normalized_advantages,
 )
-from world_marl.scripts.train_dmc_jepa import (
-    _run_passed as dmc_run_passed,
-    summarize as summarize_dmc_jepa,
-)
+from world_marl.scripts.train_dmc_jepa import summarize as summarize_dmc_jepa
 
 
 def _config() -> JepaConfig:
@@ -1074,48 +1071,8 @@ def test_reset_policy_heads_preserves_model_and_reinitializes_policy_heads():
     assert value_changed
 
 
-def test_dmc_run_passes_with_finite_improving_metrics():
-    initial = {
-        "model/jepa_loss": 2.0,
-        "model/open_loop_loss": 2.0,
-    }
-    final = {
-        "model/jepa_loss": 1.0,
-        "model/open_loop_loss": 1.0,
-        "model/open_loop_finite_fraction": 1.0,
-        "model/reward_loss": 0.5,
-        "model/reward_constant_mse": 1.0,
-        "model/continue_loss": 0.1,
-        "model/continue_constant_bce": 0.2,
-        "model/terminal_positive_fraction": 0.1,
-    }
-
-    assert dmc_run_passed(initial, final, reload_diff=0.0)
-
-
-def test_dmc_run_allows_no_terminal_validation_replay():
-    initial = {
-        "model/jepa_loss": 2.0,
-        "model/open_loop_loss": 2.0,
-    }
-    final = {
-        "model/jepa_loss": 1.0,
-        "model/open_loop_loss": 1.0,
-        "model/open_loop_finite_fraction": 1.0,
-        "model/reward_loss": 0.5,
-        "model/reward_constant_mse": 1.0,
-        "model/continue_loss": 0.1,
-        "model/continue_constant_bce": 0.0,
-        "model/terminal_positive_fraction": 0.0,
-        "model/nonterminal_recall": 1.0,
-    }
-
-    assert dmc_run_passed(initial, final, reload_diff=0.0)
-
-
 def test_dmc_jepa_summary_reports_latest_policy_results():
     outcome = {
-        "passed": True,
         "initial_jepa_loss": 2.0,
         "final_jepa_loss": 1.0,
         "initial_open_loop_loss": 2.0,
@@ -1133,7 +1090,6 @@ def test_dmc_jepa_summary_reports_latest_policy_results():
 
     summary = summarize_dmc_jepa([outcome])
 
-    assert summary["passed"]
     assert summary["protocol"] == "reset_rich_interleaved_latest_policy"
     assert summary["aggregate_final_policy_eval_mean"] == 950.0
     assert summary["aggregate_real_train_replay_env_steps"] == 497_664

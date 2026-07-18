@@ -146,7 +146,6 @@ _JEPA_BASE: dict[str, Any] = {
     "success_return_threshold": 900.0,
     "training_snapshot_env_steps": None,
     "resume_training_snapshot": None,
-    "allow_fail": True,
 }
 
 PRESETS: dict[str, dict[str, Any]] = {
