@@ -142,6 +142,11 @@ def load_training_snapshot(
     train_state = load_train_state(source / "train_state.msgpack", target_train_state)
     policy_bundle_ema = None
     if payload["has_policy_bundle_ema"]:
+        if target_policy_bundle_ema is None:
+            raise ValueError(
+                "snapshot contains the retired slow-policy EMA bundle and cannot "
+                "be resumed by the canonical JEPA trainer"
+            )
         policy_bundle_ema = load_pytree(
             source / "policy_bundle_ema.msgpack",
             target_policy_bundle_ema,

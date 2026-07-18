@@ -80,12 +80,6 @@ _JEPA_BASE: dict[str, Any] = {
     "policy_actor_kl_coef": 1.0,
     "policy_actor_kl_target_per_dim": 0.1,
     "policy_actor_kl_reference_interval": 512,
-    "policy_actor_kl_reference_mode": "phase",
-    "policy_actor_slow_kl_target_per_dim": None,
-    "policy_bundle_ema_decay": 0.0,
-    "policy_bundle_ema_start_env_steps": 0,
-    "policy_bundle_collection_online_action_fraction": 1.0,
-    "policy_bundle_eval_online_action_fraction": 0.0,
     "policy_gradient_mode": "reinforce",
     "policy_replay_critic_loss_coef": 0.3,
     "policy_replay_critic_batch_size": 16,
@@ -212,12 +206,6 @@ OVERRIDABLE_PARAMS = (
     "policy_actor_kl_coef",
     "policy_actor_kl_target_per_dim",
     "policy_actor_kl_reference_interval",
-    "policy_actor_kl_reference_mode",
-    "policy_actor_slow_kl_target_per_dim",
-    "policy_bundle_ema_decay",
-    "policy_bundle_ema_start_env_steps",
-    "policy_bundle_collection_online_action_fraction",
-    "policy_bundle_eval_online_action_fraction",
     "policy_bootstrap_start_fraction",
     "policy_reset_start_fraction",
     "policy_reset_start_fraction_start_env_steps",
@@ -493,7 +481,6 @@ def parse_args() -> argparse.Namespace:
         "online_freeze_encoder_after_env_steps",
         "online_checkpoint_interval",
         "policy_actor_kl_reference_interval",
-        "policy_bundle_ema_start_env_steps",
         "policy_reset_start_fraction_start_env_steps",
         "policy_reset_start_max_age",
         "online_recent_replay_steps",
@@ -524,10 +511,6 @@ def parse_args() -> argparse.Namespace:
         "value_clip_final",
         "policy_actor_kl_coef",
         "policy_actor_kl_target_per_dim",
-        "policy_actor_slow_kl_target_per_dim",
-        "policy_bundle_ema_decay",
-        "policy_bundle_collection_online_action_fraction",
-        "policy_bundle_eval_online_action_fraction",
         "policy_bootstrap_start_fraction",
         "policy_reset_start_fraction",
         "online_recent_replay_fraction",
@@ -545,11 +528,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--resume-training-snapshot", default=None)
     parser.add_argument("--wandb-project", default=None)
-    parser.add_argument(
-        "--policy-actor-kl-reference-mode",
-        choices=("phase", "slow-policy"),
-        default=None,
-    )
     parser.add_argument("--wandb-entity", default=None)
     parser.add_argument("--wandb-name", default=None)
     parser.add_argument("--wandb-group", default=None)

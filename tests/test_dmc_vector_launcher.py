@@ -29,29 +29,6 @@ def test_launcher_serializes_tracking_controls():
     assert "--wandb-videos" in command
 
 
-def test_launcher_serializes_slow_policy_bundle_controls():
-    command = params_to_shell_args(
-        {
-            "policy_bundle_ema_decay": 0.995,
-            "policy_bundle_ema_start_env_steps": 50_000,
-            "policy_bundle_collection_online_action_fraction": 1.0,
-            "policy_bundle_eval_online_action_fraction": 0.25,
-        }
-    )
-
-    tokens = command.replace("\\\n", " ").split()
-    assert tokens[tokens.index("--policy-bundle-ema-decay") + 1] == "0.995"
-    assert tokens[tokens.index("--policy-bundle-ema-start-env-steps") + 1] == "50000"
-    assert (
-        tokens[tokens.index("--policy-bundle-collection-online-action-fraction") + 1]
-        == "1.0"
-    )
-    assert (
-        tokens[tokens.index("--policy-bundle-eval-online-action-fraction") + 1]
-        == "0.25"
-    )
-
-
 def test_launcher_serializes_early_sample_efficiency_diagnostic_controls():
     command = params_to_shell_args(
         {
@@ -215,10 +192,6 @@ def test_100k_preset_matches_the_reset_rich_interleaved_contract():
     assert params["policy_actor_kl_coef"] == 1.0
     assert params["policy_actor_kl_target_per_dim"] == 0.1
     assert params["policy_actor_kl_reference_interval"] == 512
-    assert params["policy_bundle_ema_decay"] == 0.0
-    assert params["policy_bundle_ema_start_env_steps"] == 0
-    assert params["policy_bundle_collection_online_action_fraction"] == 1.0
-    assert params["policy_bundle_eval_online_action_fraction"] == 0.0
     assert accounting["actor_updates"] == 1_280 + 44 * 512 + 47 * 256
     assert accounting["critic_updates"] == 1_280 + 91 * 512
 
@@ -346,8 +319,6 @@ def test_launcher_serializes_actor_kl_controls():
             "policy_actor_kl_coef": 1.0,
             "policy_actor_kl_target_per_dim": 0.01,
             "policy_actor_kl_reference_interval": 64,
-            "policy_actor_kl_reference_mode": "slow-policy",
-            "policy_actor_slow_kl_target_per_dim": 0.02,
         }
     )
 
@@ -358,10 +329,6 @@ def test_launcher_serializes_actor_kl_controls():
         "0.01",
         "--policy-actor-kl-reference-interval",
         "64",
-        "--policy-actor-kl-reference-mode",
-        "slow-policy",
-        "--policy-actor-slow-kl-target-per-dim",
-        "0.02",
     ]
 
 
@@ -391,8 +358,6 @@ def test_500k_preset_locks_current_architecture_and_control_stack():
     assert params["policy_actor_kl_coef"] == 1.0
     assert params["policy_actor_kl_target_per_dim"] == 0.1
     assert params["policy_actor_kl_reference_interval"] == 512
-    assert params["policy_actor_kl_reference_mode"] == "phase"
-    assert params["policy_actor_slow_kl_target_per_dim"] is None
     assert params["target_critic_ema_decay"] == 0.98
     assert params["policy_replay_critic_loss_coef"] == 0.3
     assert params["policy_slow_value_regularization_coef"] == 1.0
