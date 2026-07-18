@@ -38,7 +38,6 @@ from world_marl.jepa.reproducibility import (
     fingerprint_pytree,
 )
 from world_marl.jepa.training import (
-    continuous_critic_warmup_step,
     continuous_policy_train_step,
     create_jepa_train_state,
     evaluate_open_loop,
@@ -46,7 +45,6 @@ from world_marl.jepa.training import (
     reset_policy_heads,
     select_continuous_actions,
     train_model_step,
-    train_model_step_scaled_encoder,
 )
 from world_marl.jepa.training_snapshot import (
     load_training_snapshot,
@@ -225,17 +223,6 @@ def parse_args() -> argparse.Namespace:
         default=True,
     )
     policy.add_argument("--actor-entropy-coef", type=float, default=3e-3)
-    policy.add_argument("--actor-entropy-final-coef", type=float, default=None)
-    policy.add_argument(
-        "--actor-entropy-decay-start-env-steps",
-        type=int,
-        default=None,
-    )
-    policy.add_argument(
-        "--actor-entropy-decay-end-env-steps",
-        type=int,
-        default=None,
-    )
     policy.add_argument(
         "--actor-entropy-mode",
         choices=("gaussian", "tanh-normal"),
@@ -248,7 +235,6 @@ def parse_args() -> argparse.Namespace:
     )
     policy.add_argument("--actor-log-std-max", type=float, default=0.0)
     policy.add_argument("--actor-output-scale", type=float, default=0.01)
-    policy.add_argument("--critic-warmup-steps", type=int, default=0)
     policy.add_argument("--critic-horizon", type=int, default=64)
     policy.add_argument("--imag-horizon", type=int, default=15)
     policy.add_argument(
@@ -298,15 +284,6 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Training transition at which to reach the final value clip.",
-    )
-    policy.add_argument(
-        "--policy-normalized-advantage-clip",
-        type=float,
-        default=0.0,
-        help=(
-            "Symmetric clip applied after actor advantage normalization; "
-            "set to 0 to disable. This does not clip critic targets."
-        ),
     )
     policy.add_argument(
         "--policy-actor-kl-coef",
@@ -411,33 +388,6 @@ def parse_args() -> argparse.Namespace:
     online = parser.add_argument_group("online schedule")
     online.add_argument("--online-iterations", type=int, default=0)
     online.add_argument("--online-collect-steps", type=int, default=64)
-    online.add_argument(
-        "--online-reset-interval",
-        type=int,
-        default=None,
-        help=(
-            "Periodically reset all online environments after this many "
-            "vector steps and record a replay cut. Disabled by default."
-        ),
-    )
-    online.add_argument(
-        "--online-reset-until-env-steps",
-        type=int,
-        default=None,
-        help=(
-            "Apply periodic online resets only through this counted training "
-            "environment step. By default, resets remain active throughout."
-        ),
-    )
-    online.add_argument(
-        "--online-reset-fraction",
-        type=float,
-        default=1.0,
-        help=(
-            "Fraction of vector environments reset at each periodic reset "
-            "event. Partial resets rotate deterministically across members."
-        ),
-    )
     online.add_argument("--online-train-steps", type=int, default=1024)
     online.add_argument("--online-policy-train-steps", type=int, default=512)
     online.add_argument(
@@ -461,15 +411,6 @@ def parse_args() -> argparse.Namespace:
     )
     online.add_argument("--online-checkpoint-interval", type=int, default=16)
     online.add_argument(
-        "--online-freeze-encoder",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help=(
-            "Freeze the observation encoder during online world-model refits. "
-            "This is intended as a latent-interface stability diagnostic."
-        ),
-    )
-    online.add_argument(
         "--online-freeze-encoder-after-env-steps",
         type=int,
         default=None,
@@ -477,26 +418,6 @@ def parse_args() -> argparse.Namespace:
             "Freeze the observation encoder once this many counted training "
             "environment steps have been collected. The predictor and heads "
             "continue training."
-        ),
-    )
-    online.add_argument(
-        "--online-encoder-update-scale",
-        type=float,
-        default=1.0,
-        help=(
-            "Scale observation-encoder parameter updates during online "
-            "world-model refits after the configured start step. Optimizer "
-            "moments continue to track the unscaled gradients."
-        ),
-    )
-    online.add_argument(
-        "--online-encoder-update-scale-start-env-steps",
-        type=int,
-        default=0,
-        help=(
-            "Keep full observation-encoder updates until this many counted "
-            "training environment steps, then apply the configured update "
-            "scale."
         ),
     )
     online.add_argument(
@@ -660,7 +581,6 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
     nonnegative = (
         "seed",
         "policy_train_steps",
-        "critic_warmup_steps",
         "optimizer_warmup_steps",
         "online_iterations",
         "online_train_steps",
@@ -704,16 +624,6 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
             parser.error("--initial-reset-interval is too short for model sequences")
         if args.initial_reset_interval > args.collect_steps:
             parser.error("--initial-reset-interval must be <= --collect-steps")
-    if args.online_reset_interval is not None:
-        if args.online_reset_interval < min_sequence_steps:
-            parser.error("--online-reset-interval is too short for model sequences")
-    elif args.online_reset_until_env_steps is not None:
-        parser.error("--online-reset-until-env-steps requires --online-reset-interval")
-    if (
-        args.online_reset_until_env_steps is not None
-        and args.online_reset_until_env_steps < 0
-    ):
-        parser.error("--online-reset-until-env-steps must be >= 0")
     if (
         args.online_recent_world_model_until_env_steps is not None
         and args.online_recent_world_model_until_env_steps < 0
@@ -724,12 +634,6 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         and args.online_freeze_encoder_after_env_steps < 0
     ):
         parser.error("--online-freeze-encoder-after-env-steps must be >= 0")
-    if not 0.0 < args.online_encoder_update_scale <= 1.0:
-        parser.error("--online-encoder-update-scale must be in (0, 1]")
-    if args.online_encoder_update_scale_start_env_steps < 0:
-        parser.error("--online-encoder-update-scale-start-env-steps must be >= 0")
-    if not 0.0 < args.online_reset_fraction <= 1.0:
-        parser.error("--online-reset-fraction must be in (0, 1]")
     if args.chunk_length < args.context_window:
         parser.error("--chunk-length must be >= --context-window")
     if not (args.env.startswith("dmc:") or args.env.startswith("brax:")):
@@ -806,35 +710,6 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         )
     if args.actor_log_std_min >= args.actor_log_std_max:
         parser.error("--actor-log-std-min must be below --actor-log-std-max")
-    entropy_schedule = (
-        args.actor_entropy_final_coef,
-        args.actor_entropy_decay_start_env_steps,
-        args.actor_entropy_decay_end_env_steps,
-    )
-    if any(value is not None for value in entropy_schedule):
-        if any(value is None for value in entropy_schedule):
-            parser.error(
-                "entropy decay requires --actor-entropy-final-coef, "
-                "--actor-entropy-decay-start-env-steps, and "
-                "--actor-entropy-decay-end-env-steps"
-            )
-        assert args.actor_entropy_final_coef is not None
-        assert args.actor_entropy_decay_start_env_steps is not None
-        assert args.actor_entropy_decay_end_env_steps is not None
-        if args.actor_entropy_final_coef < 0.0:
-            parser.error("--actor-entropy-final-coef must be >= 0")
-        if args.actor_entropy_final_coef > args.actor_entropy_coef:
-            parser.error("--actor-entropy-final-coef must be <= --actor-entropy-coef")
-        if args.actor_entropy_decay_start_env_steps < 0:
-            parser.error("--actor-entropy-decay-start-env-steps must be >= 0")
-        if (
-            args.actor_entropy_decay_end_env_steps
-            <= args.actor_entropy_decay_start_env_steps
-        ):
-            parser.error(
-                "--actor-entropy-decay-end-env-steps must be greater than "
-                "--actor-entropy-decay-start-env-steps"
-            )
     if args.stochastic_collection and not args.stochastic_actor:
         parser.error("--stochastic-collection requires --stochastic-actor")
     if args.policy_gradient_mode == "reinforce" and not args.stochastic_actor:
@@ -876,10 +751,6 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
                 "--value-clip-schedule-end-env-steps must be greater than "
                 "--value-clip-schedule-start-env-steps"
             )
-    if args.policy_normalized_advantage_clip < 0.0:
-        parser.error(
-            "--policy-normalized-advantage-clip must be >= 0 (0 disables clipping)"
-        )
     if args.policy_actor_kl_coef < 0.0:
         parser.error("--policy-actor-kl-coef must be >= 0")
     if args.policy_actor_kl_target_per_dim < 0.0:
@@ -1560,10 +1431,7 @@ def _prepare_training_prefix(
         train_steps=args.policy_train_steps,
         reset_actor=True,
         actor_update_interval=1,
-        actor_entropy_coef=_scheduled_actor_entropy_coef(
-            args,
-            train_env_steps=train_env_steps,
-        ),
+        actor_entropy_coef=args.actor_entropy_coef,
         value_clip=_scheduled_value_clip(args, train_env_steps=train_env_steps),
     )
     jax_rngs.update("policy", policy_rng)
@@ -1752,11 +1620,6 @@ def run_one(
                 np_rng=numpy_rngs.get("online_collection"),
                 stochastic_actions=args.stochastic_collection,
                 train_env_step_offset=train_env_steps,
-                reset_interval=args.online_reset_interval,
-                reset_fraction=args.online_reset_fraction,
-                reset_step_offset=(train_env_steps - initial_train_env_steps)
-                // args.num_envs,
-                reset_until_env_steps=args.online_reset_until_env_steps,
                 failure_return_threshold=args.failure_return_threshold,
                 success_return_threshold=args.success_return_threshold,
                 slow_policy_state=slow_policy_state,
@@ -1854,10 +1717,6 @@ def run_one(
                 args,
                 train_env_steps=train_env_steps,
             )
-            encoder_update_scale = _scheduled_online_encoder_update_scale(
-                args,
-                train_env_steps=train_env_steps,
-            )
             state, model_rng, _, online_model_losses = _fit_world_model(
                 args,
                 logger,
@@ -1873,7 +1732,6 @@ def run_one(
                 recent_replay=online_recent_replay,
                 recent_fraction=effective_recent_fractions["world_model"],
                 freeze_encoder=freeze_online_encoder,
-                encoder_update_scale=encoder_update_scale,
             )
             jax_rngs.update("world_model", model_rng)
             logger.plot_world_model_loss(
@@ -1911,10 +1769,7 @@ def run_one(
                 train_steps=args.online_policy_train_steps,
                 reset_actor=False,
                 actor_update_interval=actor_update_interval,
-                actor_entropy_coef=_scheduled_actor_entropy_coef(
-                    args,
-                    train_env_steps=train_env_steps,
-                ),
+                actor_entropy_coef=args.actor_entropy_coef,
                 value_clip=_scheduled_value_clip(
                     args,
                     train_env_steps=train_env_steps,
@@ -2562,10 +2417,6 @@ def _collect_policy_steps(
     success_return_threshold: float,
     slow_policy_state=None,
     online_action_fraction: float = 0.0,
-    reset_interval: int | None = None,
-    reset_fraction: float = 1.0,
-    reset_step_offset: int = 0,
-    reset_until_env_steps: int | None = None,
 ) -> tuple[np.ndarray, int, dict[str, Any]]:
     action_low_jax = jnp.asarray(action_low, dtype=jnp.float32)
     action_high_jax = jnp.asarray(action_high, dtype=jnp.float32)
@@ -2574,12 +2425,6 @@ def _collect_policy_steps(
     completed_lengths: list[int] = []
     finish_collection_steps: list[int] = []
     finish_train_steps: list[int] = []
-    forced_reset_events = 0
-    forced_reset_env_segments = 0
-    reset_envs_per_event = min(
-        adapter.num_envs,
-        max(1, math.ceil(adapter.num_envs * reset_fraction)),
-    )
     progress = tqdm(range(steps), desc=desc, unit="step", disable=quiet)
     for step_index in progress:
         action_key, step_action_key = jax.random.split(action_key)
@@ -2597,36 +2442,12 @@ def _collect_policy_steps(
             )
         )
         step = adapter.step(actions[:, None, :])
-        next_train_env_steps = (
-            train_env_step_offset + (step_index + 1) * adapter.num_envs
-        )
-        forced_reset = (
-            reset_interval is not None
-            and (reset_step_offset + step_index + 1) % reset_interval == 0
-            and (
-                reset_until_env_steps is None
-                or next_train_env_steps <= reset_until_env_steps
-            )
-        )
-        reset_indices = np.empty((0,), dtype=np.int64)
-        reset_mask = np.zeros((adapter.num_envs,), dtype=np.float32)
-        if forced_reset:
-            assert reset_interval is not None
-            reset_event_index = (
-                reset_step_offset + step_index + 1
-            ) // reset_interval - 1
-            reset_start = (reset_event_index * reset_envs_per_event) % adapter.num_envs
-            reset_indices = (
-                reset_start + np.arange(reset_envs_per_event, dtype=np.int64)
-            ) % adapter.num_envs
-            reset_mask[reset_indices] = 1.0
         _add_replay_step(
             replay,
             observations=observations[:, 0],
             actions=actions,
             rewards=step.rewards[:, 0],
             dones=step.dones[:, 0],
-            cuts=reset_mask if forced_reset else None,
         )
         completed_count = len(step.completed_returns)
         completed_returns.extend(float(item[0]) for item in step.completed_returns)
@@ -2642,16 +2463,7 @@ def _collect_policy_steps(
                 episodes=len(completed_returns),
                 mean_return=f"{np.mean(completed_returns):.3g}",
             )
-        if forced_reset:
-            forced_reset_events += 1
-            forced_reset_env_segments += int(reset_indices.size)
-            if reset_indices.size == adapter.num_envs:
-                observations = adapter.reset()
-            else:
-                observations = np.array(step.observations, copy=True)
-                observations[reset_indices] = adapter.reset_indices(reset_indices)
-        else:
-            observations = step.observations
+        observations = step.observations
 
     metrics = {
         "env_steps": steps * adapter.num_envs,
@@ -2665,13 +2477,6 @@ def _collect_policy_steps(
             if slow_policy_state is not None and online_action_fraction < 1.0
             else 1.0
         ),
-        "online_reset_interval": reset_interval,
-        "online_reset_fraction": reset_fraction,
-        "online_reset_envs_per_event": reset_envs_per_event,
-        "online_reset_until_env_steps": reset_until_env_steps,
-        "online_reset_step_offset": reset_step_offset,
-        "forced_reset_events": forced_reset_events,
-        "forced_reset_env_segments": forced_reset_env_segments,
         "completed_episodes": len(completed_returns),
         "mean_return": (
             float(np.mean(completed_returns)) if completed_returns else None
@@ -2910,7 +2715,6 @@ def _fit_world_model(
     recent_replay: SequenceReplayBuffer | None = None,
     recent_fraction: float = 0.0,
     freeze_encoder: bool = False,
-    encoder_update_scale: float = 1.0,
 ) -> tuple[Any, jax.Array, dict[str, Any], list[float]]:
     loss_history: list[jax.Array] = []
     metrics: dict[str, Any] = {}
@@ -2931,24 +2735,14 @@ def _fit_world_model(
             max_horizon=max(args.model_horizon, args.open_loop_horizon),
         )
         rng, train_key = jax.random.split(rng)
-        if encoder_update_scale == 1.0 or freeze_encoder:
-            state, metrics = train_model_step(
-                state,
-                train_key,
-                batch,
-                config,
-                chunk_length=args.chunk_length,
-                freeze_encoder=freeze_encoder,
-            )
-        else:
-            state, metrics = train_model_step_scaled_encoder(
-                state,
-                train_key,
-                batch,
-                config,
-                chunk_length=args.chunk_length,
-                encoder_update_scale=encoder_update_scale,
-            )
+        state, metrics = train_model_step(
+            state,
+            train_key,
+            batch,
+            config,
+            chunk_length=args.chunk_length,
+            freeze_encoder=freeze_encoder,
+        )
         loss_history.append(metrics["model/total_loss"])
         if (
             step_index == 1
@@ -2966,9 +2760,6 @@ def _fit_world_model(
                     "budget/train_env_steps": train_env_steps,
                     "data/online_recent_replay_fraction": recent_fraction,
                     "model/online_encoder_frozen": float(freeze_encoder),
-                    "model/online_encoder_update_scale": (
-                        0.0 if freeze_encoder else encoder_update_scale
-                    ),
                     **metrics,
                 }
             )
@@ -3018,48 +2809,6 @@ def _train_policy(
 
     action_low_jax = jnp.asarray(action_low, dtype=jnp.float32)
     action_high_jax = jnp.asarray(action_high, dtype=jnp.float32)
-    critic_metrics: dict[str, Any] = {}
-    if args.critic_warmup_steps > 0:
-        critic_progress = tqdm(
-            range(1, args.critic_warmup_steps + 1),
-            desc=f"{phase} warm replay critic",
-            unit="update",
-            disable=args.quiet,
-        )
-        for step_index in critic_progress:
-            batch = _sample_replay_batch(
-                replay,
-                np_rng,
-                recent_replay=recent_replay,
-                recent_fraction=critic_recent_fraction,
-                batch_size=args.policy_batch_size,
-                chunk_length=args.critic_horizon,
-                max_horizon=1,
-            )
-            state, critic_metrics = continuous_critic_warmup_step(
-                state,
-                batch,
-                config,
-                horizon=args.critic_horizon,
-                value_clip=value_clip,
-                target_critic_ema_decay=args.target_critic_ema_decay,
-            )
-            if (
-                step_index == 1
-                or step_index == args.critic_warmup_steps
-                or step_index % args.eval_interval == 0
-            ):
-                critic_progress.set_postfix(
-                    loss=f"{float(critic_metrics['critic/total_loss']):.4g}",
-                )
-                logger.append_metrics(
-                    {
-                        "phase": f"{phase}_critic_warmup",
-                        "update": step_index,
-                        **critic_metrics,
-                    }
-                )
-
     metrics: dict[str, Any] = {}
     reset_start_indices = None
     if reset_start_fraction > 0.0:
@@ -3138,7 +2887,6 @@ def _train_policy(
             policy_gradient_mode=args.policy_gradient_mode,
             return_normalization_ema_decay=args.policy_return_ema_decay,
             value_clip=value_clip,
-            normalized_advantage_clip=args.policy_normalized_advantage_clip,
             actor_reference_params=(
                 actor_reference_params if args.policy_actor_kl_coef > 0.0 else None
             ),
@@ -3200,8 +2948,6 @@ def _train_policy(
             "policy_gradient_mode": args.policy_gradient_mode,
             "policy_stochastic_actor": args.stochastic_actor,
             "policy_actor_entropy_coef": actor_entropy_coef,
-            "policy_actor_entropy_initial_coef": args.actor_entropy_coef,
-            "policy_actor_entropy_final_coef": args.actor_entropy_final_coef,
             "policy_value_clip": value_clip,
             "policy_value_clip_initial": args.value_clip,
             "policy_value_clip_final": args.value_clip_final,
@@ -3233,8 +2979,6 @@ def _train_policy(
             "policy_actor_kl_reference_mode": args.policy_actor_kl_reference_mode,
             "policy_actor_kl_slow_reference_used": slow_actor_reference_used,
             "policy_replay_critic_loss_coef": args.policy_replay_critic_loss_coef,
-            "critic_warmup_steps": args.critic_warmup_steps,
-            "critic_final_metrics": to_jsonable(critic_metrics),
             "policy_final_metrics": to_jsonable(metrics),
         },
     )
@@ -3369,26 +3113,6 @@ def _sample_policy_starts(
     )
 
 
-def _scheduled_actor_entropy_coef(
-    args: argparse.Namespace,
-    *,
-    train_env_steps: int,
-) -> float:
-    final_coef = args.actor_entropy_final_coef
-    start = args.actor_entropy_decay_start_env_steps
-    end = args.actor_entropy_decay_end_env_steps
-    if final_coef is None or start is None or end is None:
-        return float(args.actor_entropy_coef)
-    if train_env_steps <= start:
-        return float(args.actor_entropy_coef)
-    if train_env_steps >= end:
-        return float(final_coef)
-    progress = (train_env_steps - start) / (end - start)
-    return float(
-        args.actor_entropy_coef + progress * (final_coef - args.actor_entropy_coef)
-    )
-
-
 def _scheduled_value_clip(
     args: argparse.Namespace,
     *,
@@ -3422,20 +3146,8 @@ def _scheduled_online_encoder_freeze(
     *,
     train_env_steps: int,
 ) -> bool:
-    if args.online_freeze_encoder:
-        return True
     start = args.online_freeze_encoder_after_env_steps
     return start is not None and train_env_steps >= start
-
-
-def _scheduled_online_encoder_update_scale(
-    args: argparse.Namespace,
-    *,
-    train_env_steps: int,
-) -> float:
-    if train_env_steps < args.online_encoder_update_scale_start_env_steps:
-        return 1.0
-    return float(args.online_encoder_update_scale)
 
 
 def _final_policy_evaluation(

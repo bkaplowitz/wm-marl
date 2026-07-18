@@ -281,27 +281,6 @@ def test_cli_accepts_temporally_coherent_random_bootstrap(monkeypatch):
     assert args.initial_random_action_hold_steps == 4
 
 
-def test_cli_accepts_bounded_online_reset_diversity(monkeypatch):
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        _minimal_args(
-            "--online-reset-interval",
-            "6",
-            "--online-reset-until-env-steps",
-            "100",
-            "--online-reset-fraction",
-            "0.25",
-        ),
-    )
-
-    args = train_dmc_jepa.parse_args()
-
-    assert args.online_reset_interval == 6
-    assert args.online_reset_until_env_steps == 100
-    assert args.online_reset_fraction == 0.25
-
-
 def test_random_collection_marks_nonterminal_reset_cuts():
     class Adapter:
         num_envs = 1
@@ -410,169 +389,6 @@ def test_random_collection_holds_actions_and_resamples_after_forced_reset():
     )
 
 
-def test_policy_collection_preserves_online_reset_cadence_across_phases(
-    monkeypatch,
-):
-    class Adapter:
-        num_envs = 1
-
-        def __init__(self):
-            self.reset_calls = 0
-            self.step_count = 0
-
-        def reset(self):
-            self.reset_calls += 1
-            self.step_count = 0
-            return np.asarray([[[100 * self.reset_calls]]], dtype=np.float32)
-
-        def step(self, actions):
-            del actions
-            self.step_count += 1
-            return SimpleNamespace(
-                observations=np.asarray(
-                    [[[100 * self.reset_calls + self.step_count]]],
-                    dtype=np.float32,
-                ),
-                rewards=np.zeros((1, 1), dtype=np.float32),
-                dones=np.zeros((1, 1), dtype=np.float32),
-                completed_returns=(),
-                completed_lengths=(),
-            )
-
-    monkeypatch.setattr(
-        train_dmc_jepa,
-        "select_continuous_actions",
-        lambda *args, **kwargs: jnp.zeros((1, 1), dtype=jnp.float32),
-    )
-    adapter = Adapter()
-    replay = SequenceReplayBuffer(
-        capacity=6,
-        num_envs=1,
-        observation_shape=(1,),
-        action_shape=(1,),
-        action_dtype=np.float32,
-    )
-    observations = adapter.reset()
-    common = {
-        "adapter": adapter,
-        "state": None,
-        "config": SimpleNamespace(),
-        "replay": replay,
-        "action_low": np.asarray([-1.0], dtype=np.float32),
-        "action_high": np.asarray([1.0], dtype=np.float32),
-        "desc": "test",
-        "quiet": True,
-        "np_rng": np.random.default_rng(0),
-        "stochastic_actions": True,
-        "failure_return_threshold": 100.0,
-        "success_return_threshold": 900.0,
-        "reset_interval": 3,
-        "reset_until_env_steps": 4,
-    }
-
-    observations, _, first = train_dmc_jepa._collect_policy_steps(
-        observations=observations,
-        steps=2,
-        train_env_step_offset=0,
-        reset_step_offset=0,
-        **common,
-    )
-    observations, _, second = train_dmc_jepa._collect_policy_steps(
-        observations=observations,
-        steps=2,
-        train_env_step_offset=2,
-        reset_step_offset=2,
-        **common,
-    )
-    observations, _, third = train_dmc_jepa._collect_policy_steps(
-        observations=observations,
-        steps=2,
-        train_env_step_offset=4,
-        reset_step_offset=4,
-        **common,
-    )
-
-    assert first["forced_reset_events"] == 0
-    assert second["forced_reset_events"] == 1
-    assert second["forced_reset_env_segments"] == 1
-    assert third["forced_reset_events"] == 0
-    assert adapter.reset_calls == 2
-    np.testing.assert_array_equal(
-        replay.cuts[:, 0],
-        np.asarray([0.0, 0.0, 1.0, 0.0, 0.0, 0.0]),
-    )
-    np.testing.assert_array_equal(replay.dones[:, 0], np.zeros(6))
-    np.testing.assert_array_equal(observations, np.asarray([[[203.0]]]))
-
-
-def test_policy_collection_rotates_partial_resets(monkeypatch):
-    class Adapter:
-        num_envs = 4
-
-        def __init__(self):
-            self.reset_indices_calls = []
-
-        def step(self, actions):
-            del actions
-            return SimpleNamespace(
-                observations=np.zeros((4, 1, 1), dtype=np.float32),
-                rewards=np.zeros((4, 1), dtype=np.float32),
-                dones=np.zeros((4, 1), dtype=np.float32),
-                completed_returns=(),
-                completed_lengths=(),
-            )
-
-        def reset_indices(self, indices):
-            self.reset_indices_calls.append(np.array(indices, copy=True))
-            return np.zeros((len(indices), 1, 1), dtype=np.float32)
-
-    monkeypatch.setattr(
-        train_dmc_jepa,
-        "select_continuous_actions",
-        lambda *args, **kwargs: jnp.zeros((4, 1), dtype=jnp.float32),
-    )
-    adapter = Adapter()
-    replay = SequenceReplayBuffer(
-        capacity=6,
-        num_envs=4,
-        observation_shape=(1,),
-        action_shape=(1,),
-        action_dtype=np.float32,
-    )
-
-    _, _, metrics = train_dmc_jepa._collect_policy_steps(
-        adapter,
-        np.zeros((4, 1, 1), dtype=np.float32),
-        None,
-        SimpleNamespace(),
-        replay,
-        steps=6,
-        action_low=np.asarray([-1.0], dtype=np.float32),
-        action_high=np.asarray([1.0], dtype=np.float32),
-        desc="test",
-        quiet=True,
-        np_rng=np.random.default_rng(0),
-        stochastic_actions=True,
-        train_env_step_offset=0,
-        failure_return_threshold=100.0,
-        success_return_threshold=900.0,
-        reset_interval=3,
-        reset_fraction=0.25,
-    )
-
-    assert metrics["forced_reset_events"] == 2
-    assert metrics["forced_reset_env_segments"] == 2
-    assert metrics["online_reset_envs_per_event"] == 1
-    assert len(adapter.reset_indices_calls) == 2
-    np.testing.assert_array_equal(adapter.reset_indices_calls[0], np.asarray([0]))
-    np.testing.assert_array_equal(adapter.reset_indices_calls[1], np.asarray([1]))
-    expected_cuts = np.zeros((6, 4), dtype=np.float32)
-    expected_cuts[2, 0] = 1.0
-    expected_cuts[5, 1] = 1.0
-    np.testing.assert_array_equal(replay.cuts, expected_cuts)
-    np.testing.assert_array_equal(replay.dones, np.zeros((6, 4)))
-
-
 def test_cli_accepts_wandb_video_controls(monkeypatch):
     monkeypatch.setattr(
         sys,
@@ -631,38 +447,6 @@ def test_cli_exposes_current_dreamer_stabilizers(monkeypatch):
     assert args.target_critic_ema_decay == 0.98
     assert args.policy_replay_critic_loss_coef == 0.3
     assert args.policy_slow_value_regularization_coef == 1.0
-
-
-def test_cli_accepts_budget_relative_entropy_decay(monkeypatch):
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        _minimal_args(
-            "--actor-entropy-coef",
-            "0.003",
-            "--actor-entropy-final-coef",
-            "0.0003",
-            "--actor-entropy-decay-start-env-steps",
-            "300000",
-            "--actor-entropy-decay-end-env-steps",
-            "500000",
-        ),
-    )
-
-    args = train_dmc_jepa.parse_args()
-
-    assert train_dmc_jepa._scheduled_actor_entropy_coef(
-        args,
-        train_env_steps=299_999,
-    ) == pytest.approx(3e-3)
-    assert train_dmc_jepa._scheduled_actor_entropy_coef(
-        args,
-        train_env_steps=400_000,
-    ) == pytest.approx(1.65e-3)
-    assert train_dmc_jepa._scheduled_actor_entropy_coef(
-        args,
-        train_env_steps=500_000,
-    ) == pytest.approx(3e-4)
 
 
 def test_cli_accepts_budget_relative_value_clip_schedule(monkeypatch):
@@ -760,36 +544,6 @@ def test_online_encoder_can_freeze_after_budget_threshold(monkeypatch):
     assert train_dmc_jepa._scheduled_online_encoder_freeze(
         args,
         train_env_steps=100_000,
-    )
-
-
-def test_online_encoder_update_scale_can_start_at_budget_threshold(monkeypatch):
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        _minimal_args(
-            "--online-encoder-update-scale",
-            "0.1",
-            "--online-encoder-update-scale-start-env-steps",
-            "50000",
-        ),
-    )
-
-    args = train_dmc_jepa.parse_args()
-
-    assert (
-        train_dmc_jepa._scheduled_online_encoder_update_scale(
-            args,
-            train_env_steps=49_999,
-        )
-        == 1.0
-    )
-    assert (
-        train_dmc_jepa._scheduled_online_encoder_update_scale(
-            args,
-            train_env_steps=50_000,
-        )
-        == 0.1
     )
 
 

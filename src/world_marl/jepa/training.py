@@ -278,76 +278,6 @@ def train_model_step(
     ), metrics
 
 
-@partial(
-    jax.jit,
-    static_argnames=(
-        "config",
-        "chunk_length",
-        "encoder_update_scale",
-    ),
-)
-def train_model_step_scaled_encoder(
-    state: JepaTrainState,
-    key: jax.Array,
-    batch: ReplayBatch,
-    config: JepaConfig,
-    *,
-    chunk_length: int,
-    encoder_update_scale: float,
-) -> tuple[JepaTrainState, dict[str, jax.Array]]:
-    """Train the world model while damping only encoder parameter updates."""
-
-    def loss_fn(params):
-        loss, metrics = world_model_loss(
-            params,
-            state.apply_fn,
-            key,
-            batch,
-            config,
-            chunk_length=chunk_length,
-        )
-        return loss, metrics
-
-    (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
-    del loss
-    encoder_grad_norm = optax.global_norm(grads["encoder"])
-    updates, opt_state = state.model_tx.update(
-        grads,
-        state.model_opt_state,
-        state.params,
-    )
-    updates = updates.copy(
-        add_or_replace={
-            "encoder": jax.tree_util.tree_map(
-                lambda update: update * encoder_update_scale,
-                updates["encoder"],
-            )
-        }
-    )
-    metrics = {
-        **metrics,
-        "model/grad_norm": optax.global_norm(grads),
-        "model/encoder_grad_norm_unmasked": encoder_grad_norm,
-        "model/encoder_frozen": jnp.asarray(
-            0.0,
-            dtype=metrics["model/total_loss"].dtype,
-        ),
-        "model/encoder_update_scale": jnp.asarray(
-            encoder_update_scale,
-            dtype=metrics["model/total_loss"].dtype,
-        ),
-        "model/grad_clip_norm": jnp.asarray(
-            config.model_grad_clip_norm,
-            dtype=metrics["model/total_loss"].dtype,
-        ),
-    }
-    return state.replace(
-        step=state.step + 1,
-        params=optax.apply_updates(state.params, updates),
-        model_opt_state=opt_state,
-    ), metrics
-
-
 def actor_value_from_latent(
     apply_fn,
     params: FrozenDict,
@@ -619,7 +549,6 @@ def continuous_policy_train_step(
     policy_gradient_mode: PolicyGradientMode = "dynamics",
     return_normalization_ema_decay: float = 0.99,
     value_clip: float = 100.0,
-    normalized_advantage_clip: float = 0.0,
     actor_reference_params: FrozenDict | None = None,
     actor_kl_coef: float = 0.0,
     actor_kl_target_per_dim: float = 0.0,
@@ -704,18 +633,12 @@ def continuous_policy_train_step(
                 weights,
                 mode=policy_return_normalization,
             )
-        actor_objective_scores, advantage_clip_fraction, advantage_clip_enabled = (
-            winsorize_normalized_advantages(
-                normalized_actor_scores,
-                normalized_advantage_clip,
-            )
-        )
         if policy_gradient_mode == "reinforce":
             policy_terms = rollout["action_log_prob"] * jax.lax.stop_gradient(
-                actor_objective_scores
+                normalized_actor_scores
             )
         else:
-            policy_terms = actor_objective_scores
+            policy_terms = normalized_actor_scores
         actor_objective = weighted_mean(policy_terms, weights)
         return_loss = -actor_objective
         entropy_bonus = weighted_mean(rollout["action_entropy"], weights)
@@ -776,7 +699,6 @@ def continuous_policy_train_step(
             clipped_returns,
             actor_scores,
             normalized_actor_scores,
-            actor_objective_scores,
             reference_kl,
             actor_kl_penalty,
             actor_loss,
@@ -858,16 +780,8 @@ def continuous_policy_train_step(
                 jnp.abs(normalized_actor_scores).reshape((-1,)),
                 99.0,
             ),
-            "policy/bounded_advantage_abs_max": jnp.max(
-                jnp.abs(actor_objective_scores)
-            ),
-            "policy/normalized_advantage_clip": jnp.asarray(
-                normalized_advantage_clip,
-                dtype=actor_loss.dtype,
-            ),
-            "policy/normalized_advantage_clip_fraction": advantage_clip_fraction,
-            "policy/normalized_advantage_clip_enabled": (
-                advantage_clip_enabled.astype(actor_loss.dtype)
+            "policy/normalized_advantage_abs_max": jnp.max(
+                jnp.abs(normalized_actor_scores)
             ),
             "policy/actor_uses_value_baseline": jnp.asarray(
                 float(policy_actor_baseline == "value"),
@@ -1161,76 +1075,6 @@ def continuous_policy_train_step(
         ),
     }
     return state, metrics
-
-
-@partial(jax.jit, static_argnames=("config", "horizon", "target_critic_ema_decay"))
-def continuous_critic_warmup_step(
-    state: JepaTrainState,
-    batch: ReplayBatch,
-    config: JepaConfig,
-    *,
-    horizon: int,
-    value_clip: float = 100.0,
-    target_critic_ema_decay: float = 0.0,
-) -> tuple[JepaTrainState, dict[str, jax.Array]]:
-    if config.action_mode != "continuous":
-        raise ValueError("continuous_critic_warmup_step requires continuous actions")
-
-    def loss_fn(params):
-        rewards = jnp.swapaxes(batch.rewards[:, :horizon], 0, 1)
-        dones = jnp.swapaxes(batch.dones[:, :horizon], 0, 1)
-        continues = 1.0 - dones
-        returns = reward_only_returns(rewards, continues, gamma=config.gamma)[0]
-        targets, target_clip_fraction, value_clip_enabled = clip_value_targets(
-            returns,
-            value_clip,
-        )
-        targets = jax.lax.stop_gradient(targets)
-        model_params = jax.tree_util.tree_map(jax.lax.stop_gradient, params)
-        z = state.apply_fn(
-            {"params": model_params},
-            batch.observations[:, 0],
-            method=JepaWorldModel.encode,
-        )
-        _, value_logits = actor_value_logits_from_latent(
-            state.apply_fn,
-            params,
-            z,
-        )
-        values = value_predictions_from_logits(value_logits, config)
-        value_loss = jnp.mean(value_prediction_loss(value_logits, targets, config))
-        finite_fraction = _all_finite_fraction(values, targets, value_loss)
-        metrics = {
-            "critic/total_loss": value_loss,
-            "critic/value_loss": value_loss,
-            "critic/target_mean": jnp.mean(targets),
-            "critic/target_abs_mean": jnp.mean(jnp.abs(targets)),
-            "critic/target_abs_max": jnp.max(jnp.abs(targets)),
-            "critic/target_clip_fraction": target_clip_fraction,
-            "critic/value_clip_enabled": value_clip_enabled.astype(value_loss.dtype),
-            "critic/value_mean": jnp.mean(values),
-            "critic/value_abs_mean": jnp.mean(jnp.abs(values)),
-            "critic/finite_fraction": finite_fraction,
-        }
-        return value_loss, metrics
-
-    (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
-    del loss
-    metrics = {
-        **metrics,
-        "critic/grad_norm": optax.global_norm(grads),
-        "critic/grad_clip_norm": jnp.asarray(
-            config.critic_grad_clip_norm,
-            dtype=metrics["critic/total_loss"].dtype,
-        ),
-    }
-    return (
-        state.apply_critic_gradients(
-            grads,
-            target_critic_ema_decay=target_critic_ema_decay,
-        ),
-        metrics,
-    )
 
 
 def tanh_normal_entropy_sample(
@@ -1813,24 +1657,6 @@ def survival_weights(continues: jax.Array, *, gamma: float) -> jax.Array:
 
 def weighted_mean(values: jax.Array, weights: jax.Array) -> jax.Array:
     return jnp.sum(values * weights) / (jnp.sum(weights) + 1e-6)
-
-
-def winsorize_normalized_advantages(
-    values: jax.Array,
-    clip: float,
-) -> tuple[jax.Array, jax.Array, jax.Array]:
-    """Bound dimensionless policy weights without truncating value targets."""
-    clip_limit = jnp.asarray(clip, dtype=values.dtype)
-    clip_enabled = clip_limit > 0.0
-    bounded = jnp.where(
-        clip_enabled,
-        jnp.clip(values, -clip_limit, clip_limit),
-        values,
-    )
-    clip_fraction = jnp.mean(
-        jnp.logical_and(clip_enabled, jnp.abs(values) > clip_limit).astype(values.dtype)
-    )
-    return bounded, clip_fraction, clip_enabled
 
 
 def diagonal_gaussian_kl(

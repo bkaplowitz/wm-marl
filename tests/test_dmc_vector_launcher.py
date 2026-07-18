@@ -29,23 +29,6 @@ def test_launcher_serializes_tracking_controls():
     assert "--wandb-videos" in command
 
 
-def test_launcher_serializes_entropy_decay_controls():
-    command = params_to_shell_args(
-        {
-            "actor_entropy_coef": 3e-3,
-            "actor_entropy_final_coef": 3e-4,
-            "actor_entropy_decay_start_env_steps": 300_000,
-            "actor_entropy_decay_end_env_steps": 500_000,
-        }
-    )
-
-    tokens = command.replace("\\\n", " ").split()
-    assert tokens[tokens.index("--actor-entropy-coef") + 1] == "0.003"
-    assert tokens[tokens.index("--actor-entropy-final-coef") + 1] == "0.0003"
-    assert tokens[tokens.index("--actor-entropy-decay-start-env-steps") + 1] == "300000"
-    assert tokens[tokens.index("--actor-entropy-decay-end-env-steps") + 1] == "500000"
-
-
 def test_launcher_serializes_slow_policy_bundle_controls():
     command = params_to_shell_args(
         {
@@ -107,21 +90,6 @@ def test_launcher_serializes_early_sample_efficiency_diagnostic_controls():
     assert tokens[tokens.index("--curve-eval-seed") + 1] == "9000000"
 
 
-def test_launcher_serializes_online_reset_diversity_controls():
-    command = params_to_shell_args(
-        {
-            "online_reset_interval": 320,
-            "online_reset_until_env_steps": 50_000,
-            "online_reset_fraction": 0.25,
-        }
-    )
-
-    tokens = command.replace("\\\n", " ").split()
-    assert tokens[tokens.index("--online-reset-interval") + 1] == "320"
-    assert tokens[tokens.index("--online-reset-until-env-steps") + 1] == "50000"
-    assert tokens[tokens.index("--online-reset-fraction") + 1] == "0.25"
-
-
 def test_launcher_serializes_budget_relative_encoder_freeze():
     command = params_to_shell_args(
         {
@@ -133,22 +101,6 @@ def test_launcher_serializes_budget_relative_encoder_freeze():
         "--online-freeze-encoder-after-env-steps",
         "100000",
     ]
-
-
-def test_launcher_serializes_budget_relative_encoder_update_scale():
-    command = params_to_shell_args(
-        {
-            "online_encoder_update_scale": 0.1,
-            "online_encoder_update_scale_start_env_steps": 50_000,
-        }
-    )
-    tokens = command.replace("\\\n", " ").split()
-
-    assert tokens[tokens.index("--online-encoder-update-scale") + 1] == "0.1"
-    assert (
-        tokens[tokens.index("--online-encoder-update-scale-start-env-steps") + 1]
-        == "50000"
-    )
 
 
 def test_launcher_serializes_explicit_reporting_budget():
@@ -244,9 +196,6 @@ def test_100k_preset_matches_the_reset_rich_interleaved_contract():
     assert params["initial_random_action_hold_steps"] == 1
     assert params["online_iterations"] == 91
     assert params["online_collect_steps"] == 64
-    assert params["online_reset_interval"] is None
-    assert params["online_reset_until_env_steps"] is None
-    assert params["online_reset_fraction"] == 1.0
     assert params["online_train_steps"] == 1_024
     assert params["online_policy_train_steps"] == 512
     assert params["online_policy_actor_update_interval"] == 2
@@ -343,15 +292,12 @@ def test_launcher_can_disable_value_clipping():
     command = params_to_shell_args(
         {
             "value_clip": 0.0,
-            "policy_normalized_advantage_clip": 5.0,
         }
     )
 
     assert command.replace("\\\n", " ").split() == [
         "--value-clip",
         "0.0",
-        "--policy-normalized-advantage-clip",
-        "5.0",
     ]
 
 
@@ -442,7 +388,6 @@ def test_500k_preset_locks_current_architecture_and_control_stack():
     assert params["value_clip_final"] == 333.0
     assert params["value_clip_schedule_start_env_steps"] == 150_528
     assert params["value_clip_schedule_end_env_steps"] == 250_880
-    assert params["policy_normalized_advantage_clip"] == 0.0
     assert params["policy_actor_kl_coef"] == 1.0
     assert params["policy_actor_kl_target_per_dim"] == 0.1
     assert params["policy_actor_kl_reference_interval"] == 512

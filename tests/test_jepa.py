@@ -12,7 +12,6 @@ from world_marl.jepa.models import (
 )
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
-    continuous_critic_warmup_step,
     continuous_policy_train_step,
     create_jepa_train_state,
     diagonal_gaussian_kl,
@@ -27,9 +26,7 @@ from world_marl.jepa.training import (
     select_continuous_actions,
     tanh_normal_entropy_sample,
     train_model_step,
-    train_model_step_scaled_encoder,
     transition_start_validity,
-    winsorize_normalized_advantages,
 )
 from world_marl.scripts.train_dmc_jepa import summarize as summarize_dmc_jepa
 
@@ -337,54 +334,6 @@ def test_model_step_can_freeze_only_the_observation_encoder():
     )
     assert metrics["model/encoder_frozen"] == 1.0
     assert metrics["model/encoder_grad_norm_unmasked"] > 0.0
-
-
-def test_model_step_can_scale_only_observation_encoder_updates():
-    config = _config()
-    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
-    state, _ = train_model_step(
-        state,
-        jax.random.PRNGKey(1),
-        _batch(config),
-        config,
-        chunk_length=2,
-    )
-    full_state, _ = train_model_step(
-        state,
-        jax.random.PRNGKey(2),
-        _batch(config),
-        config,
-        chunk_length=2,
-    )
-    scaled_state, metrics = train_model_step_scaled_encoder(
-        state,
-        jax.random.PRNGKey(2),
-        _batch(config),
-        config,
-        chunk_length=2,
-        encoder_update_scale=0.1,
-    )
-
-    for before, full_after, scaled_after in zip(
-        jax.tree_util.tree_leaves(state.params["encoder"]),
-        jax.tree_util.tree_leaves(full_state.params["encoder"]),
-        jax.tree_util.tree_leaves(scaled_state.params["encoder"]),
-    ):
-        assert jnp.allclose(
-            scaled_after - before,
-            0.1 * (full_after - before),
-            rtol=1e-4,
-            atol=1e-7,
-        )
-    assert all(
-        jnp.array_equal(full_after, scaled_after)
-        for full_after, scaled_after in zip(
-            jax.tree_util.tree_leaves(full_state.params["predictor"]),
-            jax.tree_util.tree_leaves(scaled_state.params["predictor"]),
-        )
-    )
-    assert metrics["model/encoder_frozen"] == 0.0
-    assert metrics["model/encoder_update_scale"] == 0.1
 
 
 def test_dynamics_ensemble_model_step_and_policy_metrics_are_finite():
@@ -717,7 +666,6 @@ def test_dreamer_style_policy_update_is_finite_and_keeps_world_model_frozen():
         real_critic_all_steps=True,
         slow_value_regularization_coef=1.0,
         value_clip=0.0,
-        normalized_advantage_clip=5.0,
         actor_reference_params=state.params,
         actor_kl_coef=1.0,
         actor_kl_target_per_dim=0.01,
@@ -731,8 +679,7 @@ def test_dreamer_style_policy_update_is_finite_and_keeps_world_model_frozen():
         np.asarray(metrics["policy/clipped_imagined_return"]),
     )
     assert jnp.isfinite(metrics["policy/advantage_std"])
-    assert metrics["policy/normalized_advantage_clip_enabled"] == 1.0
-    assert metrics["policy/bounded_advantage_abs_max"] <= 5.0
+    assert jnp.isfinite(metrics["policy/normalized_advantage_abs_max"])
     assert metrics["policy/actor_kl_enabled"] == 1.0
     assert metrics["policy/actor_kl_penalty"] == pytest.approx(0.0, abs=1e-7)
     assert jnp.isfinite(metrics["policy/reference_full_distribution_kl_mean"])
@@ -766,23 +713,6 @@ def test_dreamer_style_policy_update_is_finite_and_keeps_world_model_frozen():
             strict=True,
         ):
             np.testing.assert_allclose(np.asarray(left), np.asarray(right))
-
-
-def test_normalized_advantage_winsorization_preserves_ordinary_values():
-    values = jnp.asarray([-9.0, -2.0, 0.0, 3.0, 8.0], dtype=jnp.float32)
-
-    bounded, clip_fraction, enabled = winsorize_normalized_advantages(values, 5.0)
-    disabled, disabled_fraction, disabled_enabled = winsorize_normalized_advantages(
-        values,
-        0.0,
-    )
-
-    np.testing.assert_allclose(bounded, [-5.0, -2.0, 0.0, 3.0, 5.0])
-    assert clip_fraction == pytest.approx(0.4)
-    assert bool(enabled)
-    np.testing.assert_allclose(disabled, values)
-    assert disabled_fraction == 0.0
-    assert not bool(disabled_enabled)
 
 
 def test_diagonal_gaussian_kl_detects_mean_and_scale_updates():
@@ -827,65 +757,6 @@ def test_full_policy_kl_penalty_uses_per_dimension_hinge():
     assert bool(enabled)
     assert disabled[0] == pytest.approx(0.0)
     assert not bool(disabled[-1])
-
-
-def test_continuous_critic_warmup_updates_value_only():
-    config = JepaConfig(
-        observation_dim=4,
-        action_dim=3,
-        action_mode="continuous",
-        latent_dim=8,
-        model_dim=16,
-        num_layers=1,
-        num_heads=2,
-        max_horizon=1,
-        context_window=1,
-        sigreg_num_proj=32,
-    )
-    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
-    before = state.params
-    batch = ReplayBatch(
-        observations=jnp.ones((8, 4, config.observation_dim), dtype=jnp.float32),
-        actions=jnp.zeros((8, 3, config.action_dim), dtype=jnp.float32),
-        rewards=jnp.ones((8, 3), dtype=jnp.float32),
-        dones=jnp.zeros((8, 3), dtype=jnp.float32),
-    )
-
-    updated, metrics = continuous_critic_warmup_step(
-        state,
-        batch,
-        config,
-        horizon=3,
-        value_clip=10.0,
-    )
-
-    assert jnp.isfinite(metrics["critic/total_loss"])
-    for group in (
-        "encoder",
-        "latent_proj",
-        "action_encoder_hidden",
-        "action_encoder_out",
-        "dynamics_norm",
-        "predictor",
-        "predictor_norm",
-        "reward_head",
-        "continue_head",
-        "actor_head",
-    ):
-        before_leaves = jax.tree_util.tree_leaves(before[group])
-        after_leaves = jax.tree_util.tree_leaves(updated.params[group])
-        for left, right in zip(before_leaves, after_leaves, strict=True):
-            np.testing.assert_allclose(np.asarray(left), np.asarray(right), atol=1e-7)
-
-    value_changed = any(
-        not np.allclose(np.asarray(left), np.asarray(right))
-        for left, right in zip(
-            jax.tree_util.tree_leaves(before["value_head"]),
-            jax.tree_util.tree_leaves(updated.params["value_head"]),
-            strict=True,
-        )
-    )
-    assert value_changed
 
 
 def test_collapse_metrics_detect_collapsed_embeddings():
