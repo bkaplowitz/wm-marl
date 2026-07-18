@@ -23,7 +23,6 @@ from world_marl.envs.dmc_adapter import DMCVectorAdapter, dmc_env_name
 from world_marl.jepa.models import JepaConfig, JepaWorldModel
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
-    ControlMode,
     create_jepa_train_state,
     evaluate_open_loop,
     evaluate_world_model_loss,
@@ -83,11 +82,6 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated horizons for autoregressive latent rollout metrics.",
     )
     parser.add_argument(
-        "--controls",
-        default="none,no-action-world-model,shuffled-action-replay",
-        help="Comma-separated controls from none/no-action-world-model/shuffled-action-replay.",
-    )
-    parser.add_argument(
         "--save-collected-replay",
         type=Path,
         default=None,
@@ -121,7 +115,6 @@ def main() -> None:
         or 64
     )
     horizons = parse_int_list(args.open_loop_horizons)
-    controls = parse_control_list(args.controls)
 
     state = create_jepa_train_state(jax.random.PRNGKey(seed + 17), config)
     state = state.replace(
@@ -142,21 +135,17 @@ def main() -> None:
 
     rng = np.random.default_rng(seed + 100_000)
     key = jax.random.PRNGKey(seed + 200_000)
-    metrics: dict[str, Any] = {}
-    for control in controls:
-        control_key = str(control).replace("-", "_")
-        metrics[control_key] = evaluate_control(
-            state,
-            config,
-            replay,
-            rng,
-            key,
-            control=control,
-            batch_size=args.batch_size,
-            batches=args.batches,
-            chunk_length=chunk_length,
-            horizons=horizons,
-        )
+    metrics = evaluate_model(
+        state,
+        config,
+        replay,
+        rng,
+        key,
+        batch_size=args.batch_size,
+        batches=args.batches,
+        chunk_length=chunk_length,
+        horizons=horizons,
+    )
 
     result = {
         "checkpoint": str(args.checkpoint),
@@ -164,7 +153,6 @@ def main() -> None:
             "env": env,
             "seed": seed,
             "algorithm": metadata.get("algorithm"),
-            "control": metadata.get("control"),
             "jepa_config": dataclasses.asdict(config),
             "ignored_legacy_jepa_config_keys": ignored_config_keys,
         },
@@ -197,10 +185,8 @@ def main() -> None:
             "batches": args.batches,
             "chunk_length": chunk_length,
             "open_loop_horizons": horizons,
-            "controls": list(controls),
         },
         "metrics": metrics,
-        "comparison": comparison(metrics),
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(to_jsonable(result), indent=2, sort_keys=True))
@@ -287,14 +273,13 @@ def collect_dmc_replay(
         adapter.close()
 
 
-def evaluate_control(
+def evaluate_model(
     state,
     config: JepaConfig,
     replay: SequenceReplayBuffer,
     rng: np.random.Generator,
     key: jax.Array,
     *,
-    control: ControlMode,
     batch_size: int,
     batches: int,
     chunk_length: int,
@@ -332,7 +317,6 @@ def evaluate_control(
             wm_batch,
             config,
             chunk_length=chunk_length,
-            control=control,
         )
         wm_records.append(to_jsonable(wm_metrics))
         horizon_records.append(
@@ -342,12 +326,11 @@ def evaluate_control(
                     config,
                     wm_batch,
                     chunk_length=chunk_length,
-                    control=control,
                 )
             )
         )
         action_records.append(
-            to_jsonable(action_sensitivity(state, config, wm_batch, control=control))
+            to_jsonable(action_sensitivity(state, config, wm_batch))
         )
 
     open_loop: dict[str, Any] = {}
@@ -367,7 +350,6 @@ def evaluate_control(
                         open_batch,
                         config,
                         horizon=horizon,
-                        control=control,
                     )
                 )
             )
@@ -392,13 +374,11 @@ def per_horizon_metrics(
     batch: ReplayBatch,
     *,
     chunk_length: int,
-    control: ControlMode,
 ) -> dict[str, jax.Array]:
-    actions = controlled_actions(jax.random.PRNGKey(0), batch.actions, config, control)
     outputs = state.apply_fn(
         {"params": state.params},
         batch.observations,
-        actions,
+        batch.actions,
         chunk_length=chunk_length,
         dones=batch.dones,
         method=JepaWorldModel.sequence_outputs,
@@ -502,33 +482,17 @@ def per_horizon_metrics(
     return metrics
 
 
-def controlled_actions(
-    key: jax.Array,
-    actions: jax.Array,
-    config: JepaConfig,
-    control: ControlMode,
-) -> jax.Array:
-    if control == "no-action-world-model":
-        return jnp.zeros_like(actions)
-    if control == "shuffled-action-replay":
-        flat = actions.reshape((-1, config.action_dim))
-        return jax.random.permutation(key, flat, axis=0).reshape(actions.shape)
-    return actions
-
-
 def action_sensitivity(
     state,
     config: JepaConfig,
     batch: ReplayBatch,
-    *,
-    control: ControlMode,
 ) -> dict[str, jax.Array]:
     obs = batch.observations[:, 0]
     latents = state.apply_fn(
         {"params": state.params}, obs, method=JepaWorldModel.encode
     )
     latent_context = latents[:, None, :]
-    if config.action_mode != "continuous" or control == "no-action-world-model":
+    if config.action_mode != "continuous":
         zero = jnp.asarray(0.0, dtype=jnp.float32)
         return {
             "latent_low_high_l2": zero,
@@ -621,58 +585,11 @@ def aggregate_nested_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     return aggregate_records(records)
 
 
-def comparison(metrics: dict[str, Any]) -> dict[str, Any]:
-    if "none" not in metrics:
-        return {}
-    base = metrics["none"]
-    result = {}
-    base_loss = nested_mean(base, ["world_model_loss", "model/jepa_loss"])
-    base_open_16 = nested_mean(base, ["open_loop", "16", "model/open_loop_loss"])
-    for name, item in metrics.items():
-        if name == "none":
-            continue
-        loss = nested_mean(item, ["world_model_loss", "model/jepa_loss"])
-        open_16 = nested_mean(item, ["open_loop", "16", "model/open_loop_loss"])
-        result[name] = {
-            "jepa_loss_minus_true_action": (
-                None if loss is None or base_loss is None else float(loss - base_loss)
-            ),
-            "open_loop_h16_loss_minus_true_action": (
-                None
-                if open_16 is None or base_open_16 is None
-                else float(open_16 - base_open_16)
-            ),
-        }
-    return result
-
-
-def nested_mean(data: dict[str, Any], path: list[str]) -> float | None:
-    current: Any = data
-    for key in path:
-        if not isinstance(current, dict) or key not in current:
-            return None
-        current = current[key]
-    if isinstance(current, dict):
-        current = current.get("mean")
-    return float(current) if is_number(current) else None
-
-
 def parse_int_list(value: str) -> list[int]:
     items = [int(item.strip()) for item in value.split(",") if item.strip()]
     if not items or min(items) < 1:
         raise ValueError("integer list values must be >= 1")
     return sorted(set(items))
-
-
-def parse_control_list(value: str) -> list[ControlMode]:
-    allowed = {"none", "no-action-world-model", "shuffled-action-replay"}
-    items = [item.strip() for item in value.split(",") if item.strip()]
-    bad = [item for item in items if item not in allowed]
-    if bad:
-        raise ValueError(f"unknown controls: {bad}")
-    return items  # type: ignore[return-value]
-
-
 def is_number(value: Any) -> bool:
     return isinstance(value, (int, float, np.integer, np.floating)) and np.isfinite(
         float(value)

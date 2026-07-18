@@ -19,12 +19,6 @@ from world_marl.jepa.models import (
 )
 from world_marl.jepa.replay import ReplayBatch
 
-ControlMode = Literal[
-    "none",
-    "no-action-world-model",
-    "shuffled-action-replay",
-    "frozen-random-world-model",
-]
 PolicyReturnMode = Literal["reward-only", "lambda"]
 PolicyActorBaseline = Literal["none", "value"]
 PolicyReturnNormalization = Literal[
@@ -233,7 +227,6 @@ def _update_target_critic_params(
     static_argnames=(
         "config",
         "chunk_length",
-        "control",
         "freeze_encoder",
     ),
 )
@@ -244,7 +237,6 @@ def train_model_step(
     config: JepaConfig,
     *,
     chunk_length: int,
-    control: ControlMode = "none",
     freeze_encoder: bool = False,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     def loss_fn(params):
@@ -255,7 +247,6 @@ def train_model_step(
             batch,
             config,
             chunk_length=chunk_length,
-            control=control,
         )
         return loss, metrics
 
@@ -292,7 +283,6 @@ def train_model_step(
     static_argnames=(
         "config",
         "chunk_length",
-        "control",
         "encoder_update_scale",
     ),
 )
@@ -303,7 +293,6 @@ def train_model_step_scaled_encoder(
     config: JepaConfig,
     *,
     chunk_length: int,
-    control: ControlMode = "none",
     encoder_update_scale: float,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     """Train the world model while damping only encoder parameter updates."""
@@ -316,7 +305,6 @@ def train_model_step_scaled_encoder(
             batch,
             config,
             chunk_length=chunk_length,
-            control=control,
         )
         return loss, metrics
 
@@ -404,7 +392,6 @@ def world_model_loss(
     config: JepaConfig,
     *,
     chunk_length: int,
-    control: ControlMode,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     loss, metrics, _ = world_model_loss_with_outputs(
         params,
@@ -413,12 +400,11 @@ def world_model_loss(
         batch,
         config,
         chunk_length=chunk_length,
-        control=control,
     )
     return loss, metrics
 
 
-@partial(jax.jit, static_argnames=("config", "chunk_length", "control"))
+@partial(jax.jit, static_argnames=("config", "chunk_length"))
 def evaluate_world_model_loss(
     state: JepaTrainState,
     key: jax.Array,
@@ -426,7 +412,6 @@ def evaluate_world_model_loss(
     config: JepaConfig,
     *,
     chunk_length: int,
-    control: ControlMode,
 ) -> dict[str, jax.Array]:
     """Jitted evaluation-only wrapper around ``world_model_loss``."""
     _, metrics = world_model_loss(
@@ -436,7 +421,6 @@ def evaluate_world_model_loss(
         batch,
         config,
         chunk_length=chunk_length,
-        control=control,
     )
     return metrics
 
@@ -449,14 +433,12 @@ def world_model_loss_with_outputs(
     config: JepaConfig,
     *,
     chunk_length: int,
-    control: ControlMode,
 ) -> tuple[jax.Array, dict[str, jax.Array], dict[str, jax.Array]]:
-    action_key, regularizer_key = jax.random.split(key)
-    actions = _controlled_actions(action_key, batch.actions, config, control)
+    _, regularizer_key = jax.random.split(key)
     outputs = apply_fn(
         {"params": params},
         batch.observations,
-        actions,
+        batch.actions,
         chunk_length=chunk_length,
         dones=batch.dones,
         method=JepaWorldModel.sequence_outputs,
@@ -608,7 +590,6 @@ def reset_policy_heads(
     static_argnames=(
         "config",
         "imag_horizon",
-        "control",
         "policy_return_mode",
         "policy_actor_baseline",
         "policy_return_normalization",
@@ -632,7 +613,6 @@ def continuous_policy_train_step(
     action_high: jax.Array,
     *,
     imag_horizon: int,
-    control: ControlMode = "none",
     policy_return_mode: PolicyReturnMode = "reward-only",
     policy_actor_baseline: PolicyActorBaseline = "none",
     policy_return_normalization: PolicyReturnNormalization = "none",
@@ -671,7 +651,6 @@ def continuous_policy_train_step(
             action_low,
             action_high,
             imag_horizon=imag_horizon,
-            control=control,
             start_actions=start_actions,
             target_critic_params=target_critic_params,
             policy_gradient_mode=policy_gradient_mode,
@@ -1277,7 +1256,6 @@ def continuous_imagine_rollout(
     action_high: jax.Array,
     *,
     imag_horizon: int,
-    control: ControlMode,
     start_actions: jax.Array | None = None,
     target_critic_params: FrozenDict | None = None,
     policy_gradient_mode: PolicyGradientMode = "dynamics",
@@ -1356,12 +1334,9 @@ def continuous_imagine_rollout(
             action_low,
             action_high,
         )
-        model_actions = (
-            jnp.zeros_like(actions) if control == "no-action-world-model" else actions
-        )
         model_action_context = replace_last_action_context(
             action_context,
-            model_actions,
+            actions,
             config,
         )
         z_ensemble, reward_ensemble, continue_logit_ensemble = apply_fn(
@@ -1381,7 +1356,7 @@ def continuous_imagine_rollout(
         next_context = jnp.concatenate([context[:, 1:], next_z[:, None, :]], axis=1)
         next_action_context = append_action_context(
             model_action_context,
-            jnp.zeros_like(model_actions),
+            jnp.zeros_like(actions),
             config,
         )
         return (
@@ -1549,14 +1524,13 @@ def reward_only_returns(
     return returns[::-1]
 
 
-@partial(jax.jit, static_argnames=("config", "horizon", "control"))
+@partial(jax.jit, static_argnames=("config", "horizon"))
 def evaluate_open_loop(
     state: JepaTrainState,
     batch: ReplayBatch,
     config: JepaConfig,
     *,
     horizon: int,
-    control: ControlMode = "none",
 ) -> dict[str, jax.Array]:
     if horizon < 1:
         raise ValueError("horizon must be >= 1")
@@ -1570,14 +1544,10 @@ def evaluate_open_loop(
     )
     context = target_z[:, : config.context_window]
     action_context = batch.actions[:, : config.context_window]
-    if control == "no-action-world-model":
-        action_context = jnp.zeros_like(action_context)
     preds = []
     for t in range(horizon):
         if t > 0:
             actions = batch.actions[:, config.context_window - 1 + t]
-            if control == "no-action-world-model":
-                actions = jnp.zeros_like(actions)
             action_context = append_action_context(action_context, actions, config)
         next_z, _, _ = state.apply_fn(
             {"params": state.params},
@@ -1752,24 +1722,6 @@ def latent_collapse_metrics(latents: jax.Array) -> dict[str, jax.Array]:
 
 def _normalize(x: jax.Array) -> jax.Array:
     return x / (jnp.linalg.norm(x, axis=-1, keepdims=True) + 1e-6)
-
-
-def _controlled_actions(
-    key: jax.Array,
-    actions: jax.Array,
-    config: JepaConfig,
-    control: ControlMode,
-) -> jax.Array:
-    if control == "no-action-world-model":
-        return jnp.zeros_like(actions)
-    if control == "shuffled-action-replay":
-        if config.action_mode == "continuous":
-            flat = actions.reshape((-1, actions.shape[-1]))
-            return jax.random.permutation(key, flat, axis=0).reshape(actions.shape)
-        flat = actions.reshape((-1,))
-        return jax.random.permutation(key, flat).reshape(actions.shape)
-    del config
-    return actions
 
 
 def prediction_validity(

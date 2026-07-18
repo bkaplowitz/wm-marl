@@ -61,7 +61,6 @@ from world_marl.logging import (
 )
 
 
-CONTROL = "none"
 POLICY_BUNDLE_PARAM_GROUPS = ("encoder", "actor_head")
 
 
@@ -73,7 +72,6 @@ def parse_args() -> argparse.Namespace:
     environment.add_argument("--num-envs", type=int, default=16)
     environment.add_argument(
         "--env-workers",
-        "--dmc-workers",
         dest="env_workers",
         type=int,
         default=1,
@@ -143,7 +141,6 @@ def parse_args() -> argparse.Namespace:
     )
     world_model.add_argument(
         "--regularizer-weight",
-        "--sigreg-weight",
         dest="regularizer_weight",
         type=float,
         default=0.05,
@@ -973,7 +970,7 @@ def main() -> None:
     outcomes = [
         run_one(
             args,
-            run_dir=experiment_dir / CONTROL / f"run_{run_index:03d}",
+            run_dir=experiment_dir / f"run_{run_index:03d}",
             run_index=run_index,
         )
         for run_index in range(args.num_runs)
@@ -1643,7 +1640,6 @@ def run_one(
             "args": vars(args),
             "run_index": run_index,
             "seed": seed,
-            "control": CONTROL,
             "observation_shape": adapter.observation_shape,
             "action_shape": adapter.action_shape,
             "action_low": adapter.action_low,
@@ -2231,7 +2227,6 @@ def run_one(
         outcome = {
             "run_index": run_index,
             "seed": seed,
-            "control": CONTROL,
             "run_dir": str(run_dir),
             "checkpoint_dir": str(checkpoint_dir),
             "slow_policy_checkpoint_dir": (
@@ -2943,7 +2938,6 @@ def _fit_world_model(
                 batch,
                 config,
                 chunk_length=args.chunk_length,
-                control=CONTROL,
                 freeze_encoder=freeze_encoder,
             )
         else:
@@ -2953,7 +2947,6 @@ def _fit_world_model(
                 batch,
                 config,
                 chunk_length=args.chunk_length,
-                control=CONTROL,
                 encoder_update_scale=encoder_update_scale,
             )
         loss_history.append(metrics["model/total_loss"])
@@ -3139,7 +3132,6 @@ def _train_policy(
             action_low_jax,
             action_high_jax,
             imag_horizon=args.imag_horizon,
-            control=CONTROL,
             policy_return_mode=args.policy_return_mode,
             policy_actor_baseline=args.policy_actor_baseline,
             policy_return_normalization=args.policy_return_normalization,
@@ -3895,7 +3887,6 @@ def _evaluate_model(
             batch,
             config,
             chunk_length=chunk_length,
-            control=CONTROL,
         )
     )
     metrics.update(
@@ -3904,7 +3895,6 @@ def _evaluate_model(
             batch,
             config,
             horizon=open_loop_horizon,
-            control=CONTROL,
         )
     )
     metrics["model/continuous_action_low_high_sensitivity"] = (

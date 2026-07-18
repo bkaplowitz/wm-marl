@@ -603,18 +603,6 @@ def test_cli_accepts_wandb_video_controls(monkeypatch):
     assert args.value_clip == 400.0
 
 
-def test_cli_uses_regularizer_weight_alias(monkeypatch):
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        _minimal_args("--sigreg-weight", "0.125"),
-    )
-
-    args = train_dmc_jepa.parse_args()
-
-    assert args.regularizer_weight == 0.125
-
-
 def test_cli_exposes_current_dreamer_stabilizers(monkeypatch):
     monkeypatch.setattr(
         sys,
