@@ -15,7 +15,6 @@ import json
 import math
 import os
 import warnings
-from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -986,13 +985,11 @@ def _prepare_training_prefix(
         config,
         chunk_length=args.chunk_length,
         open_loop_horizon=args.open_loop_horizon,
-        action_low=adapter.action_low,
-        action_high=adapter.action_high,
     )
     logger.write_json("model_metrics_initial.json", initial_metrics)
 
     model_rng = jax_rngs.current("world_model")
-    state, model_rng, _, initial_model_losses = _fit_world_model(
+    state, model_rng, _ = _fit_world_model(
         args,
         logger,
         state,
@@ -1006,10 +1003,6 @@ def _prepare_training_prefix(
         train_env_steps=train_env_steps,
     )
     jax_rngs.update("world_model", model_rng)
-    logger.plot_world_model_loss(
-        initial_model_losses,
-        filename="world_model_initial_loss.png",
-    )
     initial_fit_metrics = _evaluate_model(
         state,
         validation_jax_rngs.take("evaluation"),
@@ -1017,8 +1010,6 @@ def _prepare_training_prefix(
         config,
         chunk_length=args.chunk_length,
         open_loop_horizon=args.open_loop_horizon,
-        action_low=adapter.action_low,
-        action_high=adapter.action_high,
     )
     logger.write_json("model_metrics_initial_fit.json", initial_fit_metrics)
     logger.write_json(
@@ -1185,13 +1176,7 @@ def run_one(
                 args,
                 train_env_steps=phase_start_train_env_steps,
             )
-            phase_replay = _new_replay_buffer(
-                capacity=args.online_collect_steps,
-                num_envs=args.num_envs,
-                observation_dim=config.observation_dim,
-                action_dim=config.action_dim,
-            )
-            collection_replays = [replay, phase_replay]
+            collection_replays = [replay]
             if online_recent_replay is not None:
                 collection_replays.append(online_recent_replay)
             observations, added_env_steps, collection = _collect_policy_steps(
@@ -1222,7 +1207,6 @@ def run_one(
                 **collection,
                 "train_replay_total_env_steps": train_env_steps,
                 "replay_size_per_env": replay.size,
-                "recent_replay_size_per_env": phase_replay.size,
                 "online_recent_replay_size_per_env": (
                     online_recent_replay.size if online_recent_replay is not None else 0
                 ),
@@ -1258,7 +1242,6 @@ def run_one(
                     ),
                 }
             )
-            logger.write_json(f"{phase}_actor_replay.json", collection)
             logger.append_metrics(
                 {
                     "phase": "online_actor_replay",
@@ -1273,7 +1256,7 @@ def run_one(
                 args,
                 train_env_steps=train_env_steps,
             )
-            state, model_rng, _, online_model_losses = _fit_world_model(
+            state, model_rng, _ = _fit_world_model(
                 args,
                 logger,
                 state,
@@ -1290,21 +1273,6 @@ def run_one(
                 freeze_encoder=freeze_online_encoder,
             )
             jax_rngs.update("world_model", model_rng)
-            logger.plot_world_model_loss(
-                online_model_losses,
-                filename=f"{phase}_world_model_loss.png",
-            )
-            model_metrics = _evaluate_model(
-                state,
-                validation_jax_rngs.take("evaluation"),
-                validation_batch,
-                config,
-                chunk_length=args.chunk_length,
-                open_loop_horizon=args.open_loop_horizon,
-                action_low=adapter.action_low,
-                action_high=adapter.action_high,
-            )
-            logger.write_json(f"{phase}_model_metrics.json", model_metrics)
 
             policy_rng = jax_rngs.current("policy")
             actor_update_interval = _scheduled_online_actor_update_interval(
@@ -1337,7 +1305,6 @@ def run_one(
                 reset_start_max_age=args.policy_reset_start_max_age,
             )
             jax_rngs.update("policy", policy_rng)
-            logger.write_json(f"{phase}_policy.json", policy_metrics)
 
             curve_evaluation = None
             if (
@@ -1368,29 +1335,19 @@ def run_one(
                 online_index % args.online_checkpoint_interval == 0
                 or online_index == args.online_iterations
             )
-            reproducibility = _reproducibility_snapshot(
-                state,
-                phase=phase,
-                recent_replay=phase_replay,
-                full_replay=replay if checkpoint_phase else None,
-            )
-            if online_recent_replay is not None:
-                reproducibility.update(
-                    {
-                        "online_recent_replay_sha256": (
-                            online_recent_replay.fingerprint()
-                        ),
-                        "online_recent_replay_size_per_env": (
-                            online_recent_replay.size
-                        ),
-                    }
+            reproducibility = None
+            if checkpoint_phase:
+                reproducibility = _reproducibility_snapshot(
+                    state,
+                    phase=phase,
+                    recent_replay=online_recent_replay,
+                    full_replay=replay,
                 )
-            logger.write_json(f"{phase}_reproducibility.json", reproducibility)
+                logger.write_json(f"{phase}_reproducibility.json", reproducibility)
             online_history.append(
                 {
                     "iteration": online_index,
                     "actor_replay": collection,
-                    "model_metrics": model_metrics,
                     "policy": policy_metrics,
                     "policy_evaluation": curve_evaluation,
                     "reproducibility": reproducibility,
@@ -1465,8 +1422,6 @@ def run_one(
             config,
             chunk_length=args.chunk_length,
             open_loop_horizon=args.open_loop_horizon,
-            action_low=adapter.action_low,
-            action_high=adapter.action_high,
         )
         logger.write_json("model_metrics_final.json", final_metrics)
         logger.write_json(
@@ -1992,8 +1947,7 @@ def _fit_world_model(
     recent_replay: SequenceReplayBuffer | None = None,
     recent_fraction: float = 0.0,
     freeze_encoder: bool = False,
-) -> tuple[Any, jax.Array, dict[str, Any], list[float]]:
-    loss_history: list[jax.Array] = []
+) -> tuple[Any, jax.Array, dict[str, Any]]:
     metrics: dict[str, Any] = {}
     progress = tqdm(
         range(1, steps + 1),
@@ -2020,7 +1974,6 @@ def _fit_world_model(
             chunk_length=args.chunk_length,
             freeze_encoder=freeze_encoder,
         )
-        loss_history.append(metrics["model/total_loss"])
         if (
             step_index == 1
             or step_index == steps
@@ -2040,7 +1993,7 @@ def _fit_world_model(
                     **metrics,
                 }
             )
-    return state, rng, to_jsonable(metrics), [float(loss) for loss in loss_history]
+    return state, rng, to_jsonable(metrics)
 
 
 def _train_policy(
@@ -2467,8 +2420,6 @@ def _evaluate_model(
     *,
     chunk_length: int,
     open_loop_horizon: int,
-    action_low: np.ndarray,
-    action_high: np.ndarray,
 ) -> dict[str, Any]:
     metrics = dict(
         evaluate_world_model_loss(
@@ -2487,51 +2438,7 @@ def _evaluate_model(
             horizon=open_loop_horizon,
         )
     )
-    metrics["model/continuous_action_low_high_sensitivity"] = (
-        _continuous_action_sensitivity(
-            state,
-            batch,
-            config,
-            action_low=action_low,
-            action_high=action_high,
-        )
-    )
     return to_jsonable(metrics)
-
-
-@partial(jax.jit, static_argnames=("config",))
-def _continuous_action_sensitivity(
-    state,
-    batch: ReplayBatch,
-    config: JepaConfig,
-    *,
-    action_low: np.ndarray,
-    action_high: np.ndarray,
-) -> jax.Array:
-    flat_obs = batch.observations[:, 0].reshape((-1, config.observation_dim))
-    z = state.apply_fn({"params": state.params}, flat_obs, method=JepaWorldModel.encode)
-    context = z[:, None, :]
-    low = jnp.broadcast_to(
-        jnp.asarray(action_low, dtype=jnp.float32),
-        (z.shape[0], config.action_dim),
-    )[:, None, :]
-    high = jnp.broadcast_to(
-        jnp.asarray(action_high, dtype=jnp.float32),
-        (z.shape[0], config.action_dim),
-    )[:, None, :]
-    z_low, _, _ = state.apply_fn(
-        {"params": state.params},
-        context,
-        low,
-        method=JepaWorldModel.predict_next_from_history,
-    )
-    z_high, _, _ = state.apply_fn(
-        {"params": state.params},
-        context,
-        high,
-        method=JepaWorldModel.predict_next_from_history,
-    )
-    return jnp.mean(jnp.linalg.norm(z_high - z_low, axis=-1))
 
 
 def _reload_prediction_diff(

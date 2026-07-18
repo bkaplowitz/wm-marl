@@ -121,6 +121,9 @@ The first cleanup pass removed:
   public configuration and live training path;
 - duplicate configuration tables in the launcher and direct runner;
 - reporting and schedule calculations from the stateful runner.
+- per-phase throwaway replay buffers, world-model validation passes, action
+  sensitivity probes, loss plots, duplicate JSON artifacts, and non-checkpoint
+  reproducibility fingerprints.
 
 Every behavioral cleanup was checked against the frozen canonical step. The
 latest live comparison covered 187 model parameters and training/evaluation
