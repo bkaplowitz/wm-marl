@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 import inspect
-import os
-import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -24,18 +22,10 @@ from world_marl.dreamer_v3_baseline.networks import TensorSpace
 from world_marl.dreamer_v3_baseline.oracle import (
     OracleManifest,
     ParameterTranslator,
-    official_revision,
-    profile_overrides,
 )
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "dreamer_v3"
-OFFICIAL_CHECKOUT = Path(
-    os.environ.get(
-        "DREAMERV3_ORACLE_CHECKOUT",
-        "/private/tmp/danijar-dreamerv3-20260713",
-    )
-)
 SOURCE_HASHES = {
     "dreamerv3/agent.py": (
         "adce8e4274bc098c218bf9a20fd3327545f0ad7d850b5fe328597382e91b5269"
@@ -297,28 +287,12 @@ def test_rssm_oracle_authority_dtype_and_source_parameter_consumption(official_c
     request = json.loads(manifest.generator_request)
     assert manifest.source_spec == source_spec.name == "rssm"
     assert dict(manifest.official_file_hashes) == SOURCE_HASHES
-    assert request["official_commit"] == official_revision(manifest.profile)
+    assert request["source_revision"] == manifest.official_commit
     assert request["profile"] == manifest.profile.value
     assert request["observation_mode"] == manifest.observation_mode.value
     assert request["source_spec"] == "rssm"
-    assert request["case_dimensions"] == {
-        "action": 3,
-        "batch": 2,
-        "classes": 3,
-        "deter": 16,
-        "hidden": 8,
-        "stoch": 2,
-        "time": 4,
-        "token": 5,
-    }
-    assert request["overrides"] == profile_overrides(manifest.profile)
-    assert request["compute_dtype"] == manifest.dtype
-    assert request["canonical_dimensions"] == {
-        "classes": int(arrays["source_config.size1m.classes"]),
-        "deter": int(arrays["source_config.size1m.deter"]),
-        "hidden": int(arrays["source_config.size1m.hidden"]),
-        "stoch": int(arrays["source_config.size1m.stoch"]),
-    }
+    assert request["dtype"] == manifest.dtype
+    assert request["seed"] == manifest.seed
     assert int(arrays["source_config.size1m.deter"]) == 512
     assert int(arrays["source_config.size200m.deter"]) == 8192
     assert arrays["execution.compute_dtype"].tobytes().decode() == manifest.dtype
@@ -337,42 +311,6 @@ def test_rssm_oracle_authority_dtype_and_source_parameter_consumption(official_c
         np.testing.assert_array_equal(translated[destination_path], value)
         assert translated[destination_path].shape == destination[destination_path].shape
         assert value.dtype == translated[destination_path].dtype == np.float32
-
-
-def test_rssm_oracle_replays_exact_command_stdin_and_is_deterministic(official_case):
-    if not (OFFICIAL_CHECKOUT / ".git").exists():
-        pytest.skip("explicit DreamerV3 oracle checkout is unavailable")
-    manifest, arrays = official_case
-    payloads = []
-    for _ in range(2):
-        replayed = subprocess.run(
-            manifest.generator_command,
-            cwd=OFFICIAL_CHECKOUT,
-            input=manifest.generator_request,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        payloads.append(json.loads(replayed.stdout))
-    assert all(int(payload["worker_pid"]) != os.getpid() for payload in payloads)
-    assert all(payload["compute_dtype"] == manifest.dtype for payload in payloads)
-    assert payloads[0]["arrays"] == payloads[1]["arrays"]
-    assert tuple(sorted(payloads[0]["arrays"])) == tuple(arrays)
-    representative_dtypes = {
-        "initial.deter": manifest.dtype,
-        "observe.reset": "bool",
-        "observe.keys": "uint32",
-        "draws.initial": "int32",
-        "source_dtype.state": "uint8",
-        "param.dyngru__kernel": "float32",
-    }
-    for payload in payloads:
-        for name, dtype in representative_dtypes.items():
-            assert payload["arrays"][name]["dtype"] == dtype
-    for name, spec in payloads[0]["arrays"].items():
-        np.testing.assert_array_equal(
-            arrays[name], np.asarray(spec["values"], dtype=spec["dtype"])
-        )
 
 
 def test_oracle_control_fields_have_explicit_operational_meaning(official_case):

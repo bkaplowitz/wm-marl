@@ -1258,16 +1258,26 @@ git -C /private/tmp/danijar-dreamerv3-20260713 show bfcdfc183d2c1543a3bf3cdda6ed
 **Owned files/symbols:** `oracle.py`, `network_oracle.py`, `rssm_oracle.py`,
 `replay_oracle.py`, `replay_oracle_contract.py`, new `fixture_generator.py`
 limited to the stable root/registry/refresh symbols named in the aggregate
-inventory, `tests/test_dreamer_v3_oracle_manifest.py`,
+inventory, `__init__.py` only to remove the dead `OracleHarness` and
+`OracleInvocation` imports and `__all__` entries when their definitions are
+deleted, `tests/test_dreamer_v3_oracle_manifest.py`,
+the obsolete manifest/request/generator assertions and imports in
+`tests/test_dreamer_v3_distributions.py`, `tests/test_dreamer_v3_networks.py`,
+and `tests/test_dreamer_v3_rssm_parity.py` that must follow Task 1b's compact
+manifest schema (without changing any distribution, network, or RSSM equation,
+tolerance, or numerical assertion),
 `tests/fixtures/dreamer_v3/README.md`, and the twelve manifest-only paths named
 below. No NPZ or runtime-package file is owned.
 
 **First RED:** reject callback/source-text/interpreter authentication, require
 fixture-only pinned blob hashes and a bijective parameter translator, and fail
 the absent refresh parser. **Implementation:** replace the private-runtime
-emulation with direct read-only `git show` translation, deterministic NPZ/
-manifest helpers, the stable decorated parser registry, and manifest-only
-refresh. **Focused acceptance:** run the one oracle-manifest test file's owned
+emulation with direct read-only `git show` translation, immutable private
+source-hash/dtype lookup tables, deterministic NPZ/manifest helpers that use
+exclusive random temporary files and a random staging directory, the stable
+decorated parser registry, and manifest-only refresh. `OracleManifest` and
+`fixture_generator.py` must not call the transitional `OracleSourceSpec`
+registry. **Focused acceptance:** run the one oracle-manifest test file's owned
 tests, all twelve literal refresh commands below, assert every NPZ remains
 byte-identical, then scoped Ruff check/format. Report every digest; fresh spec/
 quality review and fresh fixer must reach 0 Critical/Important before
@@ -1309,6 +1319,11 @@ git -C /private/tmp/danijar-dreamerv3-20260713 show bfcdfc183d2c1543a3bf3cdda6ed
 
 **Owned files/symbols:** `__init__.py` only for oracle/tooling imports and exports,
 `rssm.py` only for the registration/source-spec/fixture scan-key removal,
+`oracle.py` only after those import edges are removed and only to delete the
+temporary `OracleSourceSpec`/source-spec registry interfaces retained across
+the Task-1b-to-1c boundary; the immutable fixture source-hash/dtype tables,
+direct lookup helpers, and thin source-name constants remain and need no
+Task-1c edit,
 `tests/test_dreamer_v3_distributions.py`, `tests/test_dreamer_v3_networks.py`,
 `tests/test_dreamer_v3_rssm_parity.py` only for direct tooling imports and
 boundary assertions, and new `tests/test_dreamer_v3_runtime_imports.py`.
@@ -1322,11 +1337,14 @@ replacement of the remaining production exports.
 fails because runtime import eagerly loads them; component tests fail until the
 single scan-key import is `rssm_oracle.py::ninjax_scan_sample_keys`.
 **Implementation:** remove runtime registrations/exports and migrate only those
-test imports. **Focused acceptance:** run the three component suites plus the
-runtime-import test and the literal fresh-interpreter `pkgutil.walk_packages`
-check below, then scoped Ruff check/format. Report the before/after import graph;
-fresh spec/quality review and fresh fixer must reach 0 Critical/Important before
-`refactor(dreamer): isolate parity tooling`.
+test imports. The three component files must collect, proving their import seam,
+but Task 1c does not execute their numerical tests: the network/RSSM files still
+use the removed legacy config constructor and Tasks 3b/3c own that migration and
+full execution. **Focused acceptance:** collect the three component files, run
+the runtime-import test and literal fresh-interpreter `pkgutil.walk_packages`
+check below, then scoped Ruff check/format. Report the before/after import graph
+and collection count; fresh spec/quality review and fresh fixer must reach 0
+Critical/Important before `refactor(dreamer): isolate parity tooling`.
 
 Task 1c intentionally owns three executable shell fences: its scoped unit gate,
 the integrated Task-1 regression gate, and the manifest-regeneration commands.
@@ -1337,7 +1355,8 @@ substring inside its own source.
 ```bash
 set -euo pipefail
 export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/wm-marl-uv-cache}"
-uv run pytest tests/test_dreamer_v3_distributions.py tests/test_dreamer_v3_networks.py tests/test_dreamer_v3_rssm_parity.py tests/test_dreamer_v3_runtime_imports.py -q
+uv run pytest --collect-only -q tests/test_dreamer_v3_distributions.py tests/test_dreamer_v3_networks.py tests/test_dreamer_v3_rssm_parity.py
+uv run pytest tests/test_dreamer_v3_runtime_imports.py -q
 uv run ruff check src/world_marl/dreamer_v3_baseline/__init__.py src/world_marl/dreamer_v3_baseline/rssm.py tests/test_dreamer_v3_distributions.py tests/test_dreamer_v3_networks.py tests/test_dreamer_v3_rssm_parity.py tests/test_dreamer_v3_runtime_imports.py
 uv run ruff format --check src/world_marl/dreamer_v3_baseline/__init__.py src/world_marl/dreamer_v3_baseline/rssm.py tests/test_dreamer_v3_distributions.py tests/test_dreamer_v3_networks.py tests/test_dreamer_v3_rssm_parity.py tests/test_dreamer_v3_runtime_imports.py
 git diff --check
@@ -1354,8 +1373,10 @@ git -C /private/tmp/danijar-dreamerv3-20260713 show bfcdfc183d2c1543a3bf3cdda6ed
 `_write_pair`, `_PARSER_REGISTRY`, `_register_parser`, `refresh_manifest`, and
 `_register_refresh_manifest_parser`; `__init__.py` is split by symbol: Task 1a
 removes the `ActorCriticConfig` import and `__all__` entry and adds exactly the
-five named replacement public config imports and `__all__` entries, while Task
-1c later removes only eager oracle/tooling imports and exports. Task 9 later replaces
+five named replacement public config imports and `__all__` entries, Task 1b
+removes only the dead `OracleHarness` and `OracleInvocation` imports and
+`__all__` entries, while Task 1c later removes the remaining eager
+oracle/tooling imports and exports. Task 9 later replaces
 the remaining production exports;
 `tests/test_dreamer_v3_config.py`, `tests/test_dreamer_v3_oracle_manifest.py`,
 new `tests/test_dreamer_v3_runtime_imports.py`, and the following narrow
@@ -1365,7 +1386,20 @@ fixture-only `ninjax_scan_sample_keys`; and
 `tests/test_dreamer_v3_distributions.py`, `tests/test_dreamer_v3_networks.py`,
 and `tests/test_dreamer_v3_rssm_parity.py` only to replace runtime-package
 oracle imports/registrations with direct fixture-tooling imports and assert the
-package boundary. `rssm_oracle.py::ninjax_scan_sample_keys` is the single owner
+package boundary. Task 1b separately owns their obsolete compact-manifest,
+request, command, and removed-generator assertions/imports so the literal Task
+1c component collection gate is executable before Task 1c begins; it does not
+own their config constructors, equations, tolerances, or numerical assertions.
+Tasks 3a-3c own full component execution, with Tasks 3b and 3c also owning the
+network/RSSM test migration from the removed legacy config constructor. Task 1c
+deletes the transitional
+`OracleSourceSpec` and source-spec registry definitions from `oracle.py` only
+after removing the `rssm.py` and package-root import edges in the same unit.
+Task 1b proves by AST/reference inventory that no manifest, fixture generator,
+or thin oracle wrapper uses those transitional definitions, so Task 1c's
+allowlist is sufficient without editing `fixture_generator.py` or an oracle
+wrapper.
+`rssm_oracle.py::ninjax_scan_sample_keys` is the single owner
 and import path for that fixture helper. It is not a runtime RSSM algorithm,
 is not exported from `rssm.py` or `__init__.py`, and fixture tests import it
 directly. No distribution, network, or RSSM equation is owned by Task 1.
@@ -1411,13 +1445,19 @@ implementation revisions/maps, and generic source fields in production config.
 Each numerical fixture manifest separately records and recomputes only the
 official `git show <selected revision>:<path>` blobs that generated that case.
 `test_fixture_generator_refresh_manifest_parser` fails before the stable root
-parser and refresh registration helper exist. The three component tests also
-fail until all oracle registrations/exports disappear from the runtime import
-graph and the fixture-only scan-key helper has exactly the direct
-`rssm_oracle.py` import path above.
+parser and refresh registration helper exist. Task 1b first migrates the three
+component suites off obsolete manifest/request/generator contracts. Task 1c
+requires their collection/import seam, not their numerical execution, and fails
+until all oracle registrations/exports disappear from the runtime import graph
+and the fixture-only scan-key helper has exactly the direct `rssm_oracle.py`
+import path above. Tasks 3a-3c then require complete numerical execution after
+the owning test/config migrations. Replay's removed
+`run_replay_case` caller remains Task 2 ownership and is not restored through a
+compatibility worker.
 
 **Integrated implementation constraints:** (1) add profile and import-boundary tests; (2) correct
-typed snapshots and remove legacy constructor/config paths; (3) reduce oracle
+typed snapshots and remove legacy production constructor/config paths without
+claiming ownership of the stale numerical-test constructors; (3) reduce oracle
 validation to source hashes, canonical request/schema, deterministic fixtures,
 and parameter bijection; (4) delete callback fingerprints, reload games,
 interpreter aliases, and source-text contracts; (5) regenerate only the exact
@@ -1427,7 +1467,9 @@ canonical JSON/hash helpers; (7) bind both profiles to their exact authority
 revision while keeping fixture-only blob hashes out of runtime config; (8)
 remove the runtime registration block from `rssm.py`, move the scan-key fixture
 helper to `rssm_oracle.py`, migrate the three component-test imports, and prove
-neither the package root nor any production module imports tooling.
+neither the package root nor any production module imports tooling. The direct
+fixture source tables/helpers remain after Task 1c; only the temporary runtime
+class and global registry are deleted there.
 
 **Integrated regression acceptance after 1a-1c:**
 
@@ -1435,7 +1477,7 @@ neither the package root nor any production module imports tooling.
 set -euo pipefail
 export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/wm-marl-uv-cache}"
 uv run pytest -q tests/test_dreamer_v3_config.py tests/test_dreamer_v3_oracle_manifest.py
-uv run pytest -q tests/test_dreamer_v3_distributions.py tests/test_dreamer_v3_networks.py tests/test_dreamer_v3_rssm_parity.py
+uv run pytest --collect-only -q tests/test_dreamer_v3_distributions.py tests/test_dreamer_v3_networks.py tests/test_dreamer_v3_rssm_parity.py
 uv run pytest -q tests/test_dreamer_v3_runtime_imports.py
 uv run python -c "import pkgutil,sys,world_marl.dreamer_v3_baseline as p; names={m.name for m in pkgutil.walk_packages(p.__path__,p.__name__+'.')}; tooling={n for n in names if any(t in n.rsplit('.',1)[-1] for t in ('oracle','fixture','generator','contract'))}; required={p.__name__+'.oracle',p.__name__+'.network_oracle',p.__name__+'.rssm_oracle',p.__name__+'.replay_oracle',p.__name__+'.replay_oracle_contract',p.__name__+'.fixture_generator'}; assert required<=tooling,(required-tooling); loaded=tooling&set(sys.modules); assert not loaded,sorted(loaded)"
 uv run ruff check src/world_marl/dreamer_v3_baseline tests/test_dreamer_v3_config.py tests/test_dreamer_v3_oracle_manifest.py tests/test_dreamer_v3_runtime_imports.py tests/test_dreamer_v3_distributions.py tests/test_dreamer_v3_networks.py tests/test_dreamer_v3_rssm_parity.py
@@ -1720,7 +1762,9 @@ git -C /private/tmp/danijar-dreamerv3-20260713 show bfcdfc183d2c1543a3bf3cdda6ed
 **Owned files/symbols:** `networks.py`; only
 `generate_networks`/`_register_networks_parser`; the networks test; and both
 dtype files for `paper-vision-networks` and
-`upstream-current-vision-networks`. **First RED:** supplied-parameter value/
+`upstream-current-vision-networks`. This task removes the network test's
+`_legacy=True` RSSM-config construction and replaces it with the public resolved
+config shape before requiring full file execution. **First RED:** supplied-parameter value/
 gradient cases cover initialization, RMSNorm, Linear/BlockLinear, convolution,
 MLP/head, exact paper stride-2 versus current conv-then-2x2-max-pool encoder,
 and exact spatial projection/upsampling/transposed-conv/final-sigmoid decoder.
@@ -1749,6 +1793,9 @@ git -C /private/tmp/danijar-dreamerv3-20260713 show bfcdfc183d2c1543a3bf3cdda6ed
 **Owned files/symbols:** `rssm.py`; only
 `generate_rssm`/`_register_rssm_parser`; the RSSM parity test; and both dtype
 files for `paper-proprio-rssm` and `upstream-current-proprio-rssm`.
+This task removes the RSSM parity test's `_legacy=True` config construction and
+replaces it with the public resolved config shape before requiring full file
+execution.
 Task 3c finalizes the primitive `RSSMState.state_dict()` and closed
 `RSSMState.from_state(state, config, expected_leading_shape)` APIs consumed by
 all Agent carries. They copy the exact deter/stoch arrays, reject wrong keys,

@@ -347,8 +347,8 @@ with the interleaved production runner and artifact/checkpoint interfaces.
 
 | Live symbol | Disp. | Official counterpart | Live callers/imports | Incompatibility |
 | --- | --- | --- | --- | --- |
-| `config.py::DreamerProfile` | R | CFG | S,E,O,P | I1 |
-| `config.py::ObservationMode` | R | CFG | S,E,O,P | I1 |
+| `config.py::DreamerProfile` | R | CFG | S,E,O,P,fixture_generator.py | I1 |
+| `config.py::ObservationMode` | R | CFG | S,E,O,P,fixture_generator.py | I1 |
 | `config.py::ModelSize` | R | CFG | S,E,P | I1 |
 | `config.py::NetworkSize` | R | CFG | S,E,P | I1 |
 | `config.py::RSSMConfig` | R | CFG/RSSM | S,E,networks.py,rssm.py,P,B | I1 |
@@ -448,19 +448,19 @@ with the interleaved production runner and artifact/checkpoint interfaces.
 | `oracle.py::_fingerprint_module_attribute_binding` | D | NONE | S | I4 |
 | `oracle.py::_fingerprint_component` | D | NONE | S | I4 |
 | `oracle.py::OracleInvocation` | D | NONE | S,E,O,P | I4 |
-| `oracle.py::OracleSourceSpec` | D | NONE | S,E,O,P,rssm.py | I4 |
+| `oracle.py::OracleSourceSpec` | D | NONE | S,E,P,rssm.py | I4 |
 | `oracle.py::_rehydrate_oracle_source_spec` | D | NONE | S | I4 |
 | `oracle.py::_oracle_source_spec_signature` | D | NONE | S | I4 |
 | `oracle.py::_callback_logical_identity` | D | NONE | S | I4 |
 | `oracle.py::_validate_bound_callback` | D | NONE | S | I4 |
 | `oracle.py::_validate_source_spec_callbacks` | D | NONE | S | I4 |
-| `oracle.py::register_oracle_source_spec` | D | NONE | S,O,rssm.py | I4 |
+| `oracle.py::register_oracle_source_spec` | D | NONE | S,rssm.py | I4 |
 | `oracle.py::_resolve_source_spec` | D | NONE | S | I4 |
 | `oracle.py::oracle_source_spec` | D | NONE | S,O,P | I4 |
 | `oracle.py::official_revision` | X | CFG | S,O,P | I1 |
 | `oracle.py::profile_overrides` | X | CFG | S,O,P | I1 |
-| `oracle.py::TensorSpec` | R | FIX | S,E,P | I4 |
-| `oracle.py::OracleManifest` | R | FIX | S,E,P | I4 |
+| `oracle.py::TensorSpec` | R | FIX | S,E,P,fixture_generator.py | I4 |
+| `oracle.py::OracleManifest` | R | FIX | S,E,P,fixture_generator.py | I4 |
 | `oracle.py::ParameterMapping` | R | FIX | S,E,P | I4 |
 | `oracle.py::ParameterTranslator` | R | FIX | S,E,P | I4 |
 | `oracle.py::OracleHarness` | D | NONE | S,E,P,O | I4 |
@@ -479,11 +479,14 @@ with the interleaved production runner and artifact/checkpoint interfaces.
 | `oracle.py::_transform_parameter` | R | FIX | S | I4 |
 | `oracle.py::_canonical_generator_request` | X | FIX | S | I4 |
 | `oracle.py::_canonical_json` | R | FIX | S,O | I4 |
-| `oracle.py::_sha256_bytes` | R | FIX | S,O | I4 |
-| `oracle.py::_sha256_path` | R | FIX | S | I4 |
-| `oracle.py::_git_show` | R | FIX | S,O | I4 |
+| `oracle.py::_sha256_bytes` | R | FIX | S,O,fixture_generator.py | I4 |
+| `oracle.py::_sha256_path` | R | FIX | S,fixture_generator.py | I4 |
+| `oracle.py::_git_show` | R | FIX | S,O,fixture_generator.py | I4 |
 | `oracle.py::_git_object_exists` | R | FIX | S | I4 |
-| `oracle.py::_write_deterministic_npz` | R | FIX | S | I4 |
+| `oracle.py::_source_hashes_for` | R | FIX | S,P,fixture_generator.py | I4 |
+| `oracle.py::_source_allows_dtype` | R | FIX | S,P | I4 |
+| `oracle.py::_FixtureSourceName` | R | FIX | S | I4 |
+| `oracle.py::_write_deterministic_npz` | R | FIX | S,fixture_generator.py | I4 |
 | `oracle.py::_main` | D | NONE | S | I4 |
 | `replay.py::_ReplayRestored` | X | REP | S | I5 |
 | `replay.py::_require_exact_keys` | X | REP | S | I5 |
@@ -575,6 +578,35 @@ with the interleaved production runner and artifact/checkpoint interfaces.
 | `scripts/train_dreamer_v3_baseline.py::_make_batch` | D | NONE | S:main | I6 |
 | `scripts/train_dreamer_v3_baseline.py::_run_accounting` | X | RUN | S:main | I6 |
 | `scripts/train_dreamer_v3_baseline.py::main` | X | RUN | pyproject entrypoint | I6 |
+
+The I4 oracle migration is intentionally sequential. Task 1b removes dead
+generic invocation/harness/profile/config-source APIs and migrates only stale
+manifest/request/generator assertions and imports in the distribution,
+network, and RSSM component tests to the compact fixture schema; their
+equations, tolerances, and numerical assertions do not change. Task 1b makes
+`OracleManifest` and `fixture_generator.py` depend only on immutable private
+source-hash/dtype tables and direct lookup helpers; the thin fixture source-name
+constants likewise do not instantiate or query the runtime registry. Because
+`rssm.py` and the package root still import source-spec registration symbols
+until the runtime/tooling seam is cut, Task 1b may retain only that exact
+temporary `OracleSourceSpec`/registry surface. Its complete production
+reference set is `oracle.py`, `rssm.py`, and `__init__.py`; neither the manifest
+class nor fixture-generator tooling may reference it. Task 1c first removes
+those runtime import edges and then deletes the temporary class, registration
+functions, and global registry from `oracle.py` in the same unit. The immutable
+fixture source tables and direct helpers remain. At the Task 1c boundary the component suites must
+collect without importing tooling through production modules; their complete
+numerical execution is deliberately deferred to Tasks 3a-3c. The live network
+and RSSM tests still construct the removed legacy config shape, so treating
+their current execution failures as a Task 1c import-boundary failure would be
+a false gate. Tasks 3b and 3c migrate those constructors while validating the
+corresponding equations. Replay's removed `run_replay_case` caller is not hidden
+by a compatibility worker; its migration remains Task 2 ownership.
+
+The package-root edge is split by symbol as well: Task 1b removes only the dead
+`OracleHarness` and `OracleInvocation` imports and exports together with their
+definitions so package import stays valid; Task 1c removes the remaining eager
+oracle/tooling surface when it cuts the runtime seam.
 
 #### Legacy import-site inventory (complete)
 

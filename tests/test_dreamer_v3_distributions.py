@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 from pathlib import Path
 
 import jax
@@ -29,18 +27,11 @@ from world_marl.dreamer_v3_baseline.distributions import (
 )
 from world_marl.dreamer_v3_baseline.oracle import (
     DISTRIBUTIONS_SOURCE_SPEC,
-    OracleHarness,
     OracleManifest,
 )
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "dreamer_v3"
-OFFICIAL_CHECKOUT = Path(
-    os.environ.get(
-        "DREAMERV3_ORACLE_CHECKOUT",
-        "/private/tmp/danijar-dreamerv3-20260713",
-    )
-)
 SOURCE_HASHES = {
     "embodied/jax/heads.py": (
         "437641cde21e7f9e3f69b88ad8f6b7e7c22e54eec8c5b19eef6127afde1a9b3f"
@@ -87,34 +78,9 @@ def test_distribution_oracles_pin_both_exact_authority_revisions(
     assert manifest.observation_mode is ObservationMode.PROPRIO
     assert manifest.generator_request is not None
     request = json.loads(manifest.generator_request)
-    assert request["official_commit"] == manifest.official_commit
+    assert request["source_revision"] == manifest.official_commit
     assert request["profile"] == manifest.profile.value
     assert request["source_spec"] == DISTRIBUTIONS_SOURCE_SPEC.name
-
-
-def test_distribution_oracle_command_and_stdin_replay_exact_official_arrays(
-    official_case,
-) -> None:
-    if not (OFFICIAL_CHECKOUT / ".git").exists():
-        pytest.skip("explicit DreamerV3 oracle checkout is unavailable")
-    manifest, arrays = official_case
-
-    replayed = subprocess.run(
-        manifest.generator_command,
-        cwd=OFFICIAL_CHECKOUT,
-        input=manifest.generator_request,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    payload = json.loads(replayed.stdout)
-    assert int(payload["worker_pid"]) != os.getpid()
-    assert tuple(sorted(payload["arrays"])) == tuple(arrays)
-    for name, spec in payload["arrays"].items():
-        np.testing.assert_array_equal(
-            arrays[name],
-            np.asarray(spec["values"], dtype=spec["dtype"]),
-        )
 
 
 def test_distribution_oracles_persist_supplied_categorical_noise_cases(
@@ -140,29 +106,6 @@ def test_distribution_oracles_persist_supplied_categorical_noise_cases(
     assert arrays["onehot.supplied_sample"].dtype == np.float32
     assert arrays["onehot.supplied_sample"].shape == (2, 2, 4)
     assert arrays["onehot.supplied_sample_grad"].shape == (2, 4)
-
-
-def test_distribution_oracle_writer_is_byte_deterministic(
-    tmp_path: Path,
-) -> None:
-    if not (OFFICIAL_CHECKOUT / ".git").exists():
-        pytest.skip("explicit DreamerV3 oracle checkout is unavailable")
-    first = OracleHarness(OFFICIAL_CHECKOUT, tmp_path / "first")
-    second = OracleHarness(OFFICIAL_CHECKOUT, tmp_path / "second")
-
-    first_fixture, first_manifest = first.run_distributions_case(
-        DreamerProfile.PAPER,
-        ObservationMode.PROPRIO,
-    )
-    second_fixture, second_manifest = second.run_distributions_case(
-        DreamerProfile.PAPER,
-        ObservationMode.PROPRIO,
-    )
-
-    assert first_fixture.read_bytes() == second_fixture.read_bytes()
-    assert first_manifest.read_bytes() == second_manifest.read_bytes()
-    assert first.last_worker_pid is not None
-    assert second.last_worker_pid is not None
 
 
 def test_symlog_and_symexp_match_official_extreme_scalar_oracle(

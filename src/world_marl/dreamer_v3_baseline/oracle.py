@@ -1,478 +1,130 @@
 from __future__ import annotations
 
-import ast
-import dis
 import hashlib
 import io
 import json
-import os
 import re
 import subprocess
-import sys
+import tempfile
 import zipfile
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from types import (
-    BuiltinFunctionType,
-    CodeType,
-    FunctionType,
-    MappingProxyType,
-    ModuleType,
-    SimpleNamespace,
-)
-from typing import Any, Callable, Iterator, Mapping, Sequence
+from types import MappingProxyType
+from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-import yaml
+import numpy.typing as npt
+from jax import core as jax_core
 
-if __package__:
-    from .config import (
-        DreamerProfile,
-        DreamerV3Config,
-        ObservationMode,
-        resolve_dreamer_config,
-    )
-else:  # pragma: no cover - exercised by the subprocess worker.
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from world_marl.dreamer_v3_baseline.config import (
-        DreamerProfile,
-        DreamerV3Config,
-        ObservationMode,
-        resolve_dreamer_config,
-    )
+from .config import DreamerProfile, ObservationMode
 
 
-ORACLE_SCHEMA_VERSION = 2
+Array = npt.NDArray[np.generic]
+ORACLE_SCHEMA_VERSION = 3
 PAPER_REVISION = "bfcdfc183d2c1543a3bf3cdda6edb7fae29b6a01"
 UPSTREAM_CURRENT_REVISION = "e3f02248693a79dc8b0ebd62c93683888ddaccfe"
+_PROFILE_REVISIONS = MappingProxyType(
+    {
+        DreamerProfile.PAPER: PAPER_REVISION,
+        DreamerProfile.UPSTREAM_CURRENT: UPSTREAM_CURRENT_REVISION,
+    }
+)
 _CASE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
-_CONFIG_SOURCE_SHA256 = (
-    "9dff9c7062e3e33951cb54c6dd4b598aaf7e56e18e2cff39c812eaa797bcfcfc"
-)
-_DISTRIBUTIONS_SOURCE_HASHES = {
-    "embodied/jax/heads.py": (
-        "437641cde21e7f9e3f69b88ad8f6b7e7c22e54eec8c5b19eef6127afde1a9b3f"
-    ),
-    "embodied/jax/nets.py": (
-        "9a1c0c71ad7d3596572a44416e78434f777d8f4dbcbe8ca0dd6b86bb8246392c"
-    ),
-    "embodied/jax/outs.py": (
-        "7e80691f175c71be614f089023cce3a809e0d026c6d5ce89bf566d5f11eb3ed0"
-    ),
-}
-_PAPER_OVERRIDES: dict[str, Any] = {
-    "agent.dec.simple.strided": True,
-    "agent.enc.simple.strided": True,
-    "agent.opt.beta2": 0.99,
-    "run.steps": 1_000_000,
-}
-
-GeneratorProvenanceValidator = Callable[
-    ["OracleManifest", Mapping[str, Any], Path | None],
-    None,
-]
-GeneratorInvocationResolver = Callable[
-    ["OracleManifest", Mapping[str, str | Path | None]],
-    "OracleInvocation",
-]
 
 
-def _callback_implementation_fingerprint(
-    callback: Callable[..., Any] | None,
-) -> str | None:
-    if callback is None:
-        return None
-    if type(callback) is not FunctionType:
-        raise ValueError("oracle source callback must be a Python function")
-    payload = _fingerprint_component(callback, set())
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+def _canonical_json(value: object) -> bytes:
+    return json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
 
 
-def _referenced_global_names(code: CodeType) -> tuple[str, ...]:
-    names = {
-        instruction.argval
-        for instruction in dis.get_instructions(code)
-        if instruction.opname in {"LOAD_GLOBAL", "LOAD_NAME"}
-        and type(instruction.argval) is str
-    }
-    for constant in code.co_consts:
-        if type(constant) is CodeType:
-            names.update(_referenced_global_names(constant))
-    return tuple(sorted(names))
+def _canonical_generator_request(value: str | Mapping[str, object]) -> str:
+    if type(value) is str:
+        payload = json.loads(value)
+    elif type(value) is dict:
+        payload = value
+    else:
+        raise TypeError("oracle generator request must be an exact string or dict")
+    if type(payload) is not dict or any(type(key) is not str for key in payload):
+        raise ValueError("oracle generator request must be a JSON object")
+    return _canonical_json(payload).decode()
 
 
-def _referenced_module_attribute_chains(
-    code: CodeType,
-    module_name: str,
-) -> tuple[tuple[str, ...], ...]:
-    chains: set[tuple[str, ...]] = set()
-    instructions = tuple(dis.get_instructions(code))
-    for index, instruction in enumerate(instructions):
-        if (
-            instruction.opname not in {"LOAD_GLOBAL", "LOAD_NAME"}
-            or instruction.argval != module_name
-        ):
-            continue
-        chain: list[str] = []
-        for following in instructions[index + 1 :]:
-            if following.opname not in {"LOAD_ATTR", "LOAD_METHOD"}:
-                break
-            if type(following.argval) is not str:
-                break
-            chain.append(following.argval)
-        chains.add(tuple(chain))
-    for constant in code.co_consts:
-        if type(constant) is CodeType:
-            chains.update(_referenced_module_attribute_chains(constant, module_name))
-    return tuple(sorted(chains))
+def _sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
 
 
-def _fingerprint_module_dependency(
-    module: ModuleType,
-    chains: tuple[tuple[str, ...], ...],
-    stack: set[int],
-) -> Any:
-    if not chains:
-        raise ValueError("oracle callback module dependency is not referenced")
-    attributes = []
-    for chain in chains:
-        if not chain:
-            attributes.append([[], ["module-binding", id(module)]])
-            continue
-        dependency: Any = module
-        try:
-            for name in chain:
-                dependency = getattr(dependency, name)
-        except AttributeError:
-            attributes.append([list(chain), ["missing"]])
-            continue
-        attributes.append(
-            [list(chain), _fingerprint_module_attribute_binding(dependency, stack)]
-        )
-    return ["module", module.__name__, attributes]
+def _sha256_path(path: str | Path) -> str:
+    return _sha256_bytes(Path(path).read_bytes())
 
 
-def _fingerprint_module_attribute_binding(value: Any, stack: set[int]) -> Any:
-    if value is None or type(value) in {bool, int, str}:
-        return [type(value).__name__, value]
-    if type(value) is float:
-        return ["float", value.hex()]
-    if type(value) is complex:
-        return ["complex", value.real.hex(), value.imag.hex()]
-    if type(value) is bytes:
-        return ["bytes", value.hex()]
-    if type(value) is FunctionType:
-        closure = []
-        for cell in value.__closure__ or ():
-            try:
-                contents = cell.cell_contents
-            except ValueError:
-                closure.append(["empty-cell"])
-            else:
-                closure.append(_fingerprint_module_attribute_binding(contents, stack))
-        return [
-            "function-binding",
-            id(value),
-            getattr(value, "__module__", None),
-            getattr(value, "__qualname__", None),
-            _fingerprint_component(value.__code__, stack),
-            _fingerprint_component(value.__defaults__, stack),
-            _fingerprint_component(value.__kwdefaults__, stack),
-            closure,
-        ]
-    return [
-        "object-binding",
-        type(value).__module__,
-        type(value).__qualname__,
-        id(value),
-    ]
-
-
-def _fingerprint_component(value: Any, stack: set[int]) -> Any:
-    if value is None or type(value) in {bool, int, str}:
-        return [type(value).__name__, value]
-    if type(value) is float:
-        return ["float", value.hex()]
-    if type(value) is complex:
-        return ["complex", value.real.hex(), value.imag.hex()]
-    if type(value) is bytes:
-        return ["bytes", value.hex()]
-    if value is Ellipsis:
-        return ["ellipsis"]
-    if value is NotImplemented:
-        return ["not-implemented"]
-    identity = id(value)
-    if identity in stack:
-        return [
-            "cycle",
-            type(value).__module__,
-            type(value).__qualname__,
-            getattr(value, "__module__", None),
-            getattr(value, "__qualname__", None),
-        ]
-    if type(value) in {tuple, list}:
-        stack.add(identity)
-        try:
-            return [
-                type(value).__name__,
-                [_fingerprint_component(item, stack) for item in value],
-            ]
-        finally:
-            stack.remove(identity)
-    if type(value) in {set, frozenset}:
-        stack.add(identity)
-        try:
-            items = [_fingerprint_component(item, stack) for item in value]
-            return [
-                type(value).__name__,
-                sorted(
-                    items,
-                    key=lambda item: json.dumps(
-                        item, sort_keys=True, separators=(",", ":")
-                    ),
-                ),
-            ]
-        finally:
-            stack.remove(identity)
-    if isinstance(value, Mapping):
-        stack.add(identity)
-        try:
-            items = [
-                (
-                    _fingerprint_component(key, stack),
-                    _fingerprint_component(item, stack),
-                )
-                for key, item in value.items()
-            ]
-            items.sort(
-                key=lambda pair: json.dumps(
-                    pair[0], sort_keys=True, separators=(",", ":")
-                )
-            )
-            return ["mapping", items]
-        finally:
-            stack.remove(identity)
-    if type(value) is CodeType:
-        stack.add(identity)
-        try:
-            return [
-                "code",
-                value.co_name,
-                value.co_qualname,
-                value.co_argcount,
-                value.co_posonlyargcount,
-                value.co_kwonlyargcount,
-                value.co_nlocals,
-                value.co_stacksize,
-                value.co_flags,
-                value.co_code.hex(),
-                value.co_exceptiontable.hex(),
-                list(value.co_names),
-                list(value.co_varnames),
-                list(value.co_freevars),
-                list(value.co_cellvars),
-                [_fingerprint_component(item, stack) for item in value.co_consts],
-            ]
-        finally:
-            stack.remove(identity)
-    if type(value) is FunctionType:
-        module_name = getattr(value, "__module__", None)
-        qualified_name = getattr(value, "__qualname__", None)
-        if type(module_name) is not str or type(qualified_name) is not str:
-            raise ValueError("oracle callback dependency has no stable identity")
-        stack.add(identity)
-        try:
-            globals_payload = []
-            globals_ = value.__globals__
-            builtins_ = globals_.get("__builtins__", {})
-            if isinstance(builtins_, ModuleType):
-                builtins_ = vars(builtins_)
-            for name in _referenced_global_names(value.__code__):
-                if name in globals_:
-                    dependency = globals_[name]
-                    scope = "global"
-                elif isinstance(builtins_, Mapping) and name in builtins_:
-                    dependency = builtins_[name]
-                    scope = "builtin"
-                else:
-                    globals_payload.append([name, "missing"])
-                    continue
-                if isinstance(dependency, ModuleType):
-                    component = _fingerprint_module_dependency(
-                        dependency,
-                        _referenced_module_attribute_chains(value.__code__, name),
-                        stack,
-                    )
-                else:
-                    component = _fingerprint_component(dependency, stack)
-                globals_payload.append([name, scope, component])
-            closure = []
-            for cell in value.__closure__ or ():
-                try:
-                    contents = cell.cell_contents
-                except ValueError:
-                    closure.append(["empty-cell"])
-                else:
-                    closure.append(_fingerprint_component(contents, stack))
-            return [
-                "function",
-                module_name,
-                qualified_name,
-                _fingerprint_component(value.__code__, stack),
-                _fingerprint_component(value.__defaults__, stack),
-                _fingerprint_component(value.__kwdefaults__, stack),
-                closure,
-                globals_payload,
-            ]
-        finally:
-            stack.remove(identity)
-    if isinstance(value, ModuleType):
-        return ["module", value.__name__]
-    if isinstance(value, type):
-        return ["type", value.__module__, value.__qualname__]
-    if isinstance(value, BuiltinFunctionType):
-        return [
-            "builtin-function",
-            getattr(value, "__module__", None),
-            getattr(value, "__qualname__", getattr(value, "__name__", None)),
-        ]
-    if isinstance(value, re.Pattern):
-        pattern = value.pattern
-        if type(pattern) is bytes:
-            pattern = ["bytes", pattern.hex()]
-        return ["regex", pattern, value.flags]
-    if type(value).__module__ == "typing":
-        return ["typing", repr(value)]
-    raise ValueError(
-        f"oracle callback dependency has unsupported type: {type(value).__name__}"
-    )
-
-
-@dataclass(frozen=True)
-class OracleInvocation:
-    command: tuple[str, ...]
-    cwd: Path
-    generator_request: str
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "command", tuple(self.command))
-        object.__setattr__(self, "cwd", Path(self.cwd).resolve())
-        object.__setattr__(
-            self,
-            "generator_request",
-            _canonical_generator_request(self.generator_request),
-        )
-        if not self.command or any(type(part) is not str for part in self.command):
-            raise ValueError("oracle invocation command must contain strings")
+def _git_show(checkout: str | Path, revision: str, path: str) -> bytes:
+    root = Path(checkout)
+    if not root.is_dir():
+        raise ValueError(f"official checkout does not exist: {root}")
+    if type(revision) is not str or not _COMMIT_PATTERN.fullmatch(revision):
+        raise ValueError("official revision must be a full Git object id")
+    if type(path) is not str or not path or path.startswith("/"):
+        raise ValueError(f"invalid official source path: {path!r}")
+    if ".." in Path(path).parts:
+        raise ValueError(f"invalid official source path: {path!r}")
+    try:
+        return subprocess.run(
+            ["git", "-C", str(root), "show", f"{revision}:{path}"],
+            check=True,
+            capture_output=True,
+        ).stdout
+    except subprocess.CalledProcessError as error:
+        detail = error.stderr.decode(errors="replace").strip()
+        raise ValueError(
+            f"cannot read official source {revision}:{path}: {detail}"
+        ) from error
 
 
 @dataclass(frozen=True)
 class OracleSourceSpec:
+    """Temporary Task-1b-to-1c source record for the live RSSM import seam."""
+
     name: str
     revision_hashes: Mapping[str, Mapping[str, str]]
     execution_dtypes: tuple[str, ...] = ()
-    generator_validation_required: bool = False
-    generator_validator_id: str | None = None
-    generator_validator: GeneratorProvenanceValidator | None = field(
-        default=None,
-        repr=False,
-        compare=False,
-    )
-    generator_validator_fingerprint: str | None = field(
-        init=False,
-        repr=False,
-        compare=False,
-    )
-    generator_resolution_required: bool = False
-    generator_resolver_id: str | None = None
-    generator_resolver: GeneratorInvocationResolver | None = field(
-        default=None,
-        repr=False,
-        compare=False,
-    )
-    generator_resolver_fingerprint: str | None = field(
-        init=False,
-        repr=False,
-        compare=False,
-    )
 
     def __post_init__(self) -> None:
-        if not _CASE_PATTERN.fullmatch(self.name):
+        if type(self.name) is not str or not _CASE_PATTERN.fullmatch(self.name):
             raise ValueError(f"invalid oracle source spec name: {self.name!r}")
-        normalized: dict[str, Mapping[str, str]] = {}
-        for revision, file_hashes in sorted(self.revision_hashes.items()):
-            if not _COMMIT_PATTERN.fullmatch(revision):
+        revisions: dict[str, Mapping[str, str]] = {}
+        for revision, hashes in sorted(self.revision_hashes.items()):
+            if type(revision) is not str or not _COMMIT_PATTERN.fullmatch(revision):
                 raise ValueError("oracle source revision must be a full Git object id")
-            if not file_hashes:
+            if not hashes:
                 raise ValueError("oracle source spec must contain official files")
-            files: dict[str, str] = {}
-            for path, digest in sorted(file_hashes.items()):
-                if (
-                    not path
-                    or path.startswith("/")
-                    or ".." in Path(path).parts
-                    or not _SHA256_PATTERN.fullmatch(digest)
-                ):
-                    raise ValueError(f"invalid oracle source entry: {path!r}")
-                files[path] = digest
-            normalized[revision] = MappingProxyType(files)
-        required_revisions = {PAPER_REVISION, UPSTREAM_CURRENT_REVISION}
-        if set(normalized) != required_revisions:
+            normalized: dict[str, str] = {}
+            for path, digest in sorted(hashes.items()):
+                if type(path) is not str or not path or path.startswith("/"):
+                    raise ValueError(f"invalid oracle source path: {path!r}")
+                if ".." in Path(path).parts:
+                    raise ValueError(f"invalid oracle source path: {path!r}")
+                if type(digest) is not str or not _SHA256_PATTERN.fullmatch(digest):
+                    raise ValueError(f"invalid oracle source digest: {path}")
+                normalized[path] = digest
+            revisions[revision] = MappingProxyType(normalized)
+        if set(revisions) != {PAPER_REVISION, UPSTREAM_CURRENT_REVISION}:
             raise ValueError("oracle source spec must pin both authority revisions")
-        object.__setattr__(
-            self,
-            "revision_hashes",
-            MappingProxyType(normalized),
-        )
-        dtypes = tuple(jnp.dtype(dtype).name for dtype in self.execution_dtypes)
-        if len(set(dtypes)) != len(dtypes):
-            raise ValueError("oracle source execution dtypes must be unique")
+        dtypes = tuple(self.execution_dtypes)
+        if len(set(dtypes)) != len(dtypes) or any(type(x) is not str for x in dtypes):
+            raise ValueError("oracle source execution dtypes must be exact strings")
+        object.__setattr__(self, "revision_hashes", MappingProxyType(revisions))
         object.__setattr__(self, "execution_dtypes", dtypes)
-        if self.generator_validation_required and self.generator_validator is None:
-            raise ValueError("oracle source requires a generator validator")
-        if self.generator_validator is not None and not callable(
-            self.generator_validator
-        ):
-            raise TypeError("oracle source generator validator must be callable")
-        if (self.generator_validator is None) != (self.generator_validator_id is None):
-            raise ValueError(
-                "oracle source generator validator and contract id must be paired"
-            )
-        if self.generator_validator_id is not None and not _CASE_PATTERN.fullmatch(
-            self.generator_validator_id
-        ):
-            raise ValueError("invalid oracle generator validator contract id")
-        if self.generator_resolution_required and self.generator_resolver is None:
-            raise ValueError("oracle source requires a generator resolver")
-        if self.generator_resolver is not None and not callable(
-            self.generator_resolver
-        ):
-            raise TypeError("oracle source generator resolver must be callable")
-        if (self.generator_resolver is None) != (self.generator_resolver_id is None):
-            raise ValueError(
-                "oracle source generator resolver and contract id must be paired"
-            )
-        if self.generator_resolver_id is not None and not _CASE_PATTERN.fullmatch(
-            self.generator_resolver_id
-        ):
-            raise ValueError("invalid oracle generator resolver contract id")
-        object.__setattr__(
-            self,
-            "generator_validator_fingerprint",
-            _callback_implementation_fingerprint(self.generator_validator),
-        )
-        object.__setattr__(
-            self,
-            "generator_resolver_fingerprint",
-            _callback_implementation_fingerprint(self.generator_resolver),
-        )
 
     def hashes_for(self, revision: str) -> Mapping[str, str]:
         try:
@@ -482,187 +134,331 @@ class OracleSourceSpec:
                 f"oracle source spec {self.name!r} does not pin revision {revision}"
             ) from error
 
-    def allows_execution_dtype(self, dtype: str, canonical_dtype: str) -> bool:
-        allowed = self.execution_dtypes or (jnp.dtype(canonical_dtype).name,)
-        return jnp.dtype(dtype).name in allowed
+    def allows_execution_dtype(self, dtype: str) -> bool:
+        return not self.execution_dtypes or dtype in self.execution_dtypes
 
 
-try:
-    _PRESERVED_ORACLE_SOURCE_SPECS = tuple(_ORACLE_SOURCE_SPECS.values())
-except NameError:
-    _PRESERVED_ORACLE_SOURCE_SPECS = ()
-
-
-def _rehydrate_oracle_source_spec(source_spec: Any) -> OracleSourceSpec:
-    return OracleSourceSpec(
-        name=source_spec.name,
-        revision_hashes=source_spec.revision_hashes,
-        execution_dtypes=source_spec.execution_dtypes,
-        generator_validation_required=source_spec.generator_validation_required,
-        generator_validator_id=source_spec.generator_validator_id,
-        generator_validator=source_spec.generator_validator,
-        generator_resolution_required=source_spec.generator_resolution_required,
-        generator_resolver_id=source_spec.generator_resolver_id,
-        generator_resolver=source_spec.generator_resolver,
-    )
-
-
-_ORACLE_SOURCE_SPECS: dict[str, OracleSourceSpec] = {
-    source_spec.name: _rehydrate_oracle_source_spec(source_spec)
-    for source_spec in _PRESERVED_ORACLE_SOURCE_SPECS
-}
-del _PRESERVED_ORACLE_SOURCE_SPECS
-
-
-def _oracle_source_spec_signature(source_spec: OracleSourceSpec) -> tuple[Any, ...]:
-    return (
-        source_spec.name,
-        tuple(
-            (
-                revision,
-                tuple(sorted(file_hashes.items())),
-            )
-            for revision, file_hashes in sorted(source_spec.revision_hashes.items())
-        ),
-        source_spec.execution_dtypes,
-        source_spec.generator_validation_required,
-        source_spec.generator_validator_id,
-        _callback_logical_identity(source_spec.generator_validator),
-        source_spec.generator_validator_fingerprint,
-        source_spec.generator_resolution_required,
-        source_spec.generator_resolver_id,
-        _callback_logical_identity(source_spec.generator_resolver),
-        source_spec.generator_resolver_fingerprint,
-    )
-
-
-def _callback_logical_identity(callback: Callable[..., Any] | None) -> Any:
-    if callback is None:
-        return None
-    module_name = getattr(callback, "__module__", None)
-    qualified_name = getattr(callback, "__qualname__", None)
-    if type(module_name) is not str or type(qualified_name) is not str:
-        raise ValueError("oracle source callback has no stable logical identity")
-    return module_name, qualified_name
-
-
-def _validate_bound_callback(callback: Callable[..., Any] | None) -> None:
-    identity = _callback_logical_identity(callback)
-    if identity is None:
-        return
-    module_name, qualified_name = identity
-    module = sys.modules.get(module_name)
-    if module is None or "<locals>" in qualified_name.split("."):
-        raise ValueError("oracle source callback is not a bound module object")
-    bound: Any = module
-    try:
-        for component in qualified_name.split("."):
-            bound = getattr(bound, component)
-    except AttributeError as error:
-        raise ValueError(
-            "oracle source callback is not a bound module object"
-        ) from error
-    if bound is not callback:
-        raise ValueError("oracle source callback does not match its bound object")
-
-
-def _validate_source_spec_callbacks(
-    source_spec: OracleSourceSpec,
-    *,
-    include_resolver: bool = True,
-) -> None:
-    callbacks = [
-        (
-            source_spec.generator_validator,
-            source_spec.generator_validator_fingerprint,
-        )
-    ]
-    if include_resolver:
-        callbacks.append(
-            (
-                source_spec.generator_resolver,
-                source_spec.generator_resolver_fingerprint,
-            )
-        )
-    for callback, expected_fingerprint in callbacks:
-        _validate_bound_callback(callback)
-        if _callback_implementation_fingerprint(callback) != expected_fingerprint:
-            raise ValueError("oracle source callback implementation changed")
+_ORACLE_SOURCE_SPECS: dict[str, OracleSourceSpec] = {}
 
 
 def register_oracle_source_spec(source_spec: OracleSourceSpec) -> None:
-    if (
-        source_spec.generator_validation_required
-        and source_spec.generator_validator is None
-    ):
-        raise ValueError("oracle source requires a generator validator")
-    if (
-        source_spec.generator_resolution_required
-        and source_spec.generator_resolver is None
-    ):
-        raise ValueError("oracle source requires a generator resolver")
-    _validate_source_spec_callbacks(source_spec)
+    if type(source_spec) is not OracleSourceSpec:
+        raise TypeError("oracle source spec registration requires OracleSourceSpec")
     existing = _ORACLE_SOURCE_SPECS.get(source_spec.name)
-    if existing is not None and _oracle_source_spec_signature(
-        existing
-    ) != _oracle_source_spec_signature(source_spec):
+    if existing is not None and existing != source_spec:
         raise ValueError(f"oracle source spec already registered: {source_spec.name}")
     _ORACLE_SOURCE_SPECS[source_spec.name] = source_spec
 
 
-def _resolve_source_spec(
-    source_spec: str | OracleSourceSpec,
-) -> OracleSourceSpec:
-    if isinstance(source_spec, str):
-        return oracle_source_spec(source_spec)
-    name = getattr(source_spec, "name", None)
-    if not isinstance(name, str):
-        raise TypeError("oracle source spec must be a name or source specification")
-    registered = oracle_source_spec(name)
-    if _oracle_source_spec_signature(source_spec) != _oracle_source_spec_signature(
-        registered
-    ):
-        raise ValueError(f"oracle source spec does not match registration: {name}")
-    return registered
-
-
-def oracle_source_spec(name: str) -> OracleSourceSpec:
+def source_spec_for(name: str) -> OracleSourceSpec:
+    if type(name) is not str:
+        raise TypeError("oracle source spec name must be an exact string")
     try:
         return _ORACLE_SOURCE_SPECS[name]
     except KeyError as error:
         raise ValueError(f"unknown oracle source spec: {name}") from error
 
 
-CONFIG_SOURCE_SPEC = OracleSourceSpec(
-    name="config",
-    revision_hashes={
-        PAPER_REVISION: {"dreamerv3/configs.yaml": _CONFIG_SOURCE_SHA256},
-        UPSTREAM_CURRENT_REVISION: {"dreamerv3/configs.yaml": _CONFIG_SOURCE_SHA256},
-    },
+_DISTRIBUTION_HASHES = MappingProxyType(
+    {
+        "embodied/jax/heads.py": (
+            "437641cde21e7f9e3f69b88ad8f6b7e7c22e54eec8c5b19eef6127afde1a9b3f"
+        ),
+        "embodied/jax/nets.py": (
+            "9a1c0c71ad7d3596572a44416e78434f777d8f4dbcbe8ca0dd6b86bb8246392c"
+        ),
+        "embodied/jax/outs.py": (
+            "7e80691f175c71be614f089023cce3a809e0d026c6d5ce89bf566d5f11eb3ed0"
+        ),
+    }
 )
-register_oracle_source_spec(CONFIG_SOURCE_SPEC)
 
-DISTRIBUTIONS_SOURCE_SPEC = OracleSourceSpec(
-    name="distributions",
-    revision_hashes={
-        PAPER_REVISION: _DISTRIBUTIONS_SOURCE_HASHES,
-        UPSTREAM_CURRENT_REVISION: _DISTRIBUTIONS_SOURCE_HASHES,
-    },
+_NETWORK_HASHES = MappingProxyType(
+    {
+        "dreamerv3/rssm.py": (
+            "d6d50166914e94fb8bd17a5d5dbda9d42cdd37b85819bb1e9fff3a64d4ad2eb6"
+        ),
+        "embodied/jax/heads.py": _DISTRIBUTION_HASHES["embodied/jax/heads.py"],
+        "embodied/jax/nets.py": _DISTRIBUTION_HASHES["embodied/jax/nets.py"],
+    }
 )
-register_oracle_source_spec(DISTRIBUTIONS_SOURCE_SPEC)
+
+_RSSM_HASHES = MappingProxyType(
+    {
+        "dreamerv3/agent.py": (
+            "adce8e4274bc098c218bf9a20fd3327545f0ad7d850b5fe328597382e91b5269"
+        ),
+        "dreamerv3/configs.yaml": (
+            "9dff9c7062e3e33951cb54c6dd4b598aaf7e56e18e2cff39c812eaa797bcfcfc"
+        ),
+        "dreamerv3/rssm.py": _NETWORK_HASHES["dreamerv3/rssm.py"],
+        "embodied/jax/heads.py": _DISTRIBUTION_HASHES["embodied/jax/heads.py"],
+        "embodied/jax/nets.py": _DISTRIBUTION_HASHES["embodied/jax/nets.py"],
+        "embodied/jax/outs.py": _DISTRIBUTION_HASHES["embodied/jax/outs.py"],
+    }
+)
+
+REPLAY_SOURCE_HASHES = MappingProxyType(
+    {
+        "dreamerv3/configs.yaml": (
+            "9dff9c7062e3e33951cb54c6dd4b598aaf7e56e18e2cff39c812eaa797bcfcfc"
+        ),
+        "embodied/core/chunk.py": (
+            "427b537afa75079a9f0dfd933ec49e6f71173371388418176c16c038be005c65"
+        ),
+        "embodied/core/replay.py": (
+            "ea70f6f0494c0520acd357190c5c78bee46b0365dd950231ca522ddb6dbdd027"
+        ),
+        "embodied/core/selectors.py": (
+            "b8cb69021e8f79888df88fb5c195e8ff19e3d54065bb08bd3586fd9cbe6655d3"
+        ),
+        "embodied/core/streams.py": (
+            "8c75583d15be013a22058721f8f055c9c7ccaca95360d6ed100f60dc29ee19e5"
+        ),
+    }
+)
 
 
-def official_revision(profile: DreamerProfile | str) -> str:
-    resolved = DreamerProfile(profile)
-    if resolved is DreamerProfile.PAPER:
-        return PAPER_REVISION
-    return UPSTREAM_CURRENT_REVISION
+_SOURCE_HASHES = MappingProxyType(
+    {
+        name: MappingProxyType(
+            {
+                revision: hashes
+                for revision in (PAPER_REVISION, UPSTREAM_CURRENT_REVISION)
+            }
+        )
+        for name, hashes in {
+            "distributions": _DISTRIBUTION_HASHES,
+            "networks": _NETWORK_HASHES,
+            "replay": REPLAY_SOURCE_HASHES,
+            "rssm": _RSSM_HASHES,
+        }.items()
+    }
+)
+_SOURCE_DTYPES = MappingProxyType(
+    {
+        "distributions": ("bfloat16",),
+        "networks": ("bfloat16", "float32"),
+        "replay": ("float32",),
+        "rssm": ("bfloat16", "float32"),
+    }
+)
 
 
-def profile_overrides(profile: DreamerProfile | str) -> Mapping[str, Any]:
-    resolved = DreamerProfile(profile)
-    values = _PAPER_OVERRIDES if resolved is DreamerProfile.PAPER else {}
-    return MappingProxyType(dict(values))
+def _source_hashes_for(name: str, revision: str) -> Mapping[str, str]:
+    if type(name) is not str:
+        raise TypeError("fixture source name must be an exact string")
+    if type(revision) is not str:
+        raise TypeError("fixture source revision must be an exact string")
+    try:
+        return _SOURCE_HASHES[name][revision]
+    except KeyError as error:
+        raise ValueError(
+            f"unsupported fixture source coordinate: {name}@{revision}"
+        ) from error
+
+
+def _source_allows_dtype(name: str, dtype: str) -> bool:
+    if type(name) is not str or type(dtype) is not str:
+        raise TypeError("fixture source name and dtype must be exact strings")
+    try:
+        return dtype in _SOURCE_DTYPES[name]
+    except KeyError as error:
+        raise ValueError(f"unsupported fixture source: {name}") from error
+
+
+@dataclass(frozen=True)
+class _FixtureSourceName:
+    name: str
+
+    def __post_init__(self) -> None:
+        if type(self.name) is not str or self.name not in _SOURCE_HASHES:
+            raise ValueError(f"unsupported fixture source: {self.name!r}")
+
+
+DISTRIBUTIONS_SOURCE_SPEC = _FixtureSourceName("distributions")
+NETWORKS_SOURCE_SPEC = _FixtureSourceName("networks")
+REPLAY_SOURCE_SPEC = _FixtureSourceName("replay")
+RSSM_SOURCE_SPEC = _FixtureSourceName("rssm")
+
+
+_FIXTURE_CASES = MappingProxyType(
+    {
+        "paper-proprio-distributions": (
+            DreamerProfile.PAPER,
+            ObservationMode.PROPRIO,
+            "distributions",
+            "distributions",
+            "bfloat16",
+            0,
+        ),
+        "upstream-current-proprio-distributions": (
+            DreamerProfile.UPSTREAM_CURRENT,
+            ObservationMode.PROPRIO,
+            "distributions",
+            "distributions",
+            "bfloat16",
+            0,
+        ),
+        "paper-proprio-replay": (
+            DreamerProfile.PAPER,
+            ObservationMode.PROPRIO,
+            "replay",
+            "replay",
+            "float32",
+            7,
+        ),
+        "upstream-current-proprio-replay": (
+            DreamerProfile.UPSTREAM_CURRENT,
+            ObservationMode.PROPRIO,
+            "replay",
+            "replay",
+            "float32",
+            7,
+        ),
+        "paper-proprio-rssm": (
+            DreamerProfile.PAPER,
+            ObservationMode.PROPRIO,
+            "rssm",
+            "rssm",
+            "bfloat16",
+            0,
+        ),
+        "paper-proprio-rssm-float32": (
+            DreamerProfile.PAPER,
+            ObservationMode.PROPRIO,
+            "rssm-float32",
+            "rssm",
+            "float32",
+            0,
+        ),
+        "upstream-current-proprio-rssm": (
+            DreamerProfile.UPSTREAM_CURRENT,
+            ObservationMode.PROPRIO,
+            "rssm",
+            "rssm",
+            "bfloat16",
+            0,
+        ),
+        "upstream-current-proprio-rssm-float32": (
+            DreamerProfile.UPSTREAM_CURRENT,
+            ObservationMode.PROPRIO,
+            "rssm-float32",
+            "rssm",
+            "float32",
+            0,
+        ),
+        "paper-vision-networks": (
+            DreamerProfile.PAPER,
+            ObservationMode.VISION,
+            "networks",
+            "networks",
+            "bfloat16",
+            0,
+        ),
+        "paper-vision-networks-float32": (
+            DreamerProfile.PAPER,
+            ObservationMode.VISION,
+            "networks-float32",
+            "networks",
+            "float32",
+            0,
+        ),
+        "upstream-current-vision-networks": (
+            DreamerProfile.UPSTREAM_CURRENT,
+            ObservationMode.VISION,
+            "networks",
+            "networks",
+            "bfloat16",
+            0,
+        ),
+        "upstream-current-vision-networks-float32": (
+            DreamerProfile.UPSTREAM_CURRENT,
+            ObservationMode.VISION,
+            "networks-float32",
+            "networks",
+            "float32",
+            0,
+        ),
+    }
+)
+
+
+def _fixture_coordinates(
+    stem: str,
+) -> tuple[DreamerProfile, ObservationMode, str, str, str, int]:
+    if type(stem) is not str or not _CASE_PATTERN.fullmatch(stem):
+        raise ValueError(f"unsupported fixture stem: {stem!r}")
+    try:
+        return _FIXTURE_CASES[stem]
+    except KeyError as error:
+        raise ValueError(f"unsupported fixture stem: {stem!r}") from error
+
+
+def _canonical_fixture_request(stem: str) -> str:
+    profile, mode, case, source, dtype, seed = _fixture_coordinates(stem)
+    return _canonical_generator_request(
+        {
+            "case_name": case,
+            "dtype": dtype,
+            "fixture_file": f"{stem}.npz",
+            "fixture_stem": stem,
+            "observation_mode": mode.value,
+            "profile": profile.value,
+            "schema_version": ORACLE_SCHEMA_VERSION,
+            "seed": seed,
+            "source_revision": _PROFILE_REVISIONS[profile],
+            "source_spec": source,
+        }
+    )
+
+
+def _canonical_fixture_command(stem: str) -> tuple[str, ...]:
+    profile, mode, _case, _source, _dtype, _seed = _fixture_coordinates(stem)
+    return (
+        "python",
+        "-m",
+        "world_marl.dreamer_v3_baseline.fixture_generator",
+        "refresh-manifest",
+        "--profile",
+        profile.value,
+        "--observation-mode",
+        mode.value,
+        "--reference-checkout",
+        "<reference-checkout>",
+        "--source-revision",
+        _PROFILE_REVISIONS[profile],
+        "--output-dir",
+        "<fixture-dir>",
+        "--fixture-stem",
+        stem,
+    )
+
+
+def _require_dict(value: object, name: str) -> dict[str, object]:
+    if type(value) is not dict:
+        raise TypeError(f"{name} must be an exact dict")
+    if any(type(key) is not str for key in value):
+        raise TypeError(f"{name} keys must be exact strings")
+    return value
+
+
+def _require_list(value: object, name: str) -> list[object]:
+    if type(value) is not list:
+        raise TypeError(f"{name} must be an exact list")
+    return value
+
+
+def _require_str(value: object, name: str) -> str:
+    if type(value) is not str:
+        raise TypeError(f"{name} must be an exact string")
+    return value
+
+
+def _require_int(value: object, name: str) -> int:
+    if type(value) is not int:
+        raise TypeError(f"{name} must be an exact integer")
+    return value
 
 
 @dataclass(frozen=True)
@@ -671,14 +467,27 @@ class TensorSpec:
     dtype: str
 
     def __post_init__(self) -> None:
-        if any(dimension < 0 for dimension in self.shape):
-            raise ValueError("tensor dimensions must be nonnegative")
+        if type(self.shape) is not tuple:
+            raise TypeError("oracle tensor shape must be an exact tuple")
+        if any(type(size) is not int or size < 0 for size in self.shape):
+            raise ValueError("oracle tensor shape must contain nonnegative integers")
+        if type(self.dtype) is not str or not self.dtype:
+            raise TypeError("oracle tensor dtype must be an exact nonempty string")
         try:
             np.dtype(self.dtype)
         except TypeError as error:
-            raise ValueError(f"invalid tensor dtype: {self.dtype}") from error
+            raise ValueError(f"invalid oracle tensor dtype: {self.dtype}") from error
 
-    def to_dict(self) -> dict[str, Any]:
+    @classmethod
+    def from_dict(cls, value: object) -> TensorSpec:
+        record = _require_dict(value, "oracle tensor spec")
+        if set(record) != {"dtype", "shape"}:
+            raise ValueError("oracle tensor spec has incorrect fields")
+        shape = _require_list(record["shape"], "oracle tensor shape")
+        sizes = tuple(_require_int(size, "oracle tensor shape item") for size in shape)
+        return cls(sizes, _require_str(record["dtype"], "oracle tensor dtype"))
+
+    def to_dict(self) -> dict[str, object]:
         return {"dtype": self.dtype, "shape": list(self.shape)}
 
 
@@ -686,138 +495,251 @@ class TensorSpec:
 class OracleManifest:
     schema_version: int
     case_name: str
-    profile: DreamerProfile | str
-    observation_mode: ObservationMode | str
+    profile: DreamerProfile
+    observation_mode: ObservationMode
     official_commit: str
     source_spec: str
     official_file_hashes: Mapping[str, str]
-    profile_hash: str
-    overrides: Mapping[str, Any]
-    jax_version: str
     dtype: str
-    device: str
     seed: int
     tensor_schema: Mapping[str, TensorSpec]
     generator_command: tuple[str, ...]
-    generator_request: str | None
+    generator_request: str
     fixture_file: str
     fixture_sha256: str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "profile", DreamerProfile(self.profile))
+        if type(self.schema_version) is not int:
+            raise TypeError("oracle schema version must be an exact integer")
+        for name, value in (
+            ("case name", self.case_name),
+            ("official commit", self.official_commit),
+            ("source spec", self.source_spec),
+            ("dtype", self.dtype),
+            ("generator request", self.generator_request),
+            ("fixture file", self.fixture_file),
+            ("fixture hash", self.fixture_sha256),
+        ):
+            if type(value) is not str:
+                raise TypeError(f"oracle {name} must be an exact string")
+        if type(self.profile) is not DreamerProfile:
+            raise TypeError("oracle profile must be DreamerProfile")
+        if type(self.observation_mode) is not ObservationMode:
+            raise TypeError("oracle observation mode must be ObservationMode")
+        if type(self.seed) is not int:
+            raise TypeError("oracle seed must be an exact integer")
+        hashes = dict(self.official_file_hashes)
+        if any(
+            type(key) is not str or type(value) is not str
+            for key, value in hashes.items()
+        ):
+            raise TypeError("oracle source hashes must map exact strings")
+        schema = dict(self.tensor_schema)
+        if any(
+            type(key) is not str or type(value) is not TensorSpec
+            for key, value in schema.items()
+        ):
+            raise TypeError("oracle tensor schema must map strings to TensorSpec")
+        if type(self.generator_command) is not tuple or any(
+            type(part) is not str for part in self.generator_command
+        ):
+            raise TypeError("oracle generator command must be an exact string tuple")
+        if (
+            _canonical_generator_request(self.generator_request)
+            != self.generator_request
+        ):
+            raise ValueError("oracle generator request must be canonical JSON")
         object.__setattr__(
-            self,
-            "observation_mode",
-            ObservationMode(self.observation_mode),
+            self, "official_file_hashes", MappingProxyType(dict(sorted(hashes.items())))
         )
         object.__setattr__(
-            self,
-            "official_file_hashes",
-            MappingProxyType(dict(sorted(self.official_file_hashes.items()))),
+            self, "tensor_schema", MappingProxyType(dict(sorted(schema.items())))
         )
-        object.__setattr__(
-            self,
-            "overrides",
-            MappingProxyType(dict(sorted(self.overrides.items()))),
-        )
-        object.__setattr__(
-            self,
-            "tensor_schema",
-            MappingProxyType(dict(sorted(self.tensor_schema.items()))),
-        )
-        object.__setattr__(self, "generator_command", tuple(self.generator_command))
-        if self.generator_request is not None:
-            canonical_request = _canonical_generator_request(self.generator_request)
-            object.__setattr__(self, "generator_request", canonical_request)
 
     @classmethod
-    def create(
-        cls,
-        *,
-        case_name: str,
-        profile: DreamerProfile | str,
-        observation_mode: ObservationMode | str,
-        official_checkout: str | Path,
-        fixture_path: str | Path,
-        arrays: Mapping[str, np.ndarray],
-        seed: int,
-        generator_command: Sequence[str],
-        source_spec: str | OracleSourceSpec,
-        generator_request: Mapping[str, Any] | None = None,
-        dtype: str | None = None,
-        device: str | None = None,
-    ) -> OracleManifest:
-        resolved_profile = DreamerProfile(profile)
-        resolved_mode = ObservationMode(observation_mode)
-        config = resolve_dreamer_config(resolved_profile, resolved_mode)
-        checkout = Path(official_checkout).resolve()
-        revision = official_revision(resolved_profile)
-        resolved_source_spec = _resolve_source_spec(source_spec)
-        expected_source_hashes = resolved_source_spec.hashes_for(revision)
-        source_hashes = {
-            path: _sha256_bytes(_git_show(checkout, revision, path))
-            for path in expected_source_hashes
+    def from_dict(cls, payload: Mapping[str, Any]) -> OracleManifest:
+        record = _require_dict(payload, "oracle manifest")
+        required = {
+            "case_name",
+            "dtype",
+            "fixture_file",
+            "fixture_sha256",
+            "generator_command",
+            "generator_request",
+            "observation_mode",
+            "official_commit",
+            "official_file_hashes",
+            "profile",
+            "schema_version",
+            "seed",
+            "source_spec",
+            "tensor_schema",
         }
-        if source_hashes != dict(expected_source_hashes):
+        if set(record) != required:
+            missing = required - set(record)
+            extra = set(record) - required
+            if missing:
+                raise ValueError(
+                    "oracle manifest missing fields: " + ", ".join(sorted(missing))
+                )
             raise ValueError(
-                f"official checkout does not match source spec "
-                f"{resolved_source_spec.name!r}"
+                "oracle manifest has unexpected fields: " + ", ".join(sorted(extra))
             )
-        fixture = Path(fixture_path)
-        assert config.run is not None
-        execution_dtype = jnp.dtype(dtype or config.run.compute_dtype).name
-        if not resolved_source_spec.allows_execution_dtype(
-            execution_dtype,
-            config.run.compute_dtype,
-        ):
-            raise ValueError(
-                f"oracle source spec {resolved_source_spec.name!r} does not allow "
-                f"execution dtype {execution_dtype!r}"
-            )
+        hashes_record = _require_dict(
+            record["official_file_hashes"], "oracle source hashes"
+        )
+        hashes = {
+            key: _require_str(value, f"oracle source digest {key}")
+            for key, value in hashes_record.items()
+        }
+        schema_record = _require_dict(record["tensor_schema"], "oracle tensor schema")
+        schema = {
+            key: TensorSpec.from_dict(value) for key, value in schema_record.items()
+        }
+        command_values = _require_list(
+            record["generator_command"], "oracle generator command"
+        )
+        command = tuple(
+            _require_str(value, "oracle generator command item")
+            for value in command_values
+        )
         return cls(
-            schema_version=ORACLE_SCHEMA_VERSION,
-            case_name=case_name,
-            profile=resolved_profile,
-            observation_mode=resolved_mode,
-            official_commit=revision,
-            source_spec=resolved_source_spec.name,
-            official_file_hashes=source_hashes,
-            profile_hash=config.canonical_hash(),
-            overrides=profile_overrides(resolved_profile),
-            jax_version=jax.__version__,
-            dtype=execution_dtype,
-            device=device or jax.default_backend(),
-            seed=seed,
-            tensor_schema={
-                name: TensorSpec(tuple(array.shape), array.dtype.name)
-                for name, array in sorted(arrays.items())
-            },
-            generator_command=tuple(generator_command),
-            generator_request=(
-                _canonical_generator_request(generator_request)
-                if generator_request is not None
-                else None
+            schema_version=_require_int(
+                record["schema_version"], "oracle schema version"
             ),
-            fixture_file=fixture.name,
-            fixture_sha256=_sha256_path(fixture),
+            case_name=_require_str(record["case_name"], "oracle case name"),
+            profile=DreamerProfile(_require_str(record["profile"], "oracle profile")),
+            observation_mode=ObservationMode(
+                _require_str(record["observation_mode"], "oracle observation mode")
+            ),
+            official_commit=_require_str(record["official_commit"], "official commit"),
+            source_spec=_require_str(record["source_spec"], "oracle source spec"),
+            official_file_hashes=hashes,
+            dtype=_require_str(record["dtype"], "oracle dtype"),
+            seed=_require_int(record["seed"], "oracle seed"),
+            tensor_schema=schema,
+            generator_command=command,
+            generator_request=_require_str(
+                record["generator_request"], "oracle generator request"
+            ),
+            fixture_file=_require_str(record["fixture_file"], "oracle fixture file"),
+            fixture_sha256=_require_str(
+                record["fixture_sha256"], "oracle fixture hash"
+            ),
         )
 
-    def to_dict(self) -> dict[str, Any]:
+    @classmethod
+    def load(
+        cls,
+        path: str | Path,
+        *,
+        official_checkout: str | Path | None = None,
+        fixture_path: str | Path | None = None,
+    ) -> OracleManifest:
+        source = Path(path)
+        source_bytes = source.read_bytes()
+        payload: object = json.loads(source_bytes)
+        manifest = cls.from_dict(_require_dict(payload, "oracle manifest"))
+        if source_bytes != _canonical_json(manifest.to_dict()) + b"\n":
+            raise ValueError("oracle manifest must use canonical JSON bytes")
+        fixture = (
+            Path(fixture_path)
+            if fixture_path is not None
+            else source.parent / manifest.fixture_file
+        )
+        manifest.validate(official_checkout=official_checkout, fixture_path=fixture)
+        return manifest
+
+    def validate(
+        self,
+        *,
+        official_checkout: str | Path | None = None,
+        fixture_path: str | Path | None = None,
+    ) -> None:
+        if self.schema_version != ORACLE_SCHEMA_VERSION:
+            raise ValueError(
+                f"oracle schema version {self.schema_version} is unsupported"
+            )
+        if not _CASE_PATTERN.fullmatch(self.case_name):
+            raise ValueError(f"invalid oracle case name: {self.case_name!r}")
+        if not _COMMIT_PATTERN.fullmatch(self.official_commit):
+            raise ValueError("official commit is not a full Git object id")
+        if (
+            not self.fixture_file.endswith(".npz")
+            or Path(self.fixture_file).name != self.fixture_file
+        ):
+            raise ValueError("oracle fixture filename is not a basename NPZ")
+        stem = self.fixture_file.removesuffix(".npz")
+        profile, mode, case, source, dtype, seed = _fixture_coordinates(stem)
+        if (
+            self.profile,
+            self.observation_mode,
+            self.case_name,
+            self.source_spec,
+            self.dtype,
+            self.seed,
+        ) != (profile, mode, case, source, dtype, seed):
+            raise ValueError(
+                "oracle manifest coordinates do not match supported fixture stem"
+            )
+        revision = _PROFILE_REVISIONS[profile]
+        if self.official_commit != revision:
+            raise ValueError("official commit does not match profile authority")
+        if self.generator_request != _canonical_fixture_request(stem):
+            raise ValueError(
+                "oracle generator request does not match fixture coordinates"
+            )
+        if self.generator_command != _canonical_fixture_command(stem):
+            raise ValueError(
+                "oracle generator command does not match fixture coordinates"
+            )
+        expected_hashes = dict(_source_hashes_for(source, revision))
+        if dict(self.official_file_hashes) != expected_hashes:
+            raise ValueError("oracle source hashes do not match pinned source spec")
+        if not _source_allows_dtype(source, dtype):
+            raise ValueError("oracle dtype is not allowed by source spec")
+        if not _SHA256_PATTERN.fullmatch(self.fixture_sha256):
+            raise ValueError("oracle fixture hash is malformed")
+        if official_checkout is not None:
+            for path, digest in self.official_file_hashes.items():
+                if (
+                    _sha256_bytes(_git_show(official_checkout, revision, path))
+                    != digest
+                ):
+                    raise ValueError(f"oracle source file hash mismatch: {path}")
+        if fixture_path is not None:
+            fixture = Path(fixture_path)
+            if fixture.is_symlink():
+                raise ValueError("oracle fixture must not be a symlink")
+            if not fixture.is_file():
+                raise ValueError(f"oracle fixture is missing: {fixture}")
+            if fixture.name != self.fixture_file:
+                raise ValueError("oracle fixture filename does not match manifest")
+            if _sha256_path(fixture) != self.fixture_sha256:
+                raise ValueError("oracle fixture hash mismatch")
+            with np.load(fixture, allow_pickle=False) as arrays:
+                if tuple(arrays.files) != tuple(self.tensor_schema):
+                    raise ValueError("oracle tensor schema names do not match fixture")
+                for name, tensor_spec in self.tensor_schema.items():
+                    value = arrays[name]
+                    if (
+                        value.shape != tensor_spec.shape
+                        or value.dtype.name != tensor_spec.dtype
+                    ):
+                        raise ValueError(f"oracle tensor schema mismatch: {name}")
+
+    def to_dict(self) -> dict[str, object]:
         return {
             "case_name": self.case_name,
-            "device": self.device,
             "dtype": self.dtype,
             "fixture_file": self.fixture_file,
             "fixture_sha256": self.fixture_sha256,
             "generator_command": list(self.generator_command),
             "generator_request": self.generator_request,
-            "jax_version": self.jax_version,
             "observation_mode": self.observation_mode.value,
             "official_commit": self.official_commit,
             "official_file_hashes": dict(self.official_file_hashes),
-            "overrides": dict(self.overrides),
             "profile": self.profile.value,
-            "profile_hash": self.profile_hash,
             "schema_version": self.schema_version,
             "seed": self.seed,
             "source_spec": self.source_spec,
@@ -832,232 +754,22 @@ class OracleManifest:
     def save(self, path: str | Path) -> Path:
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_name(f".{destination.name}.tmp")
-        temporary.write_bytes(_canonical_json(self.to_dict()) + b"\n")
-        temporary.replace(destination)
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=destination.parent,
+                prefix=f".{destination.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as stream:
+                temporary = Path(stream.name)
+                stream.write(_canonical_json(self.to_dict()) + b"\n")
+            temporary.replace(destination)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
         return destination
-
-    @classmethod
-    def load(
-        cls,
-        path: str | Path,
-        *,
-        official_checkout: str | Path | None = None,
-        fixture_path: str | Path | None = None,
-        config: DreamerV3Config | None = None,
-    ) -> OracleManifest:
-        source = Path(path)
-        payload = json.loads(source.read_text())
-        manifest = cls(
-            schema_version=payload["schema_version"],
-            case_name=payload["case_name"],
-            profile=payload["profile"],
-            observation_mode=payload["observation_mode"],
-            official_commit=payload["official_commit"],
-            source_spec=payload["source_spec"],
-            official_file_hashes=payload["official_file_hashes"],
-            profile_hash=payload["profile_hash"],
-            overrides=payload["overrides"],
-            jax_version=payload["jax_version"],
-            dtype=payload["dtype"],
-            device=payload["device"],
-            seed=payload["seed"],
-            tensor_schema={
-                name: TensorSpec(tuple(spec["shape"]), spec["dtype"])
-                for name, spec in payload["tensor_schema"].items()
-            },
-            generator_command=tuple(payload["generator_command"]),
-            generator_request=payload["generator_request"],
-            fixture_file=payload["fixture_file"],
-            fixture_sha256=payload["fixture_sha256"],
-        )
-        fixture = (
-            Path(fixture_path)
-            if fixture_path is not None
-            else source.parent / manifest.fixture_file
-        )
-        manifest.validate(
-            official_checkout=official_checkout,
-            fixture_path=fixture,
-            config=config,
-        )
-        return manifest
-
-    def validate(
-        self,
-        *,
-        official_checkout: str | Path | None = None,
-        fixture_path: str | Path | None = None,
-        config: DreamerV3Config | None = None,
-    ) -> None:
-        if self.schema_version != ORACLE_SCHEMA_VERSION:
-            raise ValueError(
-                f"oracle schema version {self.schema_version} is unsupported"
-            )
-        if not _CASE_PATTERN.fullmatch(self.case_name):
-            raise ValueError(f"invalid oracle case name: {self.case_name!r}")
-        if not _COMMIT_PATTERN.fullmatch(self.official_commit):
-            raise ValueError("official commit is not a full Git object id")
-        expected_commit = official_revision(self.profile)
-        if self.official_commit != expected_commit:
-            raise ValueError("official commit does not match profile authority")
-        source_spec = oracle_source_spec(self.source_spec)
-        _validate_source_spec_callbacks(source_spec, include_resolver=False)
-        expected_source_hashes = dict(source_spec.hashes_for(expected_commit))
-        if dict(self.official_file_hashes) != expected_source_hashes:
-            raise ValueError(
-                "oracle source file hashes do not match the pinned source spec"
-            )
-        expected_overrides = dict(profile_overrides(self.profile))
-        if dict(self.overrides) != expected_overrides:
-            raise ValueError("oracle override map does not match profile")
-        if config is not None:
-            config.validate()
-            if config._legacy:
-                raise ValueError("oracle requires a canonical supplied config")
-            if config.profile is not self.profile:
-                raise ValueError("supplied config profile does not match manifest")
-            if config.observation_mode is not self.observation_mode:
-                raise ValueError(
-                    "supplied config observation mode does not match manifest"
-                )
-            expected_config = config
-        else:
-            expected_config = resolve_dreamer_config(
-                self.profile,
-                self.observation_mode,
-            )
-        if self.profile_hash != expected_config.canonical_hash():
-            raise ValueError("oracle profile hash does not match resolved config")
-        if not _SHA256_PATTERN.fullmatch(self.profile_hash):
-            raise ValueError("oracle profile hash is malformed")
-        if self.jax_version != jax.__version__:
-            raise ValueError("oracle JAX version does not match the runtime")
-        assert expected_config.run is not None
-        if not source_spec.allows_execution_dtype(
-            self.dtype,
-            expected_config.run.compute_dtype,
-        ):
-            raise ValueError(
-                "oracle dtype is not allowed by the pinned source specification"
-            )
-        if source_spec.execution_dtypes:
-            if self.generator_request is None:
-                raise ValueError(
-                    "multi-dtype oracle source requires an explicit generator request"
-                )
-        request: dict[str, Any] | None = None
-        if self.generator_request is not None:
-            request = json.loads(self.generator_request)
-            if not isinstance(request, dict):
-                raise ValueError("oracle generator request must be a JSON object")
-            if source_spec.execution_dtypes and "compute_dtype" not in request:
-                raise ValueError(
-                    "multi-dtype oracle source requires an explicit generator "
-                    "compute dtype"
-                )
-            if "compute_dtype" in request and (
-                jnp.dtype(request["compute_dtype"]).name != jnp.dtype(self.dtype).name
-            ):
-                raise ValueError(
-                    "oracle dtype does not match the executed generator request"
-                )
-        expected_device = jax.default_backend()
-        if self.device != expected_device:
-            raise ValueError(
-                f"oracle device {self.device!r} does not match runtime "
-                f"{expected_device!r}"
-            )
-        if not self.generator_command:
-            raise ValueError("oracle generator command must be recorded")
-        if self.seed < 0:
-            raise ValueError("oracle seed must be nonnegative")
-        validator = source_spec.generator_validator
-        if source_spec.generator_validation_required and validator is None:
-            raise ValueError("oracle source generator validator is unavailable")
-        if validator is not None:
-            if request is None:
-                raise ValueError("oracle source generator validator requires a request")
-            validator(
-                self,
-                request,
-                Path(official_checkout).resolve()
-                if official_checkout is not None
-                else None,
-            )
-        resolver = source_spec.generator_resolver
-        if source_spec.generator_resolution_required and resolver is None:
-            raise ValueError("oracle source generator resolver is unavailable")
-        if official_checkout is not None:
-            checkout = Path(official_checkout).resolve()
-            for path, recorded_hash in self.official_file_hashes.items():
-                expected_hash = _sha256_bytes(
-                    _git_show(checkout, self.official_commit, path)
-                )
-                if recorded_hash != expected_hash:
-                    raise ValueError(f"oracle source file hash mismatch: {path}")
-        if not _SHA256_PATTERN.fullmatch(self.fixture_sha256):
-            raise ValueError("oracle fixture hash is malformed")
-        if fixture_path is not None:
-            fixture = Path(fixture_path)
-            if not fixture.is_file():
-                raise ValueError(f"oracle fixture is missing: {fixture}")
-            if fixture.name != self.fixture_file:
-                raise ValueError("oracle fixture filename does not match manifest")
-            if _sha256_path(fixture) != self.fixture_sha256:
-                raise ValueError("oracle fixture hash mismatch")
-            self._validate_tensor_schema(fixture)
-
-    def resolve_generator_invocation(
-        self,
-        *,
-        official_checkout: str | Path,
-        python_executable: str | Path | None = None,
-        elements_package_dir: str | Path | None = None,
-        elements_dist_info: str | Path | None = None,
-    ) -> OracleInvocation:
-        self.validate()
-        source_spec = oracle_source_spec(self.source_spec)
-        _validate_source_spec_callbacks(source_spec)
-        resolver = source_spec.generator_resolver
-        if source_spec.generator_resolution_required and resolver is None:
-            raise ValueError("oracle source generator resolver is unavailable")
-        coordinates: Mapping[str, str | Path | None] = MappingProxyType(
-            {
-                "elements_dist_info": elements_dist_info,
-                "elements_package_dir": elements_package_dir,
-                "official_checkout": official_checkout,
-                "python_executable": python_executable,
-            }
-        )
-        if resolver is not None:
-            resolved = resolver(self, coordinates)
-            try:
-                return OracleInvocation(
-                    command=resolved.command,
-                    cwd=resolved.cwd,
-                    generator_request=resolved.generator_request,
-                )
-            except (AttributeError, TypeError, ValueError) as error:
-                raise ValueError(
-                    "oracle resolver returned an invalid invocation"
-                ) from error
-        if self.generator_request is None:
-            raise ValueError("oracle generator invocation requires a request")
-        return OracleInvocation(
-            command=self.generator_command,
-            cwd=Path(official_checkout),
-            generator_request=self.generator_request,
-        )
-
-    def _validate_tensor_schema(self, fixture_path: Path) -> None:
-        with np.load(fixture_path, allow_pickle=False) as fixture:
-            if tuple(fixture.files) != tuple(self.tensor_schema):
-                raise ValueError("oracle tensor schema names do not match fixture")
-            for name, spec in self.tensor_schema.items():
-                array = fixture[name]
-                if tuple(array.shape) != spec.shape or array.dtype.name != spec.dtype:
-                    raise ValueError(f"oracle tensor schema mismatch: {name}")
 
 
 @dataclass(frozen=True)
@@ -1066,6 +778,49 @@ class ParameterMapping:
     destination: str
     transform: str = "identity"
     reshape: tuple[int, ...] | None = None
+
+
+def _parameter_path(path: str | Sequence[str]) -> str:
+    if type(path) is str:
+        result = path
+    else:
+        if isinstance(path, str):
+            raise TypeError("parameter path must be an exact string")
+        runtime_path = cast(object, path)
+        if not isinstance(runtime_path, Sequence):
+            raise TypeError(
+                "parameter path must be an exact string or a sequence of exact strings"
+            )
+        segments = tuple(path)
+        if any(type(segment) is not str for segment in segments):
+            raise TypeError("parameter path segments must be exact strings")
+        result = ".".join(segments)
+    if not result or result.startswith(".") or result.endswith(".") or ".." in result:
+        raise ValueError(f"invalid parameter path: {result!r}")
+    return result
+
+
+def _transform_parameter(value: Array, mapping: ParameterMapping) -> Array:
+    if mapping.transform == "identity":
+        return value
+    if mapping.transform == "transpose":
+        return value.T
+    assert mapping.reshape is not None
+    return value.reshape(mapping.reshape)
+
+
+def _prepare_parameter(
+    value: Array,
+    mapping: ParameterMapping,
+    destination_shape: Sequence[int],
+) -> Array:
+    transformed = _transform_parameter(np.asarray(value), mapping)
+    expected_shape = tuple(destination_shape)
+    if transformed.shape != expected_shape:
+        raise ValueError(
+            f"parameter shape mismatch for {mapping.destination}: {transformed.shape} != {expected_shape}"
+        )
+    return transformed
 
 
 class ParameterTranslator:
@@ -1093,10 +848,8 @@ class ParameterTranslator:
         destination_path = _parameter_path(destination)
         if transform not in self._TRANSFORMS:
             raise ValueError(f"unknown transform: {transform}")
-        if transform == "reshape" and reshape is None:
-            raise ValueError("reshape transform requires a target shape")
-        if transform != "reshape" and reshape is not None:
-            raise ValueError("reshape target is only valid for reshape transform")
+        if (transform == "reshape") != (reshape is not None):
+            raise ValueError("reshape target and transform must be used together")
         if source_path in self._by_source:
             raise ValueError(f"source parameter already registered: {source_path}")
         if destination_path in self._by_destination:
@@ -1120,16 +873,15 @@ class ParameterTranslator:
         self,
         source: str | Sequence[str],
         destination: str | Sequence[str],
-        value: np.ndarray,
+        value: Array,
         destination_shape: Sequence[int],
-    ) -> np.ndarray:
+    ) -> Array:
         source_path = _parameter_path(source)
         destination_path = _parameter_path(destination)
         mapping = self._by_source.get(source_path)
         if mapping is None or mapping.destination != destination_path:
             raise ValueError(
-                f"parameter mapping is not registered: {source_path} -> "
-                f"{destination_path}"
+                f"parameter mapping is not registered: {source_path} -> {destination_path}"
             )
         if source_path in self._consumed_sources:
             raise ValueError(f"source parameter consumed more than once: {source_path}")
@@ -1137,535 +889,127 @@ class ParameterTranslator:
             raise ValueError(
                 f"destination parameter consumed more than once: {destination_path}"
             )
-        transformed = _transform_parameter(np.asarray(value), mapping)
-        expected_shape = tuple(destination_shape)
-        if transformed.shape != expected_shape:
-            raise ValueError(
-                f"parameter shape mismatch for {destination_path}: "
-                f"{transformed.shape} != {expected_shape}"
-            )
+        transformed = _prepare_parameter(value, mapping, destination_shape)
         self._consumed_sources.add(source_path)
         self._consumed_destinations.add(destination_path)
         return transformed
 
     def translate(
         self,
-        source_parameters: Mapping[str, np.ndarray],
-        destination_shapes: Mapping[str, Sequence[int] | np.ndarray],
-    ) -> dict[str, np.ndarray]:
-        self.reset_consumption()
+        source_parameters: Mapping[str, Array],
+        destination_shapes: Mapping[str, Sequence[int] | Array],
+    ) -> dict[str, Array]:
+        if any(type(path) is not str for path in source_parameters):
+            raise TypeError("source parameter mapping keys must be exact strings")
+        if any(type(path) is not str for path in destination_shapes):
+            raise TypeError("destination parameter mapping keys must be exact strings")
         source_paths = set(source_parameters)
         destination_paths = set(destination_shapes)
-        registered_sources = set(self._by_source)
-        registered_destinations = set(self._by_destination)
-        extra_sources = source_paths - registered_sources
+        extra_sources = source_paths - set(self._by_source)
         if extra_sources:
             raise ValueError(
                 "unregistered source parameters: " + ", ".join(sorted(extra_sources))
             )
-        extra_destinations = destination_paths - registered_destinations
+        extra_destinations = destination_paths - set(self._by_destination)
         if extra_destinations:
             raise ValueError(
                 "unregistered destination parameters: "
                 + ", ".join(sorted(extra_destinations))
             )
-        missing_sources = registered_sources - source_paths
-        missing_destinations = registered_destinations - destination_paths
-        if missing_sources or missing_destinations:
-            missing = sorted(missing_sources | missing_destinations)
-            raise ValueError("unconsumed registered parameters: " + ", ".join(missing))
-        translated: dict[str, np.ndarray] = {}
+        missing = (set(self._by_source) - source_paths) | (
+            set(self._by_destination) - destination_paths
+        )
+        if missing:
+            raise ValueError(
+                "unconsumed registered parameters: " + ", ".join(sorted(missing))
+            )
+        translated: dict[str, Array] = {}
         for mapping in self.registry:
             destination = destination_shapes[mapping.destination]
             shape = (
-                destination.shape
+                tuple(np.shape(destination))
                 if isinstance(destination, np.ndarray)
                 else destination
             )
-            translated[mapping.destination] = self.consume(
-                mapping.source,
-                mapping.destination,
+            translated[mapping.destination] = _prepare_parameter(
                 source_parameters[mapping.source],
+                mapping,
                 shape,
             )
-        self.assert_fully_consumed()
+        consumed_sources = set(self._by_source)
+        consumed_destinations = set(self._by_destination)
+        self._consumed_sources.clear()
+        self._consumed_sources.update(consumed_sources)
+        self._consumed_destinations.clear()
+        self._consumed_destinations.update(consumed_destinations)
         return translated
 
     def assert_fully_consumed(self) -> None:
-        missing_sources = set(self._by_source) - self._consumed_sources
-        missing_destinations = set(self._by_destination) - self._consumed_destinations
-        if missing_sources or missing_destinations:
-            missing = sorted(missing_sources | missing_destinations)
-            raise ValueError("unconsumed parameters: " + ", ".join(missing))
-
-
-class OracleHarness:
-    def __init__(
-        self,
-        official_checkout: str | Path,
-        fixture_dir: str | Path,
-        *,
-        python_executable: str | Path | None = None,
-    ) -> None:
-        self.official_checkout = Path(official_checkout).resolve()
-        self.fixture_dir = Path(fixture_dir)
-        self.python_executable = str(python_executable or sys.executable)
-        self._last_worker_pid: int | None = None
-        if not self.official_checkout.is_dir():
-            raise ValueError("official checkout does not exist")
-        for revision in (PAPER_REVISION, UPSTREAM_CURRENT_REVISION):
-            _git_object_exists(self.official_checkout, revision)
-
-    @property
-    def last_worker_pid(self) -> int | None:
-        return self._last_worker_pid
-
-    def write_fixture(
-        self,
-        *,
-        case_name: str,
-        profile: DreamerProfile | str,
-        observation_mode: ObservationMode | str,
-        arrays: Mapping[str, np.ndarray],
-        seed: int,
-        generator_command: Sequence[str],
-        source_spec: str | OracleSourceSpec,
-        generator_request: Mapping[str, Any] | None = None,
-        dtype: str | None = None,
-    ) -> tuple[Path, Path]:
-        if not _CASE_PATTERN.fullmatch(case_name):
-            raise ValueError(f"invalid oracle case name: {case_name!r}")
-        if not arrays:
-            raise ValueError("oracle fixture must contain at least one tensor")
-        normalized: dict[str, np.ndarray] = {}
-        for name, value in arrays.items():
-            if not _CASE_PATTERN.fullmatch(name):
-                raise ValueError(f"invalid oracle tensor name: {name!r}")
-            array = np.asarray(value)
-            if array.dtype.hasobject:
-                raise ValueError("oracle tensors cannot use object dtype")
-            normalized[name] = array
-        resolved_profile = DreamerProfile(profile)
-        resolved_mode = ObservationMode(observation_mode)
-        self.fixture_dir.mkdir(parents=True, exist_ok=True)
-        stem = f"{resolved_profile.value}-{resolved_mode.value}-{case_name}"
-        fixture_path = self.fixture_dir / f"{stem}.npz"
-        manifest_path = self.fixture_dir / f"{stem}.manifest.json"
-        _write_deterministic_npz(fixture_path, normalized)
-        manifest = OracleManifest.create(
-            case_name=case_name,
-            profile=resolved_profile,
-            observation_mode=resolved_mode,
-            official_checkout=self.official_checkout,
-            fixture_path=fixture_path,
-            arrays=normalized,
-            seed=seed,
-            generator_command=generator_command,
-            generator_request=generator_request,
-            source_spec=source_spec,
-            dtype=dtype,
+        missing = (set(self._by_source) - self._consumed_sources) | (
+            set(self._by_destination) - self._consumed_destinations
         )
-        manifest.validate(
-            official_checkout=self.official_checkout,
-            fixture_path=fixture_path,
-        )
-        manifest.save(manifest_path)
-        return fixture_path, manifest_path
-
-    def run_config_case(
-        self,
-        profile: DreamerProfile | str,
-        observation_mode: ObservationMode | str,
-        *,
-        case_name: str = "config",
-        seed: int = 0,
-    ) -> tuple[Path, Path]:
-        resolved_profile = DreamerProfile(profile)
-        resolved_mode = ObservationMode(observation_mode)
-        request = {
-            "official_checkout": str(self.official_checkout),
-            "official_commit": official_revision(resolved_profile),
-            "observation_mode": resolved_mode.value,
-            "overrides": dict(profile_overrides(resolved_profile)),
-            "profile": resolved_profile.value,
-            "source_spec": CONFIG_SOURCE_SPEC.name,
-        }
-        command = (
-            self.python_executable,
-            str(Path(__file__).resolve()),
-            "_config_worker",
-        )
-        completed = subprocess.run(
-            command,
-            cwd=self.official_checkout,
-            input=_canonical_json(request).decode(),
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        payload = json.loads(completed.stdout)
-        worker_pid = int(payload["worker_pid"])
-        if worker_pid <= 0 or worker_pid == os.getpid():
-            raise ValueError("oracle config worker did not cross a process boundary")
-        self._last_worker_pid = worker_pid
-        arrays = {
-            name: np.asarray(spec["values"], dtype=spec["dtype"])
-            for name, spec in payload["arrays"].items()
-        }
-        _validate_config_case_arrays(
-            arrays,
-            resolve_dreamer_config(resolved_profile, resolved_mode),
-        )
-        return self.write_fixture(
-            case_name=case_name,
-            profile=resolved_profile,
-            observation_mode=resolved_mode,
-            arrays=arrays,
-            seed=seed,
-            generator_command=command,
-            generator_request=request,
-            source_spec=CONFIG_SOURCE_SPEC.name,
-        )
-
-    def run_distributions_case(
-        self,
-        profile: DreamerProfile | str,
-        observation_mode: ObservationMode | str,
-        *,
-        case_name: str = "distributions",
-        seed: int = 0,
-    ) -> tuple[Path, Path]:
-        resolved_profile = DreamerProfile(profile)
-        resolved_mode = ObservationMode(observation_mode)
-        request = {
-            "official_checkout": str(self.official_checkout),
-            "official_commit": official_revision(resolved_profile),
-            "observation_mode": resolved_mode.value,
-            "overrides": dict(profile_overrides(resolved_profile)),
-            "profile": resolved_profile.value,
-            "seed": seed,
-            "source_spec": DISTRIBUTIONS_SOURCE_SPEC.name,
-        }
-        command = (
-            self.python_executable,
-            str(Path(__file__).resolve()),
-            "_distributions_worker",
-        )
-        completed = subprocess.run(
-            command,
-            cwd=self.official_checkout,
-            input=_canonical_json(request).decode(),
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        payload = json.loads(completed.stdout)
-        worker_pid = int(payload["worker_pid"])
-        if worker_pid <= 0 or worker_pid == os.getpid():
-            raise ValueError(
-                "oracle distributions worker did not cross a process boundary"
-            )
-        self._last_worker_pid = worker_pid
-        arrays = {
-            name: np.asarray(spec["values"], dtype=spec["dtype"])
-            for name, spec in payload["arrays"].items()
-        }
-        return self.write_fixture(
-            case_name=case_name,
-            profile=resolved_profile,
-            observation_mode=resolved_mode,
-            arrays=arrays,
-            seed=seed,
-            generator_command=command,
-            generator_request=request,
-            source_spec=DISTRIBUTIONS_SOURCE_SPEC.name,
-        )
-
-    def run_networks_case(
-        self,
-        profile: DreamerProfile | str,
-        observation_mode: ObservationMode | str,
-        *,
-        case_name: str | None = None,
-        seed: int = 0,
-        compute_dtype: str = "bfloat16",
-    ) -> tuple[Path, Path]:
-        from world_marl.dreamer_v3_baseline.network_oracle import run_networks_case
-
-        return run_networks_case(
-            self,
-            profile,
-            observation_mode,
-            case_name=case_name,
-            seed=seed,
-            compute_dtype=compute_dtype,
-        )
+        if missing:
+            raise ValueError("unconsumed parameters: " + ", ".join(sorted(missing)))
 
 
-def _validate_config_case_arrays(
-    arrays: Mapping[str, np.ndarray],
-    config: DreamerV3Config,
-) -> None:
-    assert config.rssm is not None
-    assert config.encoder is not None
-    assert config.decoder is not None
-    assert config.optimizer is not None
-    assert config.run is not None
-    expected = {
-        "rssm": np.asarray(
-            [
-                config.rssm.deter,
-                config.rssm.hidden,
-                config.rssm.stoch,
-                config.rssm.classes,
-            ],
-            dtype=np.int64,
-        ),
-        "encoder": np.asarray(
-            [config.encoder.depth, config.encoder.units, config.encoder.strided],
-            dtype=np.int64,
-        ),
-        "decoder": np.asarray(
-            [config.decoder.depth, config.decoder.units, config.decoder.strided],
-            dtype=np.int64,
-        ),
-        "dmc": np.asarray(
-            [
-                config.observation_mode is ObservationMode.VISION,
-                config.observation_mode is ObservationMode.PROPRIO,
-                *config.run.image_size,
-                config.run.action_repeat,
-                config.run.camera,
-            ],
-            dtype=np.int64,
-        ),
-        "optimizer": np.asarray([config.optimizer.beta2], dtype=np.float64),
-        "run": np.asarray(
-            [config.run.steps, config.run.replay_ratio],
-            dtype=np.float64,
-        ),
-    }
-    for name, value in expected.items():
-        if name not in arrays or not np.array_equal(arrays[name], value):
-            raise ValueError(f"official config case disagrees with native {name}")
-
-
-def _config_worker(request: Mapping[str, Any]) -> dict[str, Any]:
-    checkout = Path(request["official_checkout"]).resolve()
-    revision = str(request["official_commit"])
-    profile = DreamerProfile(request["profile"])
-    mode = ObservationMode(request["observation_mode"])
-    if revision != official_revision(profile):
-        raise ValueError("worker revision does not match requested profile")
-    overrides = dict(request["overrides"])
-    if overrides != dict(profile_overrides(profile)):
-        raise ValueError("worker override map does not match requested profile")
-    source_spec = oracle_source_spec(str(request["source_spec"]))
-    if source_spec != CONFIG_SOURCE_SPEC:
-        raise ValueError("config worker requires the registered config source spec")
-    source_files = tuple(source_spec.hashes_for(revision))
-    source = yaml.safe_load(_git_show(checkout, revision, source_files[0]))
-    defaults = source["defaults"]
-    mode_config = source[f"dmc_{mode.value}"]
-    size_config = source["size200m" if mode is ObservationMode.VISION else "size1m"]
-    rssm_size = size_config[r".*\.rssm"]
-    depth = int(size_config[r".*\.depth"])
-    units = int(size_config[r".*\.units"])
-    rssm_defaults = defaults["agent"]["dyn"]["rssm"]
-    encoder_defaults = defaults["agent"]["enc"]["simple"]
-    decoder_defaults = defaults["agent"]["dec"]["simple"]
-    optimizer_defaults = defaults["agent"]["opt"]
-    dmc_defaults = defaults["env"]["dmc"]
-    encoder_strided = overrides.get(
-        "agent.enc.simple.strided",
-        encoder_defaults["strided"],
-    )
-    decoder_strided = overrides.get(
-        "agent.dec.simple.strided",
-        decoder_defaults["strided"],
-    )
-    beta2 = overrides.get("agent.opt.beta2", optimizer_defaults["beta2"])
-    steps = overrides.get("run.steps", mode_config["run"]["steps"])
-    image = mode_config.get("env.dmc.image", dmc_defaults["image"])
-    proprio = mode_config.get("env.dmc.proprio", dmc_defaults["proprio"])
-    arrays = {
-        "decoder": {
-            "dtype": "int64",
-            "values": [depth, units, int(decoder_strided)],
-        },
-        "encoder": {
-            "dtype": "int64",
-            "values": [depth, units, int(encoder_strided)],
-        },
-        "dmc": {
-            "dtype": "int64",
-            "values": [
-                int(image),
-                int(proprio),
-                *dmc_defaults["size"],
-                dmc_defaults["repeat"],
-                dmc_defaults["camera"],
-            ],
-        },
-        "optimizer": {"dtype": "float64", "values": [beta2]},
-        "rssm": {
-            "dtype": "int64",
-            "values": [
-                rssm_size["deter"],
-                rssm_size["hidden"],
-                rssm_defaults["stoch"],
-                rssm_size["classes"],
-            ],
-        },
-        "run": {
-            "dtype": "float64",
-            "values": [steps, mode_config["run"]["train_ratio"]],
-        },
-    }
-    return {"arrays": arrays, "worker_pid": os.getpid()}
-
-
-def _distributions_worker(request: Mapping[str, Any]) -> dict[str, Any]:
-    checkout = Path(request["official_checkout"]).resolve()
-    revision = str(request["official_commit"])
-    profile = DreamerProfile(request["profile"])
-    ObservationMode(request["observation_mode"])
-    if revision != official_revision(profile):
-        raise ValueError("worker revision does not match requested profile")
-    if dict(request["overrides"]) != dict(profile_overrides(profile)):
-        raise ValueError("worker override map does not match requested profile")
-    source_spec = oracle_source_spec(str(request["source_spec"]))
-    if source_spec != DISTRIBUTIONS_SOURCE_SPEC:
-        raise ValueError(
-            "distributions worker requires the registered distributions source spec"
-        )
-    sources: dict[str, bytes] = {}
-    for path, digest in source_spec.hashes_for(revision).items():
-        source = _git_show(checkout, revision, path)
-        if _sha256_bytes(source) != digest:
-            raise ValueError(f"official distribution source hash mismatch: {path}")
-        sources[path] = source
-    official_outs = _load_official_outs(sources["embodied/jax/outs.py"], revision)
-    official_symexp = _load_official_function(
-        sources["embodied/jax/nets.py"],
-        "symexp",
-        {"jnp": jax.numpy},
-        revision,
-    )
-    official_symlog = _load_official_function(
-        sources["embodied/jax/nets.py"],
-        "symlog",
-        {"jnp": jax.numpy},
-        revision,
-    )
-    bounded_normal = _load_official_method(
-        sources["embodied/jax/heads.py"],
-        "Head",
-        "bounded_normal",
-        {
-            "f32": jax.numpy.float32,
-            "jax": jax,
-            "jnp": jax.numpy,
-            "nets": SimpleNamespace(Linear=object, symexp=official_symexp),
-            "outs": official_outs,
-        },
-        revision,
-    )
-    symexp_twohot = _load_official_method(
-        sources["embodied/jax/heads.py"],
-        "Head",
-        "symexp_twohot",
-        {
-            "f32": jax.numpy.float32,
-            "jax": jax,
-            "jnp": jax.numpy,
-            "nets": SimpleNamespace(Linear=object, symexp=official_symexp),
-            "outs": official_outs,
-        },
-        revision,
-    )
-    arrays = _official_distribution_arrays(
-        official_outs,
-        official_symlog,
-        official_symexp,
-        bounded_normal,
-        symexp_twohot,
-        int(request["seed"]),
-    )
-    return {
-        "arrays": {
-            name: {
-                "dtype": array.dtype.name,
-                "values": array.tolist(),
-            }
-            for name, array in sorted(arrays.items())
-        },
-        "worker_pid": os.getpid(),
-    }
-
-
-def _load_official_outs(source: bytes, revision: str) -> ModuleType:
-    module = ModuleType("dreamerv3_official_outs")
-    code = compile(
-        source,
-        f"{revision}:embodied/jax/outs.py",
-        "exec",
-    )
-    exec(code, module.__dict__)
-    runtime_jax = module.jax
-
-    module.jax = SimpleNamespace(
-        nn=runtime_jax.nn,
-        random=_OfficialRandomFacade(runtime_jax.random),
-        scipy=runtime_jax.scipy,
-    )
-    return module
-
-
-class _OfficialRandomFacade:
-    def __init__(self, runtime_random: Any) -> None:
-        self._runtime_random = runtime_random
-
-    def bernoulli(
-        self,
-        seed: jax.Array,
-        probability: jax.Array,
-        axis: int,
-        shape: tuple[int, ...],
-    ) -> jax.Array:
-        if axis != -1:
-            raise ValueError("official Binary sample axis must be -1")
-        return self._runtime_random.bernoulli(seed, probability, shape)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._runtime_random, name)
+def _write_deterministic_npz(path: str | Path, arrays: Mapping[str, Array]) -> Path:
+    if any(type(name) is not str for name in arrays):
+        raise TypeError("array keys must be exact strings")
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w+b",
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            with zipfile.ZipFile(
+                stream, "w", compression=zipfile.ZIP_STORED
+            ) as archive:
+                for name, value in sorted(arrays.items()):
+                    buffer = io.BytesIO()
+                    np.lib.format.write_array(
+                        buffer, np.asarray(value), allow_pickle=False
+                    )
+                    info = zipfile.ZipInfo(
+                        f"{name}.npy", date_time=(1980, 1, 1, 0, 0, 0)
+                    )
+                    info.compress_type = zipfile.ZIP_STORED
+                    info.external_attr = 0o600 << 16
+                    archive.writestr(info, buffer.getvalue())
+        temporary.replace(destination)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return destination
 
 
 class _SuppliedCategoricalNoise:
     def __init__(
         self,
         *,
-        expected_logits: np.ndarray | jax.Array,
+        expected_logits: Array | jax.Array,
         expected_output_shape: Sequence[int],
-        noise: np.ndarray | jax.Array,
+        noise: Array | jax.Array,
     ) -> None:
         self.expected_logits = np.asarray(jax.device_get(expected_logits))
         self.expected_output_shape = tuple(expected_output_shape)
         supplied_noise = np.asarray(jax.device_get(noise))
-        expected_noise_shape = self.expected_output_shape + (
-            self.expected_logits.shape[-1],
-        )
-        if tuple(supplied_noise.shape) != expected_noise_shape:
+        expected_shape = self.expected_output_shape + (self.expected_logits.shape[-1],)
+        if supplied_noise.shape != expected_shape:
             raise ValueError(
-                "supplied categorical noise shape does not match the expected "
-                f"primitive shape: {supplied_noise.shape} != {expected_noise_shape}"
+                f"supplied categorical noise shape mismatch: {supplied_noise.shape} != {expected_shape}"
             )
         if supplied_noise.dtype != self.expected_logits.dtype:
             raise ValueError(
                 "supplied categorical noise dtype does not match logits: "
                 f"{supplied_noise.dtype} != {self.expected_logits.dtype}"
             )
-        self.noise = jax.numpy.asarray(supplied_noise)
+        self.noise = jnp.asarray(supplied_noise)
         self.calls = 0
 
     def __call__(
@@ -1677,47 +1021,33 @@ class _SuppliedCategoricalNoise:
     ) -> jax.Array:
         del seed
         if axis != -1:
-            raise ValueError("official Categorical sample axis must be -1")
+            raise ValueError("categorical sample axis must be -1")
         if shape is None or tuple(shape) != self.expected_output_shape:
-            raise ValueError(
-                "categorical requested output shape does not match supplied case: "
-                f"{shape} != {self.expected_output_shape}"
-            )
+            raise ValueError("categorical output shape does not match supplied case")
         if tuple(logits.shape) != self.expected_logits.shape:
-            raise ValueError(
-                "categorical logits shape does not match supplied case: "
-                f"{logits.shape} != {self.expected_logits.shape}"
-            )
+            raise ValueError("categorical logits shape does not match supplied case")
         batch_shape = tuple(logits.shape[:-1])
         if (
             batch_shape
             and self.expected_output_shape[-len(batch_shape) :] != batch_shape
         ):
             raise ValueError(
-                "categorical output shape does not end in the logits batch shape"
-            )
-        expected_noise_shape = self.expected_output_shape + (logits.shape[-1],)
-        if tuple(self.noise.shape) != expected_noise_shape:
-            raise ValueError(
-                "supplied categorical noise shape changed after construction"
+                "categorical output shape does not end in logits batch shape"
             )
         self._assert_logits(logits)
         shape_prefix = len(self.expected_output_shape) - len(batch_shape)
         expanded_logits = jax.lax.expand_dims(logits, tuple(range(shape_prefix)))
         self.calls += 1
-        return jax.numpy.argmax(self.noise + expanded_logits, axis=axis)
+        return jnp.argmax(self.noise + expanded_logits, axis=axis)
 
     def _assert_logits(self, logits: jax.Array) -> None:
         expected = self.expected_logits
 
-        def assert_equal(value: np.ndarray) -> None:
+        def assert_equal(value: Array) -> None:
             if not np.array_equal(value, expected):
-                raise ValueError(
-                    "categorical logits do not match the authoritative supplied-noise "
-                    "case"
-                )
+                raise ValueError("categorical logits do not match supplied-noise case")
 
-        if isinstance(logits, jax.core.Tracer):
+        if isinstance(logits, jax_core.Tracer):
             jax.debug.callback(assert_equal, logits)
         else:
             assert_equal(np.asarray(jax.device_get(logits)))
@@ -1727,9 +1057,9 @@ class _SuppliedCategoricalNoise:
 def _supplied_categorical_noise_scope(
     random_namespace: Any,
     *,
-    expected_logits: np.ndarray | jax.Array,
+    expected_logits: Array | jax.Array,
     expected_output_shape: Sequence[int],
-    noise: np.ndarray | jax.Array,
+    noise: Array | jax.Array,
 ) -> Iterator[None]:
     injected = _SuppliedCategoricalNoise(
         expected_logits=expected_logits,
@@ -1742,9 +1072,7 @@ def _supplied_categorical_noise_scope(
     try:
         yield
         if injected.calls != 1:
-            raise ValueError(
-                "supplied categorical noise case must invoke the primitive exactly once"
-            )
+            raise ValueError("supplied categorical noise case must invoke exactly once")
     finally:
         if original is missing:
             delattr(random_namespace, "categorical")
@@ -1752,564 +1080,20 @@ def _supplied_categorical_noise_scope(
             setattr(random_namespace, "categorical", original)
 
 
-def _load_official_function(
-    source: bytes,
-    function_name: str,
-    namespace: Mapping[str, Any],
-    revision: str,
-) -> Any:
-    tree = ast.parse(source)
-    matches = [
-        node
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == function_name
-    ]
-    if len(matches) != 1:
-        raise ValueError(f"official function is not unique: {function_name}")
-    module = ast.Module(body=matches, type_ignores=[])
-    ast.fix_missing_locations(module)
-    globals_dict = dict(namespace)
-    exec(
-        compile(module, f"{revision}:official:{function_name}", "exec"),
-        globals_dict,
-    )
-    return globals_dict[function_name]
-
-
-def _load_official_method(
-    source: bytes,
-    class_name: str,
-    method_name: str,
-    namespace: Mapping[str, Any],
-    revision: str,
-) -> Any:
-    tree = ast.parse(source)
-    classes = [
-        node
-        for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == class_name
-    ]
-    if len(classes) != 1:
-        raise ValueError(f"official class is not unique: {class_name}")
-    matches = [
-        node
-        for node in classes[0].body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == method_name
-    ]
-    if len(matches) != 1:
-        raise ValueError(f"official method is not unique: {class_name}.{method_name}")
-    module = ast.Module(body=matches, type_ignores=[])
-    ast.fix_missing_locations(module)
-    globals_dict = dict(namespace)
-    exec(
-        compile(
-            module,
-            f"{revision}:official:{class_name}.{method_name}",
-            "exec",
-        ),
-        globals_dict,
-    )
-    return globals_dict[method_name]
-
-
-class _OfficialHeadStub:
-    def __init__(
-        self,
-        values: Mapping[str, jax.Array],
-        *,
-        shape: tuple[int, ...],
-        bins: int = 255,
-        minstd: float = 0.1,
-        maxstd: float = 1.0,
-    ) -> None:
-        self.values = values
-        self.space = SimpleNamespace(discrete=False, shape=shape)
-        self.bins = bins
-        self.minstd = minstd
-        self.maxstd = maxstd
-        self.kw: dict[str, Any] = {}
-
-    def sub(self, name: str, *args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        value = self.values[name]
-        return lambda inputs: value
-
-
-def _official_distribution_arrays(
-    outs: ModuleType,
-    official_symlog: Any,
-    official_symexp: Any,
-    bounded_normal: Any,
-    symexp_twohot: Any,
-    seed: int,
-) -> dict[str, np.ndarray]:
-    jnp = jax.numpy
-    keys = jax.random.split(jax.random.PRNGKey(seed), 8)
-    arrays: dict[str, jax.Array] = {}
-
-    scalar_input = jnp.asarray(
-        [-1e20, -100.0, -1.0, -0.0, 0.0, 1.0, 100.0, 1e20],
-        jnp.float32,
-    )
-    scalar_symlog = official_symlog(scalar_input)
-    scalar_roundtrip = official_symexp(scalar_symlog)
-    arrays.update(
-        {
-            "scalar.input": scalar_input,
-            "scalar.roundtrip": scalar_roundtrip,
-            "scalar.symlog": scalar_symlog,
-        }
-    )
-
-    mse_mean = jnp.asarray([[-2.0, -0.5, 0.0], [0.5, 2.0, 5.0]], jnp.float32)
-    mse_target = jnp.asarray([[-1.0, 0.5, 2.0], [0.0, -2.0, 3.0]], jnp.float32)
-    mse = outs.MSE(mse_mean)
-    arrays.update(
-        {
-            "mse.grad_mean": jax.grad(
-                lambda value: outs.MSE(value).loss(mse_target).sum()
-            )(mse_mean),
-            "mse.grad_target": jax.grad(lambda value: mse.loss(value).sum())(
-                mse_target
-            ),
-            "mse.loss": mse.loss(mse_target),
-            "mse.mean": mse_mean,
-            "mse.pred": mse.pred(),
-            "mse.seed": keys[0],
-            "mse.target": mse_target,
-        }
-    )
-
-    normal_mean = jnp.asarray([[-1.0, 0.0, 1.0], [2.0, -2.0, 0.5]], jnp.float32)
-    normal_stddev = jnp.asarray([[0.2, 0.5, 1.0], [1.5, 2.0, 0.1]], jnp.float32)
-    normal_event = jnp.asarray([[-3.0, 0.25, 1.5], [0.25, 3.0, -1.0]], jnp.float32)
-    normal_other_mean = jnp.asarray([[0.0, -1.0, 2.0], [1.0, 0.0, -0.5]], jnp.float32)
-    normal_other_stddev = jnp.asarray([[1.0, 0.3, 2.0], [0.5, 1.5, 0.25]], jnp.float32)
-    normal = outs.Normal(normal_mean, normal_stddev)
-    normal_other = outs.Normal(normal_other_mean, normal_other_stddev)
-    arrays.update(
-        {
-            "normal.entropy": normal.entropy(),
-            "normal.event": normal_event,
-            "normal.grad_target": jax.grad(lambda value: normal.loss(value).sum())(
-                normal_event
-            ),
-            "normal.kl": normal.kl(normal_other),
-            "normal.logp": normal.logp(normal_event),
-            "normal.loss": normal.loss(normal_event),
-            "normal.mean": normal_mean,
-            "normal.other_mean": normal_other_mean,
-            "normal.other_stddev": normal_other_stddev,
-            "normal.pred": normal.pred(),
-            "normal.prob": normal.prob(normal_event),
-            "normal.sample": normal.sample(keys[1], shape=(2,)),
-            "normal.seed": keys[1],
-            "normal.stddev": normal_stddev,
-        }
-    )
-
-    bounded_raw_mean = jnp.asarray([[2.0, -2.0, 0.1], [3.0, -3.0, 0.0]], jnp.float32)
-    bounded_raw_stddev = jnp.asarray(
-        [[-5.0, -2.0, 0.0], [2.0, 5.0, -10.0]], jnp.float32
-    )
-    bounded_event = jnp.asarray([[1.2, -1.4, 0.0], [2.0, -2.0, 0.5]], jnp.float32)
-
-    def make_bounded(raw_mean: jax.Array, raw_stddev: jax.Array) -> Any:
-        stub = _OfficialHeadStub(
-            {"mean": raw_mean, "stddev": raw_stddev},
-            shape=(3,),
-        )
-        return bounded_normal(stub, jnp.zeros((2, 1), jnp.float32))
-
-    bounded = make_bounded(bounded_raw_mean, bounded_raw_stddev)
-    arrays.update(
-        {
-            "bounded.entropy": bounded.entropy(),
-            "bounded.event": bounded_event,
-            "bounded.grad_raw_mean": jax.grad(
-                lambda value: (
-                    make_bounded(value, bounded_raw_stddev).loss(bounded_event).sum()
-                )
-            )(bounded_raw_mean),
-            "bounded.grad_raw_stddev": jax.grad(
-                lambda value: (
-                    make_bounded(bounded_raw_mean, value).loss(bounded_event).sum()
-                )
-            )(bounded_raw_stddev),
-            "bounded.logp": bounded.logp(bounded_event),
-            "bounded.loss": bounded.loss(bounded_event),
-            "bounded.mean": bounded.mean,
-            "bounded.pred": bounded.pred(),
-            "bounded.prob": bounded.prob(bounded_event),
-            "bounded.raw_mean": bounded_raw_mean,
-            "bounded.raw_stddev": bounded_raw_stddev,
-            "bounded.sample": bounded.sample(keys[2]),
-            "bounded.seed": keys[2],
-            "bounded.stddev": bounded.stddev,
-        }
-    )
-
-    binary_logit = jnp.asarray([-100.0, -10.0, -0.0, 0.0, 10.0, 100.0], jnp.float32)
-    binary_event = jnp.asarray([1.0, 0.0, 0.0, 1.0, 1.0, 0.0], jnp.float32)
-    binary = outs.Binary(binary_logit)
-    arrays.update(
-        {
-            "binary.event": binary_event,
-            "binary.logit": binary_logit,
-            "binary.logp": binary.logp(binary_event),
-            "binary.loss": binary.loss(binary_event),
-            "binary.pred": binary.pred(),
-            "binary.prob": binary.prob(binary_event),
-            "binary.sample": binary.sample(keys[3], shape=(3,)),
-            "binary.seed": keys[3],
-        }
-    )
-
-    categorical_logits = jnp.asarray(
-        [[-100.0, 0.0, 1.0, 2.0], [10.0, -10.0, 0.0, -5.0]],
-        jnp.float32,
-    )
-    categorical_other_logits = jnp.asarray(
-        [[2.0, 1.0, 0.0, -2.0], [-3.0, 4.0, 0.5, 1.0]],
-        jnp.float32,
-    )
-    categorical_event = jnp.asarray([3, 1], jnp.int32)
-    categorical = outs.Categorical(categorical_logits, 0.01)
-    categorical_other = outs.Categorical(categorical_other_logits, 0.01)
-    categorical_supplied_noise = jnp.asarray(
-        [
-            [[8.0, 0.0, 0.0, 0.0], [0.0, 7.5, 0.0, 0.0]],
-            [[0.0, 4.0, 0.0, 0.0], [0.0, 0.0, 7.0, 0.0]],
-            [[0.0, 0.0, 3.0, 0.0], [0.0, 0.0, 0.0, 7.0]],
-        ],
-        jnp.float32,
-    )
-    with _supplied_categorical_noise_scope(
-        outs.jax.random,
-        expected_logits=categorical.logits,
-        expected_output_shape=(3, 2),
-        noise=categorical_supplied_noise,
-    ):
-        categorical_supplied_sample = categorical.sample(keys[4], shape=(3,))
-    arrays.update(
-        {
-            "categorical.effective_logits": categorical.logits,
-            "categorical.entropy": categorical.entropy(),
-            "categorical.event": categorical_event,
-            "categorical.kl": categorical.kl(categorical_other),
-            "categorical.logits": categorical_logits,
-            "categorical.logp": categorical.logp(categorical_event),
-            "categorical.loss": categorical.loss(categorical_event),
-            "categorical.other_logits": categorical_other_logits,
-            "categorical.pred": categorical.pred(),
-            "categorical.prob": categorical.prob(categorical_event),
-            "categorical.probs": jax.nn.softmax(categorical.logits),
-            "categorical.sample": categorical.sample(keys[4], shape=(3,)),
-            "categorical.seed": keys[4],
-            "categorical.supplied_noise": categorical_supplied_noise,
-            "categorical.supplied_sample": categorical_supplied_sample,
-        }
-    )
-
-    onehot_logits = jnp.asarray(
-        [[-3.0, 0.0, 2.0, 1.0], [5.0, -2.0, 0.5, -1.0]],
-        jnp.float32,
-    )
-    onehot_other_logits = jnp.asarray(
-        [[1.0, 2.0, -1.0, 0.0], [-2.0, 0.0, 1.0, 3.0]],
-        jnp.float32,
-    )
-    onehot_event = jax.nn.one_hot(jnp.asarray([2, 0]), 4, dtype=jnp.float32)
-    onehot_weights = jnp.asarray(
-        [[-1.0, 0.5, 2.0, -0.25], [0.1, -0.4, 1.5, 2.0]],
-        jnp.float32,
-    )
-    onehot = outs.OneHot(onehot_logits, 0.01)
-    onehot_other = outs.OneHot(onehot_other_logits, 0.01)
-    onehot_supplied_noise = jnp.asarray(
-        [
-            [[5.0, 0.0, 0.0, 0.0], [0.0, 8.0, 0.0, 0.0]],
-            [[0.0, 4.0, 0.0, 0.0], [0.0, 0.0, 6.0, 0.0]],
-        ],
-        jnp.float32,
-    )
-    with _supplied_categorical_noise_scope(
-        outs.jax.random,
-        expected_logits=onehot.dist.logits,
-        expected_output_shape=(2, 2),
-        noise=onehot_supplied_noise,
-    ):
-        onehot_supplied_sample = onehot.sample(keys[5], shape=(2,))
-
-    def supplied_onehot_objective(value: jax.Array) -> jax.Array:
-        candidate = outs.OneHot(value, 0.01)
-        with _supplied_categorical_noise_scope(
-            outs.jax.random,
-            expected_logits=onehot.dist.logits,
-            expected_output_shape=(2, 2),
-            noise=onehot_supplied_noise,
-        ):
-            sample = candidate.sample(keys[5], shape=(2,))
-        return (sample * onehot_weights).sum()
-
-    arrays.update(
-        {
-            "onehot.effective_logits": onehot.dist.logits,
-            "onehot.entropy": onehot.entropy(),
-            "onehot.event": onehot_event,
-            "onehot.grad_target": jax.grad(lambda value: onehot.loss(value).sum())(
-                onehot_event
-            ),
-            "onehot.kl": onehot.kl(onehot_other),
-            "onehot.logits": onehot_logits,
-            "onehot.logp": onehot.logp(onehot_event),
-            "onehot.loss": onehot.loss(onehot_event),
-            "onehot.other_logits": onehot_other_logits,
-            "onehot.pred": onehot.pred(),
-            "onehot.prob": onehot.prob(onehot_event),
-            "onehot.sample": onehot.sample(keys[5]),
-            "onehot.sample_grad": jax.grad(
-                lambda value: (
-                    outs.OneHot(value, 0.01).sample(keys[5]) * onehot_weights
-                ).sum()
-            )(onehot_logits),
-            "onehot.sample_weights": onehot_weights,
-            "onehot.seed": keys[5],
-            "onehot.supplied_noise": onehot_supplied_noise,
-            "onehot.supplied_sample": onehot_supplied_sample,
-            "onehot.supplied_sample_grad": jax.grad(supplied_onehot_objective)(
-                onehot_logits
-            ),
-        }
-    )
-
-    odd_logits = jnp.stack(
-        [
-            jnp.zeros((255,), jnp.float32),
-            jnp.linspace(-2.0, 2.0, 255, dtype=jnp.float32),
-            jnp.linspace(2.0, -2.0, 255, dtype=jnp.float32),
-            jnp.sin(jnp.linspace(-3.0, 3.0, 255, dtype=jnp.float32)),
-            jnp.zeros((255,), jnp.float32).at[-1].set(5.0),
-        ]
-    )
-    odd_target = jnp.asarray([-1e20, -1.0, 0.25, 10.0, 1e20], jnp.float32)
-
-    def make_twohot(logits: jax.Array, bins: int) -> Any:
-        stub = _OfficialHeadStub({"logits": logits}, shape=(), bins=bins)
-        return symexp_twohot(stub, jnp.zeros((*logits.shape[:-1], 1), jnp.float32))
-
-    odd = make_twohot(odd_logits, 255)
-    arrays.update(
-        {
-            "twohot_odd.bins": odd.bins,
-            "twohot_odd.grad_logits": jax.grad(
-                lambda value: make_twohot(value, 255).loss(odd_target).sum()
-            )(odd_logits),
-            "twohot_odd.grad_target": jax.grad(lambda value: odd.loss(value).sum())(
-                odd_target
-            ),
-            "twohot_odd.logits": odd_logits,
-            "twohot_odd.loss": odd.loss(odd_target),
-            "twohot_odd.pred": odd.pred(),
-            "twohot_odd.target": odd_target,
-        }
-    )
-
-    even_logits = jnp.stack(
-        [
-            jnp.zeros((8,), jnp.float32),
-            jnp.linspace(-2.0, 2.0, 8, dtype=jnp.float32),
-            jnp.linspace(2.0, -2.0, 8, dtype=jnp.float32),
-        ]
-    )
-    even_target = jnp.asarray([-1e20, 0.2, 1e20], jnp.float32)
-    even = make_twohot(even_logits, 8)
-    arrays.update(
-        {
-            "twohot_even.bins": even.bins,
-            "twohot_even.logits": even_logits,
-            "twohot_even.loss": even.loss(even_target),
-            "twohot_even.pred": even.pred(),
-            "twohot_even.seed": keys[6],
-            "twohot_even.target": even_target,
-        }
-    )
-
-    aggregate_mean = jnp.linspace(-1.0, 1.0, 12, dtype=jnp.float32).reshape(2, 2, 3)
-    aggregate_stddev = jnp.linspace(0.2, 1.3, 12, dtype=jnp.float32).reshape(2, 2, 3)
-    aggregate_event = jnp.linspace(-2.0, 2.0, 12, dtype=jnp.float32).reshape(2, 2, 3)
-    aggregate_other_mean = jnp.linspace(1.0, -1.0, 12, dtype=jnp.float32).reshape(
-        2, 2, 3
-    )
-    aggregate_other_stddev = jnp.linspace(1.5, 0.4, 12, dtype=jnp.float32).reshape(
-        2, 2, 3
-    )
-    aggregate = outs.Agg(outs.Normal(aggregate_mean, aggregate_stddev), 2, jnp.mean)
-    aggregate_other = outs.Agg(
-        outs.Normal(aggregate_other_mean, aggregate_other_stddev),
-        2,
-        jnp.mean,
-    )
-    arrays.update(
-        {
-            "aggregate.entropy": aggregate.entropy(),
-            "aggregate.event": aggregate_event,
-            "aggregate.kl": aggregate.kl(aggregate_other),
-            "aggregate.logp": aggregate.logp(aggregate_event),
-            "aggregate.loss": aggregate.loss(aggregate_event),
-            "aggregate.mean": aggregate_mean,
-            "aggregate.other_mean": aggregate_other_mean,
-            "aggregate.other_stddev": aggregate_other_stddev,
-            "aggregate.pred": aggregate.pred(),
-            "aggregate.prob": aggregate.prob(aggregate_event),
-            "aggregate.sample": aggregate.sample(keys[7]),
-            "aggregate.seed": keys[7],
-            "aggregate.stddev": aggregate_stddev,
-        }
-    )
-
-    aggregate_mse_mean = jnp.linspace(-2.0, 2.0, 12, dtype=jnp.float32).reshape(2, 2, 3)
-    aggregate_mse_target = jnp.linspace(1.0, -1.0, 12, dtype=jnp.float32).reshape(
-        2, 2, 3
-    )
-    aggregate_mse = outs.Agg(outs.MSE(aggregate_mse_mean), 2)
-    arrays.update(
-        {
-            "aggregate_mse.grad_target": jax.grad(
-                lambda value: aggregate_mse.loss(value).sum()
-            )(aggregate_mse_target),
-            "aggregate_mse.loss": aggregate_mse.loss(aggregate_mse_target),
-            "aggregate_mse.mean": aggregate_mse_mean,
-            "aggregate_mse.target": aggregate_mse_target,
-        }
-    )
-    return {
-        name: np.asarray(jax.device_get(value))
-        for name, value in sorted(arrays.items())
-    }
-
-
-def _parameter_path(path: str | Sequence[str]) -> str:
-    if isinstance(path, str):
-        normalized = path
-    else:
-        normalized = "/".join(path)
-    if not normalized or normalized.startswith("/") or normalized.endswith("/"):
-        raise ValueError(f"invalid parameter path: {normalized!r}")
-    return normalized
-
-
-def _transform_parameter(array: np.ndarray, mapping: ParameterMapping) -> np.ndarray:
-    if mapping.transform == "identity":
-        return array
-    if mapping.transform == "transpose":
-        return array.T
-    assert mapping.reshape is not None
-    return array.reshape(mapping.reshape)
-
-
-def _canonical_generator_request(request: Mapping[str, Any] | str) -> str:
-    payload = json.loads(request) if isinstance(request, str) else dict(request)
-    if not isinstance(payload, dict):
-        raise ValueError("oracle generator request must be a JSON object")
-    if any(not isinstance(key, str) for key in payload):
-        raise ValueError("oracle generator request keys must be strings")
-    return _canonical_json(payload).decode()
-
-
-def _canonical_json(payload: Mapping[str, Any]) -> bytes:
-    return json.dumps(
-        payload,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode()
-
-
-def _sha256_bytes(payload: bytes) -> str:
-    return hashlib.sha256(payload).hexdigest()
-
-
-def _sha256_path(path: Path) -> str:
-    return _sha256_bytes(path.read_bytes())
-
-
-def _git_show(checkout: Path, revision: str, path: str) -> bytes:
-    _git_object_exists(checkout, revision)
-    completed = subprocess.run(
-        ["git", "show", f"{revision}:{path}"],
-        cwd=checkout,
-        check=True,
-        capture_output=True,
-    )
-    return completed.stdout
-
-
-def _git_object_exists(checkout: Path, revision: str) -> None:
-    try:
-        subprocess.run(
-            ["git", "cat-file", "-e", f"{revision}^{{commit}}"],
-            cwd=checkout,
-            check=True,
-            capture_output=True,
-        )
-    except subprocess.CalledProcessError as error:
-        raise ValueError(f"official checkout is missing commit {revision}") from error
-
-
-def _write_deterministic_npz(
-    destination: Path,
-    arrays: Mapping[str, np.ndarray],
-) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.tmp")
-    with zipfile.ZipFile(
-        temporary, mode="w", compression=zipfile.ZIP_STORED
-    ) as archive:
-        for name, array in sorted(arrays.items()):
-            buffer = io.BytesIO()
-            np.lib.format.write_array(buffer, np.asarray(array), allow_pickle=False)
-            info = zipfile.ZipInfo(f"{name}.npy", date_time=(1980, 1, 1, 0, 0, 0))
-            info.compress_type = zipfile.ZIP_STORED
-            info.create_system = 3
-            info.external_attr = 0o600 << 16
-            archive.writestr(info, buffer.getvalue())
-    temporary.replace(destination)
-
-
-def _main(argv: Sequence[str]) -> int:
-    workers = {
-        "_config_worker": _config_worker,
-        "_distributions_worker": _distributions_worker,
-    }
-    if len(argv) != 1 or argv[0] not in workers:
-        raise SystemExit("oracle.py is an internal fixture worker")
-    request = json.loads(sys.stdin.read())
-    sys.stdout.write(json.dumps(workers[argv[0]](request), sort_keys=True))
-    return 0
-
-
-if __name__ == "__main__":  # pragma: no cover - subprocess boundary.
-    raise SystemExit(_main(sys.argv[1:]))
-
-
 __all__ = [
-    "CONFIG_SOURCE_SPEC",
     "DISTRIBUTIONS_SOURCE_SPEC",
+    "NETWORKS_SOURCE_SPEC",
     "ORACLE_SCHEMA_VERSION",
-    "OracleHarness",
-    "OracleInvocation",
+    "PAPER_REVISION",
+    "REPLAY_SOURCE_HASHES",
+    "REPLAY_SOURCE_SPEC",
+    "RSSM_SOURCE_SPEC",
+    "UPSTREAM_CURRENT_REVISION",
     "OracleManifest",
     "OracleSourceSpec",
-    "PAPER_REVISION",
     "ParameterMapping",
     "ParameterTranslator",
     "TensorSpec",
-    "UPSTREAM_CURRENT_REVISION",
-    "official_revision",
-    "oracle_source_spec",
-    "profile_overrides",
     "register_oracle_source_spec",
+    "source_spec_for",
 ]

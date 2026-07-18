@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
-import subprocess
-from dataclasses import replace
 from pathlib import Path
 
 import jax
@@ -37,21 +34,12 @@ from world_marl.dreamer_v3_baseline.networks import (
     TensorSpace,
 )
 from world_marl.dreamer_v3_baseline.oracle import (
-    CONFIG_SOURCE_SPEC,
-    DISTRIBUTIONS_SOURCE_SPEC,
-    OracleHarness,
     OracleManifest,
     ParameterTranslator,
 )
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "dreamer_v3"
-OFFICIAL_CHECKOUT = Path(
-    os.environ.get(
-        "DREAMERV3_ORACLE_CHECKOUT",
-        "/private/tmp/danijar-dreamerv3-20260713",
-    )
-)
 SOURCE_HASHES = {
     "dreamerv3/rssm.py": (
         "d6d50166914e94fb8bd17a5d5dbda9d42cdd37b85819bb1e9fff3a64d4ad2eb6"
@@ -151,134 +139,19 @@ def official_case(request) -> tuple[OracleManifest, dict[str, np.ndarray]]:
     return manifest, arrays
 
 
-def test_network_manifests_record_the_dtype_the_worker_actually_executed(
+def test_network_manifests_record_the_dtype_of_the_frozen_fixture(
     official_case,
 ) -> None:
     manifest, arrays = official_case
 
     request = json.loads(manifest.generator_request)
-    assert request["compute_dtype"] == manifest.dtype
+    assert request["dtype"] == manifest.dtype
     assert arrays["execution.compute_dtype"].tobytes().decode() == manifest.dtype
     assert all(
         value.dtype.name == "float32"
         for name, value in arrays.items()
         if ".param." in name
     )
-
-
-@pytest.mark.parametrize(
-    "source_spec",
-    (CONFIG_SOURCE_SPEC, DISTRIBUTIONS_SOURCE_SPEC),
-    ids=lambda source_spec: source_spec.name,
-)
-def test_canonical_source_specs_reject_request_only_noncanonical_dtype(
-    tmp_path: Path,
-    source_spec,
-) -> None:
-    if not (OFFICIAL_CHECKOUT / ".git").exists():
-        pytest.skip("explicit DreamerV3 oracle checkout is unavailable")
-    harness = OracleHarness(OFFICIAL_CHECKOUT, tmp_path)
-
-    with pytest.raises(ValueError, match="executed generator request"):
-        harness.write_fixture(
-            case_name=f"{source_spec.name}-request-float32",
-            profile=DreamerProfile.PAPER,
-            observation_mode=ObservationMode.VISION,
-            arrays={"marker": np.asarray(1, np.uint8)},
-            seed=0,
-            generator_command=("oracle",),
-            generator_request={"compute_dtype": "float32"},
-            source_spec=source_spec,
-        )
-
-
-@pytest.mark.parametrize(
-    "source_spec",
-    (CONFIG_SOURCE_SPEC, DISTRIBUTIONS_SOURCE_SPEC),
-    ids=lambda source_spec: source_spec.name,
-)
-def test_canonical_source_specs_accept_matching_canonical_request_dtype(
-    tmp_path: Path,
-    source_spec,
-) -> None:
-    if not (OFFICIAL_CHECKOUT / ".git").exists():
-        pytest.skip("explicit DreamerV3 oracle checkout is unavailable")
-    harness = OracleHarness(OFFICIAL_CHECKOUT, tmp_path)
-
-    fixture_path, manifest_path = harness.write_fixture(
-        case_name=f"{source_spec.name}-request-bfloat16",
-        profile=DreamerProfile.PAPER,
-        observation_mode=ObservationMode.VISION,
-        arrays={"marker": np.asarray(1, np.uint8)},
-        seed=0,
-        generator_command=("oracle",),
-        generator_request={"compute_dtype": "bfloat16"},
-        source_spec=source_spec,
-    )
-
-    manifest = OracleManifest.load(manifest_path, fixture_path=fixture_path)
-    assert manifest.dtype == "bfloat16"
-
-
-def test_config_manifest_rejects_generator_request_dtype_tampering(
-    tmp_path: Path,
-) -> None:
-    if not (OFFICIAL_CHECKOUT / ".git").exists():
-        pytest.skip("explicit DreamerV3 oracle checkout is unavailable")
-    harness = OracleHarness(OFFICIAL_CHECKOUT, tmp_path)
-    fixture_path, manifest_path = harness.write_fixture(
-        case_name="config-request-tamper",
-        profile=DreamerProfile.PAPER,
-        observation_mode=ObservationMode.VISION,
-        arrays={"marker": np.asarray(1, np.uint8)},
-        seed=0,
-        generator_command=("oracle",),
-        generator_request={"compute_dtype": "bfloat16"},
-        source_spec=CONFIG_SOURCE_SPEC,
-    )
-    manifest = OracleManifest.load(manifest_path, fixture_path=fixture_path)
-    tampered = replace(manifest, generator_request={"compute_dtype": "float32"})
-
-    with pytest.raises(ValueError, match="executed generator request"):
-        tampered.validate(fixture_path=fixture_path)
-
-
-def test_network_manifest_rejects_generator_dtype_tampering(official_case) -> None:
-    manifest, _ = official_case
-    request = json.loads(manifest.generator_request)
-    request["compute_dtype"] = "float32" if manifest.dtype == "bfloat16" else "bfloat16"
-    tampered = replace(manifest, generator_request=request)
-    suffix = "" if manifest.dtype == "bfloat16" else "-float32"
-    fixture_path = FIXTURE_DIR / f"{manifest.profile.value}-vision-networks{suffix}.npz"
-
-    with pytest.raises(ValueError, match="executed generator request"):
-        tampered.validate(fixture_path=fixture_path)
-
-
-def test_network_manifest_requires_generator_compute_dtype(official_case) -> None:
-    manifest, _ = official_case
-    request = json.loads(manifest.generator_request)
-    request.pop("compute_dtype")
-    incomplete = replace(manifest, generator_request=request)
-    suffix = "" if manifest.dtype == "bfloat16" else "-float32"
-    fixture_path = FIXTURE_DIR / f"{manifest.profile.value}-vision-networks{suffix}.npz"
-
-    with pytest.raises(ValueError, match="explicit generator compute dtype"):
-        incomplete.validate(fixture_path=fixture_path)
-
-
-def test_network_manifest_normalizes_matching_generator_dtype_alias(
-    official_case,
-) -> None:
-    manifest, _ = official_case
-    if manifest.dtype != "float32":
-        pytest.skip("dtype alias control applies to the float32 override fixtures")
-    request = json.loads(manifest.generator_request)
-    request["compute_dtype"] = "<f4"
-    aliased = replace(manifest, generator_request=request)
-    fixture_path = FIXTURE_DIR / f"{manifest.profile.value}-vision-networks-float32.npz"
-
-    aliased.validate(fixture_path=fixture_path)
 
 
 def test_network_oracles_pin_exact_three_file_authority(official_case) -> None:
@@ -288,73 +161,9 @@ def test_network_oracles_pin_exact_three_file_authority(official_case) -> None:
     assert dict(manifest.official_file_hashes) == SOURCE_HASHES
     assert manifest.observation_mode is ObservationMode.VISION
     request = json.loads(manifest.generator_request)
-    assert request["official_commit"] == manifest.official_commit
+    assert request["source_revision"] == manifest.official_commit
     assert request["profile"] == manifest.profile.value
     assert request["source_spec"] == NETWORKS_SOURCE_SPEC.name
-
-
-def test_network_oracle_replays_exact_worker_command_and_stdin(official_case) -> None:
-    if not (OFFICIAL_CHECKOUT / ".git").exists():
-        pytest.skip("explicit DreamerV3 oracle checkout is unavailable")
-    manifest, arrays = official_case
-
-    replayed = subprocess.run(
-        manifest.generator_command,
-        cwd=OFFICIAL_CHECKOUT,
-        input=manifest.generator_request,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    payload = json.loads(replayed.stdout)
-
-    assert int(payload["worker_pid"]) != os.getpid()
-    assert payload["compute_dtype"] == manifest.dtype
-    assert payload["arrays"]["mlp.output"]["dtype"] == manifest.dtype
-    assert payload["arrays"]["encoder.output"]["dtype"] == manifest.dtype
-    assert payload["arrays"]["blockgru.output"]["dtype"] == manifest.dtype
-    assert tuple(sorted(payload["arrays"])) == tuple(arrays)
-    for name, spec in payload["arrays"].items():
-        np.testing.assert_array_equal(
-            arrays[name],
-            np.asarray(spec["values"], dtype=spec["dtype"]),
-        )
-
-
-@pytest.mark.parametrize(
-    ("profile", "compute_dtype"),
-    (
-        (DreamerProfile.PAPER, "bfloat16"),
-        (DreamerProfile.PAPER, "float32"),
-        (DreamerProfile.UPSTREAM_CURRENT, "bfloat16"),
-        (DreamerProfile.UPSTREAM_CURRENT, "float32"),
-    ),
-)
-def test_network_oracle_regeneration_is_byte_deterministic(
-    tmp_path: Path,
-    profile: DreamerProfile,
-    compute_dtype: str,
-) -> None:
-    if not (OFFICIAL_CHECKOUT / ".git").exists():
-        pytest.skip("explicit DreamerV3 oracle checkout is unavailable")
-    first = OracleHarness(OFFICIAL_CHECKOUT, tmp_path / "first")
-    second = OracleHarness(OFFICIAL_CHECKOUT, tmp_path / "second")
-
-    first_fixture, first_manifest = first.run_networks_case(
-        profile,
-        ObservationMode.VISION,
-        compute_dtype=compute_dtype,
-    )
-    second_fixture, second_manifest = second.run_networks_case(
-        profile,
-        ObservationMode.VISION,
-        compute_dtype=compute_dtype,
-    )
-
-    assert first_fixture.read_bytes() == second_fixture.read_bytes()
-    assert first_manifest.read_bytes() == second_manifest.read_bytes()
-    assert first.last_worker_pid is not None
-    assert second.last_worker_pid is not None
 
 
 @pytest.mark.parametrize(
