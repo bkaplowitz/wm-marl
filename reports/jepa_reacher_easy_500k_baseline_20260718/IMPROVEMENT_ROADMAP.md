@@ -7,6 +7,25 @@ rules, and simultaneous bundles of unrelated changes.
 The ordering is important: correctness and protocol clarity come before
 capacity scaling or objective changes.
 
+## Status After the First Candidate
+
+The complete terminal-contract bundle was implemented and validated on branch
+`jepa-terminal-contract-20260718`. Unit tests, a real DMC smoke, checkpoint
+reload, and snapshot production passed. However, the matched 200k seed-1 and
+seed-2 comparison failed the performance promotion gate:
+
+| Variant | Mean of final means | Mean failure | Mean P10 | Mean CVaR10 |
+|---|---:|---:|---:|---:|
+| Cleaned parent | 865.14 | 7% | 427.05 | 366.70 |
+| Terminal-contract bundle | 720.73 | 17% | 65.75 | 13.25 |
+
+The candidate changed both replay representation and truncation bootstrap
+semantics. Its seed-2 policy scored 800.85 at the 150k fixed evaluation but
+regressed to 631.82 at the 200k final evaluation, while the parent reached
+921.60. It is therefore rejected for baseline promotion.
+
+The canonical performance baseline remains commit `82d671d`.
+
 ## Goal 1: Correct the replay boundary contract
 
 ### Problem
@@ -30,6 +49,20 @@ Use:
 - `is_last OR cut` for sequence, attention, and target-crossing masks;
 - `is_terminal` for continuation supervision and real lambda returns;
 - `cut` only for collector-imposed resets.
+
+### Revised Decomposition
+
+The first candidate bundled too many semantic consequences into one change.
+Future work must proceed in three independently testable stages:
+
+1. introduce explicit fields with behavior exactly equivalent to the canonical
+   baseline;
+2. correct sequence and JEPA-target crossing at reset boundaries while keeping
+   the baseline's finite-episode bootstrap rule;
+3. test DMC time-limit bootstrapping as a separate control-objective choice.
+
+Only stages that pass the fixed paired gate are retained. This keeps the replay
+schema understandable without silently changing the optimized task.
 
 ### Why first
 
@@ -230,6 +263,11 @@ evaluation-driven training decision.
 
 ## Immediate Priority
 
-The next implementation branch should contain only Goal 1. It is the clearest
-general correctness improvement and establishes a trustworthy base for every
-later simplification or performance claim.
+Do not promote the bundled terminal-contract candidate and do not launch a
+five-seed confirmation for it.
+
+The next implementation branch should contain only Goal 1, stage 1: an
+explicit but behavior-equivalent replay schema. Exact numerical equivalence is
+the acceptance criterion. Stage 2 may then change sequence targets alone, and
+stage 3 may change truncation bootstrapping alone. Goals 2--7 remain blocked
+until this data/objective boundary is explicit.
