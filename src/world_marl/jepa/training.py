@@ -36,12 +36,6 @@ MODEL_GROUPS = frozenset(
 )
 ACTOR_GROUPS = frozenset({"actor_head"})
 CRITIC_GROUPS = frozenset({"value_head"})
-ENSEMBLE_GROUP_PREFIXES = {
-    "predictor": "predictor_",
-    "predictor_norm": "predictor_norm_",
-    "reward_head": "reward_head_",
-    "continue_head": "continue_head_",
-}
 
 
 @struct.dataclass
@@ -362,9 +356,6 @@ def world_model_loss_with_outputs(
     )
     pred = _normalize(outputs["predicted_latents"])
     target = _normalize(outputs["target_latents"])
-    ensemble_axis = pred.ndim == target.ndim + 1
-    if ensemble_axis:
-        target = target[..., None, :]
 
     max_horizon = config.max_horizon
     reward_targets = jnp.stack(
@@ -384,22 +375,15 @@ def world_model_loss_with_outputs(
     continue_targets = 1.0 - done_targets
     reward_logits = outputs["reward_logits"]
     continue_logits = outputs["continue_logits"]
-    if ensemble_axis:
-        reward_targets = reward_targets[..., None]
-        continue_targets = continue_targets[..., None]
     latent_validity = prediction_validity(batch.dones, chunk_length, max_horizon)
     transition_validity = transition_start_validity(
         batch.dones,
         chunk_length,
         max_horizon,
     )
-    if ensemble_axis:
-        latent_validity = latent_validity[..., None]
-        transition_validity = transition_validity[..., None]
     reward_loss_values = prediction_loss(
         reward_logits,
         reward_targets,
-        mode=config.reward_prediction_mode,
         num_bins=config.twohot_bins,
         low=config.twohot_min,
         high=config.twohot_max,
@@ -413,7 +397,7 @@ def world_model_loss_with_outputs(
     jepa_loss = masked_mean(1.0 - cosine, latent_validity)
     jepa_cosine = masked_mean(cosine, latent_validity)
 
-    regularizer, regularizer_name, collapse = representation_regularizer(
+    regularizer, collapse = representation_regularizer(
         outputs["context_latents"],
         regularizer_key,
         config,
@@ -431,15 +415,11 @@ def world_model_loss_with_outputs(
         constant_prediction_loss(
             constant_reward,
             reward_targets,
-            mode=config.reward_prediction_mode,
             num_bins=config.twohot_bins,
             low=config.twohot_min,
             high=config.twohot_max,
         ),
         transition_validity,
-    )
-    terminal_logits = (
-        jnp.mean(continue_logits, axis=-1) if ensemble_axis else continue_logits
     )
     metrics = {
         "model/total_loss": total_loss,
@@ -448,11 +428,11 @@ def world_model_loss_with_outputs(
         "model/jepa_valid_fraction": jnp.mean(latent_validity),
         "model/transition_valid_fraction": jnp.mean(transition_validity),
         "model/regularizer_loss": regularizer,
-        f"model/{regularizer_name}_loss": regularizer,
+        "model/sigreg_loss": regularizer,
         "model/reward_loss": reward_loss,
         "model/reward_constant_loss": constant_reward_loss,
         "model/reward_prediction_mode_symlog_twohot": jnp.asarray(
-            float(config.reward_prediction_mode == "symlog_twohot"),
+            1.0,
             dtype=reward_loss.dtype,
         ),
         "model/reward_constant_mse": masked_mean(
@@ -460,11 +440,6 @@ def world_model_loss_with_outputs(
             transition_validity,
         ),
         "model/continue_loss": continue_loss,
-        **ensemble_prediction_metrics(
-            outputs["predicted_latents"],
-            outputs["reward_values"],
-            outputs["continue_logits"],
-        ),
         "model/continue_constant_bce": masked_mean(
             optax.sigmoid_binary_cross_entropy(
                 jnp.log(constant_continue / (1.0 - constant_continue + 1e-6) + 1e-6),
@@ -473,9 +448,9 @@ def world_model_loss_with_outputs(
             transition_validity,
         ),
         **terminal_prediction_metrics(
-            terminal_logits,
+            continue_logits,
             done_targets,
-            mask=transition_validity[..., 0] if ensemble_axis else transition_validity,
+            mask=transition_validity,
         ),
         **{f"collapse/{key}": value for key, value in collapse.items()},
     }
@@ -1101,15 +1076,13 @@ def continuous_imagine_rollout(
             actions,
             config,
         )
-        z_ensemble, reward_ensemble, continue_logit_ensemble = apply_fn(
+        next_z, raw_rewards, continue_logits = apply_fn(
             {"params": model_params},
             context,
             model_action_context,
-            method=JepaWorldModel.predict_next_ensemble_from_history,
+            method=JepaWorldModel.predict_next_from_history,
         )
-        next_z = jnp.mean(z_ensemble, axis=0)
-        raw_rewards = jnp.mean(reward_ensemble, axis=0)
-        continues = jnp.mean(jax.nn.sigmoid(continue_logit_ensemble), axis=0)
+        continues = jax.nn.sigmoid(continue_logits)
         _, fixed_values = actor_value_from_latent(
             apply_fn,
             value_params,
@@ -1214,7 +1187,7 @@ def select_continuous_actions(
         state.params,
         z,
     )
-    if stochastic and config.stochastic_actor:
+    if stochastic:
         if key is None:
             raise ValueError("key is required for stochastic continuous actions")
         noise = jax.random.normal(key, action_means.shape)
@@ -1356,10 +1329,8 @@ def representation_regularizer(
     latents: jax.Array,
     key: jax.Array,
     config: JepaConfig,
-) -> tuple[jax.Array, str, dict[str, jax.Array]]:
+) -> tuple[jax.Array, dict[str, jax.Array]]:
     collapse = latent_collapse_metrics(latents)
-    if config.regularizer == "none":
-        return jnp.asarray(0.0, dtype=latents.dtype), "none", collapse
     return (
         sigreg_loss(
             latents,
@@ -1367,33 +1338,8 @@ def representation_regularizer(
             knots=config.sigreg_knots,
             num_proj=config.sigreg_num_proj,
         ),
-        "sigreg",
         collapse,
     )
-
-
-def ensemble_prediction_metrics(
-    predicted_latents: jax.Array,
-    reward_logits: jax.Array,
-    continue_logits: jax.Array,
-) -> dict[str, jax.Array]:
-    if predicted_latents.ndim != 5:
-        zero = jnp.asarray(0.0, dtype=predicted_latents.dtype)
-        return {
-            "model/ensemble_latent_disagreement": zero,
-            "model/ensemble_reward_std": zero,
-            "model/ensemble_continue_std": zero,
-        }
-
-    normalized = _normalize(predicted_latents)
-    mean_direction = jnp.mean(normalized, axis=-2)
-    latent_disagreement = 1.0 - jnp.sum(jnp.square(mean_direction), axis=-1)
-    continue_probs = jax.nn.sigmoid(continue_logits)
-    return {
-        "model/ensemble_latent_disagreement": jnp.mean(latent_disagreement),
-        "model/ensemble_reward_std": jnp.mean(jnp.std(reward_logits, axis=-1)),
-        "model/ensemble_continue_std": jnp.mean(jnp.std(continue_probs, axis=-1)),
-    }
 
 
 def sigreg_loss(
@@ -1629,45 +1575,33 @@ def prediction_loss(
     logits: jax.Array,
     targets: jax.Array,
     *,
-    mode: str,
     num_bins: int,
     low: float,
     high: float,
 ) -> jax.Array:
-    if mode == "mse":
-        return jnp.square(logits - targets)
-    if mode == "symlog_twohot":
-        target_probs = symlog_twohot(targets, num_bins=num_bins, low=low, high=high)
-        return -jnp.sum(target_probs * jax.nn.log_softmax(logits, axis=-1), axis=-1)
-    raise ValueError(f"unknown prediction mode: {mode}")
+    target_probs = symlog_twohot(targets, num_bins=num_bins, low=low, high=high)
+    return -jnp.sum(target_probs * jax.nn.log_softmax(logits, axis=-1), axis=-1)
 
 
 def constant_prediction_loss(
     constant_values: jax.Array,
     targets: jax.Array,
     *,
-    mode: str,
     num_bins: int,
     low: float,
     high: float,
 ) -> jax.Array:
-    if mode == "mse":
-        return jnp.square(constant_values - targets)
-    if mode == "symlog_twohot":
-        target_probs = symlog_twohot(targets, num_bins=num_bins, low=low, high=high)
-        constant_probs = symlog_twohot(
-            constant_values,
-            num_bins=num_bins,
-            low=low,
-            high=high,
-        )
-        return -jnp.sum(target_probs * jnp.log(constant_probs + 1e-6), axis=-1)
-    raise ValueError(f"unknown prediction mode: {mode}")
+    target_probs = symlog_twohot(targets, num_bins=num_bins, low=low, high=high)
+    constant_probs = symlog_twohot(
+        constant_values,
+        num_bins=num_bins,
+        low=low,
+        high=high,
+    )
+    return -jnp.sum(target_probs * jnp.log(constant_probs + 1e-6), axis=-1)
 
 
 def value_predictions_from_logits(logits: jax.Array, config: JepaConfig) -> jax.Array:
-    if config.value_prediction_mode == "mse":
-        return jnp.squeeze(logits, axis=-1)
     support = jnp.linspace(
         config.twohot_min,
         config.twohot_max,
@@ -1683,13 +1617,9 @@ def value_prediction_loss(
     targets: jax.Array,
     config: JepaConfig,
 ) -> jax.Array:
-    if config.value_prediction_mode == "mse":
-        predictions = jnp.squeeze(logits, axis=-1)
-        return 0.5 * jnp.square(predictions - targets)
     return prediction_loss(
         logits,
         targets,
-        mode=config.value_prediction_mode,
         num_bins=config.twohot_bins,
         low=config.twohot_min,
         high=config.twohot_max,
@@ -1748,12 +1678,7 @@ def _label_params(params: FrozenDict, trainable_groups: frozenset[str]) -> Froze
 def _trainable_param_group(key: str, trainable_groups: frozenset[str]) -> bool:
     if key in trainable_groups:
         return True
-    if key.startswith("block_") and "transformer_blocks" in trainable_groups:
-        return True
-    return any(
-        key.startswith(prefix) and group in trainable_groups
-        for group, prefix in ENSEMBLE_GROUP_PREFIXES.items()
-    )
+    return key.startswith("block_") and "transformer_blocks" in trainable_groups
 
 
 def _finite_fraction(x: jax.Array) -> jax.Array:

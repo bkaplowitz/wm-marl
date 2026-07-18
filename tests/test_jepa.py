@@ -335,65 +335,6 @@ def test_model_step_can_freeze_only_the_observation_encoder():
     assert metrics["model/encoder_grad_norm_unmasked"] > 0.0
 
 
-def test_dynamics_ensemble_model_step_and_policy_metrics_are_finite():
-    config = JepaConfig(
-        observation_dim=4,
-        action_dim=3,
-        action_mode="continuous",
-        latent_dim=8,
-        model_dim=16,
-        num_layers=1,
-        num_heads=2,
-        max_horizon=1,
-        context_window=1,
-        dynamics_ensemble_size=3,
-        sigreg_num_proj=32,
-    )
-    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
-    observations = jnp.ones((3, 4, 4), dtype=jnp.float32)
-    actions = jnp.zeros((3, 3, 3), dtype=jnp.float32)
-    outputs = state.apply_fn(
-        {"params": state.params},
-        observations,
-        actions,
-        chunk_length=2,
-        method=JepaWorldModel.sequence_outputs,
-    )
-
-    assert outputs["predicted_latents"].shape == (3, 2, 1, 3, 8)
-    assert outputs["reward_logits"].shape == (3, 2, 1, 3)
-    assert outputs["continue_logits"].shape == (3, 2, 1, 3)
-
-    batch = ReplayBatch(
-        observations=observations,
-        actions=actions,
-        rewards=jnp.ones((3, 3), dtype=jnp.float32),
-        dones=jnp.zeros((3, 3), dtype=jnp.float32),
-    )
-    state, model_metrics = train_model_step(
-        state,
-        jax.random.PRNGKey(1),
-        batch,
-        config,
-        chunk_length=2,
-    )
-    assert jnp.isfinite(model_metrics["model/total_loss"])
-    assert jnp.isfinite(model_metrics["model/ensemble_latent_disagreement"])
-
-    state, policy_metrics = continuous_policy_train_step(
-        state,
-        jax.random.PRNGKey(2),
-        jnp.ones((5, 1, 4), dtype=jnp.float32),
-        config,
-        jnp.full((3,), -1.0),
-        jnp.full((3,), 1.0),
-        imag_horizon=2,
-    )
-
-    del state
-    assert jnp.isfinite(policy_metrics["policy/total_loss"])
-
-
 def test_jepa_model_trains_recursive_overshooting_horizons():
     config = JepaConfig(
         observation_dim=4,
@@ -420,7 +361,7 @@ def test_jepa_model_trains_recursive_overshooting_horizons():
 
     assert outputs["predicted_latents"].shape == (3, 3, 3, 8)
     assert outputs["target_latents"].shape == (3, 3, 3, 8)
-    assert outputs["reward_logits"].shape == (3, 3, 3)
+    assert outputs["reward_logits"].shape == (3, 3, 3, config.twohot_bins)
     assert outputs["continue_logits"].shape == (3, 3, 3)
 
     replay_batch = ReplayBatch(
@@ -506,7 +447,6 @@ def test_continuous_policy_step_can_update_critic_without_actor():
         num_heads=2,
         max_horizon=2,
         context_window=1,
-        stochastic_actor=True,
         actor_hidden_dim=16,
         critic_hidden_dim=16,
         actor_num_layers=2,
@@ -546,7 +486,6 @@ def test_stochastic_continuous_policy_update_reports_entropy_and_samples_actions
         max_horizon=1,
         context_window=1,
         sigreg_num_proj=32,
-        stochastic_actor=True,
     )
     state = create_jepa_train_state(jax.random.PRNGKey(0), config)
     observations = jnp.ones((8, config.observation_dim), dtype=jnp.float32)
@@ -602,12 +541,8 @@ def test_dreamer_style_policy_update_is_finite_and_keeps_world_model_frozen():
         num_heads=2,
         max_horizon=2,
         context_window=1,
-        stochastic_actor=True,
         actor_log_std_min=-2.302585092994046,
         actor_log_std_max=0.0,
-        input_symlog=True,
-        activation="silu",
-        normalization="rms",
         actor_hidden_dim=16,
         critic_hidden_dim=16,
         actor_num_layers=2,
@@ -617,8 +552,6 @@ def test_dreamer_style_policy_update_is_finite_and_keeps_world_model_frozen():
         actor_output_scale=0.01,
         value_output_scale=0.0,
         reward_output_scale=0.0,
-        value_prediction_mode="symlog_twohot",
-        reward_prediction_mode="symlog_twohot",
         twohot_bins=11,
         adaptive_grad_clip=0.3,
         sigreg_num_proj=8,
@@ -771,10 +704,6 @@ def test_effective_rank_distinguishes_rank_one_and_isotropic_embeddings():
 def test_jepa_config_enforces_world_model_constraints():
     with pytest.raises(ValueError, match="action_mode"):
         JepaConfig(observation_dim=4, action_dim=2, action_mode="mixed")
-    with pytest.raises(ValueError, match="regularizer"):
-        JepaConfig(observation_dim=4, action_dim=2, regularizer="made-up")
-    with pytest.raises(ValueError, match="target_gradient"):
-        JepaConfig(observation_dim=4, action_dim=2, target_gradient="ema")
     with pytest.raises(ValueError, match="max_horizon"):
         JepaConfig(observation_dim=4, action_dim=2, max_horizon=0)
     with pytest.raises(ValueError, match="context_window"):

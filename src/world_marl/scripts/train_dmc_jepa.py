@@ -100,39 +100,12 @@ def parse_args() -> argparse.Namespace:
     world_model.add_argument("--num-layers", type=int, default=2)
     world_model.add_argument("--num-heads", type=int, default=4)
     world_model.add_argument("--mlp-ratio", type=int, default=4)
-    world_model.add_argument("--dynamics-ensemble-size", type=int, default=1)
-    world_model.add_argument(
-        "--target-gradient",
-        choices=("stopgrad", "symmetric"),
-        default="stopgrad",
-    )
-    world_model.add_argument(
-        "--residual-dynamics",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
     world_model.add_argument("--learning-rate", type=float, default=4e-5)
     world_model.add_argument("--model-grad-clip-norm", type=float, default=0.0)
     world_model.add_argument("--optimizer-warmup-steps", type=int, default=1000)
     world_model.add_argument("--adaptive-grad-clip", type=float, default=0.3)
     world_model.add_argument("--optimizer-epsilon", type=float, default=1e-8)
-    world_model.add_argument(
-        "--input-symlog",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
-    world_model.add_argument("--activation", choices=("gelu", "silu"), default="silu")
-    world_model.add_argument(
-        "--normalization",
-        choices=("layer", "rms"),
-        default="rms",
-    )
     world_model.add_argument("--reward-output-scale", type=float, default=0.0)
-    world_model.add_argument(
-        "--regularizer",
-        choices=("sigreg", "none"),
-        default="sigreg",
-    )
     world_model.add_argument(
         "--regularizer-weight",
         dest="regularizer_weight",
@@ -143,11 +116,6 @@ def parse_args() -> argparse.Namespace:
     world_model.add_argument("--sigreg-num-proj", type=int, default=256)
     world_model.add_argument("--reward-weight", type=float, default=1.0)
     world_model.add_argument("--continue-weight", type=float, default=1.0)
-    world_model.add_argument(
-        "--reward-prediction-mode",
-        choices=("mse", "symlog-twohot"),
-        default="symlog-twohot",
-    )
     world_model.add_argument("--twohot-bins", type=int, default=255)
     world_model.add_argument("--twohot-min", type=float, default=-20.0)
     world_model.add_argument("--twohot-max", type=float, default=20.0)
@@ -195,16 +163,6 @@ def parse_args() -> argparse.Namespace:
     )
     policy.add_argument(
         "--critic-layer-norm",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
-    policy.add_argument(
-        "--stochastic-actor",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
-    policy.add_argument(
-        "--stochastic-collection",
         action=argparse.BooleanOptionalAction,
         default=True,
     )
@@ -265,11 +223,6 @@ def parse_args() -> argparse.Namespace:
         help="Actor updates between KL reference-policy refreshes.",
     )
     policy.add_argument("--value-output-scale", type=float, default=0.0)
-    policy.add_argument(
-        "--value-prediction-mode",
-        choices=("mse", "symlog-twohot"),
-        default="symlog-twohot",
-    )
     policy.add_argument("--target-critic-ema-decay", type=float, default=0.98)
     policy.add_argument("--policy-replay-critic-loss-coef", type=float, default=0.3)
     policy.add_argument("--policy-replay-critic-batch-size", type=int, default=16)
@@ -432,7 +385,6 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         "num_layers",
         "num_heads",
         "mlp_ratio",
-        "dynamics_ensemble_size",
         "sigreg_knots",
         "sigreg_num_proj",
         "policy_batch_size",
@@ -564,8 +516,6 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         )
     if args.actor_log_std_min >= args.actor_log_std_max:
         parser.error("--actor-log-std-min must be below --actor-log-std-max")
-    if args.stochastic_collection and not args.stochastic_actor:
-        parser.error("--stochastic-collection requires --stochastic-actor")
     if not 0.0 <= args.policy_return_ema_decay < 1.0:
         parser.error("--policy-return-ema-decay must be in [0, 1)")
     if not 0.0 <= args.target_critic_ema_decay < 1.0:
@@ -755,31 +705,21 @@ def _jepa_config(args: argparse.Namespace, adapter) -> JepaConfig:
         critic_num_layers=args.critic_num_layers,
         actor_layer_norm=args.actor_layer_norm,
         critic_layer_norm=args.critic_layer_norm,
-        stochastic_actor=args.stochastic_actor,
         actor_log_std_min=args.actor_log_std_min,
         actor_log_std_max=args.actor_log_std_max,
-        input_symlog=args.input_symlog,
-        activation=args.activation,
-        normalization=args.normalization,
         actor_output_scale=args.actor_output_scale,
         value_output_scale=args.value_output_scale,
         reward_output_scale=args.reward_output_scale,
-        regularizer=args.regularizer,
         regularizer_weight=args.regularizer_weight,
         sigreg_knots=args.sigreg_knots,
         sigreg_num_proj=args.sigreg_num_proj,
         reward_weight=args.reward_weight,
         continue_weight=args.continue_weight,
-        reward_prediction_mode=args.reward_prediction_mode.replace("-", "_"),
-        value_prediction_mode=args.value_prediction_mode.replace("-", "_"),
         twohot_bins=args.twohot_bins,
         twohot_min=args.twohot_min,
         twohot_max=args.twohot_max,
-        dynamics_ensemble_size=args.dynamics_ensemble_size,
         gamma=args.gamma,
         lambda_return=args.lambda_return,
-        residual_dynamics=args.residual_dynamics,
-        target_gradient=args.target_gradient,
     )
 
 
@@ -1269,7 +1209,7 @@ def run_one(
                 desc=f"{phase} collect policy replay",
                 quiet=args.quiet,
                 np_rng=numpy_rngs.get("online_collection"),
-                stochastic_actions=args.stochastic_collection,
+                stochastic_actions=True,
                 train_env_step_offset=train_env_steps,
                 failure_return_threshold=args.failure_return_threshold,
                 success_return_threshold=args.success_return_threshold,
@@ -2387,7 +2327,7 @@ def _train_policy(
             "policy_actor_baseline": "value",
             "policy_return_normalization": "ema-percentile",
             "policy_gradient_mode": "reinforce",
-            "policy_stochastic_actor": args.stochastic_actor,
+            "policy_stochastic_actor": True,
             "policy_actor_entropy_coef": actor_entropy_coef,
             "policy_value_clip": value_clip,
             "policy_value_clip_initial": args.value_clip,

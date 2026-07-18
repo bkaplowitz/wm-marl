@@ -103,10 +103,6 @@ def evaluate_checkpoint(path: Path, args: argparse.Namespace) -> dict[str, Any]:
             "--env is required unless checkpoint metadata contains a DMC env"
         )
     config, ignored_keys = jepa_config_from_metadata(metadata)
-    if args.stochastic_actions and not config.stochastic_actor:
-        raise ValueError(
-            "--stochastic-actions requires a checkpoint with a stochastic actor"
-        )
     state = create_jepa_train_state(jax.random.PRNGKey(0), config)
     state = state.replace(
         params=load_params(path / "checkpoint.msgpack", state.params)

@@ -36,45 +36,25 @@ class JepaConfig:
     critic_num_layers: int = 1
     actor_layer_norm: bool = False
     critic_layer_norm: bool = False
-    stochastic_actor: bool = False
     actor_log_std_min: float = -5.0
     actor_log_std_max: float = 2.0
-    input_symlog: bool = False
-    activation: str = "gelu"
-    normalization: str = "layer"
     actor_output_scale: float = 1.0
     value_output_scale: float = 1.0
     reward_output_scale: float = 1.0
-    regularizer: str = "sigreg"
     regularizer_weight: float = 0.05
     sigreg_knots: int = 17
     sigreg_num_proj: int = 1024
     reward_weight: float = 1.0
     continue_weight: float = 1.0
-    reward_prediction_mode: str = "mse"
-    value_prediction_mode: str = "mse"
     twohot_bins: int = 41
     twohot_min: float = -20.0
     twohot_max: float = 20.0
-    dynamics_ensemble_size: int = 1
     gamma: float = 0.99
     lambda_return: float = 0.95
-    residual_dynamics: bool = True
-    target_gradient: str = "stopgrad"
 
     def __post_init__(self) -> None:
         if self.action_mode not in ("discrete", "continuous"):
             raise ValueError("action_mode must be one of: discrete, continuous")
-        if self.regularizer not in ("sigreg", "none"):
-            raise ValueError("regularizer must be one of: sigreg, none")
-        if self.target_gradient not in ("stopgrad", "symmetric"):
-            raise ValueError("target_gradient must be one of: stopgrad, symmetric")
-        if self.reward_prediction_mode not in ("mse", "symlog_twohot"):
-            raise ValueError(
-                "reward_prediction_mode must be one of: mse, symlog_twohot"
-            )
-        if self.value_prediction_mode not in ("mse", "symlog_twohot"):
-            raise ValueError("value_prediction_mode must be one of: mse, symlog_twohot")
         if self.twohot_bins < 3:
             raise ValueError("twohot_bins must be >= 3")
         if self.twohot_min >= self.twohot_max:
@@ -87,8 +67,6 @@ class JepaConfig:
             raise ValueError("max_horizon must be >= 1")
         if self.context_window < 1:
             raise ValueError("context_window must be >= 1")
-        if self.dynamics_ensemble_size < 1:
-            raise ValueError("dynamics_ensemble_size must be >= 1")
         if self.model_grad_clip_norm < 0.0:
             raise ValueError("model_grad_clip_norm must be >= 0")
         if self.actor_grad_clip_norm < 0.0:
@@ -111,10 +89,6 @@ class JepaConfig:
             raise ValueError("critic_num_layers must be >= 1")
         if self.actor_log_std_min >= self.actor_log_std_max:
             raise ValueError("actor_log_std_min must be < actor_log_std_max")
-        if self.activation not in ("gelu", "silu"):
-            raise ValueError("activation must be one of: gelu, silu")
-        if self.normalization not in ("layer", "rms"):
-            raise ValueError("normalization must be one of: layer, rms")
         for name in (
             "actor_output_scale",
             "value_output_scale",
@@ -128,33 +102,20 @@ class JepaConfig:
             raise ValueError("per-head dimension must be even for RoPE")
 
 
-def apply_activation(x: jax.Array, activation: str) -> jax.Array:
-    if activation == "gelu":
-        return nn.gelu(x)
-    if activation == "silu":
-        return nn.silu(x)
-    raise ValueError(f"unknown activation: {activation}")
+def apply_activation(x: jax.Array) -> jax.Array:
+    return nn.silu(x)
 
 
-def normalization_module(normalization: str, *, name: str):
-    if normalization == "layer":
-        return nn.LayerNorm(name=name)
-    if normalization == "rms":
-        return nn.RMSNorm(name=name)
-    raise ValueError(f"unknown normalization: {normalization}")
+def normalization_module(*, name: str):
+    return nn.RMSNorm(name=name)
 
 
 def apply_normalization(
     x: jax.Array,
-    normalization: str,
     *,
     name: str | None = None,
 ) -> jax.Array:
-    if normalization == "layer":
-        return nn.LayerNorm(name=name)(x)
-    if normalization == "rms":
-        return nn.RMSNorm(name=name)(x)
-    raise ValueError(f"unknown normalization: {normalization}")
+    return nn.RMSNorm(name=name)(x)
 
 
 def scaled_kernel_init(scale: float):
@@ -170,21 +131,16 @@ def scaled_kernel_init(scale: float):
 class MLPEncoder(nn.Module):
     latent_dim: int
     hidden_dim: int
-    input_symlog: bool = False
-    activation: str = "gelu"
-    normalization: str = "layer"
 
     @nn.compact
     def __call__(self, observations: jax.Array) -> jax.Array:
-        x = observations.astype(jnp.float32)
-        if self.input_symlog:
-            x = symlog(x)
+        x = symlog(observations.astype(jnp.float32))
         x = nn.Dense(self.hidden_dim)(x)
-        x = apply_activation(x, self.activation)
+        x = apply_activation(x)
         x = nn.Dense(self.hidden_dim)(x)
-        x = apply_activation(x, self.activation)
+        x = apply_activation(x)
         x = nn.Dense(self.latent_dim)(x)
-        return apply_normalization(x, self.normalization)
+        return apply_normalization(x)
 
 
 class MLPHead(nn.Module):
@@ -192,8 +148,6 @@ class MLPHead(nn.Module):
     hidden_dim: int
     num_layers: int = 1
     use_layer_norm: bool = False
-    activation: str = "gelu"
-    normalization: str = "layer"
     output_scale: float = 1.0
 
     @nn.compact
@@ -202,13 +156,13 @@ class MLPHead(nn.Module):
             raise ValueError("num_layers must be >= 1")
         default_layout = self.num_layers == 1 and not self.use_layer_norm
         if self.use_layer_norm:
-            x = apply_normalization(x, self.normalization, name="input_norm")
+            x = apply_normalization(x, name="input_norm")
         for index in range(self.num_layers):
             if default_layout:
                 x = nn.Dense(self.hidden_dim)(x)
             else:
                 x = nn.Dense(self.hidden_dim, name=f"hidden_{index}")(x)
-            x = apply_activation(x, self.activation)
+            x = apply_activation(x)
         output_kwargs = {}
         if self.output_scale != 1.0:
             output_kwargs["kernel_init"] = scaled_kernel_init(self.output_scale)
@@ -221,12 +175,10 @@ class TransformerBlock(nn.Module):
     model_dim: int
     num_heads: int
     mlp_ratio: int
-    activation: str = "gelu"
-    normalization: str = "layer"
 
     @nn.compact
     def __call__(self, x: jax.Array, mask: jax.Array) -> jax.Array:
-        h = apply_normalization(x, self.normalization)
+        h = apply_normalization(x)
         head_dim = self.model_dim // self.num_heads
         query = nn.DenseGeneral(
             (self.num_heads, head_dim),
@@ -261,13 +213,13 @@ class TransformerBlock(nn.Module):
             name="attention_out",
         )(attention)
         x = x + attention
-        h = apply_normalization(x, self.normalization)
+        h = apply_normalization(x)
         h = nn.Dense(
             2 * self.mlp_ratio * self.model_dim,
             name="geglu_in",
         )(h)
         value, gate = jnp.split(h, 2, axis=-1)
-        h = value * apply_activation(gate, self.activation)
+        h = value * apply_activation(gate)
         h = nn.Dense(
             self.model_dim,
             name="geglu_out",
@@ -279,20 +231,9 @@ class JepaWorldModel(nn.Module):
     config: JepaConfig
 
     def setup(self) -> None:
-        reward_output_dim = prediction_output_dim(
-            self.config.reward_prediction_mode,
-            self.config.twohot_bins,
-        )
-        value_output_dim = prediction_output_dim(
-            self.config.value_prediction_mode,
-            self.config.twohot_bins,
-        )
         self.encoder = MLPEncoder(
             latent_dim=self.config.latent_dim,
             hidden_dim=self.config.model_dim,
-            input_symlog=self.config.input_symlog,
-            activation=self.config.activation,
-            normalization=self.config.normalization,
             name="encoder",
         )
         self.latent_proj = nn.Dense(self.config.model_dim, name="latent_proj")
@@ -321,84 +262,30 @@ class JepaWorldModel(nn.Module):
                 model_dim=self.config.model_dim,
                 num_heads=self.config.num_heads,
                 mlp_ratio=self.config.mlp_ratio,
-                activation=self.config.activation,
-                normalization=self.config.normalization,
                 name=f"block_{index}",
             )
             for index in range(self.config.num_layers)
         ]
-        self.dynamics_norm = normalization_module(
-            self.config.normalization,
-            name="dynamics_norm",
+        self.dynamics_norm = normalization_module(name="dynamics_norm")
+        self.predictor = MLPHead(
+            self.config.latent_dim,
+            self.config.model_dim,
+            name="predictor",
         )
-        if self.config.dynamics_ensemble_size == 1:
-            self.predictor = MLPHead(
-                self.config.latent_dim,
-                self.config.model_dim,
-                activation=self.config.activation,
-                normalization=self.config.normalization,
-                name="predictor",
-            )
-            self.predictor_norm = normalization_module(
-                self.config.normalization,
-                name="predictor_norm",
-            )
-            self.reward_head = MLPHead(
-                reward_output_dim,
-                self.config.model_dim,
-                activation=self.config.activation,
-                normalization=self.config.normalization,
-                output_scale=self.config.reward_output_scale,
-                name="reward_head",
-            )
-            self.continue_head = MLPHead(
-                1,
-                self.config.model_dim,
-                activation=self.config.activation,
-                normalization=self.config.normalization,
-                name="continue_head",
-            )
-        else:
-            self.predictors = [
-                MLPHead(
-                    self.config.latent_dim,
-                    self.config.model_dim,
-                    activation=self.config.activation,
-                    normalization=self.config.normalization,
-                    name=f"predictor_{index}",
-                )
-                for index in range(self.config.dynamics_ensemble_size)
-            ]
-            self.predictor_norms = [
-                normalization_module(
-                    self.config.normalization,
-                    name=f"predictor_norm_{index}",
-                )
-                for index in range(self.config.dynamics_ensemble_size)
-            ]
-            self.reward_heads = [
-                MLPHead(
-                    reward_output_dim,
-                    self.config.model_dim,
-                    activation=self.config.activation,
-                    normalization=self.config.normalization,
-                    output_scale=self.config.reward_output_scale,
-                    name=f"reward_head_{index}",
-                )
-                for index in range(self.config.dynamics_ensemble_size)
-            ]
-            self.continue_heads = [
-                MLPHead(
-                    1,
-                    self.config.model_dim,
-                    activation=self.config.activation,
-                    normalization=self.config.normalization,
-                    name=f"continue_head_{index}",
-                )
-                for index in range(self.config.dynamics_ensemble_size)
-            ]
+        self.predictor_norm = normalization_module(name="predictor_norm")
+        self.reward_head = MLPHead(
+            self.config.twohot_bins,
+            self.config.model_dim,
+            output_scale=self.config.reward_output_scale,
+            name="reward_head",
+        )
+        self.continue_head = MLPHead(
+            1,
+            self.config.model_dim,
+            name="continue_head",
+        )
         actor_output_dim = self.config.action_dim
-        if self.config.action_mode == "continuous" and self.config.stochastic_actor:
+        if self.config.action_mode == "continuous":
             actor_output_dim = 2 * self.config.action_dim
         actor_hidden_dim = self.config.actor_hidden_dim or self.config.model_dim
         critic_hidden_dim = self.config.critic_hidden_dim or self.config.model_dim
@@ -407,18 +294,14 @@ class JepaWorldModel(nn.Module):
             actor_hidden_dim,
             num_layers=self.config.actor_num_layers,
             use_layer_norm=self.config.actor_layer_norm,
-            activation=self.config.activation,
-            normalization=self.config.normalization,
             output_scale=self.config.actor_output_scale,
             name="actor_head",
         )
         self.value_head = MLPHead(
-            value_output_dim,
+            self.config.twohot_bins,
             critic_hidden_dim,
             num_layers=self.config.critic_num_layers,
             use_layer_norm=self.config.critic_layer_norm,
-            activation=self.config.activation,
-            normalization=self.config.normalization,
             output_scale=self.config.value_output_scale,
             name="value_head",
         )
@@ -461,7 +344,7 @@ class JepaWorldModel(nn.Module):
         latents: jax.Array,
     ) -> tuple[jax.Array, jax.Array, jax.Array]:
         logits, value_logits = self.actor_value_logits_from_latent(latents)
-        if self.config.action_mode == "continuous" and self.config.stochastic_actor:
+        if self.config.action_mode == "continuous":
             means, log_stds = jnp.split(logits, 2, axis=-1)
             log_stds = jnp.clip(
                 log_stds,
@@ -473,7 +356,6 @@ class JepaWorldModel(nn.Module):
             log_stds = jnp.zeros_like(means)
         values = scalar_prediction_from_logits(
             value_logits,
-            mode=self.config.value_prediction_mode,
             num_bins=self.config.twohot_bins,
             low=self.config.twohot_min,
             high=self.config.twohot_max,
@@ -555,54 +437,41 @@ class JepaWorldModel(nn.Module):
             # convention so actor rollouts do not see a different interface.
             horizon_ids = jnp.ones((flat_batch,), dtype=jnp.int32)
             current_latents = flat_latents[:, -1]
-            head_predictions = []
-            head_reward_logits = []
-            head_reward_values = []
-            head_continues = []
-            for head_index in range(self.config.dynamics_ensemble_size):
-                next_latents = self.predict_latent(
-                    last_h + self.horizon_embed(horizon_ids),
-                    current_latents=current_latents,
-                    head_index=head_index,
+            next_latents = self.predict_latent(
+                last_h + self.horizon_embed(horizon_ids),
+                current_latents=current_latents,
+            )
+            predictions.append(
+                next_latents.reshape(
+                    (batch_size, chunk_length, self.config.latent_dim)
                 )
-                head_predictions.append(
-                    next_latents.reshape(
-                        (batch_size, chunk_length, self.config.latent_dim)
-                    )
+            )
+            targets.append(
+                jax.lax.stop_gradient(
+                    latents[:, step_index + 1 : step_index + 1 + chunk_length]
                 )
-                current_reward_logits = self.reward_from_hidden(
-                    last_h,
-                    head_index=head_index,
+            )
+            current_reward_logits = self.reward_from_hidden(last_h)
+            reward_logits.append(
+                current_reward_logits.reshape(
+                    (batch_size, chunk_length, current_reward_logits.shape[-1])
                 )
-                head_reward_logits.append(
-                    current_reward_logits.reshape(
-                        (batch_size, chunk_length, current_reward_logits.shape[-1])
-                    )
+            )
+            reward_values.append(
+                self.reward_value_from_logits(current_reward_logits).reshape(
+                    (batch_size, chunk_length)
                 )
-                head_reward_values.append(
-                    self.reward_value_from_logits(current_reward_logits).reshape(
-                        (batch_size, chunk_length)
-                    )
-                )
-                head_continues.append(
-                    jnp.squeeze(
-                        self.continue_from_hidden(last_h, head_index=head_index),
-                        axis=-1,
-                    ).reshape((batch_size, chunk_length))
-                )
-            head_predictions = jnp.stack(head_predictions, axis=2)
-            predictions.append(head_predictions)
-            target = latents[:, step_index + 1 : step_index + 1 + chunk_length]
-            if self.config.target_gradient == "stopgrad":
-                target = jax.lax.stop_gradient(target)
-            targets.append(target)
-            reward_logits.append(jnp.stack(head_reward_logits, axis=2))
-            reward_values.append(jnp.stack(head_reward_values, axis=2))
-            continues.append(jnp.stack(head_continues, axis=2))
+            )
+            continues.append(
+                jnp.squeeze(
+                    self.continue_from_hidden(last_h),
+                    axis=-1,
+                ).reshape((batch_size, chunk_length))
+            )
             if step_index + 1 < max_horizon:
                 latent_history = append_history(
                     latent_history,
-                    jnp.mean(predictions[-1], axis=2),
+                    predictions[-1],
                 )
                 action_history = append_history(
                     action_history,
@@ -617,13 +486,6 @@ class JepaWorldModel(nn.Module):
         reward_logits = jnp.stack(reward_logits, axis=2)
         reward_values = jnp.stack(reward_values, axis=2)
         continue_logits = jnp.stack(continues, axis=2)
-        if self.config.dynamics_ensemble_size == 1:
-            predicted_latents = predicted_latents[..., 0, :]
-            reward_logits = reward_logits[..., 0, :]
-            reward_values = reward_values[..., 0]
-            continue_logits = continue_logits[..., 0]
-        if self.config.reward_prediction_mode == "mse":
-            reward_logits = jnp.squeeze(reward_logits, axis=-1)
         return {
             "context_latents": context_latents,
             "predicted_latents": predicted_latents,
@@ -658,65 +520,29 @@ class JepaWorldModel(nn.Module):
         self,
         hidden: jax.Array,
         *,
-        current_latents: jax.Array | None = None,
-        head_index: int = 0,
+        current_latents: jax.Array,
     ) -> jax.Array:
-        if self.config.dynamics_ensemble_size == 1:
-            update = self.predictor(hidden)
-        else:
-            update = self.predictors[head_index](hidden)
-        if self.config.residual_dynamics and current_latents is not None:
-            update = current_latents + update
-        if self.config.dynamics_ensemble_size == 1:
-            return self.predictor_norm(update)
-        return self.predictor_norms[head_index](update)
+        return self.predictor_norm(current_latents + self.predictor(hidden))
 
-    def reward_from_hidden(
-        self, hidden: jax.Array, *, head_index: int = 0
-    ) -> jax.Array:
-        if self.config.dynamics_ensemble_size == 1:
-            return self.reward_head(hidden)
-        return self.reward_heads[head_index](hidden)
+    def reward_from_hidden(self, hidden: jax.Array) -> jax.Array:
+        return self.reward_head(hidden)
 
     def reward_value_from_logits(self, logits: jax.Array) -> jax.Array:
         return scalar_prediction_from_logits(
             logits,
-            mode=self.config.reward_prediction_mode,
             num_bins=self.config.twohot_bins,
             low=self.config.twohot_min,
             high=self.config.twohot_max,
         )
 
-    def continue_from_hidden(
-        self,
-        hidden: jax.Array,
-        *,
-        head_index: int = 0,
-    ) -> jax.Array:
-        if self.config.dynamics_ensemble_size == 1:
-            return self.continue_head(hidden)
-        return self.continue_heads[head_index](hidden)
+    def continue_from_hidden(self, hidden: jax.Array) -> jax.Array:
+        return self.continue_head(hidden)
 
     def predict_next_from_history(
         self,
         latent_history: jax.Array,
         action_history: jax.Array,
     ) -> tuple[jax.Array, jax.Array, jax.Array]:
-        if self.config.dynamics_ensemble_size > 1:
-            z_ensemble, reward_ensemble, continue_logit_ensemble = (
-                self.predict_next_ensemble_from_history(latent_history, action_history)
-            )
-            continue_prob = jnp.mean(jax.nn.sigmoid(continue_logit_ensemble), axis=0)
-            continue_logit = jnp.log(
-                jnp.clip(continue_prob, 1e-6, 1.0 - 1e-6)
-                / jnp.clip(1.0 - continue_prob, 1e-6, 1.0)
-            )
-            return (
-                jnp.mean(z_ensemble, axis=0),
-                jnp.mean(reward_ensemble, axis=0),
-                continue_logit,
-            )
-
         h = self.dynamics_hidden(latent_history, action_history)
         last_h = h[:, -1]
         horizon_ids = jnp.ones((last_h.shape[0],), dtype=jnp.int32)
@@ -728,42 +554,6 @@ class JepaWorldModel(nn.Module):
         continue_logit = jnp.squeeze(self.continue_from_hidden(last_h), axis=-1)
         return z_next, reward, continue_logit
 
-    def predict_next_ensemble_from_history(
-        self,
-        latent_history: jax.Array,
-        action_history: jax.Array,
-    ) -> tuple[jax.Array, jax.Array, jax.Array]:
-        h = self.dynamics_hidden(latent_history, action_history)
-        last_h = h[:, -1]
-        horizon_ids = jnp.ones((last_h.shape[0],), dtype=jnp.int32)
-        z_next = []
-        rewards = []
-        continue_logits = []
-        for head_index in range(self.config.dynamics_ensemble_size):
-            z_next.append(
-                self.predict_latent(
-                    last_h + self.horizon_embed(horizon_ids),
-                    current_latents=latent_history[:, -1],
-                    head_index=head_index,
-                )
-            )
-            rewards.append(
-                self.reward_value_from_logits(
-                    self.reward_from_hidden(last_h, head_index=head_index)
-                )
-            )
-            continue_logits.append(
-                jnp.squeeze(
-                    self.continue_from_hidden(last_h, head_index=head_index),
-                    axis=-1,
-                )
-            )
-        return (
-            jnp.stack(z_next, axis=0),
-            jnp.stack(rewards, axis=0),
-            jnp.stack(continue_logits, axis=0),
-        )
-
     def action_tokens(self, actions: jax.Array) -> jax.Array:
         if self.config.action_mode == "discrete":
             return self.action_embed(actions.astype(jnp.int32))
@@ -773,7 +563,7 @@ class JepaWorldModel(nn.Module):
             )
         x = actions.astype(jnp.float32)
         x = self.action_encoder_hidden(x)
-        x = apply_activation(x, self.config.activation)
+        x = apply_activation(x)
         return self.action_encoder_out(x)
 
 
@@ -835,14 +625,6 @@ def append_history(history: jax.Array, values: jax.Array) -> jax.Array:
     return jnp.concatenate([history[:, :, 1:], values[:, :, None]], axis=2)
 
 
-def prediction_output_dim(mode: str, num_bins: int) -> int:
-    if mode == "mse":
-        return 1
-    if mode == "symlog_twohot":
-        return num_bins
-    raise ValueError(f"unknown prediction mode: {mode}")
-
-
 def symlog(values: jax.Array) -> jax.Array:
     return jnp.sign(values) * jnp.log1p(jnp.abs(values))
 
@@ -884,16 +666,11 @@ def symlog_twohot_decode(
 def scalar_prediction_from_logits(
     logits: jax.Array,
     *,
-    mode: str,
     num_bins: int,
     low: float,
     high: float,
 ) -> jax.Array:
-    if mode == "mse":
-        return jnp.squeeze(logits, axis=-1)
-    if mode == "symlog_twohot":
-        return symlog_twohot_decode(logits, num_bins=num_bins, low=low, high=high)
-    raise ValueError(f"unknown prediction mode: {mode}")
+    return symlog_twohot_decode(logits, num_bins=num_bins, low=low, high=high)
 
 
 def apply_rotary_position_embedding(x: jax.Array) -> jax.Array:
