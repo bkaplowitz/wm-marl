@@ -32,12 +32,8 @@ def test_launcher_serializes_tracking_controls():
 def test_launcher_serializes_early_sample_efficiency_diagnostic_controls():
     command = params_to_shell_args(
         {
-            "online_recent_replay_fraction": 0.5,
             "online_recent_world_model_fraction": 0.5,
             "online_recent_world_model_until_env_steps": 50_000,
-            "online_recent_policy_start_fraction": 0.0,
-            "online_recent_critic_fraction": 0.25,
-            "policy_bootstrap_start_fraction": 0.25,
             "policy_reset_start_fraction": 0.05,
             "policy_reset_start_max_age": 63,
             "online_recent_replay_steps": 320,
@@ -49,15 +45,11 @@ def test_launcher_serializes_early_sample_efficiency_diagnostic_controls():
     )
 
     tokens = command.replace("\\\n", " ").split()
-    assert tokens[tokens.index("--online-recent-replay-fraction") + 1] == "0.5"
     assert tokens[tokens.index("--online-recent-world-model-fraction") + 1] == "0.5"
     assert (
         tokens[tokens.index("--online-recent-world-model-until-env-steps") + 1]
         == "50000"
     )
-    assert tokens[tokens.index("--online-recent-policy-start-fraction") + 1] == "0.0"
-    assert tokens[tokens.index("--online-recent-critic-fraction") + 1] == "0.25"
-    assert tokens[tokens.index("--policy-bootstrap-start-fraction") + 1] == "0.25"
     assert tokens[tokens.index("--policy-reset-start-fraction") + 1] == "0.05"
     assert tokens[tokens.index("--policy-reset-start-max-age") + 1] == "63"
     assert tokens[tokens.index("--online-recent-replay-steps") + 1] == "320"
@@ -179,13 +171,9 @@ def test_100k_preset_matches_the_reset_rich_interleaved_contract():
     assert params["online_policy_actor_update_interval_start_env_steps"] == 50_000
     assert params["online_freeze_encoder_after_env_steps"] == 101_376
     assert params["online_recent_replay_steps"] == 320
-    assert params["online_recent_replay_fraction"] == 0.5
     assert params["online_recent_world_model_fraction"] == 0.5
     assert params["online_recent_world_model_until_env_steps"] == 50_000
-    assert params["online_recent_policy_start_fraction"] == 0.0
-    assert params["online_recent_critic_fraction"] == 0.0
     assert params["online_recent_replay_max_oversample"] == 10.0
-    assert params["policy_bootstrap_start_fraction"] == 0.0
     assert params["policy_reset_start_fraction"] == 0.1
     assert params["policy_reset_start_fraction_start_env_steps"] == 201_728
     assert params["policy_reset_start_max_age"] == 63

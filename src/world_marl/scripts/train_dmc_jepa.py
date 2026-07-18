@@ -156,16 +156,6 @@ def parse_args() -> argparse.Namespace:
     policy.add_argument("--policy-train-steps", type=int, default=1280)
     policy.add_argument("--policy-batch-size", type=int, default=1024)
     policy.add_argument(
-        "--policy-bootstrap-start-fraction",
-        type=float,
-        default=0.0,
-        help=(
-            "Fraction of online actor imagination starts sampled from the "
-            "frozen reset-rich bootstrap replay. This reuses counted data and "
-            "does not affect world-model or critic replay."
-        ),
-    )
-    policy.add_argument(
         "--policy-reset-start-fraction",
         type=float,
         default=0.0,
@@ -363,19 +353,10 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     online.add_argument(
-        "--online-recent-replay-fraction",
-        type=float,
-        default=0.0,
-        help=(
-            "Default recent-replay fraction for each online learner. "
-            "Component-specific fractions override this value."
-        ),
-    )
-    online.add_argument(
         "--online-recent-world-model-fraction",
         type=float,
-        default=None,
-        help="Override recent replay for online world-model batches.",
+        default=0.0,
+        help="Fraction of online world-model batches sampled from recent replay.",
     )
     online.add_argument(
         "--online-recent-world-model-until-env-steps",
@@ -386,18 +367,6 @@ def parse_args() -> argparse.Namespace:
             "phase starts below this many training environment steps, then "
             "switch world-model batches to uniform replay."
         ),
-    )
-    online.add_argument(
-        "--online-recent-policy-start-fraction",
-        type=float,
-        default=None,
-        help="Override recent replay for actor imagination start states.",
-    )
-    online.add_argument(
-        "--online-recent-critic-fraction",
-        type=float,
-        default=None,
-        help="Override recent replay for real replay-critic targets.",
     )
     online.add_argument("--online-recent-replay-steps", type=int, default=320)
     online.add_argument(
@@ -598,18 +567,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
             "--curve-eval-interval-env-steps and --curve-eval-episodes must "
             "either both be zero or both be positive"
         )
-    recent_fraction_names = (
-        "online_recent_replay_fraction",
-        "online_recent_world_model_fraction",
-        "online_recent_policy_start_fraction",
-        "online_recent_critic_fraction",
-    )
-    for name in recent_fraction_names:
-        value = getattr(args, name)
-        if value is not None and not 0.0 <= value <= 1.0:
-            parser.error(f"--{name.replace('_', '-')} must be in [0, 1]")
-    if not 0.0 <= args.policy_bootstrap_start_fraction <= 1.0:
-        parser.error("--policy-bootstrap-start-fraction must be in [0, 1]")
+    if not 0.0 <= args.online_recent_world_model_fraction <= 1.0:
+        parser.error("--online-recent-world-model-fraction must be in [0, 1]")
     if not 0.0 <= args.policy_reset_start_fraction <= 1.0:
         parser.error("--policy-reset-start-fraction must be in [0, 1]")
     if args.policy_reset_start_fraction_start_env_steps < 0:
@@ -623,23 +582,11 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         and args.online_recent_replay_max_oversample < 1.0
     ):
         parser.error("--online-recent-replay-max-oversample must be zero or >= 1")
-    recent_min_steps = max(
-        args.chunk_length + max(args.model_horizon, args.open_loop_horizon),
-        args.context_window + 1,
-        args.policy_replay_critic_horizon + 1,
+    recent_min_steps = args.chunk_length + max(
+        args.model_horizon,
+        args.open_loop_horizon,
     )
-    requested_recent_fractions = _requested_recent_fractions(args)
-    if (
-        args.policy_bootstrap_start_fraction
-        + args.policy_reset_start_fraction
-        + requested_recent_fractions["policy_start"]
-        > 1.0
-    ):
-        parser.error(
-            "policy bootstrap, reset-start, and requested online recent "
-            "policy-start fractions must sum to at most 1"
-        )
-    if max(requested_recent_fractions.values()) > 0.0 and (
+    if args.online_recent_world_model_fraction > 0.0 and (
         args.online_recent_replay_steps < recent_min_steps
     ):
         parser.error(
@@ -895,37 +842,15 @@ def _reproducibility_snapshot(
     return snapshot
 
 
-def _requested_recent_fractions(args: argparse.Namespace) -> dict[str, float]:
-    default = float(args.online_recent_replay_fraction)
-    return {
-        "world_model": float(
-            default
-            if args.online_recent_world_model_fraction is None
-            else args.online_recent_world_model_fraction
-        ),
-        "policy_start": float(
-            default
-            if args.online_recent_policy_start_fraction is None
-            else args.online_recent_policy_start_fraction
-        ),
-        "critic": float(
-            default
-            if args.online_recent_critic_fraction is None
-            else args.online_recent_critic_fraction
-        ),
-    }
-
-
-def _scheduled_recent_fractions(
+def _scheduled_recent_world_model_fraction(
     args: argparse.Namespace,
     *,
     train_env_steps: int,
-) -> dict[str, float]:
-    fractions = _requested_recent_fractions(args)
+) -> float:
     until = args.online_recent_world_model_until_env_steps
     if until is not None and train_env_steps >= until:
-        fractions["world_model"] = 0.0
-    return fractions
+        return 0.0
+    return float(args.online_recent_world_model_fraction)
 
 
 def _scheduled_policy_reset_start_fraction(
@@ -948,7 +873,6 @@ class _TrainingPrefix:
     state: Any
     observations: np.ndarray
     replay: SequenceReplayBuffer
-    bootstrap_start_replay: SequenceReplayBuffer | None
     online_recent_replay: SequenceReplayBuffer | None
     validation_replay: SequenceReplayBuffer
     validation_batch: ReplayBatch
@@ -971,7 +895,6 @@ def _prepare_training_prefix(
     *,
     seed: int,
     validation_seed: int,
-    requested_recent_fractions: dict[str, float],
     jax_rngs: JaxRngStreams,
     numpy_rngs: NumpyRngStreams,
     validation_jax_rngs: JaxRngStreams,
@@ -1010,10 +933,16 @@ def _prepare_training_prefix(
             raise ValueError(
                 "training snapshot JEPA architecture/config does not match"
             )
-        required_replays = {"main", "bootstrap_start", "online_recent", "validation"}
-        if set(loaded.replays) != required_replays:
+        canonical_replays = {"main", "online_recent", "validation"}
+        legacy_replays = canonical_replays | {"bootstrap_start"}
+        if set(loaded.replays) not in (canonical_replays, legacy_replays):
             raise ValueError(
                 f"training snapshot replay set does not match: {sorted(loaded.replays)}"
+            )
+        if loaded.replays.get("bootstrap_start") is not None:
+            raise ValueError(
+                "snapshot contains the retired bootstrap-start replay and cannot "
+                "be resumed by the canonical JEPA trainer"
             )
         replay = loaded.replays["main"]
         validation_replay = loaded.replays["validation"]
@@ -1047,7 +976,6 @@ def _prepare_training_prefix(
             state=loaded.train_state,
             observations=loaded.observations,
             replay=replay,
-            bootstrap_start_replay=loaded.replays["bootstrap_start"],
             online_recent_replay=loaded.replays["online_recent"],
             validation_replay=validation_replay,
             validation_batch=validation_batch,
@@ -1068,16 +996,6 @@ def _prepare_training_prefix(
         observation_dim=config.observation_dim,
         action_dim=config.action_dim,
     )
-    bootstrap_start_replay = (
-        _new_replay_buffer(
-            capacity=args.collect_steps,
-            num_envs=args.num_envs,
-            observation_dim=config.observation_dim,
-            action_dim=config.action_dim,
-        )
-        if args.policy_bootstrap_start_fraction > 0.0
-        else None
-    )
     online_recent_replay = (
         _new_replay_buffer(
             capacity=args.online_recent_replay_steps,
@@ -1085,7 +1003,7 @@ def _prepare_training_prefix(
             observation_dim=config.observation_dim,
             action_dim=config.action_dim,
         )
-        if max(requested_recent_fractions.values()) > 0.0
+        if args.online_recent_world_model_fraction > 0.0
         else None
     )
 
@@ -1096,8 +1014,6 @@ def _prepare_training_prefix(
         bootstrap_replays = [replay]
         if online_recent_replay is not None:
             bootstrap_replays.append(online_recent_replay)
-        if bootstrap_start_replay is not None:
-            bootstrap_replays.append(bootstrap_start_replay)
         _, initial_train_env_steps = _collect_random_steps(
             bootstrap_adapter,
             bootstrap_adapter.reset(),
@@ -1130,10 +1046,6 @@ def _prepare_training_prefix(
             "observation_dim": config.observation_dim,
             "action_dim": config.action_dim,
             "source": "isolated_reset_rich_collection",
-            "policy_bootstrap_start_fraction": args.policy_bootstrap_start_fraction,
-            "policy_bootstrap_start_size_per_env": (
-                bootstrap_start_replay.size if bootstrap_start_replay is not None else 0
-            ),
         },
     )
 
@@ -1159,10 +1071,6 @@ def _prepare_training_prefix(
             "validation_replay_sha256": validation_replay.fingerprint(),
         }
     )
-    if bootstrap_start_replay is not None:
-        initialized_snapshot["policy_bootstrap_start_replay_sha256"] = (
-            bootstrap_start_replay.fingerprint()
-        )
     logger.write_json("reproducibility_initialized.json", initialized_snapshot)
 
     validation_batch = validation_replay.sample(
@@ -1254,7 +1162,6 @@ def _prepare_training_prefix(
         state=state,
         observations=observations,
         replay=replay,
-        bootstrap_start_replay=bootstrap_start_replay,
         online_recent_replay=online_recent_replay,
         validation_replay=validation_replay,
         validation_batch=validation_batch,
@@ -1294,7 +1201,6 @@ def run_one(
     try:
         adapter = _make_vector_adapter(args, seed=seed)
         config = _jepa_config(args, adapter)
-        requested_recent_fractions = _requested_recent_fractions(args)
         resolved_config = {
             "args": vars(args),
             "run_index": run_index,
@@ -1305,7 +1211,6 @@ def run_one(
             "action_high": adapter.action_high,
             "env_backend": _env_backend(args.env),
             "jepa_config": dataclasses.asdict(config),
-            "online_recent_replay_requested_fractions": (requested_recent_fractions),
             "protocol": _protocol_name(args),
         }
         logger.write_json("config.json", resolved_config)
@@ -1349,7 +1254,6 @@ def run_one(
             config,
             seed=seed,
             validation_seed=validation_seed,
-            requested_recent_fractions=requested_recent_fractions,
             jax_rngs=jax_rngs,
             numpy_rngs=numpy_rngs,
             validation_jax_rngs=validation_jax_rngs,
@@ -1359,7 +1263,6 @@ def run_one(
         state = prefix.state
         observations = prefix.observations
         replay = prefix.replay
-        bootstrap_start_replay = prefix.bootstrap_start_replay
         online_recent_replay = prefix.online_recent_replay
         validation_replay = prefix.validation_replay
         validation_batch = prefix.validation_batch
@@ -1378,7 +1281,7 @@ def run_one(
         ):
             phase = f"online_{online_index:03d}"
             phase_start_train_env_steps = train_env_steps
-            active_recent_fractions = _scheduled_recent_fractions(
+            requested_recent_fraction = _scheduled_recent_world_model_fraction(
                 args,
                 train_env_steps=phase_start_train_env_steps,
             )
@@ -1427,60 +1330,32 @@ def run_one(
             recent_replay_size = (
                 online_recent_replay.size if online_recent_replay is not None else 0
             )
-            effective_recent_fractions = {
-                component: _effective_recent_fraction(
-                    requested_fraction,
-                    full_replay_size=replay.size,
-                    recent_replay_size=recent_replay_size,
-                    max_oversample=args.online_recent_replay_max_oversample,
-                )
-                for component, requested_fraction in (active_recent_fractions.items())
-            }
-            effective_recent_oversamples = {
-                component: _recent_oversample_ratio(
-                    effective_fraction,
-                    full_replay_size=replay.size,
-                    recent_replay_size=recent_replay_size,
-                )
-                for component, effective_fraction in (
-                    effective_recent_fractions.items()
-                )
-            }
+            effective_recent_fraction = _effective_recent_fraction(
+                requested_recent_fraction,
+                full_replay_size=replay.size,
+                recent_replay_size=recent_replay_size,
+                max_oversample=args.online_recent_replay_max_oversample,
+            )
+            effective_recent_oversample = _recent_oversample_ratio(
+                effective_recent_fraction,
+                full_replay_size=replay.size,
+                recent_replay_size=recent_replay_size,
+            )
             collection.update(
                 {
-                    "online_recent_replay_fraction": (
-                        active_recent_fractions["world_model"]
-                    ),
+                    "online_recent_replay_fraction": requested_recent_fraction,
                     "online_recent_replay_requested_fraction": (
-                        active_recent_fractions["world_model"]
+                        requested_recent_fraction
                     ),
                     "online_recent_replay_effective_fraction": (
-                        effective_recent_fractions["world_model"]
+                        effective_recent_fraction
                     ),
                     "online_recent_replay_max_oversample": (
                         args.online_recent_replay_max_oversample
                     ),
                     "online_recent_replay_effective_oversample": (
-                        effective_recent_oversamples["world_model"]
+                        effective_recent_oversample
                     ),
-                    **{
-                        f"online_recent_{component}_requested_fraction": (
-                            active_recent_fractions[component]
-                        )
-                        for component in active_recent_fractions
-                    },
-                    **{
-                        f"online_recent_{component}_effective_fraction": (
-                            effective_recent_fractions[component]
-                        )
-                        for component in active_recent_fractions
-                    },
-                    **{
-                        f"online_recent_{component}_effective_oversample": (
-                            effective_recent_oversamples[component]
-                        )
-                        for component in active_recent_fractions
-                    },
                 }
             )
             logger.write_json(f"{phase}_actor_replay.json", collection)
@@ -1511,7 +1386,7 @@ def run_one(
                 desc=f"{phase} fit world model",
                 train_env_steps=train_env_steps,
                 recent_replay=online_recent_replay,
-                recent_fraction=effective_recent_fractions["world_model"],
+                recent_fraction=effective_recent_fraction,
                 freeze_encoder=freeze_online_encoder,
             )
             jax_rngs.update("world_model", model_rng)
@@ -1555,35 +1430,11 @@ def run_one(
                     args,
                     train_env_steps=train_env_steps,
                 ),
-                recent_replay=online_recent_replay,
-                start_recent_fraction=effective_recent_fractions["policy_start"],
-                critic_recent_fraction=effective_recent_fractions["critic"],
-                bootstrap_start_replay=bootstrap_start_replay,
-                bootstrap_start_fraction=args.policy_bootstrap_start_fraction,
                 reset_start_fraction=_scheduled_policy_reset_start_fraction(
                     args,
                     train_env_steps=train_env_steps,
                 ),
                 reset_start_max_age=args.policy_reset_start_max_age,
-            )
-            policy_metrics.update(
-                {
-                    "policy_online_recent_start_requested_fraction": (
-                        active_recent_fractions["policy_start"]
-                    ),
-                    "policy_online_recent_start_effective_oversample": (
-                        effective_recent_oversamples["policy_start"]
-                    ),
-                    "policy_online_recent_critic_requested_fraction": (
-                        active_recent_fractions["critic"]
-                    ),
-                    "policy_online_recent_critic_effective_oversample": (
-                        effective_recent_oversamples["critic"]
-                    ),
-                    "policy_online_recent_replay_max_oversample": (
-                        args.online_recent_replay_max_oversample
-                    ),
-                }
             )
             jax_rngs.update("policy", policy_rng)
             logger.write_json(f"{phase}_policy.json", policy_metrics)
@@ -1659,7 +1510,6 @@ def run_one(
                     adapter=adapter,
                     observations=observations,
                     replay=replay,
-                    bootstrap_start_replay=bootstrap_start_replay,
                     online_recent_replay=online_recent_replay,
                     validation_replay=validation_replay,
                     validation_batch=validation_batch,
@@ -1888,7 +1738,6 @@ def _save_branch_training_snapshot(
     adapter,
     observations: np.ndarray,
     replay: SequenceReplayBuffer,
-    bootstrap_start_replay: SequenceReplayBuffer | None,
     online_recent_replay: SequenceReplayBuffer | None,
     validation_replay: SequenceReplayBuffer,
     validation_batch: ReplayBatch,
@@ -1913,7 +1762,6 @@ def _save_branch_training_snapshot(
         policy_bundle_ema=None,
         replays={
             "main": replay,
-            "bootstrap_start": bootstrap_start_replay,
             "online_recent": online_recent_replay,
             "validation": validation_replay,
         },
@@ -2441,11 +2289,6 @@ def _train_policy(
     actor_update_interval: int,
     actor_entropy_coef: float,
     value_clip: float,
-    recent_replay: SequenceReplayBuffer | None = None,
-    start_recent_fraction: float = 0.0,
-    critic_recent_fraction: float = 0.0,
-    bootstrap_start_replay: SequenceReplayBuffer | None = None,
-    bootstrap_start_fraction: float = 0.0,
     reset_start_fraction: float = 0.0,
     reset_start_max_age: int = 63,
 ) -> tuple[Any, jax.Array, dict[str, Any]]:
@@ -2498,25 +2341,18 @@ def _train_policy(
                 jax.lax.stop_gradient,
                 state.params,
             )
-        start_observations, start_actions = _sample_mixed_policy_starts(
+        start_observations, start_actions = _sample_policy_starts_with_reset_mix(
             replay,
             np_rng,
             config=config,
             batch_size=args.policy_batch_size,
-            recent_replay=recent_replay,
-            recent_fraction=start_recent_fraction,
-            bootstrap_replay=bootstrap_start_replay,
-            bootstrap_fraction=bootstrap_start_fraction,
             reset_start_indices=reset_start_indices,
             reset_start_fraction=reset_start_fraction,
         )
         real_critic_batch = None
         if args.policy_replay_critic_loss_coef > 0.0:
-            real_critic_batch = _sample_replay_batch(
-                replay,
+            real_critic_batch = replay.sample(
                 np_rng,
-                recent_replay=recent_replay,
-                recent_fraction=critic_recent_fraction,
                 batch_size=args.policy_replay_critic_batch_size,
                 chunk_length=args.policy_replay_critic_horizon,
                 max_horizon=1,
@@ -2600,11 +2436,6 @@ def _train_policy(
             "policy_value_clip": value_clip,
             "policy_value_clip_initial": args.value_clip,
             "policy_value_clip_final": args.value_clip_final,
-            "policy_online_recent_start_fraction": start_recent_fraction,
-            "policy_bootstrap_start_fraction": bootstrap_start_fraction,
-            "policy_bootstrap_start_size_per_env": (
-                bootstrap_start_replay.size if bootstrap_start_replay is not None else 0
-            ),
             "policy_reset_start_fraction": reset_start_fraction,
             "policy_reset_start_max_age": reset_start_max_age,
             "policy_reset_start_candidate_count": (
@@ -2612,7 +2443,6 @@ def _train_policy(
                 if reset_start_indices is not None
                 else 0
             ),
-            "policy_online_recent_critic_fraction": critic_recent_fraction,
             "policy_target_critic_ema_decay": args.target_critic_ema_decay,
             "policy_actor_kl_coef": args.policy_actor_kl_coef,
             "policy_actor_kl_target_per_dim": args.policy_actor_kl_target_per_dim,
@@ -2626,42 +2456,26 @@ def _train_policy(
     )
 
 
-def _sample_mixed_policy_starts(
+def _sample_policy_starts_with_reset_mix(
     replay: SequenceReplayBuffer,
     rng: np.random.Generator,
     *,
     config: JepaConfig,
     batch_size: int,
-    recent_replay: SequenceReplayBuffer | None,
-    recent_fraction: float,
-    bootstrap_replay: SequenceReplayBuffer | None = None,
-    bootstrap_fraction: float = 0.0,
     reset_start_indices: tuple[np.ndarray, np.ndarray] | None = None,
     reset_start_fraction: float = 0.0,
 ) -> tuple[jax.Array, jax.Array]:
-    bootstrap_size = _recent_batch_size(
-        batch_size,
-        recent_replay=bootstrap_replay,
-        recent_fraction=bootstrap_fraction,
-    )
-    recent_size = _recent_batch_size(
-        batch_size,
-        recent_replay=recent_replay,
-        recent_fraction=recent_fraction,
-    )
     reset_size = int(round(batch_size * reset_start_fraction))
     if reset_size > 0 and reset_start_indices is None:
         raise ValueError("reset_start_indices are required for reset-start sampling")
-    if bootstrap_size + reset_size + recent_size > batch_size:
-        raise ValueError("policy-start replay fractions must sum to at most 1")
-    if bootstrap_size == 0 and reset_size == 0 and recent_size == 0:
+    if reset_size == 0:
         return _sample_policy_starts(
             replay,
             rng,
             config=config,
             batch_size=batch_size,
         )
-    full_size = batch_size - bootstrap_size - reset_size - recent_size
+    full_size = batch_size - reset_size
     chunks = []
     if full_size:
         chunks.append(
@@ -2670,16 +2484,6 @@ def _sample_mixed_policy_starts(
                 rng,
                 config=config,
                 batch_size=full_size,
-            )
-        )
-    if bootstrap_size:
-        assert bootstrap_replay is not None
-        chunks.append(
-            _sample_policy_starts(
-                bootstrap_replay,
-                rng,
-                config=config,
-                batch_size=bootstrap_size,
             )
         )
     if reset_size:
@@ -2696,16 +2500,6 @@ def _sample_mixed_policy_starts(
             (
                 reset_batch.observations[:, : config.context_window],
                 reset_batch.actions[:, : config.context_window],
-            )
-        )
-    if recent_size:
-        assert recent_replay is not None
-        chunks.append(
-            _sample_policy_starts(
-                recent_replay,
-                rng,
-                config=config,
-                batch_size=recent_size,
             )
         )
     return (
