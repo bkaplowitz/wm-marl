@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
-import math
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +16,7 @@ from tqdm.auto import tqdm
 from world_marl.checkpointing import load_metadata, load_params
 from world_marl.envs.dmc_adapter import DMCVectorAdapter, dmc_env_name
 from world_marl.jepa.models import JepaConfig
+from world_marl.jepa.reporting import return_tail_metrics
 from world_marl.jepa.training import create_jepa_train_state, select_continuous_actions
 
 
@@ -104,9 +104,7 @@ def evaluate_checkpoint(path: Path, args: argparse.Namespace) -> dict[str, Any]:
         )
     config, ignored_keys = jepa_config_from_metadata(metadata)
     state = create_jepa_train_state(jax.random.PRNGKey(0), config)
-    state = state.replace(
-        params=load_params(path / "checkpoint.msgpack", state.params)
-    )
+    state = state.replace(params=load_params(path / "checkpoint.msgpack", state.params))
 
     adapter = DMCVectorAdapter(
         dmc_env_name(env),
@@ -199,36 +197,6 @@ def jepa_config_from_metadata(
     return JepaConfig(
         **{key: value for key, value in payload.items() if key in field_names}
     ), ignored
-
-
-def return_tail_metrics(
-    returns: list[float],
-    *,
-    failure_threshold: float,
-    success_threshold: float,
-) -> dict[str, Any]:
-    values = np.asarray(returns, dtype=np.float32)
-    failures = values < float(failure_threshold)
-    successes = values >= float(success_threshold)
-    tail_count = max(1, int(math.ceil(0.10 * values.size)))
-    nonfailures = values[~failures]
-    return {
-        "failure_return_threshold": float(failure_threshold),
-        "success_return_threshold": float(success_threshold),
-        "failure_count": int(np.sum(failures)),
-        "failure_rate": float(np.mean(failures)),
-        "success_count": int(np.sum(successes)),
-        "success_rate": float(np.mean(successes)),
-        "return_min": float(np.min(values)),
-        "return_max": float(np.max(values)),
-        "return_p05": float(np.percentile(values, 5)),
-        "return_p10": float(np.percentile(values, 10)),
-        "return_p25": float(np.percentile(values, 25)),
-        "return_cvar10": float(np.mean(np.sort(values)[:tail_count])),
-        "nonfailure_mean_return": (
-            float(np.mean(nonfailures)) if nonfailures.size else None
-        ),
-    }
 
 
 def compare_evaluations(

@@ -65,7 +65,13 @@ them before a controlled test would silently change the reference algorithm.
 | File or feature | Reason retained |
 | --- | --- |
 | `train_dmc_jepa_bootstrap.py` | Configures deterministic accelerator behavior before JAX import |
-| `train_dmc_jepa.py` | Canonical training orchestration |
+| `config.py` | Single source of truth for the canonical 500k and smoke configurations |
+| `models.py` | Canonical JEPA, actor, and critic modules |
+| `training.py` | Canonical world-model and actor-critic objectives |
+| `replay.py` | Sequence storage, cut handling, and valid sampling |
+| `schedule.py` | Pure protocol schedules and replay/start-state sampling |
+| `reporting.py` | Pure reporting summaries and real-step accounting |
+| `train_dmc_jepa.py` | Stateful collection, update, evaluation, and checkpoint orchestration |
 | `write_dmc_vector_launcher.py` | Reproducible task, seed, GPU, and budget launch manifests |
 | `eval_dmc_jepa.py` | Fixed-seed latest-policy evaluation |
 | `eval_jepa_wm.py` | World-model-only predictive verification |
@@ -111,18 +117,23 @@ The first cleanup pass removed:
   scheduling, and periodic reset controls;
 - the dormant cross-phase slow-policy controller;
 - duplicate actor, critic, and bootstrap replay paths.
+- all alternate world-model architectures and actor-critic objectives from the
+  public configuration and live training path;
+- duplicate configuration tables in the launcher and direct runner;
+- reporting and schedule calculations from the stateful runner.
 
-Every cleanup commit was checked against the pre-cleanup canonical step. The
-latest comparison covered 196 arrays and 56 parameter leaves with maximum
-absolute difference zero. The maintained CPU test suite passed 95 tests.
+Every behavioral cleanup was checked against the frozen canonical step. The
+latest live comparison covered 187 model parameters and training/evaluation
+outputs with maximum absolute difference zero.
 
-## Next Structural Work
+## Remaining Structural Boundary
 
-1. Move the canonical configuration into one importable source of truth.
-2. Make both the direct trainer and launcher consume that configuration.
-3. Remove the retired public algorithm branches listed above.
-4. Split collection, update scheduling, evaluation, and orchestration out of
-   the monolithic trainer without changing numerical behavior.
-5. Re-run exact one-step equivalence, snapshot-resume checks, the CPU suite,
-   and a local smoke run.
+The stateful online loop remains in `train_dmc_jepa.py`. Its collection,
+checkpoint, resume, logging, and evaluation state is intentionally kept
+together: splitting those operations further would add cross-module mutable
+state without simplifying the algorithm. Pure calculations have been moved to
+the JEPA package and are tested independently.
 
+The remaining work is verification, followed by an audit of the five active
+schedule rules. Those rules are retained because they are part of the measured
+baseline, not because they are presumed necessary.

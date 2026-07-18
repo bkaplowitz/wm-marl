@@ -32,10 +32,28 @@ from world_marl.envs.dmc_adapter import DMCVectorAdapter, dmc_env_name
 from world_marl.jepa.config import canonical_jepa_config
 from world_marl.jepa.models import JepaConfig, JepaWorldModel
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
+from world_marl.jepa.reporting import (
+    collection_report_summary as _collection_report_summary,
+    dreamer_style_training_score as _dreamer_style_training_score,
+    optional_value as _nested,
+    real_step_accounting as _real_step_accounting,
+    return_tail_metrics as _return_tail_metrics,
+)
 from world_marl.jepa.reproducibility import (
     JaxRngStreams,
     NumpyRngStreams,
     fingerprint_pytree,
+)
+from world_marl.jepa.schedule import (
+    effective_recent_fraction as _effective_recent_fraction,
+    recent_oversample_ratio as _recent_oversample_ratio,
+    sample_policy_starts_with_reset_mix as _sample_policy_starts_with_reset_mix,
+    sample_replay_batch as _sample_replay_batch,
+    scheduled_online_actor_update_interval as _scheduled_online_actor_update_interval,
+    scheduled_online_encoder_freeze as _scheduled_online_encoder_freeze,
+    scheduled_policy_reset_start_fraction as _scheduled_policy_reset_start_fraction,
+    scheduled_recent_world_model_fraction as _scheduled_recent_world_model_fraction,
+    scheduled_value_clip as _scheduled_value_clip,
 )
 from world_marl.jepa.training import (
     continuous_policy_train_step,
@@ -491,9 +509,7 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
     if not 0.0 <= args.policy_reset_start_fraction <= 1.0:
         parser.error("--policy-reset-start-fraction must be in [0, 1]")
     if args.policy_reset_start_fraction_start_env_steps < 0:
-        parser.error(
-            "--policy-reset-start-fraction-start-env-steps must be >= 0"
-        )
+        parser.error("--policy-reset-start-fraction-start-env-steps must be >= 0")
     if args.policy_reset_start_max_age < 0:
         parser.error("--policy-reset-start-max-age must be >= 0")
     if (
@@ -745,27 +761,6 @@ def _reproducibility_snapshot(
         snapshot["full_replay_sha256"] = full_replay.fingerprint()
         snapshot["full_replay_size_per_env"] = full_replay.size
     return snapshot
-
-
-def _scheduled_recent_world_model_fraction(
-    args: argparse.Namespace,
-    *,
-    train_env_steps: int,
-) -> float:
-    until = args.online_recent_world_model_until_env_steps
-    if until is not None and train_env_steps >= until:
-        return 0.0
-    return float(args.online_recent_world_model_fraction)
-
-
-def _scheduled_policy_reset_start_fraction(
-    args: argparse.Namespace,
-    *,
-    train_env_steps: int,
-) -> float:
-    if train_env_steps < args.policy_reset_start_fraction_start_env_steps:
-        return 0.0
-    return float(args.policy_reset_start_fraction)
 
 
 def _protocol_name(args: argparse.Namespace) -> str:
@@ -1958,18 +1953,6 @@ def _collect_validation_replay(
         adapter.close()
 
 
-def _collection_report_summary(metrics: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "return_mean": metrics.get("mean_return"),
-        "return_std": metrics.get("std_return"),
-        "return_p10": metrics.get("return_p10"),
-        "return_cvar10": metrics.get("return_cvar10"),
-        "failure_rate": metrics.get("failure_rate"),
-        "success_rate": metrics.get("success_rate"),
-        "completed_episodes": metrics.get("completed_episodes", 0),
-    }
-
-
 def _log_collection_episode_reports(
     logger: RunLogger,
     metrics: dict[str, Any],
@@ -1991,123 +1974,6 @@ def _log_collection_episode_reports(
         if index < len(lengths):
             row["report/episode_length"] = int(lengths[index])
         logger.append_metrics(row)
-
-
-def _recent_batch_size(
-    batch_size: int,
-    *,
-    recent_replay: SequenceReplayBuffer | None,
-    recent_fraction: float,
-) -> int:
-    if recent_replay is None or recent_fraction <= 0.0:
-        return 0
-    return max(0, min(batch_size, int(round(batch_size * recent_fraction))))
-
-
-def _effective_recent_fraction(
-    requested_fraction: float,
-    *,
-    full_replay_size: int,
-    recent_replay_size: int,
-    max_oversample: float,
-) -> float:
-    """Bound recent replay pressure as the full replay grows.
-
-    The recent buffer is a subset of the full replay. Under mixture sampling, a
-    recent transition can therefore be drawn from either component while an
-    older transition can only be drawn from the full component. This computes
-    the largest mixture fraction whose per-transition probability ratio does
-    not exceed ``max_oversample``.
-    """
-
-    if requested_fraction <= 0.0 or recent_replay_size <= 0:
-        return 0.0
-    if max_oversample <= 0.0:
-        return float(requested_fraction)
-    if max_oversample <= 1.0:
-        return 0.0
-
-    extra_weight = max_oversample - 1.0
-    capped_fraction = (
-        extra_weight
-        * float(recent_replay_size)
-        / (float(full_replay_size) + extra_weight * float(recent_replay_size))
-    )
-    return float(min(requested_fraction, capped_fraction))
-
-
-def _recent_oversample_ratio(
-    recent_fraction: float,
-    *,
-    full_replay_size: int,
-    recent_replay_size: int,
-) -> float | None:
-    """Return recent-versus-old per-transition sampling probability."""
-
-    if recent_replay_size <= 0 or full_replay_size <= recent_replay_size:
-        return 1.0
-    if recent_fraction <= 0.0:
-        return 1.0
-    if recent_fraction >= 1.0:
-        return None
-    return float(
-        1.0
-        + recent_fraction
-        * float(full_replay_size)
-        / ((1.0 - recent_fraction) * float(recent_replay_size))
-    )
-
-
-def _sample_replay_batch(
-    replay: SequenceReplayBuffer,
-    rng: np.random.Generator,
-    *,
-    recent_replay: SequenceReplayBuffer | None,
-    recent_fraction: float,
-    batch_size: int,
-    chunk_length: int,
-    max_horizon: int,
-) -> ReplayBatch:
-    recent_size = _recent_batch_size(
-        batch_size,
-        recent_replay=recent_replay,
-        recent_fraction=recent_fraction,
-    )
-    if recent_size == 0:
-        return replay.sample(
-            rng,
-            batch_size=batch_size,
-            chunk_length=chunk_length,
-            max_horizon=max_horizon,
-        )
-    assert recent_replay is not None
-    full_size = batch_size - recent_size
-    batches = []
-    if full_size:
-        batches.append(
-            replay.sample(
-                rng,
-                batch_size=full_size,
-                chunk_length=chunk_length,
-                max_horizon=max_horizon,
-            )
-        )
-    batches.append(
-        recent_replay.sample(
-            rng,
-            batch_size=recent_size,
-            chunk_length=chunk_length,
-            max_horizon=max_horizon,
-        )
-    )
-    if len(batches) == 1:
-        return batches[0]
-    return ReplayBatch(
-        observations=jnp.concatenate([batch.observations for batch in batches], axis=0),
-        actions=jnp.concatenate([batch.actions for batch in batches], axis=0),
-        rewards=jnp.concatenate([batch.rewards for batch in batches], axis=0),
-        dones=jnp.concatenate([batch.dones for batch in batches], axis=0),
-    )
 
 
 def _fit_world_model(
@@ -2354,136 +2220,6 @@ def _train_policy(
     )
 
 
-def _sample_policy_starts_with_reset_mix(
-    replay: SequenceReplayBuffer,
-    rng: np.random.Generator,
-    *,
-    config: JepaConfig,
-    batch_size: int,
-    reset_start_indices: tuple[np.ndarray, np.ndarray] | None = None,
-    reset_start_fraction: float = 0.0,
-) -> tuple[jax.Array, jax.Array]:
-    reset_size = int(round(batch_size * reset_start_fraction))
-    if reset_size > 0 and reset_start_indices is None:
-        raise ValueError("reset_start_indices are required for reset-start sampling")
-    if reset_size == 0:
-        return _sample_policy_starts(
-            replay,
-            rng,
-            config=config,
-            batch_size=batch_size,
-        )
-    full_size = batch_size - reset_size
-    chunks = []
-    if full_size:
-        chunks.append(
-            _sample_policy_starts(
-                replay,
-                rng,
-                config=config,
-                batch_size=full_size,
-            )
-        )
-    if reset_size:
-        assert reset_start_indices is not None
-        candidate_starts, candidate_envs = reset_start_indices
-        selected = rng.integers(0, candidate_starts.size, size=(reset_size,))
-        reset_batch = replay.sample_from_indices(
-            candidate_starts[selected],
-            candidate_envs[selected],
-            chunk_length=config.context_window,
-            max_horizon=1,
-        )
-        chunks.append(
-            (
-                reset_batch.observations[:, : config.context_window],
-                reset_batch.actions[:, : config.context_window],
-            )
-        )
-    return (
-        jnp.concatenate([chunk[0] for chunk in chunks], axis=0),
-        jnp.concatenate([chunk[1] for chunk in chunks], axis=0),
-    )
-
-
-def _sample_policy_starts(
-    replay: SequenceReplayBuffer,
-    rng: np.random.Generator,
-    *,
-    config: JepaConfig,
-    batch_size: int,
-) -> tuple[jax.Array, jax.Array]:
-    observation_chunks = []
-    action_chunks = []
-    collected = 0
-    attempts = 0
-    sample_size = max(64, 2 * batch_size)
-    while collected < batch_size and attempts < 64:
-        attempts += 1
-        batch = replay.sample(
-            rng,
-            batch_size=sample_size,
-            chunk_length=config.context_window,
-            max_horizon=1,
-        )
-        done_context = np.asarray(batch.dones[:, : config.context_window])
-        valid_indices = np.flatnonzero(np.sum(done_context, axis=1) == 0.0)
-        if valid_indices.size == 0:
-            continue
-        valid_indices = valid_indices[: batch_size - collected]
-        observation_chunks.append(
-            batch.observations[valid_indices, : config.context_window]
-        )
-        action_chunks.append(batch.actions[valid_indices, : config.context_window])
-        collected += int(valid_indices.size)
-    if collected < batch_size:
-        raise ValueError(
-            "could not sample enough policy starts without episode boundaries; "
-            f"collected {collected}/{batch_size} after {attempts} attempts"
-        )
-    return (
-        jnp.concatenate(observation_chunks, axis=0)[:batch_size],
-        jnp.concatenate(action_chunks, axis=0)[:batch_size],
-    )
-
-
-def _scheduled_value_clip(
-    args: argparse.Namespace,
-    *,
-    train_env_steps: int,
-) -> float:
-    final_clip = args.value_clip_final
-    start = args.value_clip_schedule_start_env_steps
-    end = args.value_clip_schedule_end_env_steps
-    if final_clip is None or start is None or end is None:
-        return float(args.value_clip)
-    if train_env_steps <= start:
-        return float(args.value_clip)
-    if train_env_steps >= end:
-        return float(final_clip)
-    progress = (train_env_steps - start) / (end - start)
-    return float(args.value_clip + progress * (final_clip - args.value_clip))
-
-
-def _scheduled_online_actor_update_interval(
-    args: argparse.Namespace,
-    *,
-    train_env_steps: int,
-) -> int:
-    if train_env_steps < args.online_policy_actor_update_interval_start_env_steps:
-        return 1
-    return int(args.online_policy_actor_update_interval)
-
-
-def _scheduled_online_encoder_freeze(
-    args: argparse.Namespace,
-    *,
-    train_env_steps: int,
-) -> bool:
-    start = args.online_freeze_encoder_after_env_steps
-    return start is not None and train_env_steps >= start
-
-
 def _final_policy_evaluation(
     args: argparse.Namespace,
     logger: RunLogger,
@@ -2721,170 +2457,6 @@ def _evaluate_continuous_policy(
         }
     finally:
         adapter.close()
-
-
-def _return_tail_metrics(
-    returns: list[float],
-    *,
-    failure_threshold: float,
-    success_threshold: float,
-) -> dict[str, Any]:
-    if not returns:
-        return {
-            "failure_return_threshold": float(failure_threshold),
-            "success_return_threshold": float(success_threshold),
-            "failure_count": 0,
-            "failure_rate": None,
-            "success_count": 0,
-            "success_rate": None,
-            "return_min": None,
-            "return_max": None,
-            "return_p05": None,
-            "return_p10": None,
-            "return_p25": None,
-            "return_cvar10": None,
-            "nonfailure_mean_return": None,
-        }
-    values = np.asarray(returns, dtype=np.float32)
-    failures = values < float(failure_threshold)
-    successes = values >= float(success_threshold)
-    tail_count = max(1, int(math.ceil(0.10 * values.size)))
-    nonfailures = values[~failures]
-    return {
-        "failure_return_threshold": float(failure_threshold),
-        "success_return_threshold": float(success_threshold),
-        "failure_count": int(np.sum(failures)),
-        "failure_rate": float(np.mean(failures)),
-        "success_count": int(np.sum(successes)),
-        "success_rate": float(np.mean(successes)),
-        "return_min": float(np.min(values)),
-        "return_max": float(np.max(values)),
-        "return_p05": float(np.quantile(values, 0.05)),
-        "return_p10": float(np.quantile(values, 0.10)),
-        "return_p25": float(np.quantile(values, 0.25)),
-        "return_cvar10": float(np.mean(np.sort(values)[:tail_count])),
-        "nonfailure_mean_return": (
-            float(np.mean(nonfailures)) if nonfailures.size else None
-        ),
-    }
-
-
-def _dreamer_style_training_score(
-    online_history: list[dict[str, Any]],
-    *,
-    window_env_steps: int,
-    budget_env_steps: int,
-) -> dict[str, Any]:
-    enabled = window_env_steps > 0 and budget_env_steps > 0
-    episodes: list[dict[str, Any]] = []
-    for item in online_history:
-        replay = item.get("actor_replay", {})
-        returns = replay.get("returns") or []
-        lengths = replay.get("lengths") or []
-        finish_steps = replay.get("episode_finish_train_env_steps") or []
-        if len(finish_steps) != len(returns):
-            continue
-        for index, (value, finish_step) in enumerate(zip(returns, finish_steps)):
-            episodes.append(
-                {
-                    "online_iteration": item.get("iteration"),
-                    "return": float(value),
-                    "length": int(lengths[index]) if index < len(lengths) else None,
-                    "finish_train_env_step": int(finish_step),
-                }
-            )
-
-    final_step = max(
-        (item["finish_train_env_step"] for item in episodes),
-        default=None,
-    )
-    if not enabled or final_step is None:
-        return {
-            "enabled": enabled,
-            "budget_env_steps": int(budget_env_steps),
-            "window_env_steps": int(window_env_steps),
-            "budget_reached": False,
-            "final_train_env_step": final_step,
-            "window_start_env_step": None,
-            "window_end_env_step": None,
-            "episodes": 0,
-            "mean_return": None,
-            "std_return": None,
-            "returns": [],
-            "episode_finish_train_env_steps": [],
-        }
-    budget_reached = final_step >= budget_env_steps
-    window_end = budget_env_steps if budget_reached else final_step
-    window_start = max(0, window_end - window_env_steps)
-    selected = [
-        item
-        for item in episodes
-        if window_start < item["finish_train_env_step"] <= window_end
-    ]
-    returns = [item["return"] for item in selected]
-    return {
-        "enabled": True,
-        "budget_env_steps": int(budget_env_steps),
-        "window_env_steps": int(window_env_steps),
-        "budget_reached": bool(budget_reached),
-        "final_train_env_step": int(final_step),
-        "window_start_env_step": int(window_start),
-        "window_end_env_step": int(window_end),
-        "episodes": len(returns),
-        "mean_return": float(np.mean(returns)) if returns else None,
-        "std_return": float(np.std(returns)) if returns else None,
-        "returns": returns,
-        "episode_finish_train_env_steps": [
-            item["finish_train_env_step"] for item in selected
-        ],
-        "episode_records": selected,
-    }
-
-
-def _real_step_accounting(
-    *,
-    initial_train_env_steps: int,
-    validation_env_steps: int,
-    online_history: list[dict[str, Any]],
-    final_policy_eval: dict[str, Any] | None,
-) -> dict[str, int]:
-    online_env_steps = sum(
-        int(item["actor_replay"]["env_steps"]) for item in online_history
-    )
-    curve_eval_env_steps = sum(
-        int(_nested(item.get("policy_evaluation"), "env_steps") or 0)
-        for item in online_history
-    )
-    curve_completed_eval_steps = sum(
-        int(_nested(item.get("policy_evaluation"), "completed_episode_steps") or 0)
-        for item in online_history
-    )
-    policy_eval_env_steps = curve_eval_env_steps + int(
-        _nested(final_policy_eval, "env_steps") or 0
-    )
-    completed_eval_steps = (
-        int(_nested(final_policy_eval, "completed_episode_steps") or 0)
-        + curve_completed_eval_steps
-    )
-    train_env_steps = initial_train_env_steps + online_env_steps
-    return {
-        "real_initial_train_replay_env_steps": int(initial_train_env_steps),
-        "real_online_actor_replay_env_steps": int(online_env_steps),
-        "real_train_replay_env_steps": int(train_env_steps),
-        "real_validation_replay_env_steps": int(validation_env_steps),
-        "real_train_plus_validation_env_steps": int(
-            train_env_steps + validation_env_steps
-        ),
-        "real_policy_eval_env_steps": policy_eval_env_steps,
-        "real_policy_eval_completed_episode_steps": completed_eval_steps,
-        "real_total_env_steps": int(
-            train_env_steps + validation_env_steps + policy_eval_env_steps
-        ),
-    }
-
-
-def _nested(payload: dict[str, Any] | None, key: str) -> Any:
-    return None if payload is None else payload.get(key)
 
 
 def _evaluate_model(

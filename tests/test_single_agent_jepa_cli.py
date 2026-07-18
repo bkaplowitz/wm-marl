@@ -325,13 +325,17 @@ def test_cli_accepts_budget_relative_value_clip_schedule(monkeypatch):
     ) == pytest.approx(200.0)
 
 
-def test_cli_rejects_partial_value_clip_schedule(monkeypatch):
+def test_cli_rejects_invalid_value_clip_schedule(monkeypatch):
     monkeypatch.setattr(
         sys,
         "argv",
         _minimal_args(
             "--value-clip-final",
             "200",
+            "--value-clip-schedule-start-env-steps",
+            "200000",
+            "--value-clip-schedule-end-env-steps",
+            "100000",
         ),
     )
 
@@ -421,8 +425,8 @@ def test_cli_accepts_recent_replay_and_curve_evaluation(monkeypatch):
 
     args = train_dmc_jepa.parse_args()
 
-    assert args.online_policy_actor_update_interval == 1
-    assert args.online_policy_actor_update_interval_start_env_steps == 0
+    assert args.online_policy_actor_update_interval == 2
+    assert args.online_policy_actor_update_interval_start_env_steps == 50_000
     assert train_dmc_jepa._scheduled_recent_world_model_fraction(
         args,
         train_env_steps=49_999,
