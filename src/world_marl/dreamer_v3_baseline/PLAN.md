@@ -401,8 +401,41 @@ task7a = section("### Task 7a:", "### Task 7b:")
 task10 = section("## Task 10:", "## Task 11:")
 task11 = section("## Task 11:")
 task1a = section("### Task 1a:", "### Task 1b:")
+task1c = section("### Task 1c:", "#### Integrated Task 1 regression inventory")
 def words(value):
     return " ".join(value.split())
+
+for token in (
+    "`src/world_marl/dreamer_v3_baseline/__init__.py` only for the exact "
+    "public-config migration",
+    "add imports and `__all__` entries for exactly `DebugSnapshot`, "
+    "`ResolvedDreamerRun`, `RuntimeOverrides`, `SequenceShapeConfig`, and "
+    "`resolve_dreamer_run`",
+    "imports the package root and proves that `ActorCriticConfig` is absent "
+    "and the five replacement public config interfaces are present",
+    "No compatibility alias, forwarding import, or deprecated export is retained",
+):
+    assert token in words(task1a), ("Task 1a package ownership", token)
+for token in (
+    "report `report_length=32, report_consecutive=1`",
+    "`RunConfig` separately owns the source-derived `eval_envs=4` and `report_batches=1`",
+    "`valnorm.debias=True`, `advnorm.debias=True`, and explicit `retnorm.debias=False`",
+    "During review this unit remains uncommitted",
+    "its focused GREEN is not a claim that the whole package is runnable",
+):
+    assert token in words(task1a), ("Task 1a corrected config contract", token)
+for token in (
+    "Task 1c owns `__init__.py` only for oracle/tooling imports and exports",
+    "must not restore, alias, or otherwise edit `ActorCriticConfig`",
+):
+    assert token in words(task1c), ("Task 1c package ownership", token)
+for token in (
+    "Task 1a removes the `ActorCriticConfig` import and `__all__` entry and "
+    "adds imports and `__all__` entries for exactly",
+    "Task 1c later removes only eager oracle/tooling imports and exports",
+    "Task 9 later replaces the remaining production exports",
+):
+    assert token in words(architecture), ("architecture package ownership", token)
 
 replay_config_row = next(
     line for line in architecture.splitlines() if line.startswith("| `ReplayConfig` |")
@@ -410,6 +443,26 @@ replay_config_row = next(
 dreamer_replay_row = next(
     line for line in architecture.splitlines() if line.startswith("| `DreamerReplay` |")
 )
+sequence_shape_row = next(
+    line for line in architecture.splitlines() if line.startswith("| `SequenceShapeConfig` |")
+)
+run_config_row = next(
+    line for line in architecture.splitlines() if line.startswith("| `RunConfig` |")
+)
+for token in (
+    "report_length=T_report",
+    "report_consecutive=C_report",
+    "report_raw_length=K+T_report*C_report",
+):
+    assert token in sequence_shape_row, token
+for token in ("eval_envs", "report_batches"):
+    assert token in run_config_row, token
+for token in (
+    "Bool-as-int, int-as-float, NumPy scalar, list-for-tuple",
+    "reconstructs the expected final config",
+    "missing, extra, or disagreeing override",
+):
+    assert token in words(architecture), token
 assert "selector seed" not in replay_config_row
 assert "DreamerV3Config.seed" not in replay_config_row
 assert "seed)" not in dreamer_replay_row.split("|", 3)[2]
@@ -1052,18 +1105,25 @@ git -C /private/tmp/danijar-dreamerv3-20260713 show bfcdfc183d2c1543a3bf3cdda6ed
 
 ## Task 1: Minimize oracle boundary and correct profiles
 
-Task 1 is three sequential implementer-review-fixer-commit units. Their owned
-paths do not overlap, except that later units consume earlier public interfaces;
-editors never run concurrently. The aggregate inventory and regression matrix
-below are cross-unit reference, not permission for one large implementation.
+Task 1 is three sequential implementer-review-fixer-commit units. Their symbol
+ownership does not overlap, except that Task 1a and Task 1c sequentially edit
+different named imports/exports in `__init__.py`; later units otherwise consume
+earlier public interfaces, and editors never run concurrently. The aggregate
+inventory and regression matrix below are cross-unit reference, not permission
+for one large implementation.
 
 ### Task 1a: Resolve typed profiles and configuration
 
-**Owned files/symbols:** `config.py` and `tests/test_dreamer_v3_config.py` only.
-Own all typed config dataclasses/enums, canonical serialization/hash, and
-`SequenceShapeConfig`, `RuntimeOverrides`, `DebugSnapshot`,
-`resolve_dreamer_run`, and the no-override `resolve_dreamer_config` wrapper; do
-not edit oracle/runtime-import code or fixtures.
+**Owned files/symbols:** `config.py`, `tests/test_dreamer_v3_config.py`, and
+`src/world_marl/dreamer_v3_baseline/__init__.py` only for the exact
+public-config migration: remove the `ActorCriticConfig` import and its
+`__all__` entry, and add imports and `__all__` entries for exactly
+`DebugSnapshot`, `ResolvedDreamerRun`, `RuntimeOverrides`,
+`SequenceShapeConfig`, and `resolve_dreamer_run`. Own all typed config
+dataclasses/enums, canonical serialization/hash, and `SequenceShapeConfig`,
+`RuntimeOverrides`, `DebugSnapshot`, `resolve_dreamer_run`, and the no-override
+`resolve_dreamer_config` wrapper. No other package-root import or export is
+owned: do not edit oracle/runtime-import code or fixtures.
 
 Freeze the exact public signatures
 `resolve_dreamer_run(*, mode, task, profile=DreamerProfile.PAPER, seed=0, model=None, debug_local=False, overrides=RuntimeOverrides())`
@@ -1088,7 +1148,12 @@ canonical config, `config_sha256`, authority revision, nullable debug snapshot,
 and the separate algorithm/environment runtime-override mappings. REDs require
 fresh dict/list/array ownership, exact key/type reconstruction, public-Flax
 roundtrip, and rejection of tuple, dataclass, enum, and `FrozenDict` leaves.
-No generic object converter is introduced.
+No generic object converter is introduced. Every accepted public constructor
+enforces the same exact Python primitive, finiteness, tuple-element, and
+nested-record rules as its inverse. Table-drive bool-as-int, int-as-float,
+NumPy integer/float scalars, list/tuple mismatch, nonfinite floats, wrong
+primitive types, and `type(record).from_state(record.state_dict()) == record`
+for every named constructible record.
 
 The scalar `seed` is included in canonical resolved config JSON/hash and
 `ResolvedDreamerRun.identity_state()`. Validate it as a non-bool Python integer
@@ -1112,8 +1177,20 @@ advanced selector state resumes at the exact next sample. Prove `ReplayConfig`
 has no seed field and `ResolvedDreamerRun.identity_state()` has no replay/public
 seed equality projection. Prove the no-override wrapper forwards `seed`; reject
 `bool`, `-1`, and `2**32 - 10_000` before construction or NumPy conversion.
-Require
-`SequenceShapeConfig` to be the sole owner of `B,T,K,consecutive`. Table-drive
+The same RED imports the package root and proves that `ActorCriticConfig` is
+absent and the five replacement public config interfaces are present in both
+attributes and `__all__`; it initially fails because the live package imports
+and exports the legacy class but none of the five replacement interfaces.
+GREEN deletes the class and its config property/serialization path, removes
+exactly its two package-root references, and adds exactly the five named
+imports and five `__all__` entries in one atomic unit. No compatibility alias,
+forwarding import, or deprecated export is retained; no other package-root edit
+is permitted.
+Require `SequenceShapeConfig` to be the sole owner of train
+`B,T,K,consecutive` and report `report_length=32, report_consecutive=1`, with
+derived train `raw_length=65` and report `report_raw_length=33` in production.
+`RunConfig` separately owns the source-derived `eval_envs=4` and
+`report_batches=1`. Table-drive
 every Task-9 identity-bearing override (`env_steps`, `num_envs`, `batch_size`,
 `batch_length`, `train_ratio`, `eval_every`, `eval_episodes`, `report_every`,
 `checkpoint_every`, and environment-only `camera`) through `RuntimeOverrides`;
@@ -1121,8 +1198,10 @@ assert the exact merge order,
 cross-field revalidation, canonical JSON/hash and sorted override map. Reject
 unknown fields. Assert invocation-only out-dir/resume/dry-run/stop fields are
 absent; camera is returned only in the
-environment override map and is absent from Dreamer config/hash. Snapshot every value of deterministic noncanonical
-`debug-local-v1`, including the literal 48-frame CPU resolution. Both production
+environment override map and is absent from Dreamer config/hash. Snapshot every
+value of deterministic noncanonical `debug-local-v1`, including the literal
+48-frame CPU resolution, `report_length=4`, `report_consecutive=1`,
+`eval_envs=1`, and `report_batches=1`. Both production
 profiles resolve `RunConfig.log_every=1_000` as a positive physical-frame
 cadence; `debug-local-v1` resolves `log_every=16`. This repository-native
 decision does not convert upstream's wall-clock setting and is not a public CLI
@@ -1131,23 +1210,45 @@ The resolved run state therefore owns the log next threshold. At each crossing,
 the driver emits `metric_means` and `metric_counts`, then flushes and resets the
 window; the debug acceptance trace observes this at frame 16.
 
+The locked-profile RED mutates at least one leaf in every component family and
+requires rejection of every non-overridable leaf. A resolved-identity RED
+reconstructs the final config from profile/mode/task/seed/base model, nullable
+exact debug snapshot, and explicit overrides, then rejects every component
+family patch, debug presence/value mismatch, and missing, extra, or disagreeing
+override. This reconstruction is pure, nonrecursive, and independent of the
+canonical hash self-check. Source-derived normalizer expectations are
+`valnorm.debias=True`, `advnorm.debias=True`, and explicit
+`retnorm.debias=False`, using `configs.yaml` plus
+`embodied/jax/utils.py::Normalize`.
+
 **Implementation:** translate the two resolved snapshots from the Nature
 profile plus pinned `configs.yaml`, delete legacy config branches, keep one
 canonical JSON/hash path, and make Task 9 only parse values and call the Task-1
-resolver. `ReplayConfig` and `RunConfig` do not duplicate the shape fields.
+resolver. Apply only the exact public-config migration at the package root:
+remove the `ActorCriticConfig` import and `__all__` entry and add the five named
+replacement imports and `__all__` entries; leave oracle/tooling cleanup to Task
+1c and later production export replacement to Task 9. `ReplayConfig` and
+`RunConfig` do not duplicate the shape fields.
 **Focused acceptance:**
 `uv run pytest -q tests/test_dreamer_v3_config.py` followed by scoped Ruff check
-and format-check of those two files. Report RED/GREEN, exact scalar/source
+and format-check of those three files. Report RED/GREEN, exact scalar/source
 mapping, and concerns; fresh spec and quality reviewers plus a fresh covering
 fixer must reach 0 Critical/Important before
 `fix(dreamer): align conformance profiles`.
+
+During review this unit remains uncommitted, and its focused GREEN is not a
+claim that the whole package is runnable: Task 1b owns the positional oracle
+resolver migration and Task 2 owns replay construction against the new
+sequence/replay split. No compatibility alias hides those explicit sequential
+owners; a later accepted per-task commit still carries no whole-package parity
+claim until the composed owners land.
 
 ```bash
 set -euo pipefail
 export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/wm-marl-uv-cache}"
 uv run pytest tests/test_dreamer_v3_config.py -q
-uv run ruff check src/world_marl/dreamer_v3_baseline/config.py tests/test_dreamer_v3_config.py
-uv run ruff format --check src/world_marl/dreamer_v3_baseline/config.py tests/test_dreamer_v3_config.py
+uv run ruff check src/world_marl/dreamer_v3_baseline/config.py src/world_marl/dreamer_v3_baseline/__init__.py tests/test_dreamer_v3_config.py
+uv run ruff format --check src/world_marl/dreamer_v3_baseline/config.py src/world_marl/dreamer_v3_baseline/__init__.py tests/test_dreamer_v3_config.py
 git diff --check
 git -C /private/tmp/danijar-dreamerv3-20260713 show bfcdfc183d2c1543a3bf3cdda6edb7fae29b6a01:dreamerv3/configs.yaml >/dev/null
 ```
@@ -1206,12 +1307,16 @@ git -C /private/tmp/danijar-dreamerv3-20260713 show bfcdfc183d2c1543a3bf3cdda6ed
 
 ### Task 1c: Enforce the runtime/tooling import boundary
 
-**Owned files/symbols:** `__init__.py` only for oracle exports,
+**Owned files/symbols:** `__init__.py` only for oracle/tooling imports and exports,
 `rssm.py` only for the registration/source-spec/fixture scan-key removal,
 `tests/test_dreamer_v3_distributions.py`, `tests/test_dreamer_v3_networks.py`,
 `tests/test_dreamer_v3_rssm_parity.py` only for direct tooling imports and
 boundary assertions, and new `tests/test_dreamer_v3_runtime_imports.py`.
 No numerical equation, fixture, manifest, or parser is owned.
+Task 1c owns `__init__.py` only for oracle/tooling imports and exports; the Task
+1a package-root removal is already complete, and Task 1c must not restore,
+alias, or otherwise edit `ActorCriticConfig`. Task 9 separately owns later
+replacement of the remaining production exports.
 
 **First RED:** a fresh interpreter enumerates tooling-named package modules and
 fails because runtime import eagerly loads them; component tests fail until the
@@ -1247,8 +1352,11 @@ git -C /private/tmp/danijar-dreamerv3-20260713 show bfcdfc183d2c1543a3bf3cdda6ed
 `replay_oracle_contract.py`, new `fixture_generator.py` limited to
 `main`, `_parse_args`, `_validate_reference`, `_canonical_request`,
 `_write_pair`, `_PARSER_REGISTRY`, `_register_parser`, `refresh_manifest`, and
-`_register_refresh_manifest_parser`, and `__init__.py`
-limited to removing eager oracle/tooling imports and exports;
+`_register_refresh_manifest_parser`; `__init__.py` is split by symbol: Task 1a
+removes the `ActorCriticConfig` import and `__all__` entry and adds exactly the
+five named replacement public config imports and `__all__` entries, while Task
+1c later removes only eager oracle/tooling imports and exports. Task 9 later replaces
+the remaining production exports;
 `tests/test_dreamer_v3_config.py`, `tests/test_dreamer_v3_oracle_manifest.py`,
 new `tests/test_dreamer_v3_runtime_imports.py`, and the following narrow
 runtime-boundary exceptions: `rssm.py` only to remove
@@ -1381,7 +1489,9 @@ subcommand contract.
 `DreamerReplay.prepare_add/commit_add`, `prepare_sample/commit_sample`, `state_dict`,
 transactional `DreamerReplay.from_state_dict(state, replay_config,
 sequence_shape, transition_spaces, latent_spaces)`, immutable public
-`raw_length = K + T * consecutive`, `can_sample_batch(mode)`, `validate`, and
+train `raw_length = K + T * consecutive`, report
+`report_raw_length = K + report_length * report_consecutive`,
+`can_sample_batch(mode)`, `validate`, and
 exact context writeback. The closed inverse APIs are exactly
 `AgentCarry.from_state(state, agent, expected_leading_shape)` and
 `ReplayBatch.from_state(state, transition_spaces, latent_spaces, expected_batch_size, expected_time_length)`.
@@ -1442,10 +1552,11 @@ items, separate stream progress, and byte/tree equality of the complete replay
 state before and after every query. They call readiness before any selector,
 stream, queue, replay RNG, or limiter mutation. Task 7b consumes this API and is
 forbidden to edit replay.
-With nonzero context and `consecutive > 1`, a source-derived RED asserts the
-immutable property is the raw length `K + T * consecutive`, differs from the
-trimmed training length `T`, and survives restore; Task 7a consumes only this
-property.
+With nonzero context and consecutive counts greater than one, source-derived
+REDs assert the immutable train and report properties are respectively
+`K + T * consecutive` and
+`K + report_length * report_consecutive`, differ from their trimmed lengths,
+and survive restore; Task 7a consumes only the train property.
 Replay-context reconstruction and its negative-index slice run only when
 `K>0`. Tests prove that at `K=0` every consecutive slice uses the incoming
 carry and normal prepended-previous-action alignment. Separate zero-context and
@@ -2435,8 +2546,9 @@ dimensions.
 `want_sample()`, `insert()`, and per-sequence `sample()`. Construction is
 `train_ratio / batch_length`, `4 * batch_size`, and
 `batch_size * replay.raw_length`; one batch consumes `batch_size` credits. A
-nonzero-context, `consecutive > 1` case proves minsize uses raw
-`K + T * consecutive`, not trimmed `T`, and proves
+nonzero-context, `consecutive > 1` case proves minsize uses train raw
+`K + T * consecutive`, not trimmed `T`, while an independent report case uses
+`K + report_length * report_consecutive`; both prove
 `SequenceShapeConfig` is the sole owner. Cover
 minsize debt, both pressure directions and boundaries, and executable paper-
 default cases `samples_per_insert=4`, `tolerance=64`: insertion at

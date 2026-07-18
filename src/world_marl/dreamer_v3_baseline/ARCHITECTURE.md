@@ -677,13 +677,13 @@ the small idempotent reconciliation operation.
 | `ContinueHeadConfig` | continuation `HeadConfig` specialization | immutable; complete dataclass | `dreamerv3/configs.yaml::cont` |
 | `PolicyConfig` | action distributions/std/unimix/entropy/layers | immutable; complete dataclass | `dreamerv3/configs.yaml::policy`; `embodied/jax/heads.py::DictHead` |
 | `OptimizerConfig` | lr, AGC, beta1/2, epsilon, decay, schedule/warmup/anneal | immutable; complete dataclass | `dreamerv3/configs.yaml::opt`; `dreamerv3/agent.py::Agent._make_opt` |
-| `SequenceShapeConfig` | sole owner of `batch_size=B`, `sequence_length=T`, `context=K`, and `consecutive`; derived raw length `R=K+T*consecutive` | frozen; positive `B,T,consecutive`, nonnegative `K`; complete config/checkpoint identity | `dreamerv3/main.py::make_replay` raw `length`; `embodied/core/streams.py::Consec` |
-| `ReplayConfig` | capacity, chunk size, and online queue size | immutable; complete dataclass; contains no replay construction seed and none of `B,T,K,consecutive` | `dreamerv3/configs.yaml::replay`; `embodied/core/replay.py::Replay` |
-| `RunConfig` | train ratio, positive physical-frame `log_every`, other physical-frame cadences/budgets, vector count, evaluation, and checkpoint only | immutable; complete dataclass; contains no seed and none of `B,T,K,consecutive`; limiter `minsize` is derived | source run controls plus the explicit native physical-log decision below; `embodied/run/parallel.py`, `train.py`, `train_eval.py` |
+| `SequenceShapeConfig` | sole owner of train `batch_size=B`, `sequence_length=T`, `context=K`, `consecutive=C`, report `report_length=T_report`, and `report_consecutive=C_report`; derived `raw_length=K+T*C` and `report_raw_length=K+T_report*C_report` | frozen; positive `B,T,C,T_report,C_report`, nonnegative `K`; complete config/checkpoint identity | `dreamerv3/configs.yaml::{batch_size,batch_length,report_length,consec_train,consec_report,replay_context}`; `dreamerv3/main.py::make_replay/make_stream`; `embodied/core/streams.py::Consec` |
+| `ReplayConfig` | capacity, chunk size, and online queue size | immutable; complete dataclass; contains no replay construction seed and no train/report sequence-shape field | `dreamerv3/configs.yaml::replay`; `embodied/core/replay.py::Replay` |
+| `RunConfig` | train ratio, positive physical-frame `log_every`, other physical-frame cadences/budgets, train/evaluation vector counts including `eval_envs`, `report_batches`, evaluation, and checkpoint only | immutable; complete dataclass; contains no seed and no train/report sequence-shape field; limiter `minsize` is derived | source `run` controls including `eval_envs=4` and `report_batches=1`, plus the explicit native physical-log decision below; `embodied/run/parallel.py`, `train.py`, `train_eval.py` |
 | `LossScaleConfig` | named rec/rew/con/dyn/rep/policy/value/repval scales | immutable; complete dataclass | `dreamerv3/configs.yaml::loss_scales`; `dreamerv3/agent.py::Agent.loss` |
 | `ImaginationConfig` | horizon/lambda/contdisc/slowtar/ac_grads/repval switches | immutable; complete dataclass | `dreamerv3/configs.yaml`; `dreamerv3/agent.py::Agent.imag_loss/repl_loss` |
 | `SlowValueConfig` | EMA rate and update period | immutable; complete dataclass | `dreamerv3/configs.yaml::slowvalue`; `embodied/jax/utils.py::SlowModel` |
-| `NormalizerConfig` | kind/rate/percentiles/limit/debias | immutable; complete dataclass | normalizer entries in `dreamerv3/configs.yaml`; `embodied/jax/utils.py::Normalize` |
+| `NormalizerConfig` | kind/rate/percentiles/limit/debias | immutable; complete dataclass; `valnorm` and `advnorm` inherit `Normalize.debias=True`, while `retnorm` explicitly sets `debias=False` | normalizer entries in `dreamerv3/configs.yaml`; `embodied/jax/utils.py::Normalize` |
 | `DreamerV3Config` | complete aggregate plus profile/mode/task/model and exactly one checked scalar `seed` field | immutable; canonical JSON, SHA-256, and full config serialize; `seed` is the sole canonical public-seed owner | resolved top-level `dreamerv3/configs.yaml::seed` snapshot |
 | `RuntimeOverrides` | exact optional identity-bearing fields `env_steps`, `num_envs`, `batch_size`, `batch_length`, `train_ratio`, `eval_every`, `eval_episodes`, `report_every`, `checkpoint_every`, and environment-only `camera` | frozen; rejects unknown fields and preserves separate algorithm/environment explicit maps | typed native boundary for the Task-9 CLI |
 | `DebugSnapshot` | exact noncanonical resource snapshot named `debug-local-v1` | frozen full replacement values; serialized in resolved identity | native local-execution profile; equations and DMC semantics unchanged |
@@ -692,6 +692,12 @@ the small idempotent reconciliation operation.
 Every Task-1 config row above projects through an exact plain-mapping
 `state_dict()` and a closed `from_state()` that reconstructs the named enum or
 frozen runtime record. DreamerV3Config.seed is the sole canonical public-seed owner.
+Every accepted public constructor enforces the same exact Python primitive,
+tuple-element, finiteness, and nested-record rules as its inverse, so
+`type(record).from_state(record.state_dict()) == record` for every constructible
+record. Bool-as-int, int-as-float, NumPy scalar, list-for-tuple, and wrong
+nested-record values are rejected at construction rather than emitted into a
+noncanonical owner projection.
 Seed is a primary resolver input, not a `RuntimeOverrides` field.
 `ResolvedDreamerRun.identity_state()` is the only checkpoint/manifest
 projection and contains canonical config, `config_sha256`,
@@ -710,7 +716,17 @@ remains only a no-override convenience wrapper and calls
 `resolve_dreamer_run(mode=mode, task=task, profile=profile, seed=seed, model=model, debug_local=debug_local, overrides=RuntimeOverrides())`
 before returning `.config`; the public CLI calls the latter with keywords.
 `ActorCriticConfig` and `_LegacyEncoderConfig` are migration-only and are
-removed; they are not production classes.
+removed; they are not production classes. The `E` caller annotation on
+`config.py::ActorCriticConfig` in the live-symbol inventory is an exact
+package-root ownership edge: Task 1a removes the `ActorCriticConfig` import and
+`__all__` entry and adds imports and `__all__` entries for exactly
+`DebugSnapshot`, `ResolvedDreamerRun`, `RuntimeOverrides`,
+`SequenceShapeConfig`, and `resolve_dreamer_run` in
+`src/world_marl/dreamer_v3_baseline/__init__.py` in the same atomic change that
+deletes the legacy class. No compatibility alias, forwarding import, or
+deprecated export survives. Task 1c later removes only eager
+oracle/tooling imports and exports from that file; Task 9 later replaces the
+remaining production exports.
 
 ### 3.4 Distribution classes
 
@@ -771,7 +787,7 @@ serializes only inside train parameters.
 | `OnlineQueue` | `(maxlen)`; enqueue/dequeue fresh starts | bounded ordered keys | contents serialize; `embodied/core/replay.py::Replay.online` |
 | `UniformSelector` | `(seed)`; `insert(item_id)`, `delete(item_id)`, `sample() -> item_id` | dense item ids/index map plus `default_rng` `PCG64` state with exact section-2.3 schema | runtime index map serializes as the exact ordered string-keyed records below; generator state/order roundtrip exactly; `embodied/core/selectors.py::Uniform` |
 | `ConsecutiveStream` | `(source, sequence_length=T, consecutive, context=K)`; `next() -> ReplayBatch` | current raw batch/slice index | independent train and training report stream instances serialize; `embodied/core/streams.py::Consec` |
-| `DreamerReplay` | `(ReplayConfig, SequenceShapeConfig, transition_spaces, latent_spaces)`; immutable `raw_length = K + T * consecutive`; internally constructs `UniformSelector(seed=0)`; `can_sample_batch(mode)`, `prepare_add/commit_add`, `prepare_sample/commit_sample`, `update_context`, `stats`, `validate` | `can_sample_batch("train" | "report")` independently proves all `B` items are available without changing selector, stream, queue, replay RNG, limiter, or counters; bounded add/sample plans touch only current chunks, one eviction, selector/queue, two streams/RNG/counters and identity cursors | `state_dict()` returns the complete primitive record including complete PCG64 state and `from_state_dict(state, config, sequence_shape, transition_spaces, latent_spaces)` constructs a fresh validated replay transactionally at the exact next sample; `dreamerv3/main.py::make_replay`; `embodied/core/replay.py::Replay` |
+| `DreamerReplay` | `(ReplayConfig, SequenceShapeConfig, transition_spaces, latent_spaces)`; immutable train `raw_length = K + T * C` and report `report_raw_length = K + T_report * C_report`; internally constructs `UniformSelector(seed=0)`; `can_sample_batch(mode)`, `prepare_add/commit_add`, `prepare_sample/commit_sample`, `update_context`, `stats`, `validate` | `can_sample_batch("train" | "report")` independently proves all `B` items of the mode-specific raw length are available without changing selector, stream, queue, replay RNG, limiter, or counters; bounded add/sample plans touch only current chunks, one eviction, selector/queue, two streams/RNG/counters and identity cursors | `state_dict()` returns the complete primitive record including complete PCG64 state and `from_state_dict(state, config, sequence_shape, transition_spaces, latent_spaces)` constructs a fresh validated replay transactionally at the exact next sample; `dreamerv3/main.py::make_replay`; `embodied/core/replay.py::Replay` |
 
 ### 3.7 Agent, optimizer, environment, and online-system classes
 
@@ -820,9 +836,18 @@ dataclasses. `RuntimeOverrides` and `DebugSnapshot` are also frozen typed
 records. Head specializations may validate family-specific values but do
 not introduce a second behavior path. The redundant legacy `ActorCriticConfig`
 and legacy shape/action constructor fields are removed or migrated to the
-canonical aggregate.
+canonical aggregate. Removing the class and its package import/export while
+adding exactly the five replacement public config interfaces named above is
+one Task-1a migration: retaining a compatibility symbol or omitting a new
+public interface would preserve the wrong package boundary and is forbidden.
+Task 1c's separate `__init__.py` edit is
+oracle/tooling-only, and Task 9 owns the later production export surface.
 
-`SequenceShapeConfig` is the sole owner of `B`, `T`, `K`, and `consecutive`.
+`SequenceShapeConfig` is the sole owner of train `B,T,K,C` and report
+`T_report,C_report`. Its defaults are the source-derived
+`batch_size=16`, `sequence_length=64`, `context=1`, `consecutive=1`,
+`report_length=32`, and `report_consecutive=1`; its two immutable derived
+lengths are respectively `65` and `33`.
 Neither `ReplayConfig` nor `RunConfig` repeats those fields. `RunConfig` owns no
 seed or batch/sequence shape. `DreamerV3Config` owns the complete immutable
 aggregate, including exactly one `SequenceShapeConfig` and exactly one scalar
@@ -875,6 +900,16 @@ The no-override wrapper has exact signature
 and forwards every argument by keyword without a second defaulting or validation
 path.
 
+Locked configuration validation compares every non-overridable component leaf
+against the selected paper/current profile, including the report sequence,
+evaluation-environment count, and report-batch count. `ResolvedDreamerRun`
+then reconstructs the expected final config from
+`profile/mode/task/seed/model`, the nullable exact `debug-local-v1` snapshot,
+and the complete explicit override record. It rejects any component-family
+patch, debug presence/value mismatch, or missing, extra, or disagreeing
+override before accepting canonical JSON/hash identity; this reconstruction is
+pure and does not recurse through `ResolvedDreamerRun`.
+
 `RunConfig.log_every` is a positive physical-`env_frames` integer. Both the
 `paper` and explicit `upstream-current` snapshots resolve `log_every=1_000`.
 This is a declared native wm-marl operational choice: one log window per 0.1%
@@ -890,9 +925,11 @@ The complete deterministic noncanonical debug snapshot is
 units `32`; RSSM `deter=32, stoch=4, classes=4`; Vision encoder/decoder depths
 `(8,16,32,64)` with the selected profile's unchanged stride/pooling rule;
 `SequenceShapeConfig(batch_size=1, sequence_length=4, context=0,
-consecutive=1)`; replay capacity `256`, chunk size `32`, online queue `16`;
-run `env_steps=48, num_envs=1, train_ratio=4, eval_every=16,
-eval_episodes=1, report_every=16, log_every=16, checkpoint_every=16`;
+consecutive=1, report_length=4, report_consecutive=1)`; replay capacity `256`,
+chunk size `32`, online queue `16`; run `env_steps=48, num_envs=1,
+eval_envs=1, train_ratio=4, eval_every=16,
+eval_episodes=1, report_every=16, log_every=16, checkpoint_every=16,
+report_batches=1`;
 imagination horizon
 `5`. It does not change loss scales, distributions, detach switches,
 normalizer/slow-value equations, action repeat, image size, task time limit,
@@ -1111,10 +1148,11 @@ same incompatibility. It owns only these two state-boundary conversions and
 proves public-Flax roundtrip plus exact next behavior; the checkpoint codec adds
 no mapping adapter.
 
-`DreamerReplay.raw_length = K + T * consecutive` is an immutable public
-property derived from the sole `SequenceShapeConfig`; it is never the trimmed
-training length `T`. Direct tests use nonzero context and `consecutive > 1` to
-distinguish it. For raw length `R = K + T * consecutive`, a start enters the uniform selector
+`DreamerReplay.raw_length = K + T * C` and
+`DreamerReplay.report_raw_length = K + T_report * C_report` are immutable public
+properties derived from the sole `SequenceShapeConfig`; neither is a trimmed
+learner length. Direct tests use nonzero context and consecutive counts greater
+than one to distinguish them. For a mode-specific raw length `R`, a start enters the uniform selector
 only after all `R` linked rows exist. Online eligibility has an independent
 scalar `int64` phase counter per writer. On each writer-local add, the source
 ordering is binding: test the old writer length for online eligibility, enqueue
@@ -1816,8 +1854,9 @@ exactly one from `avail`.
 
 Construction is `samples_per_insert = train_ratio / batch_length`,
 `tolerance = 4 * batch_size`, and
-`minsize = batch_size * replay.raw_length`, where the immutable raw length is
-`K + T * consecutive` from the sole `SequenceShapeConfig`. Configuration,
+`minsize = batch_size * replay.raw_length`, where the immutable train raw length
+is `K + T * C` from the sole `SequenceShapeConfig`; report sampling separately
+uses `report_raw_length = K + T_report * C_report`. Configuration,
 bounds, `size`, and
 `avail` serialize exactly. Restore rejects mismatched configuration or invalid
 state transactionally. The native single-thread runner never blocks inside a
