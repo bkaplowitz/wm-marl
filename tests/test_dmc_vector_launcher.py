@@ -29,7 +29,7 @@ def test_launcher_serializes_tracking_controls():
     assert "--wandb-videos" in command
 
 
-def test_launcher_serializes_early_sample_efficiency_diagnostic_controls():
+def test_launcher_serializes_canonical_replay_and_evaluation_controls():
     command = params_to_shell_args(
         {
             "online_recent_world_model_fraction": 0.5,

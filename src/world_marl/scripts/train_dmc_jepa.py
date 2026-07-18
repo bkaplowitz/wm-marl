@@ -29,6 +29,7 @@ from tqdm.auto import tqdm
 from world_marl.checkpointing import load_params, save_checkpoint
 from world_marl.envs.brax_adapter import BraxVectorAdapter, brax_env_name
 from world_marl.envs.dmc_adapter import DMCVectorAdapter, dmc_env_name
+from world_marl.jepa.config import canonical_jepa_config
 from world_marl.jepa.models import JepaConfig, JepaWorldModel
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.reproducibility import (
@@ -359,6 +360,7 @@ def parse_args() -> argparse.Namespace:
     tracking.add_argument("--wandb-video-fps", type=int, default=20)
     tracking.add_argument("--wandb-video-camera", type=int, default=0)
 
+    parser.set_defaults(**canonical_jepa_config())
     args = parser.parse_args()
     _validate_args(parser, args)
     return args

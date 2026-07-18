@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from world_marl.jepa.config import canonical_jepa_config
 from world_marl.jepa.replay import SequenceReplayBuffer
 from world_marl.scripts import train_dmc_jepa
 
@@ -29,6 +30,15 @@ def _minimal_args(*extra: str) -> list[str]:
         "2",
         *extra,
     ]
+
+
+def test_direct_cli_defaults_match_the_canonical_500k_configuration(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["world-marl-train-dmc-jepa"])
+
+    args = train_dmc_jepa.parse_args()
+
+    expected = canonical_jepa_config()
+    assert {name: getattr(args, name) for name in expected} == expected
 
 
 def test_cli_accepts_dmc_and_brax_environments(monkeypatch):

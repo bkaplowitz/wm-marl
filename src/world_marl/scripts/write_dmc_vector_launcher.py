@@ -10,6 +10,8 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Any
 
+from world_marl.jepa.config import canonical_jepa_config, smoke_jepa_config
+
 
 DEFAULT_TASKS = (
     "reacher/easy",
@@ -19,135 +21,11 @@ DEFAULT_TASKS = (
     "walker/walk",
 )
 
-# This is the publication-clean configuration exercised by the July 2026
-# reset-rich, interleaved runs. Keep algorithmic changes explicit and covered
-# by test_dmc_vector_launcher.py; launcher-only settings belong in CLI
-# overrides.
-_JEPA_BASE: dict[str, Any] = {
-    "num_runs": 1,
-    "num_envs": 16,
-    "env_workers": 16,
-    "isolated_rng_streams": True,
-    "deterministic_compute": True,
-    "collect_steps": 320,
-    "initial_reset_interval": 80,
-    "initial_random_action_hold_steps": 1,
-    "validation_steps": 80,
-    "validation_seed": 1_000_042,
-    "replay_capacity": 1_000_000,
-    "batch_size": 16,
-    "chunk_length": 64,
-    "context_window": 8,
-    "model_horizon": 5,
-    "open_loop_horizon": 5,
-    "latent_dim": 128,
-    "model_dim": 128,
-    "num_layers": 2,
-    "num_heads": 4,
-    "mlp_ratio": 4,
-    "train_steps": 1_280,
-    "policy_train_steps": 1_280,
-    "online_collect_steps": 64,
-    "online_train_steps": 1_024,
-    "online_policy_train_steps": 512,
-    "online_policy_actor_update_interval": 2,
-    "online_policy_actor_update_interval_start_env_steps": 50_000,
-    "online_freeze_encoder_after_env_steps": 101_376,
-    "online_checkpoint_interval": 16,
-    "online_recent_replay_steps": 320,
-    "online_recent_world_model_fraction": 0.5,
-    "online_recent_world_model_until_env_steps": 50_000,
-    "online_recent_replay_max_oversample": 10.0,
-    "policy_batch_size": 1_024,
-    "policy_reset_start_fraction": 0.1,
-    "policy_reset_start_fraction_start_env_steps": 201_728,
-    "policy_reset_start_max_age": 63,
-    "imag_horizon": 15,
-    "critic_horizon": 64,
-    "policy_return_ema_decay": 0.99,
-    "value_clip": 100.0,
-    "value_clip_final": 333.0,
-    "value_clip_schedule_start_env_steps": 150_528,
-    "value_clip_schedule_end_env_steps": 250_880,
-    "policy_actor_kl_coef": 1.0,
-    "policy_actor_kl_target_per_dim": 0.1,
-    "policy_actor_kl_reference_interval": 512,
-    "policy_replay_critic_loss_coef": 0.3,
-    "policy_replay_critic_batch_size": 16,
-    "policy_replay_critic_horizon": 64,
-    "policy_slow_value_regularization_coef": 1.0,
-    "target_critic_ema_decay": 0.98,
-    "actor_hidden_dim": 64,
-    "critic_hidden_dim": 64,
-    "actor_num_layers": 3,
-    "critic_num_layers": 3,
-    "actor_layer_norm": True,
-    "critic_layer_norm": True,
-    "actor_entropy_coef": 3e-3,
-    "actor_log_std_min": -2.302585092994046,
-    "actor_log_std_max": 0.0,
-    "actor_output_scale": 0.01,
-    "value_output_scale": 0.0,
-    "reward_output_scale": 0.0,
-    "twohot_bins": 255,
-    "twohot_min": -20.0,
-    "twohot_max": 20.0,
-    "regularizer_weight": 0.05,
-    "learning_rate": 4e-5,
-    "actor_learning_rate": 4e-5,
-    "model_grad_clip_norm": 0.0,
-    "actor_grad_clip_norm": 10.0,
-    "critic_grad_clip_norm": 100.0,
-    "optimizer_warmup_steps": 1_000,
-    "adaptive_grad_clip": 0.3,
-    "optimizer_epsilon": 1e-8,
-    "gamma": 1.0 - 1.0 / 333.0,
-    "lambda_return": 0.95,
-    "final_policy_eval_episodes": 100,
-    "final_policy_eval_seed": 9_000_000,
-    "curve_eval_interval_env_steps": 50_000,
-    "curve_eval_episodes": 20,
-    "curve_eval_num_envs": 16,
-    "curve_eval_seed": 9_000_000,
-    "failure_return_threshold": 100.0,
-    "success_return_threshold": 900.0,
-    "training_snapshot_env_steps": None,
-    "resume_training_snapshot": None,
-}
-
 PRESETS: dict[str, dict[str, Any]] = {
-    "smoke": {
-        **_JEPA_BASE,
-        "num_envs": 2,
-        "env_workers": 2,
-        "collect_steps": 80,
-        "validation_steps": 80,
-        "batch_size": 2,
-        "policy_batch_size": 8,
-        "train_steps": 2,
-        "policy_train_steps": 2,
-        "online_iterations": 1,
-        "online_train_steps": 2,
-        "online_policy_train_steps": 2,
-        "online_checkpoint_interval": 1,
-        "final_policy_eval_episodes": 0,
-        "dreamer_report_budget_env_steps": 0,
-    },
-    "jepa_100k": {
-        **_JEPA_BASE,
-        "online_iterations": 91,
-        "dreamer_report_budget_env_steps": 100_000,
-    },
-    "jepa_200k": {
-        **_JEPA_BASE,
-        "online_iterations": 190,
-        "dreamer_report_budget_env_steps": 200_000,
-    },
-    "jepa_500k": {
-        **_JEPA_BASE,
-        "online_iterations": 483,
-        "dreamer_report_budget_env_steps": 500_000,
-    },
+    "smoke": smoke_jepa_config(),
+    "jepa_100k": canonical_jepa_config(budget_env_steps=100_000),
+    "jepa_200k": canonical_jepa_config(budget_env_steps=200_000),
+    "jepa_500k": canonical_jepa_config(budget_env_steps=500_000),
 }
 
 OVERRIDABLE_PARAMS = (
@@ -555,7 +433,7 @@ def write_run_one(out_root: Path, params: dict[str, Any]) -> None:
 def params_to_shell_args(params: dict[str, Any]) -> str:
     parts: list[str] = []
     for key, value in params.items():
-        if value is None or value is False:
+        if value is None or value is False or value == ():
             continue
         flag = "--" + key.replace("_", "-")
         if value is True:
