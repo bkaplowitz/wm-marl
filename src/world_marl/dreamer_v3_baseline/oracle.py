@@ -91,74 +91,6 @@ def _git_show(checkout: str | Path, revision: str, path: str) -> bytes:
         ) from error
 
 
-@dataclass(frozen=True)
-class OracleSourceSpec:
-    """Temporary Task-1b-to-1c source record for the live RSSM import seam."""
-
-    name: str
-    revision_hashes: Mapping[str, Mapping[str, str]]
-    execution_dtypes: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        if type(self.name) is not str or not _CASE_PATTERN.fullmatch(self.name):
-            raise ValueError(f"invalid oracle source spec name: {self.name!r}")
-        revisions: dict[str, Mapping[str, str]] = {}
-        for revision, hashes in sorted(self.revision_hashes.items()):
-            if type(revision) is not str or not _COMMIT_PATTERN.fullmatch(revision):
-                raise ValueError("oracle source revision must be a full Git object id")
-            if not hashes:
-                raise ValueError("oracle source spec must contain official files")
-            normalized: dict[str, str] = {}
-            for path, digest in sorted(hashes.items()):
-                if type(path) is not str or not path or path.startswith("/"):
-                    raise ValueError(f"invalid oracle source path: {path!r}")
-                if ".." in Path(path).parts:
-                    raise ValueError(f"invalid oracle source path: {path!r}")
-                if type(digest) is not str or not _SHA256_PATTERN.fullmatch(digest):
-                    raise ValueError(f"invalid oracle source digest: {path}")
-                normalized[path] = digest
-            revisions[revision] = MappingProxyType(normalized)
-        if set(revisions) != {PAPER_REVISION, UPSTREAM_CURRENT_REVISION}:
-            raise ValueError("oracle source spec must pin both authority revisions")
-        dtypes = tuple(self.execution_dtypes)
-        if len(set(dtypes)) != len(dtypes) or any(type(x) is not str for x in dtypes):
-            raise ValueError("oracle source execution dtypes must be exact strings")
-        object.__setattr__(self, "revision_hashes", MappingProxyType(revisions))
-        object.__setattr__(self, "execution_dtypes", dtypes)
-
-    def hashes_for(self, revision: str) -> Mapping[str, str]:
-        try:
-            return self.revision_hashes[revision]
-        except KeyError as error:
-            raise ValueError(
-                f"oracle source spec {self.name!r} does not pin revision {revision}"
-            ) from error
-
-    def allows_execution_dtype(self, dtype: str) -> bool:
-        return not self.execution_dtypes or dtype in self.execution_dtypes
-
-
-_ORACLE_SOURCE_SPECS: dict[str, OracleSourceSpec] = {}
-
-
-def register_oracle_source_spec(source_spec: OracleSourceSpec) -> None:
-    if type(source_spec) is not OracleSourceSpec:
-        raise TypeError("oracle source spec registration requires OracleSourceSpec")
-    existing = _ORACLE_SOURCE_SPECS.get(source_spec.name)
-    if existing is not None and existing != source_spec:
-        raise ValueError(f"oracle source spec already registered: {source_spec.name}")
-    _ORACLE_SOURCE_SPECS[source_spec.name] = source_spec
-
-
-def source_spec_for(name: str) -> OracleSourceSpec:
-    if type(name) is not str:
-        raise TypeError("oracle source spec name must be an exact string")
-    try:
-        return _ORACLE_SOURCE_SPECS[name]
-    except KeyError as error:
-        raise ValueError(f"unknown oracle source spec: {name}") from error
-
-
 _DISTRIBUTION_HASHES = MappingProxyType(
     {
         "embodied/jax/heads.py": (
@@ -1090,10 +1022,7 @@ __all__ = [
     "RSSM_SOURCE_SPEC",
     "UPSTREAM_CURRENT_REVISION",
     "OracleManifest",
-    "OracleSourceSpec",
     "ParameterMapping",
     "ParameterTranslator",
     "TensorSpec",
-    "register_oracle_source_spec",
-    "source_spec_for",
 ]

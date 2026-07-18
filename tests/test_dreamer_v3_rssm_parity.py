@@ -23,6 +23,10 @@ from world_marl.dreamer_v3_baseline.oracle import (
     OracleManifest,
     ParameterTranslator,
 )
+from world_marl.dreamer_v3_baseline.rssm_oracle import (
+    RSSM_SOURCE_SPEC,
+    ninjax_scan_sample_keys,
+)
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "dreamer_v3"
@@ -283,7 +287,7 @@ def official_case(request):
 
 def test_rssm_oracle_authority_dtype_and_source_parameter_consumption(official_case):
     manifest, arrays = official_case
-    source_spec = getattr(rssm_module, "RSSM_SOURCE_SPEC")
+    source_spec = RSSM_SOURCE_SPEC
     request = json.loads(manifest.generator_request)
     assert manifest.source_spec == source_spec.name == "rssm"
     assert dict(manifest.official_file_hashes) == SOURCE_HASHES
@@ -1007,7 +1011,7 @@ def test_truncate_starts_and_entry_space_match_source_batch_major_order(official
 def test_ninjax_scan_keys_match_captured_source_draws_and_public_exports(official_case):
     _manifest, arrays = official_case
     root = jnp.asarray(arrays["scan.root"])
-    actual = rssm_module.ninjax_scan_sample_keys(root, 4)
+    actual = ninjax_scan_sample_keys(root, 4)
     np.testing.assert_array_equal(actual, arrays["observe.keys"])
     np.testing.assert_array_equal(actual, arrays["imagine.keys"])
     assert len({tuple(value) for value in np.asarray(actual)}) == 4
@@ -1016,8 +1020,13 @@ def test_ninjax_scan_keys_match_captured_source_draws_and_public_exports(officia
     )
     assert not hasattr(rssm_module, "categorical_straight_through")
     assert not hasattr(dreamer_package, "categorical_straight_through")
-    for name in ("RSSM", "RSSMState", "RSSMTrajectory", "RSSM_SOURCE_SPEC"):
+    for name in ("RSSM", "RSSMState", "RSSMTrajectory"):
         assert getattr(dreamer_package, name) is getattr(rssm_module, name)
+    for name in ("RSSM_SOURCE_SPEC", "ninjax_scan_sample_keys"):
+        assert name not in rssm_module.__all__
+        assert not hasattr(rssm_module, name)
+        assert name not in dreamer_package.__all__
+        assert not hasattr(dreamer_package, name)
     for name in ("flatten_rssm_state", "initial_rssm_state", "reset_rssm_state"):
         assert name not in rssm_module.__all__
         assert not hasattr(dreamer_package, name)

@@ -332,23 +332,36 @@ def test_manifest_load_rejects_noncanonical_top_level_bytes(
         OracleManifest.load(manifest_path, fixture_path=fixture_path)
 
 
-def test_manifest_validation_is_independent_of_transitional_registry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_manifest_validation_uses_retained_direct_tables_after_registry_deletion() -> (
+    None
+):
     from world_marl.dreamer_v3_baseline import oracle
 
-    monkeypatch.setattr(oracle, "_ORACLE_SOURCE_SPECS", {})
+    for name in (
+        "OracleSourceSpec",
+        "_ORACLE_SOURCE_SPECS",
+        "register_oracle_source_spec",
+        "source_spec_for",
+    ):
+        assert not hasattr(oracle, name)
+    assert isinstance(oracle._SOURCE_HASHES, MappingProxyType)
+    assert isinstance(oracle._SOURCE_DTYPES, MappingProxyType)
+
     manifest = OracleManifest.load(FIXTURE_ROOT / f"{STEMS[0]}.manifest.json")
     assert manifest.source_spec == "distributions"
+    assert dict(manifest.official_file_hashes) == dict(
+        _source_hashes_for(manifest.source_spec, manifest.official_commit)
+    )
+    assert _source_allows_dtype(manifest.source_spec, manifest.dtype)
 
 
-def test_transitional_source_registry_has_exact_task1c_deletion_boundary() -> None:
+def test_task1c_deletes_registry_and_retains_direct_fixture_source_tables() -> None:
     root = Path("src/world_marl/dreamer_v3_baseline")
     transitional = {
-        "OracleSourceSpec": {"oracle.py", "rssm.py", "__init__.py"},
-        "register_oracle_source_spec": {"oracle.py", "rssm.py"},
-        "source_spec_for": {"oracle.py"},
-        "_ORACLE_SOURCE_SPECS": {"oracle.py"},
+        "OracleSourceSpec",
+        "register_oracle_source_spec",
+        "source_spec_for",
+        "_ORACLE_SOURCE_SPECS",
     }
     callers = {name: set() for name in transitional}
     for path in root.glob("*.py"):
@@ -368,9 +381,24 @@ def test_transitional_source_registry_has_exact_task1c_deletion_boundary() -> No
         for name in transitional:
             if name in referenced:
                 callers[name].add(path.name)
-    assert callers == transitional
+    assert callers == {name: set() for name in transitional}
 
     oracle_tree = ast.parse((root / "oracle.py").read_text())
+    oracle_assignments = {
+        target.id
+        for node in oracle_tree.body
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+        for target in (node.targets if isinstance(node, ast.Assign) else (node.target,))
+        if isinstance(target, ast.Name)
+    }
+    assert {
+        "DISTRIBUTIONS_SOURCE_SPEC",
+        "NETWORKS_SOURCE_SPEC",
+        "REPLAY_SOURCE_SPEC",
+        "RSSM_SOURCE_SPEC",
+        "_SOURCE_DTYPES",
+        "_SOURCE_HASHES",
+    } <= oracle_assignments
     manifest = next(
         node
         for node in oracle_tree.body
@@ -379,7 +407,7 @@ def test_transitional_source_registry_has_exact_task1c_deletion_boundary() -> No
     manifest_references = {
         node.id for node in ast.walk(manifest) if isinstance(node, ast.Name)
     }
-    assert not manifest_references & set(transitional)
+    assert not manifest_references & transitional
     assert not [
         node
         for node in ast.walk(oracle_tree)
@@ -1489,6 +1517,7 @@ def test_dead_generic_oracle_apis_are_absent_from_module_and_package() -> None:
     import ast
 
     import world_marl.dreamer_v3_baseline as package
+    import world_marl.dreamer_v3_baseline.oracle as oracle
 
     source = Path("src/world_marl/dreamer_v3_baseline/oracle.py").read_text()
     names = {
@@ -1513,4 +1542,8 @@ def test_dead_generic_oracle_apis_are_absent_from_module_and_package() -> None:
         "register_oracle_source_spec",
         "source_spec_for",
     ):
-        assert transitional in names
+        assert transitional not in names
+        assert transitional not in oracle.__all__
+        assert not hasattr(oracle, transitional)
+        assert transitional not in package.__all__
+        assert not hasattr(package, transitional)

@@ -529,7 +529,6 @@ def test_task_two_interfaces_are_exported_from_package_boundary() -> None:
         "AggregateOutput",
         "BinaryOutput",
         "CategoricalOutput",
-        "DISTRIBUTIONS_SOURCE_SPEC",
         "MSEOutput",
         "NormalOutput",
         "OneHotOutput",
@@ -540,3 +539,5 @@ def test_task_two_interfaces_are_exported_from_package_boundary() -> None:
 
     assert expected <= set(dreamer_v3.__all__)
     assert all(getattr(dreamer_v3, name) is not None for name in expected)
+    assert "DISTRIBUTIONS_SOURCE_SPEC" not in dreamer_v3.__all__
+    assert not hasattr(dreamer_v3, "DISTRIBUTIONS_SOURCE_SPEC")

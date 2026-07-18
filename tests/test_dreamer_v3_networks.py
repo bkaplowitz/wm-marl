@@ -1215,10 +1215,11 @@ def test_task_three_interfaces_are_exported_from_package_boundary() -> None:
         "Linear",
         "MLP",
         "MLPHead",
-        "NETWORKS_SOURCE_SPEC",
         "RMSNorm",
         "TensorSpace",
     }
 
     assert expected <= set(dreamer_v3.__all__)
     assert all(getattr(dreamer_v3, name) is not None for name in expected)
+    assert "NETWORKS_SOURCE_SPEC" not in dreamer_v3.__all__
+    assert not hasattr(dreamer_v3, "NETWORKS_SOURCE_SPEC")

@@ -1260,7 +1260,8 @@ git -C /private/tmp/danijar-dreamerv3-20260713 show bfcdfc183d2c1543a3bf3cdda6ed
 limited to the stable root/registry/refresh symbols named in the aggregate
 inventory, `__init__.py` only to remove the dead `OracleHarness` and
 `OracleInvocation` imports and `__all__` entries when their definitions are
-deleted, `tests/test_dreamer_v3_oracle_manifest.py`,
+deleted, `tests/test_dreamer_v3_oracle_manifest.py` except for Task 1c's three
+post-deletion transitional-registry assertions,
 the obsolete manifest/request/generator assertions and imports in
 `tests/test_dreamer_v3_distributions.py`, `tests/test_dreamer_v3_networks.py`,
 and `tests/test_dreamer_v3_rssm_parity.py` that must follow Task 1b's compact
@@ -1326,7 +1327,10 @@ direct lookup helpers, and thin source-name constants remain and need no
 Task-1c edit,
 `tests/test_dreamer_v3_distributions.py`, `tests/test_dreamer_v3_networks.py`,
 `tests/test_dreamer_v3_rssm_parity.py` only for direct tooling imports and
-boundary assertions, and new `tests/test_dreamer_v3_runtime_imports.py`.
+boundary assertions, `tests/test_dreamer_v3_oracle_manifest.py` only to rewrite
+the three transitional-registry presence assertions as post-deletion absence,
+direct-immutable-table, and canonical-fixture-load assertions, and new
+`tests/test_dreamer_v3_runtime_imports.py`.
 No numerical equation, fixture, manifest, or parser is owned.
 Task 1c owns `__init__.py` only for oracle/tooling imports and exports; the Task
 1a package-root removal is already complete, and Task 1c must not restore,
@@ -1378,8 +1382,10 @@ removes only the dead `OracleHarness` and `OracleInvocation` imports and
 `__all__` entries, while Task 1c later removes the remaining eager
 oracle/tooling imports and exports. Task 9 later replaces
 the remaining production exports;
-`tests/test_dreamer_v3_config.py`, `tests/test_dreamer_v3_oracle_manifest.py`,
-new `tests/test_dreamer_v3_runtime_imports.py`, and the following narrow
+`tests/test_dreamer_v3_config.py`, `tests/test_dreamer_v3_oracle_manifest.py`
+(split sequentially: Task 1b owns compact manifest behavior and Task 1c rewrites
+only its three transitional-registry presence assertions after deletion), new
+`tests/test_dreamer_v3_runtime_imports.py`, and the following narrow
 runtime-boundary exceptions: `rssm.py` only to remove
 `OracleSourceSpec`/`register_oracle_source_spec`, `RSSM_SOURCE_SPEC`, and the
 fixture-only `ninjax_scan_sample_keys`; and

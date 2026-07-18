@@ -22,48 +22,10 @@ from world_marl.dreamer_v3_baseline.networks import (
     TensorSpace,
     _activation,
 )
-from world_marl.dreamer_v3_baseline.oracle import (
-    PAPER_REVISION,
-    UPSTREAM_CURRENT_REVISION,
-    OracleSourceSpec,
-    register_oracle_source_spec,
-)
-
 
 Array = jax.Array
 _f32 = jnp.float32
 _DEFAULT_COMPUTE_DTYPE = jnp.bfloat16
-
-_RSSM_SOURCE_HASHES = {
-    "dreamerv3/agent.py": (
-        "adce8e4274bc098c218bf9a20fd3327545f0ad7d850b5fe328597382e91b5269"
-    ),
-    "dreamerv3/configs.yaml": (
-        "9dff9c7062e3e33951cb54c6dd4b598aaf7e56e18e2cff39c812eaa797bcfcfc"
-    ),
-    "dreamerv3/rssm.py": (
-        "d6d50166914e94fb8bd17a5d5dbda9d42cdd37b85819bb1e9fff3a64d4ad2eb6"
-    ),
-    "embodied/jax/heads.py": (
-        "437641cde21e7f9e3f69b88ad8f6b7e7c22e54eec8c5b19eef6127afde1a9b3f"
-    ),
-    "embodied/jax/nets.py": (
-        "9a1c0c71ad7d3596572a44416e78434f777d8f4dbcbe8ca0dd6b86bb8246392c"
-    ),
-    "embodied/jax/outs.py": (
-        "7e80691f175c71be614f089023cce3a809e0d026c6d5ce89bf566d5f11eb3ed0"
-    ),
-}
-
-RSSM_SOURCE_SPEC = OracleSourceSpec(
-    name="rssm",
-    revision_hashes={
-        PAPER_REVISION: _RSSM_SOURCE_HASHES,
-        UPSTREAM_CURRENT_REVISION: _RSSM_SOURCE_HASHES,
-    },
-    execution_dtypes=("bfloat16", "float32"),
-)
-register_oracle_source_spec(RSSM_SOURCE_SPEC)
 
 
 @struct.dataclass
@@ -132,13 +94,6 @@ class RSSMTrajectory:
             raise ValueError("RSSM final deterministic state shape does not match")
         if self.final_state.stoch.shape != (batch, *state.stoch.shape[-2:]):
             raise ValueError("RSSM final stochastic state shape does not match")
-
-
-def ninjax_scan_sample_keys(root_seed: Array, length: int) -> Array:
-    if length <= 0:
-        raise ValueError("scan length must be positive")
-    contexts = jax.random.split(root_seed, length + 1)[1:]
-    return jax.vmap(lambda key: jax.random.split(key, 16)[1])(contexts)
 
 
 class RSSM(nn.Module):
@@ -558,6 +513,4 @@ __all__ = [
     "RSSM",
     "RSSMState",
     "RSSMTrajectory",
-    "RSSM_SOURCE_SPEC",
-    "ninjax_scan_sample_keys",
 ]

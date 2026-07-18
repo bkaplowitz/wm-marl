@@ -594,8 +594,12 @@ reference set is `oracle.py`, `rssm.py`, and `__init__.py`; neither the manifest
 class nor fixture-generator tooling may reference it. Task 1c first removes
 those runtime import edges and then deletes the temporary class, registration
 functions, and global registry from `oracle.py` in the same unit. The immutable
-fixture source tables and direct helpers remain. At the Task 1c boundary the component suites must
-collect without importing tooling through production modules; their complete
+fixture source tables and direct helpers remain. The three Task-1b manifest
+tests that freeze the temporary deletion seam are sequentially Task-1c-owned
+only for their post-deletion rewrite: they require exact registry absence while
+still loading canonical fixtures through those retained direct tables. At the
+Task 1c boundary the component suites must collect without importing tooling
+through production modules; their complete
 numerical execution is deliberately deferred to Tasks 3a-3c. The live network
 and RSSM tests still construct the removed legacy config shape, so treating
 their current execution failures as a Task 1c import-boundary failure would be

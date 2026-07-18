@@ -49,7 +49,6 @@ from world_marl.dreamer_v3_baseline.models import (
     DreamerEncoder,
     RewardHead,
 )
-from world_marl.dreamer_v3_baseline.network_oracle import NETWORKS_SOURCE_SPEC
 from world_marl.dreamer_v3_baseline.networks import (
     BlockGRU,
     BlockLinear,
@@ -63,19 +62,10 @@ from world_marl.dreamer_v3_baseline.networks import (
     RMSNorm,
     TensorSpace,
 )
-from world_marl.dreamer_v3_baseline.oracle import (
-    DISTRIBUTIONS_SOURCE_SPEC,
-    OracleManifest,
-    OracleSourceSpec,
-    ParameterMapping,
-    ParameterTranslator,
-    TensorSpec,
-)
 from world_marl.dreamer_v3_baseline.rssm import (
     DreamerRSSM,
     RSSM,
     RSSMTrajectory,
-    RSSM_SOURCE_SPEC,
     RSSMState,
 )
 from world_marl.dreamer_v3_baseline.replay import (
@@ -88,7 +78,6 @@ from world_marl.dreamer_v3_baseline.replay import (
     ReplayWriter,
     UniformSelector,
 )
-from world_marl.dreamer_v3_baseline.replay_oracle import REPLAY_SOURCE_SPEC
 
 __all__ = [
     "AggregateOutput",
@@ -100,7 +89,6 @@ __all__ = [
     "Conv2D",
     "BinaryOutput",
     "CategoricalOutput",
-    "DISTRIBUTIONS_SOURCE_SPEC",
     "DecoderConfig",
     "DebugSnapshot",
     "DictDecoder",
@@ -123,7 +111,6 @@ __all__ = [
     "MLPHead",
     "ModelSize",
     "MSEOutput",
-    "NETWORKS_SOURCE_SPEC",
     "NetworkSize",
     "NormalizerConfig",
     "NormalOutput",
@@ -131,17 +118,11 @@ __all__ = [
     "OptimizerConfig",
     "OneHotOutput",
     "OnlineQueue",
-    "OracleManifest",
-    "OracleSourceSpec",
-    "ParameterMapping",
-    "ParameterTranslator",
     "PolicyConfig",
     "RSSMConfig",
     "RSSM",
     "RSSMTrajectory",
-    "RSSM_SOURCE_SPEC",
     "RSSMState",
-    "REPLAY_SOURCE_SPEC",
     "ReplayBatch",
     "ReplayChunk",
     "ReplayConfig",
@@ -155,7 +136,6 @@ __all__ = [
     "RunConfig",
     "SequenceShapeConfig",
     "SlowValueConfig",
-    "TensorSpec",
     "TensorSpace",
     "TwoHotOutput",
     "UniformSelector",
