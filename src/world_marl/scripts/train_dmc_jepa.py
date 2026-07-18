@@ -210,11 +210,6 @@ def parse_args() -> argparse.Namespace:
     )
     policy.add_argument("--actor-entropy-coef", type=float, default=3e-3)
     policy.add_argument(
-        "--actor-entropy-mode",
-        choices=("gaussian", "tanh-normal"),
-        default="tanh-normal",
-    )
-    policy.add_argument(
         "--actor-log-std-min",
         type=float,
         default=-2.302585092994046,
@@ -223,26 +218,6 @@ def parse_args() -> argparse.Namespace:
     policy.add_argument("--actor-output-scale", type=float, default=0.01)
     policy.add_argument("--critic-horizon", type=int, default=64)
     policy.add_argument("--imag-horizon", type=int, default=15)
-    policy.add_argument(
-        "--policy-return-mode",
-        choices=("reward-only", "lambda"),
-        default="lambda",
-    )
-    policy.add_argument(
-        "--policy-actor-baseline",
-        choices=("none", "value"),
-        default="value",
-    )
-    policy.add_argument(
-        "--policy-return-normalization",
-        choices=("none", "batch", "percentile", "ema-percentile"),
-        default="ema-percentile",
-    )
-    policy.add_argument(
-        "--policy-gradient-mode",
-        choices=("dynamics", "reinforce"),
-        default="reinforce",
-    )
     policy.add_argument("--policy-return-ema-decay", type=float, default=0.99)
     policy.add_argument(
         "--value-clip",
@@ -299,16 +274,6 @@ def parse_args() -> argparse.Namespace:
     policy.add_argument("--policy-replay-critic-loss-coef", type=float, default=0.3)
     policy.add_argument("--policy-replay-critic-batch-size", type=int, default=16)
     policy.add_argument("--policy-replay-critic-horizon", type=int, default=64)
-    policy.add_argument(
-        "--policy-replay-critic-return-mode",
-        choices=("reward-only", "lambda"),
-        default="lambda",
-    )
-    policy.add_argument(
-        "--policy-replay-critic-all-steps",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
     policy.add_argument(
         "--policy-slow-value-regularization-coef",
         type=float,
@@ -601,8 +566,6 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--actor-log-std-min must be below --actor-log-std-max")
     if args.stochastic_collection and not args.stochastic_actor:
         parser.error("--stochastic-collection requires --stochastic-actor")
-    if args.policy_gradient_mode == "reinforce" and not args.stochastic_actor:
-        parser.error("--policy-gradient-mode reinforce requires --stochastic-actor")
     if not 0.0 <= args.policy_return_ema_decay < 1.0:
         parser.error("--policy-return-ema-decay must be in [0, 1)")
     if not 0.0 <= args.target_critic_ema_decay < 1.0:
@@ -2366,10 +2329,6 @@ def _train_policy(
             action_low_jax,
             action_high_jax,
             imag_horizon=args.imag_horizon,
-            policy_return_mode=args.policy_return_mode,
-            policy_actor_baseline=args.policy_actor_baseline,
-            policy_return_normalization=args.policy_return_normalization,
-            policy_gradient_mode=args.policy_gradient_mode,
             return_normalization_ema_decay=args.policy_return_ema_decay,
             value_clip=value_clip,
             actor_reference_params=(
@@ -2380,7 +2339,6 @@ def _train_policy(
             action_saturation_threshold=0.95,
             start_actions=start_actions,
             actor_entropy_coef=actor_entropy_coef,
-            actor_entropy_mode=args.actor_entropy_mode,
             target_critic_params=(
                 state.target_critic_params
                 if args.target_critic_ema_decay > 0.0
@@ -2391,8 +2349,6 @@ def _train_policy(
             real_critic_loss_enabled=args.policy_replay_critic_loss_coef > 0.0,
             real_critic_loss_coef=args.policy_replay_critic_loss_coef,
             real_critic_horizon=args.policy_replay_critic_horizon,
-            real_critic_return_mode=args.policy_replay_critic_return_mode,
-            real_critic_all_steps=args.policy_replay_critic_all_steps,
             slow_value_regularization_coef=(args.policy_slow_value_regularization_coef),
             apply_actor_update=apply_actor_update,
         )
@@ -2427,10 +2383,10 @@ def _train_policy(
             "policy_actor_updates": actor_updates,
             "policy_batch_size": args.policy_batch_size,
             "policy_imag_horizon": args.imag_horizon,
-            "policy_return_mode": args.policy_return_mode,
-            "policy_actor_baseline": args.policy_actor_baseline,
-            "policy_return_normalization": args.policy_return_normalization,
-            "policy_gradient_mode": args.policy_gradient_mode,
+            "policy_return_mode": "lambda",
+            "policy_actor_baseline": "value",
+            "policy_return_normalization": "ema-percentile",
+            "policy_gradient_mode": "reinforce",
             "policy_stochastic_actor": args.stochastic_actor,
             "policy_actor_entropy_coef": actor_entropy_coef,
             "policy_value_clip": value_clip,

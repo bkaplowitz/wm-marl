@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from functools import partial
-from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -18,18 +17,6 @@ from world_marl.jepa.models import (
     symlog_twohot,
 )
 from world_marl.jepa.replay import ReplayBatch
-
-PolicyReturnMode = Literal["reward-only", "lambda"]
-PolicyActorBaseline = Literal["none", "value"]
-PolicyReturnNormalization = Literal[
-    "none",
-    "batch",
-    "percentile",
-    "ema-percentile",
-]
-PolicyGradientMode = Literal["dynamics", "reinforce"]
-PolicyActionEntropyMode = Literal["gaussian", "tanh-normal"]
-ReplayCriticReturnMode = Literal["reward-only", "lambda"]
 
 MODEL_GROUPS = frozenset(
     {
@@ -520,16 +507,9 @@ def reset_policy_heads(
     static_argnames=(
         "config",
         "imag_horizon",
-        "policy_return_mode",
-        "policy_actor_baseline",
-        "policy_return_normalization",
-        "policy_gradient_mode",
-        "actor_entropy_mode",
         "target_critic_ema_decay",
         "real_critic_loss_enabled",
         "real_critic_horizon",
-        "real_critic_return_mode",
-        "real_critic_all_steps",
         "slow_value_regularization_coef",
         "apply_actor_update",
     ),
@@ -543,10 +523,6 @@ def continuous_policy_train_step(
     action_high: jax.Array,
     *,
     imag_horizon: int,
-    policy_return_mode: PolicyReturnMode = "reward-only",
-    policy_actor_baseline: PolicyActorBaseline = "none",
-    policy_return_normalization: PolicyReturnNormalization = "none",
-    policy_gradient_mode: PolicyGradientMode = "dynamics",
     return_normalization_ema_decay: float = 0.99,
     value_clip: float = 100.0,
     actor_reference_params: FrozenDict | None = None,
@@ -555,15 +531,12 @@ def continuous_policy_train_step(
     action_saturation_threshold: float = 0.95,
     start_actions: jax.Array | None = None,
     actor_entropy_coef: float = 0.0,
-    actor_entropy_mode: PolicyActionEntropyMode = "gaussian",
     target_critic_params: FrozenDict | None = None,
     target_critic_ema_decay: float = 0.0,
     real_critic_batch: ReplayBatch | None = None,
     real_critic_loss_enabled: bool = False,
     real_critic_loss_coef: float = 0.0,
     real_critic_horizon: int = 32,
-    real_critic_return_mode: ReplayCriticReturnMode = "reward-only",
-    real_critic_all_steps: bool = False,
     slow_value_regularization_coef: float = 0.0,
     apply_actor_update: bool = True,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
@@ -582,36 +555,22 @@ def continuous_policy_train_step(
             imag_horizon=imag_horizon,
             start_actions=start_actions,
             target_critic_params=target_critic_params,
-            policy_gradient_mode=policy_gradient_mode,
-            action_entropy_mode=actor_entropy_mode,
         )
-        if policy_return_mode == "reward-only":
-            actor_returns = reward_only_returns(
-                rollout["rewards"],
-                rollout["continues"],
-                gamma=config.gamma,
-            )
-        else:
-            actor_returns = lambda_returns(
-                rollout["rewards"],
-                rollout["continues"],
-                rollout["fixed_values"],
-                rollout["fixed_last_value"],
-                gamma=config.gamma,
-                lambda_return=config.lambda_return,
-            )
+        actor_returns = lambda_returns(
+            rollout["rewards"],
+            rollout["continues"],
+            rollout["fixed_values"],
+            rollout["fixed_last_value"],
+            gamma=config.gamma,
+            lambda_return=config.lambda_return,
+        )
         clipped_returns, value_target_clip_fraction, value_clip_enabled = (
             clip_value_targets(actor_returns, value_clip)
         )
         weights = survival_weights(rollout["continues"], gamma=config.gamma)
-        if policy_actor_baseline == "none":
-            actor_scores = clipped_returns
-        elif policy_actor_baseline == "value":
-            actor_scores = clipped_returns - jax.lax.stop_gradient(
-                rollout["fixed_values"]
-            )
-        else:
-            raise ValueError(f"unknown policy_actor_baseline: {policy_actor_baseline}")
+        actor_scores = clipped_returns - jax.lax.stop_gradient(
+            rollout["fixed_values"]
+        )
         return_range = jnp.maximum(
             jnp.percentile(clipped_returns.reshape((-1,)), 95.0)
             - jnp.percentile(clipped_returns.reshape((-1,)), 5.0),
@@ -623,22 +582,12 @@ def continuous_policy_train_step(
             + (1.0 - return_normalization_ema_decay) * return_range,
             return_range,
         )
-        if policy_return_normalization == "ema-percentile":
-            normalized_actor_scores = actor_scores / jax.lax.stop_gradient(
-                next_return_range_ema
-            )
-        else:
-            normalized_actor_scores = normalize_weighted_values(
-                actor_scores,
-                weights,
-                mode=policy_return_normalization,
-            )
-        if policy_gradient_mode == "reinforce":
-            policy_terms = rollout["action_log_prob"] * jax.lax.stop_gradient(
-                normalized_actor_scores
-            )
-        else:
-            policy_terms = normalized_actor_scores
+        normalized_actor_scores = actor_scores / jax.lax.stop_gradient(
+            next_return_range_ema
+        )
+        policy_terms = rollout["action_log_prob"] * jax.lax.stop_gradient(
+            normalized_actor_scores
+        )
         actor_objective = weighted_mean(policy_terms, weights)
         return_loss = -actor_objective
         entropy_bonus = weighted_mean(rollout["action_entropy"], weights)
@@ -729,11 +678,11 @@ def continuous_policy_train_step(
                 reference_kl_excess_per_dim
             ),
             "policy/action_entropy_tanh_normal": jnp.asarray(
-                actor_entropy_mode == "tanh-normal",
+                True,
                 dtype=actor_loss.dtype,
             ),
             "policy/gradient_mode_reinforce": jnp.asarray(
-                float(policy_gradient_mode == "reinforce"),
+                1.0,
                 dtype=actor_loss.dtype,
             ),
             "policy/action_log_prob_mean": weighted_mean(
@@ -784,15 +733,15 @@ def continuous_policy_train_step(
                 jnp.abs(normalized_actor_scores)
             ),
             "policy/actor_uses_value_baseline": jnp.asarray(
-                float(policy_actor_baseline == "value"),
+                1.0,
                 dtype=actor_loss.dtype,
             ),
             "policy/return_normalization_batch": jnp.asarray(
-                float(policy_return_normalization == "batch"),
+                0.0,
                 dtype=actor_loss.dtype,
             ),
             "policy/return_normalization_ema_percentile": jnp.asarray(
-                float(policy_return_normalization == "ema-percentile"),
+                1.0,
                 dtype=actor_loss.dtype,
             ),
             "policy/imagined_reward": weighted_mean(rollout["rewards"], weights),
@@ -969,27 +918,16 @@ def continuous_policy_train_step(
                 0,
                 1,
             )
-            if real_critic_return_mode == "lambda":
-                real_returns = lambda_returns(
-                    real_rewards,
-                    real_continues,
-                    bootstrap_values[:-1],
-                    bootstrap_values[-1],
-                    gamma=config.gamma,
-                    lambda_return=config.lambda_return,
-                )
-            else:
-                real_returns = reward_only_returns(
-                    real_rewards,
-                    real_continues,
-                    gamma=config.gamma,
-                )
-            if real_critic_all_steps:
-                real_targets = jnp.swapaxes(real_returns, 0, 1)
-                real_value_latents = real_z[:, :-1]
-            else:
-                real_targets = real_returns[0]
-                real_value_latents = real_z[:, 0]
+            real_returns = lambda_returns(
+                real_rewards,
+                real_continues,
+                bootstrap_values[:-1],
+                bootstrap_values[-1],
+                gamma=config.gamma,
+                lambda_return=config.lambda_return,
+            )
+            real_targets = jnp.swapaxes(real_returns, 0, 1)
+            real_value_latents = real_z[:, :-1]
             real_targets, real_target_clip_fraction, _ = clip_value_targets(
                 real_targets,
                 value_clip,
@@ -1032,11 +970,11 @@ def continuous_policy_train_step(
                 dtype=value_loss.dtype,
             ),
             "policy/replay_critic_lambda_return": jnp.asarray(
-                float(real_critic_return_mode == "lambda"),
+                1.0,
                 dtype=value_loss.dtype,
             ),
             "policy/replay_critic_all_steps": jnp.asarray(
-                float(real_critic_all_steps),
+                1.0,
                 dtype=value_loss.dtype,
             ),
             "policy/replay_critic_value_mean": real_value_mean,
@@ -1102,8 +1040,6 @@ def continuous_imagine_rollout(
     imag_horizon: int,
     start_actions: jax.Array | None = None,
     target_critic_params: FrozenDict | None = None,
-    policy_gradient_mode: PolicyGradientMode = "dynamics",
-    action_entropy_mode: PolicyActionEntropyMode = "gaussian",
 ) -> dict[str, jax.Array]:
     model_params = jax.tree_util.tree_map(jax.lax.stop_gradient, params)
     value_params = (
@@ -1118,7 +1054,6 @@ def continuous_imagine_rollout(
         start_actions,
         config,
     )
-    batch_size = context.shape[0]
 
     def step(carry, _):
         context, action_context, rng = carry
@@ -1129,48 +1064,31 @@ def continuous_imagine_rollout(
             params,
             current_z,
         )
-        if config.stochastic_actor:
-            noise = jax.random.normal(action_key, action_means.shape)
-            sampled_raw_actions = action_means + jnp.exp(action_log_stds) * noise
-            raw_actions = (
-                jax.lax.stop_gradient(sampled_raw_actions)
-                if policy_gradient_mode == "reinforce"
-                else sampled_raw_actions
+        noise = jax.random.normal(action_key, action_means.shape)
+        sampled_raw_actions = action_means + jnp.exp(action_log_stds) * noise
+        raw_actions = jax.lax.stop_gradient(sampled_raw_actions)
+        action_entropy = tanh_normal_entropy_sample(
+            sampled_raw_actions,
+            action_log_stds,
+        )
+        log_prob_actions = jax.lax.stop_gradient(raw_actions)
+        gaussian_log_probs = (
+            -0.5
+            * jnp.square(
+                (log_prob_actions - action_means) / jnp.exp(action_log_stds)
             )
-            if action_entropy_mode == "gaussian":
-                action_entropy = jnp.sum(
-                    0.5 * jnp.log(2.0 * jnp.pi) + 0.5 + action_log_stds,
-                    axis=-1,
-                )
-            elif action_entropy_mode == "tanh-normal":
-                action_entropy = tanh_normal_entropy_sample(
-                    sampled_raw_actions,
-                    action_log_stds,
-                )
-            else:
-                raise ValueError(f"unknown action_entropy_mode: {action_entropy_mode}")
-            log_prob_actions = jax.lax.stop_gradient(raw_actions)
-            gaussian_log_probs = (
-                -0.5
-                * jnp.square(
-                    (log_prob_actions - action_means) / jnp.exp(action_log_stds)
-                )
-                - action_log_stds
-                - 0.5 * jnp.log(2.0 * jnp.pi)
-            )
-            squash_correction = 2.0 * (
-                jnp.log(2.0)
-                - log_prob_actions
-                - jax.nn.softplus(-2.0 * log_prob_actions)
-            )
-            action_log_prob = jnp.sum(
-                gaussian_log_probs - squash_correction,
-                axis=-1,
-            )
-        else:
-            raw_actions = action_means
-            action_entropy = jnp.zeros((batch_size,), dtype=current_z.dtype)
-            action_log_prob = jnp.zeros((batch_size,), dtype=current_z.dtype)
+            - action_log_stds
+            - 0.5 * jnp.log(2.0 * jnp.pi)
+        )
+        squash_correction = 2.0 * (
+            jnp.log(2.0)
+            - log_prob_actions
+            - jax.nn.softplus(-2.0 * log_prob_actions)
+        )
+        action_log_prob = jnp.sum(
+            gaussian_log_probs - squash_correction,
+            axis=-1,
+        )
         normalized_action_means = jnp.tanh(action_means)
         normalized_actions = jnp.tanh(raw_actions)
         actions = scale_normalized_actions(
@@ -1345,25 +1263,6 @@ def lambda_returns(
         scan_fn,
         last_value,
         (rewards[::-1], continues[::-1], next_values[::-1]),
-    )
-    return returns[::-1]
-
-
-def reward_only_returns(
-    rewards: jax.Array,
-    continues: jax.Array,
-    *,
-    gamma: float,
-) -> jax.Array:
-    def scan_fn(next_return, inputs):
-        reward, cont = inputs
-        ret = reward + gamma * cont * next_return
-        return ret, ret
-
-    _, returns = jax.lax.scan(
-        scan_fn,
-        jnp.zeros_like(rewards[-1]),
-        (rewards[::-1], continues[::-1]),
     )
     return returns[::-1]
 
@@ -1724,27 +1623,6 @@ def weighted_std(values: jax.Array, weights: jax.Array) -> jax.Array:
     mean = weighted_mean(values, weights)
     variance = weighted_mean(jnp.square(values - mean), weights)
     return jnp.sqrt(jnp.maximum(variance, 1e-6))
-
-
-def normalize_weighted_values(
-    values: jax.Array,
-    weights: jax.Array,
-    *,
-    mode: PolicyReturnNormalization,
-) -> jax.Array:
-    if mode == "none":
-        return values
-    if mode == "batch":
-        mean = jax.lax.stop_gradient(weighted_mean(values, weights))
-        std = jax.lax.stop_gradient(weighted_std(values, weights))
-        return (values - mean) / (std + 1e-6)
-    if mode == "percentile":
-        flat_values = values.reshape((-1,))
-        low = jax.lax.stop_gradient(jnp.percentile(flat_values, 5.0))
-        high = jax.lax.stop_gradient(jnp.percentile(flat_values, 95.0))
-        scale = jnp.maximum(high - low, 1.0)
-        return values / (scale + 1e-6)
-    raise ValueError(f"unknown normalization mode: {mode}")
 
 
 def prediction_loss(

@@ -259,17 +259,11 @@ def test_cli_accepts_wandb_video_controls(monkeypatch):
     assert args.value_clip == 400.0
 
 
-def test_cli_exposes_current_dreamer_stabilizers(monkeypatch):
+def test_cli_uses_single_current_actor_critic_objective(monkeypatch):
     monkeypatch.setattr(
         sys,
         "argv",
         _minimal_args(
-            "--policy-gradient-mode",
-            "reinforce",
-            "--policy-return-mode",
-            "lambda",
-            "--policy-return-normalization",
-            "ema-percentile",
             "--target-critic-ema-decay",
             "0.98",
             "--policy-replay-critic-loss-coef",
@@ -281,9 +275,9 @@ def test_cli_exposes_current_dreamer_stabilizers(monkeypatch):
 
     args = train_dmc_jepa.parse_args()
 
-    assert args.policy_gradient_mode == "reinforce"
-    assert args.policy_return_mode == "lambda"
-    assert args.policy_return_normalization == "ema-percentile"
+    assert not hasattr(args, "policy_gradient_mode")
+    assert not hasattr(args, "policy_return_mode")
+    assert not hasattr(args, "policy_return_normalization")
     assert args.target_critic_ema_decay == 0.98
     assert args.policy_replay_critic_loss_coef == 0.3
     assert args.policy_slow_value_regularization_coef == 1.0

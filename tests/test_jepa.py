@@ -22,7 +22,6 @@ from world_marl.jepa.training import (
     masked_mean,
     prediction_validity,
     reset_policy_heads,
-    reward_only_returns,
     select_continuous_actions,
     tanh_normal_entropy_sample,
     train_model_step,
@@ -525,10 +524,6 @@ def test_continuous_policy_step_can_update_critic_without_actor():
         -jnp.ones((2,), dtype=jnp.float32),
         jnp.ones((2,), dtype=jnp.float32),
         imag_horizon=2,
-        policy_return_mode="lambda",
-        policy_actor_baseline="value",
-        policy_return_normalization="ema-percentile",
-        policy_gradient_mode="reinforce",
         target_critic_params=state.target_critic_params,
         target_critic_ema_decay=0.98,
         apply_actor_update=False,
@@ -650,20 +645,13 @@ def test_dreamer_style_policy_update_is_finite_and_keeps_world_model_frozen():
         -jnp.ones((2,), dtype=jnp.float32),
         jnp.ones((2,), dtype=jnp.float32),
         imag_horizon=2,
-        policy_return_mode="lambda",
-        policy_actor_baseline="value",
-        policy_return_normalization="ema-percentile",
-        policy_gradient_mode="reinforce",
         actor_entropy_coef=3e-4,
-        actor_entropy_mode="tanh-normal",
         target_critic_params=state.target_critic_params,
         target_critic_ema_decay=0.98,
         real_critic_batch=real_batch,
         real_critic_loss_enabled=True,
         real_critic_loss_coef=0.3,
         real_critic_horizon=4,
-        real_critic_return_mode="lambda",
-        real_critic_all_steps=True,
         slow_value_regularization_coef=1.0,
         value_clip=0.0,
         actor_reference_params=state.params,
@@ -811,15 +799,6 @@ def test_lambda_returns_bootstrap_from_next_values():
     )
 
     np.testing.assert_allclose(np.asarray(returns[:, 0]), np.asarray([27.0, 32.0]))
-
-
-def test_reward_only_returns_do_not_bootstrap_from_value_head():
-    rewards = jnp.asarray([[1.0], [2.0], [3.0]])
-    continues = jnp.asarray([[1.0], [0.0], [1.0]])
-
-    returns = reward_only_returns(rewards, continues, gamma=1.0)
-
-    np.testing.assert_allclose(np.asarray(returns[:, 0]), np.asarray([3.0, 2.0, 3.0]))
 
 
 def test_prediction_validity_masks_terminal_crossing_targets():

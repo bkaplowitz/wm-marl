@@ -334,10 +334,10 @@ def test_500k_preset_locks_current_architecture_and_control_stack():
     assert params["critic_hidden_dim"] == 64
     assert params["actor_num_layers"] == 3
     assert params["critic_num_layers"] == 3
-    assert params["policy_gradient_mode"] == "reinforce"
-    assert params["policy_return_mode"] == "lambda"
-    assert params["policy_return_normalization"] == "ema-percentile"
-    assert params["actor_entropy_mode"] == "tanh-normal"
+    assert "policy_gradient_mode" not in params
+    assert "policy_return_mode" not in params
+    assert "policy_return_normalization" not in params
+    assert "actor_entropy_mode" not in params
     assert params["actor_entropy_coef"] == 3e-3
     assert params["value_clip"] == 100.0
     assert params["value_clip_final"] == 333.0
