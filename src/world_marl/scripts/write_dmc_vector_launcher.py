@@ -108,6 +108,7 @@ def main() -> None:
     manifest = {
         "algorithm": "jepa",
         "preset": args.preset,
+        "source": source_revision(_source_checkout_root()),
         "tasks": args.tasks,
         "seeds": args.seeds,
         "gpus": args.gpus,
@@ -514,6 +515,30 @@ def _source_checkout_root() -> Path:
         if (candidate / "pyproject.toml").is_file():
             return candidate
     return Path.cwd().resolve()
+
+
+def source_revision(repo_root: Path) -> dict[str, str | bool | None]:
+    """Describe the exact source tree used to generate a launcher."""
+
+    def git_output(*args: str) -> str | None:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(repo_root), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            return None
+        return result.stdout.strip()
+
+    commit = git_output("rev-parse", "HEAD")
+    status = git_output("status", "--porcelain", "--untracked-files=normal")
+    return {
+        "checkout": str(repo_root.resolve()),
+        "commit": commit,
+        "dirty": None if status is None else bool(status),
+    }
 
 
 def write_tail(out_root: Path) -> None:

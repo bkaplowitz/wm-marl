@@ -6,6 +6,7 @@ from world_marl.scripts import write_dmc_vector_launcher as launcher
 from world_marl.scripts.write_dmc_vector_launcher import (
     PRESETS,
     params_to_shell_args,
+    source_revision,
     step_accounting,
     write_launcher,
 )
@@ -134,6 +135,15 @@ def test_launcher_can_pin_an_explicit_repo_root(tmp_path):
 
     script = (out_root / "launcher.sh").read_text()
     assert f"DEFAULT_REPO_ROOT={repo_root}" in script
+
+
+def test_source_revision_records_current_checkout():
+    revision = source_revision(launcher._source_checkout_root())
+
+    assert revision["checkout"] == str(launcher._source_checkout_root())
+    assert isinstance(revision["commit"], str)
+    assert len(revision["commit"]) == 40
+    assert isinstance(revision["dirty"], bool)
 
 
 def test_maintained_presets_are_small_and_unambiguous():
