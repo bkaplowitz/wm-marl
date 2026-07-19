@@ -40,7 +40,6 @@ def _replay() -> SequenceReplayBuffer:
     )
     replay.add_step(
         observations=np.arange(6, dtype=np.float32).reshape(2, 3),
-        next_observations=np.arange(6, dtype=np.float32).reshape(2, 3) + 1.0,
         actions=np.asarray([[0.25], [-0.5]], dtype=np.float32),
         rewards=np.asarray([1.0, 0.0], dtype=np.float32),
         is_last=np.asarray([0.0, 1.0], dtype=np.float32),

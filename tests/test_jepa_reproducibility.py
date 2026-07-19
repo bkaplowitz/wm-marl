@@ -49,7 +49,6 @@ def test_replay_fingerprint_survives_round_trip_and_detects_changes(tmp_path):
     )
     replay.add_step(
         observations=np.arange(6, dtype=np.float32).reshape(2, 3),
-        next_observations=np.arange(6, dtype=np.float32).reshape(2, 3) + 1.0,
         actions=np.asarray([[0.25], [-0.5]], dtype=np.float32),
         rewards=np.asarray([1.0, 0.0], dtype=np.float32),
         is_last=np.asarray([0.0, 1.0], dtype=np.float32),
@@ -67,7 +66,6 @@ def test_replay_fingerprint_survives_round_trip_and_detects_changes(tmp_path):
 
     restored.add_step(
         observations=np.zeros((2, 3), dtype=np.float32),
-        next_observations=np.ones((2, 3), dtype=np.float32),
         actions=np.zeros((2, 1), dtype=np.float32),
         rewards=np.zeros(2, dtype=np.float32),
         is_last=np.zeros(2, dtype=np.float32),
@@ -88,10 +86,6 @@ def test_replay_can_materialize_pre_generated_sample_indices():
         replay.add_step(
             observations=np.asarray(
                 [[step, 0], [step, 1]],
-                dtype=np.float32,
-            ),
-            next_observations=np.asarray(
-                [[step + 1, 0], [step + 1, 1]],
                 dtype=np.float32,
             ),
             actions=np.asarray([[step], [-step]], dtype=np.float32),
@@ -122,7 +116,6 @@ def test_replay_can_materialize_pre_generated_sample_indices():
     )
     for field in (
         "observations",
-        "next_observations",
         "actions",
         "rewards",
         "is_last",
@@ -155,11 +148,6 @@ def test_legacy_replay_migrates_done_to_explicit_boundary_fields(tmp_path):
 
     np.testing.assert_array_equal(replay.is_last[:4], dones)
     np.testing.assert_array_equal(replay.is_terminal[:4], dones)
-    np.testing.assert_array_equal(
-        replay.next_observations[:3],
-        observations[1:],
-    )
-    np.testing.assert_array_equal(replay.next_observations[3], observations[3])
 
 
 def test_pytree_fingerprint_is_stable_and_value_sensitive():

@@ -139,7 +139,6 @@ class DMCVectorAdapter:
             (self.num_envs, self.action_dim)
         )
         observations = []
-        next_observations = []
         rewards = np.zeros((self.num_envs, 1), dtype=np.float32)
         dones = np.zeros((self.num_envs, 1), dtype=np.float32)
         completed_returns: list[tuple[float, ...]] = []
@@ -171,7 +170,6 @@ class DMCVectorAdapter:
             )
             rewards[env_index, 0] = reward
             dones[env_index, 0] = float(done)
-            next_observations.append(self._flatten_observation(timestep.observation))
 
             if done:
                 completed_returns.append((float(self._episode_returns[env_index, 0]),))
@@ -200,9 +198,6 @@ class DMCVectorAdapter:
             completed_lengths=tuple(completed_lengths),
             step_infos=tuple({} for _ in range(self.num_envs)),
             infos=tuple(infos),
-            next_observations=np.asarray(next_observations, dtype=np.float32)[
-                :, None, :
-            ],
         )
 
     def sample_actions(self, rng: np.random.Generator) -> np.ndarray:

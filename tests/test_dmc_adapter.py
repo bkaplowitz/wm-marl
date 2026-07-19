@@ -99,20 +99,6 @@ def test_dmc_adapter_reset_step_and_completion(num_workers):
         assert first.observations.shape == (2, 1, 3)
         assert first.rewards.shape == (2, 1)
         assert second.dones.tolist() == [[1.0], [1.0]]
-        np.testing.assert_array_equal(
-            second.next_observations[:, 0],
-            np.asarray(
-                [[10.0, 2.0, 2.5], [11.0, 2.0, 2.5]],
-                dtype=np.float32,
-            ),
-        )
-        np.testing.assert_array_equal(
-            second.observations[:, 0],
-            np.asarray(
-                [[10.0, 0.0, 0.5], [11.0, 0.0, 0.5]],
-                dtype=np.float32,
-            ),
-        )
         assert len(second.completed_returns) == 2
         assert second.completed_lengths == (2, 2)
     finally:
@@ -216,7 +202,9 @@ def test_dmc_adapter_state_snapshot_round_trip(tmp_path):
         adapter._episode_lengths[0] = 17
         adapter._envs[0]._task._random.uniform()
         expected_random = adapter._envs[0]._task._random.uniform()
-        adapter._envs[0]._task._random.set_state(np.random.RandomState(10).get_state())
+        adapter._envs[0]._task._random.set_state(
+            np.random.RandomState(10).get_state()
+        )
         adapter._envs[0]._task._random.uniform()
         snapshot = tmp_path / "dmc_state.npz"
         adapter.save_state_npz(snapshot)

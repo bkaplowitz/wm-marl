@@ -28,7 +28,6 @@ class VectorStep:
     completed_lengths: tuple[int, ...]
     step_infos: tuple[dict[str, Any], ...]
     infos: tuple[dict[str, Any], ...]
-    next_observations: np.ndarray | None = None
 
 
 def make_meltingpot_env(substrate: str, max_cycles: int = 1000):

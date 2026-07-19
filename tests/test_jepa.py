@@ -50,7 +50,6 @@ def _batch(config: JepaConfig):
     for step in range(5):
         replay.add_step(
             observations=np.full((1, 4), step, dtype=np.float32),
-            next_observations=np.full((1, 4), step + 1, dtype=np.float32),
             actions=np.asarray([step % config.action_dim], dtype=np.int32),
             rewards=np.asarray([1.0], dtype=np.float32),
             is_last=np.asarray([0.0], dtype=np.float32),
@@ -141,10 +140,6 @@ def test_sequence_replay_samples_contiguous_chunks():
     for step in range(6):
         replay.add_step(
             observations=np.asarray([[step], [step + 100]], dtype=np.float32),
-            next_observations=np.asarray(
-                [[step + 1], [step + 101]],
-                dtype=np.float32,
-            ),
             actions=np.asarray([step % 2, (step + 1) % 2]),
             rewards=np.asarray([step, step + 100], dtype=np.float32),
             is_last=np.zeros((2,), dtype=np.float32),
@@ -171,7 +166,6 @@ def test_sequence_replay_does_not_sample_across_collector_cuts():
     for step in range(10):
         replay.add_step(
             observations=np.asarray([[step]], dtype=np.float32),
-            next_observations=np.asarray([[step + 1]], dtype=np.float32),
             actions=np.asarray([step % 2]),
             rewards=np.asarray([0.0], dtype=np.float32),
             is_last=np.asarray([0.0], dtype=np.float32),
@@ -194,7 +188,6 @@ def test_sequence_replay_finds_valid_starts_near_episode_boundaries():
     for step in range(15):
         replay.add_step(
             observations=np.asarray([[step]], dtype=np.float32),
-            next_observations=np.asarray([[step + 1]], dtype=np.float32),
             actions=np.asarray([step % 2]),
             rewards=np.asarray([0.0], dtype=np.float32),
             is_last=np.asarray([float(step == 10)], dtype=np.float32),
@@ -217,7 +210,6 @@ def test_sequence_replay_reset_starts_remain_correct_after_ring_wrap():
     for step in range(15):
         replay.add_step(
             observations=np.asarray([[step]], dtype=np.float32),
-            next_observations=np.asarray([[step + 1]], dtype=np.float32),
             actions=np.asarray([step % 2]),
             rewards=np.asarray([0.0], dtype=np.float32),
             is_last=np.asarray([float(step in {6, 11})], dtype=np.float32),
@@ -248,10 +240,6 @@ def test_sequence_replay_supports_continuous_action_vectors():
     for step in range(6):
         replay.add_step(
             observations=np.asarray([[step], [step + 100]], dtype=np.float32),
-            next_observations=np.asarray(
-                [[step + 1], [step + 101]],
-                dtype=np.float32,
-            ),
             actions=np.asarray(
                 [
                     [step, step + 1, step + 2],
@@ -330,7 +318,6 @@ def test_continuous_action_jepa_model_step_is_finite():
 
     replay_batch = ReplayBatch(
         observations=observations,
-        next_observations=observations[:, 1:],
         actions=actions,
         rewards=jnp.ones((3, 3), dtype=jnp.float32),
         is_last=jnp.zeros((3, 3), dtype=jnp.float32),
@@ -344,45 +331,6 @@ def test_continuous_action_jepa_model_step_is_finite():
         chunk_length=2,
     )
     assert jnp.isfinite(metrics["model/total_loss"])
-
-
-def test_sequence_outputs_use_physical_successors_as_latent_targets():
-    config = _config()
-    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
-    observations = jnp.zeros((2, 3, config.observation_dim), dtype=jnp.float32)
-    next_observations = jax.random.normal(
-        jax.random.PRNGKey(1),
-        (2, 2, config.observation_dim),
-    )
-    actions = jnp.zeros((2, 2), dtype=jnp.int32)
-
-    outputs = state.apply_fn(
-        {"params": state.params},
-        observations,
-        actions,
-        chunk_length=2,
-        next_observations=next_observations,
-        is_last=jnp.asarray([[0.0, 0.0], [1.0, 0.0]], dtype=jnp.float32),
-        method=JepaWorldModel.sequence_outputs,
-    )
-    physical = state.apply_fn(
-        {"params": state.params},
-        next_observations,
-        method=JepaWorldModel.encode,
-    )
-    shifted = state.apply_fn(
-        {"params": state.params},
-        observations,
-        method=JepaWorldModel.encode,
-    )[:, 1:]
-    expected = shifted.at[1, 0].set(physical[1, 0])
-
-    np.testing.assert_allclose(
-        np.asarray(outputs["target_latents"][:, :, 0]),
-        np.asarray(expected),
-        rtol=1e-6,
-        atol=1e-6,
-    )
 
 
 def test_model_step_can_freeze_only_the_observation_encoder():
@@ -456,7 +404,6 @@ def test_jepa_model_trains_recursive_overshooting_horizons():
 
     replay_batch = ReplayBatch(
         observations=observations,
-        next_observations=observations[:, 1:],
         actions=actions,
         rewards=jnp.ones((3, 5), dtype=jnp.float32),
         is_last=jnp.zeros((3, 5), dtype=jnp.float32),
@@ -652,7 +599,6 @@ def test_dreamer_style_policy_update_is_finite_and_keeps_world_model_frozen():
     before = state.params
     real_batch = ReplayBatch(
         observations=jax.random.normal(jax.random.PRNGKey(1), (4, 5, 4)),
-        next_observations=jax.random.normal(jax.random.PRNGKey(1), (4, 5, 4))[:, 1:],
         actions=jax.random.uniform(
             jax.random.PRNGKey(2),
             (4, 4, 2),
@@ -840,26 +786,22 @@ def test_transition_start_validity_keeps_boundary_transition_labels():
     np.testing.assert_allclose(np.asarray(validity), expected)
 
 
-def test_open_loop_evaluation_keeps_boundary_target_but_masks_after_it():
+def test_open_loop_evaluation_masks_terminal_crossing_predictions():
     config = _config()
     state = create_jepa_train_state(jax.random.PRNGKey(0), config)
     batch = ReplayBatch(
-        observations=jnp.zeros((2, 3, config.observation_dim), dtype=jnp.float32),
-        next_observations=jnp.zeros(
-            (2, 2, config.observation_dim),
-            dtype=jnp.float32,
-        ),
-        actions=jnp.zeros((2, 2), dtype=jnp.int32),
-        rewards=jnp.ones((2, 2), dtype=jnp.float32),
-        is_last=jnp.asarray([[0.0, 0.0], [1.0, 0.0]], dtype=jnp.float32),
-        is_terminal=jnp.asarray([[0.0, 0.0], [1.0, 0.0]], dtype=jnp.float32),
+        observations=jnp.zeros((2, 2, config.observation_dim), dtype=jnp.float32),
+        actions=jnp.zeros((2, 1), dtype=jnp.int32),
+        rewards=jnp.ones((2, 1), dtype=jnp.float32),
+        is_last=jnp.asarray([[0.0], [1.0]], dtype=jnp.float32),
+        is_terminal=jnp.asarray([[0.0], [1.0]], dtype=jnp.float32),
     )
 
-    metrics = evaluate_open_loop(state, batch, config, horizon=2)
+    metrics = evaluate_open_loop(state, batch, config, horizon=1)
 
     np.testing.assert_allclose(
         np.asarray(metrics["model/open_loop_valid_fraction"]),
-        0.75,
+        0.5,
     )
     assert metrics["model/open_loop_finite_fraction"] == 1.0
 
@@ -880,10 +822,6 @@ def test_open_loop_evaluation_supports_history_context():
     state = create_jepa_train_state(jax.random.PRNGKey(0), config)
     batch = ReplayBatch(
         observations=jnp.zeros((3, 5, config.observation_dim), dtype=jnp.float32),
-        next_observations=jnp.zeros(
-            (3, 4, config.observation_dim),
-            dtype=jnp.float32,
-        ),
         actions=jnp.zeros((3, 4, config.action_dim), dtype=jnp.float32),
         rewards=jnp.ones((3, 4), dtype=jnp.float32),
         is_last=jnp.asarray(
@@ -908,7 +846,7 @@ def test_open_loop_evaluation_supports_history_context():
 
     np.testing.assert_allclose(
         np.asarray(metrics["model/open_loop_valid_fraction"]),
-        0.5,
+        1.0 / 3.0,
         atol=1e-6,
     )
     assert metrics["model/open_loop_finite_fraction"] == 1.0

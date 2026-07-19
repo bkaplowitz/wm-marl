@@ -874,12 +874,6 @@ def _prepare_training_prefix(
             raise ValueError("training snapshot is missing validation boundaries")
         validation_batch = ReplayBatch(
             observations=jnp.asarray(loaded.arrays["validation_observations"]),
-            next_observations=jnp.asarray(
-                loaded.arrays.get(
-                    "validation_next_observations",
-                    loaded.arrays["validation_observations"][:, 1:],
-                )
-            ),
             actions=jnp.asarray(loaded.arrays["validation_actions"]),
             rewards=jnp.asarray(loaded.arrays["validation_rewards"]),
             is_last=jnp.asarray(validation_is_last),
@@ -1642,9 +1636,6 @@ def _save_branch_training_snapshot(
         observations=observations,
         arrays={
             "validation_observations": jax.device_get(validation_batch.observations),
-            "validation_next_observations": jax.device_get(
-                validation_batch.next_observations
-            ),
             "validation_actions": jax.device_get(validation_batch.actions),
             "validation_rewards": jax.device_get(validation_batch.rewards),
             "validation_is_last": jax.device_get(validation_batch.is_last),
@@ -1769,11 +1760,6 @@ def _collect_random_steps(
         _add_replay_step(
             replay,
             observations=observations[:, 0],
-            next_observations=(
-                step.next_observations[:, 0]
-                if step.next_observations is not None
-                else step.observations[:, 0]
-            ),
             actions=actions[:, 0],
             rewards=step.rewards[:, 0],
             is_last=step.dones[:, 0],
@@ -1843,11 +1829,6 @@ def _collect_policy_steps(
         _add_replay_step(
             replay,
             observations=observations[:, 0],
-            next_observations=(
-                step.next_observations[:, 0]
-                if step.next_observations is not None
-                else step.observations[:, 0]
-            ),
             actions=actions,
             rewards=step.rewards[:, 0],
             is_last=step.dones[:, 0],
@@ -1899,7 +1880,6 @@ def _add_replay_step(
     replay: SequenceReplayBuffer | tuple[SequenceReplayBuffer, ...],
     *,
     observations: np.ndarray,
-    next_observations: np.ndarray,
     actions: np.ndarray,
     rewards: np.ndarray,
     is_last: np.ndarray,
@@ -1910,7 +1890,6 @@ def _add_replay_step(
     for buffer in buffers:
         buffer.add_step(
             observations=observations,
-            next_observations=next_observations,
             actions=actions,
             rewards=rewards,
             is_last=is_last,
@@ -2498,7 +2477,6 @@ def _reload_prediction_diff(
         batch.observations,
         batch.actions,
         chunk_length=chunk_length,
-        next_observations=batch.next_observations,
         is_last=batch.is_last,
         method=JepaWorldModel.sequence_outputs,
     )["predicted_latents"]
@@ -2507,7 +2485,6 @@ def _reload_prediction_diff(
         batch.observations,
         batch.actions,
         chunk_length=chunk_length,
-        next_observations=batch.next_observations,
         is_last=batch.is_last,
         method=JepaWorldModel.sequence_outputs,
     )["predicted_latents"]

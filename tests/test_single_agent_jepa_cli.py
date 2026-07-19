@@ -156,10 +156,6 @@ def test_random_collection_marks_nonterminal_reset_cuts():
                     [[[100 * self.reset_calls + self.step_count]]],
                     dtype=np.float32,
                 ),
-                next_observations=np.asarray(
-                    [[[100 * self.reset_calls + self.step_count]]],
-                    dtype=np.float32,
-                ),
                 rewards=np.zeros((1, 1), dtype=np.float32),
                 dones=np.zeros((1, 1), dtype=np.float32),
             )
@@ -213,7 +209,6 @@ def test_random_collection_holds_actions_and_resamples_after_forced_reset():
         def step(self, actions):
             return SimpleNamespace(
                 observations=np.asarray(actions, dtype=np.float32),
-                next_observations=np.asarray(actions, dtype=np.float32),
                 rewards=np.zeros((1, 1), dtype=np.float32),
                 dones=np.zeros((1, 1), dtype=np.float32),
             )
@@ -478,7 +473,6 @@ def test_recent_replay_batch_respects_requested_fraction():
         for step in range(10):
             replay.add_step(
                 observations=np.asarray([[step]], dtype=np.float32),
-                next_observations=np.asarray([[step + 1]], dtype=np.float32),
                 actions=np.zeros((1, 1), dtype=np.float32),
                 rewards=np.asarray([reward], dtype=np.float32),
                 is_last=np.zeros((1,), dtype=np.float32),
@@ -512,7 +506,6 @@ def test_policy_start_mixture_adds_reset_aligned_main_replay_states():
         for value in values:
             replay.add_step(
                 observations=np.asarray([[value]], dtype=np.float32),
-                next_observations=np.asarray([[value]], dtype=np.float32),
                 actions=np.zeros((1, 1), dtype=np.float32),
                 rewards=np.zeros((1,), dtype=np.float32),
                 is_last=np.zeros((1,), dtype=np.float32),

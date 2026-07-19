@@ -396,7 +396,6 @@ class JepaWorldModel(nn.Module):
         actions: jax.Array,
         *,
         chunk_length: int,
-        next_observations: jax.Array | None = None,
         is_last: jax.Array | None = None,
     ) -> dict[str, jax.Array]:
         latents = self.encode(observations)
@@ -405,18 +404,6 @@ class JepaWorldModel(nn.Module):
             raise ValueError("observations must cover chunk_length + max_horizon")
         if actions.shape[1] < chunk_length + max_horizon - 1:
             raise ValueError("actions must cover chunk_length + max_horizon - 1")
-        target_next_latents = latents[:, 1:]
-        if next_observations is not None and is_last is not None:
-            physical_next_latents = self.encode(next_observations)
-            target_next_latents = jnp.where(
-                is_last[:, : physical_next_latents.shape[1], None] > 0.5,
-                physical_next_latents,
-                target_next_latents[:, : physical_next_latents.shape[1]],
-            )
-        if target_next_latents.shape[1] < chunk_length + max_horizon - 1:
-            raise ValueError(
-                "next_observations must cover chunk_length + max_horizon - 1"
-            )
 
         context_latents = latents[:, :chunk_length]
         latent_history = history_windows(
@@ -477,10 +464,7 @@ class JepaWorldModel(nn.Module):
             )
             targets.append(
                 jax.lax.stop_gradient(
-                    target_next_latents[
-                        :,
-                        step_index : step_index + chunk_length,
-                    ]
+                    latents[:, step_index + 1 : step_index + 1 + chunk_length]
                 )
             )
             current_reward_logits = self.reward_from_hidden(last_h)

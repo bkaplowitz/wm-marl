@@ -27,19 +27,17 @@ def make_brax_env(
     kwargs = {}
     if backend is not None:
         kwargs["backend"] = backend
-    return envs.create(
-        env_name=env_id,
-        episode_length=episode_length,
-        auto_reset=False,
-        **kwargs,
-    )
+    return envs.create(env_name=env_id, episode_length=episode_length, **kwargs)
 
 
 class BraxVectorAdapter:
     """Wrap Brax environments in the repo's single-agent vector contract.
 
-    The default factory disables Brax's internal auto-reset wrapper so the
-    adapter can expose the physical post-action observation before resetting.
+    ``auto_reset=False`` is **not honored** for the underlying dynamics:
+    ``brax.envs.create`` always applies Brax's ``AutoResetWrapper``, which
+    restores a done env to its original fixed initial state on the next step.
+    Setting ``auto_reset=False`` only skips the adapter's re-randomized resets;
+    the underlying environment keeps restarting either way.
     """
 
     def __init__(
@@ -138,10 +136,6 @@ class BraxVectorAdapter:
         next_state = self._step(self._state, jnp.asarray(action_batch))
         rewards_flat = np.asarray(jax.device_get(next_state.reward), dtype=np.float32)
         env_done = np.asarray(jax.device_get(next_state.done), dtype=np.float32) > 0.5
-        next_observations = np.asarray(
-            jax.device_get(next_state.obs),
-            dtype=np.float32,
-        ).reshape((self.num_envs, -1))[:, None, :]
 
         self._episode_returns[:, 0] += rewards_flat.reshape((self.num_envs,))
         self._episode_lengths += 1
@@ -185,7 +179,6 @@ class BraxVectorAdapter:
             completed_lengths=tuple(completed_lengths),
             step_infos=tuple({} for _ in range(self.num_envs)),
             infos=tuple(infos),
-            next_observations=next_observations,
         )
 
     def sample_actions(self, rng: np.random.Generator) -> np.ndarray:

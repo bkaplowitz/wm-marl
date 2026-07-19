@@ -351,7 +351,6 @@ def world_model_loss_with_outputs(
         batch.observations,
         batch.actions,
         chunk_length=chunk_length,
-        next_observations=batch.next_observations,
         is_last=batch.is_last,
         method=JepaWorldModel.sequence_outputs,
     )
@@ -376,7 +375,7 @@ def world_model_loss_with_outputs(
     continue_targets = 1.0 - terminal_targets
     reward_logits = outputs["reward_logits"]
     continue_logits = outputs["continue_logits"]
-    latent_validity = transition_start_validity(
+    latent_validity = prediction_validity(
         batch.is_last,
         chunk_length,
         max_horizon,
@@ -1252,34 +1251,12 @@ def evaluate_open_loop(
     if batch.observations.shape[1] < config.context_window + horizon:
         raise ValueError("batch is too short for context_window + horizon")
 
-    observed_z = state.apply_fn(
+    target_z = state.apply_fn(
         {"params": state.params},
         batch.observations[:, : config.context_window + horizon],
         method=JepaWorldModel.encode,
     )
-    context_z = observed_z[:, : config.context_window]
-    shifted_target_z = observed_z[
-        :,
-        config.context_window : config.context_window + horizon,
-    ]
-    physical_target_z = state.apply_fn(
-        {"params": state.params},
-        batch.next_observations[
-            :,
-            config.context_window - 1 : config.context_window - 1 + horizon,
-        ],
-        method=JepaWorldModel.encode,
-    )
-    rollout_boundaries = batch.is_last[
-        :,
-        config.context_window - 1 : config.context_window - 1 + horizon,
-    ]
-    target_z = jnp.where(
-        rollout_boundaries[..., None] > 0.5,
-        physical_target_z,
-        shifted_target_z,
-    )
-    context = context_z
+    context = target_z[:, : config.context_window]
     action_context = batch.actions[:, : config.context_window]
     preds = []
     for t in range(horizon):
@@ -1295,20 +1272,15 @@ def evaluate_open_loop(
         preds.append(next_z)
         context = jnp.concatenate([context[:, 1:], next_z[:, None, :]], axis=1)
     pred = _normalize(jnp.stack(preds, axis=1))
-    target = _normalize(jax.lax.stop_gradient(target_z))
-    rollout_validity = jnp.concatenate(
-        [
-            jnp.ones_like(rollout_boundaries[:, :1]),
-            jnp.cumprod(1.0 - rollout_boundaries[:, :-1], axis=1),
-        ],
-        axis=1,
+    target = _normalize(
+        jax.lax.stop_gradient(
+            target_z[:, config.context_window : config.context_window + horizon]
+        )
     )
-    context_validity = jnp.prod(
-        1.0 - batch.is_last[:, : config.context_window - 1],
+    validity = jnp.cumprod(
+        1.0 - batch.is_last[:, : config.context_window + horizon],
         axis=1,
-        keepdims=True,
-    )
-    validity = context_validity * rollout_validity
+    )[:, config.context_window - 1 : config.context_window - 1 + horizon]
     cosine = jnp.sum(pred * target, axis=-1)
     error = 1.0 - cosine
     return {
