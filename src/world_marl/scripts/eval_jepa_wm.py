@@ -363,11 +363,6 @@ def evaluate_model(
     }
 
 
-@jax.jit
-def _noop_jit_barrier(x):
-    return x
-
-
 def per_horizon_metrics(
     state,
     config: JepaConfig,
