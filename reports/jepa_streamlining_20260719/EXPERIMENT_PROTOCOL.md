@@ -222,6 +222,23 @@ Promotion gate:
 
 The EMA critic is not removed in this stage.
 
+Result: rejected.
+
+| Metric | Frozen control | No slow-value term |
+| --- | ---: | ---: |
+| Mean of seed means | 865.14 | 626.69 |
+| Seed-mean population std | 56.47 | 39.98 |
+| Mean failure rate | 7.0% | 27.5% |
+| Mean success rate | 73.5% | 52.5% |
+| Mean P10 | 427.05 | 2.70 |
+| Mean CVaR10 | 366.70 | 0.00 |
+| Normalized curve area | 488.13 | 424.44 |
+
+Removing the term reduced the pair mean by 238.45 points, increased failure
+rate by 20.5 percentage points, and collapsed the lower tail. The slow-value
+regularizer is therefore a necessary part of the maintained critic rather than
+removable complexity.
+
 ## Early Replay Simplification
 
 The 500k baseline mixes 50% recent data into world-model batches before 50k
