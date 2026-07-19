@@ -9,7 +9,6 @@ from world_marl.jepa.models import (
     JepaConfig,
     JepaWorldModel,
     apply_rotary_position_embedding,
-    smooth_bounded_log_std,
 )
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
@@ -103,36 +102,6 @@ def test_tanh_normal_entropy_penalizes_saturated_action_means():
 
     assert np.all(np.asarray(centered) > np.asarray(saturated))
     assert np.all(np.isfinite(np.asarray(saturated)))
-
-
-def test_smooth_actor_scale_stays_bounded_and_has_outside_clip_gradients():
-    log_std_min = np.log(0.1)
-    log_std_max = np.log(1.0)
-    raw_scales = jnp.asarray([-5.0, 0.0, 2.0], dtype=jnp.float32)
-
-    log_stds = smooth_bounded_log_std(
-        raw_scales,
-        log_std_min=log_std_min,
-        log_std_max=log_std_max,
-    )
-    gradients = jax.grad(
-        lambda values: jnp.sum(
-            smooth_bounded_log_std(
-                values,
-                log_std_min=log_std_min,
-                log_std_max=log_std_max,
-            )
-        )
-    )(raw_scales)
-
-    assert np.all(np.asarray(log_stds) > log_std_min)
-    assert np.all(np.asarray(log_stds) < log_std_max)
-    assert np.all(np.asarray(gradients) > 0.0)
-    np.testing.assert_allclose(
-        np.exp(np.asarray(log_stds[1])),
-        0.1 + 0.9 / (1.0 + np.exp(-2.0)),
-        rtol=1e-6,
-    )
 
 
 def test_sequence_replay_samples_contiguous_chunks():

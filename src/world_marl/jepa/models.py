@@ -128,20 +128,6 @@ def scaled_kernel_init(scale: float):
     )
 
 
-def smooth_bounded_log_std(
-    raw_scale: jax.Array,
-    *,
-    log_std_min: float,
-    log_std_max: float,
-) -> jax.Array:
-    """Map unconstrained actor outputs smoothly into a bounded std range."""
-
-    std_min = math.exp(log_std_min)
-    std_max = math.exp(log_std_max)
-    fraction = jax.nn.sigmoid(raw_scale + 2.0)
-    return jnp.log(std_min + (std_max - std_min) * fraction)
-
-
 class MLPEncoder(nn.Module):
     latent_dim: int
     hidden_dim: int
@@ -359,11 +345,11 @@ class JepaWorldModel(nn.Module):
     ) -> tuple[jax.Array, jax.Array, jax.Array]:
         logits, value_logits = self.actor_value_logits_from_latent(latents)
         if self.config.action_mode == "continuous":
-            means, raw_scales = jnp.split(logits, 2, axis=-1)
-            log_stds = smooth_bounded_log_std(
-                raw_scales,
-                log_std_min=self.config.actor_log_std_min,
-                log_std_max=self.config.actor_log_std_max,
+            means, log_stds = jnp.split(logits, 2, axis=-1)
+            log_stds = jnp.clip(
+                log_stds,
+                self.config.actor_log_std_min,
+                self.config.actor_log_std_max,
             )
         else:
             means = logits
