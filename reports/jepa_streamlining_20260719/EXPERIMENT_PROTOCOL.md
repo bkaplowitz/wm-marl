@@ -221,16 +221,16 @@ Promotion gate:
 
 Only independently passing changes are combined. The combined candidate is
 launched directly with the final 500k manifest, but both jobs are held at the
-first phase boundary at or after 200k training transitions. Their fixed
-50k/100k/150k/200k evaluations are compared with the frozen controls before
-the jobs are allowed to continue.
+matched nominal-200k phase boundary of 199,680 training transitions. Their
+fixed 50k/100k/150k evaluations and 199,680 endpoint are compared with the
+frozen controls before the jobs are allowed to continue.
 
 This makes the gate an exact prefix of the final experiment. It avoids a
 throwaway 200k run whose budget-relative schedule would differ from the first
 200k transitions of the 500k algorithm. No optimizer, replay, RNG, simulator,
 or policy state is reset after the gate.
 
-The 200k prefix must satisfy:
+The 199,680-transition prefix must satisfy:
 
 - no seed-level catastrophic regression;
 - mean of seed means no more than 10 points below the frozen 200k controls;
