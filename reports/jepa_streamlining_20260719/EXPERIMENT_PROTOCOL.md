@@ -127,8 +127,8 @@ limits:
   does not force continuation or the real critic bootstrap to zero.
 
 A direct `dm_control` rollout verified that `reacher/easy` reaches `LAST` at
-step 1,000 with discount `1.0`. Commit `f5a1bc7` applies the isolated terminal
-semantics directly to the accepted replay schema; 90 focused adapter, replay,
+step 1,000 with discount `1.0`. The isolated candidate maps that discount to
+`is_terminal` while retaining `LAST` as `is_last`; 90 focused adapter, replay,
 runner, and launcher tests pass.
 
 Diagnostic: fresh 200k seeds 1 and 2.
@@ -141,7 +141,31 @@ Promotion gate:
 - prefer the candidate on a metric tie because it implements the environment's
   explicit bootstrap contract.
 
-Result: pending.
+Result: isolated gate passed; final promotion rejected by the combination gate.
+
+| Metric | Frozen control | Time-limit bootstrap |
+| --- | ---: | ---: |
+| Mean of seed means | 865.14 | 847.71 |
+| Seed-mean population std | 56.47 | 11.89 |
+| Minimum seed mean | 808.67 | 835.82 |
+| Mean failure rate | 7.0% | 7.5% |
+| Mean success rate | 73.5% | 71.5% |
+| Mean P10 | 427.05 | 670.05 |
+| Mean CVaR10 | 366.70 | 148.60 |
+| Normalized curve area | 488.13 | 617.06 |
+
+The candidate met the isolated correctness gate: neither seed regressed
+catastrophically, its pair mean was 17.43 points below control and therefore
+inside the 20-point margin, and failure increased by only 0.5 percentage
+points. It also learned earlier, greatly reduced cross-seed dispersion, and
+improved P10.
+
+However, its final severe lower tail was worse. The exact resolved parameters
+match the first 199,680 transitions of the final 500k manifest for every
+training-affecting field. The only differences are total phase count,
+measurement budget, checkpoint/snapshot cadence, and W&B reporting. The
+completed diagnostic can therefore be evaluated directly as the final
+combination prefix rather than rerun.
 
 ## General Numerical Fixes
 
@@ -332,6 +356,23 @@ The 199,680-transition prefix must satisfy:
 
 If the prefix fails, both jobs are terminated and no 500k result is reported
 for that candidate. If it passes, the same processes continue uninterrupted.
+
+Result: the time-limit-bootstrap candidate failed the final combination gate.
+
+| Check | Required | Observed | Pass |
+| --- | ---: | ---: | :---: |
+| Pair mean | >= 855.135 | 847.710 | No |
+| Minimum seed mean | >= 500 | 835.820 | Yes |
+| Mean failure rate | <= 7.0% | 7.5% | No |
+| Mean P10 | >= 300 | 670.050 | Yes |
+| Mean CVaR10 | >= 250 | 148.600 | No |
+| Normalized curve area | >= 439.317 | 617.058 | Yes |
+
+The thresholds are not relaxed after observing the candidate. Since every
+algorithm-changing simplification failed its complete gate, the final 500k
+baseline uses the cleaned frozen numerical algorithm. It includes only the
+behavior-preserving replay schema, deterministic-stream cleanup, dead-code
+removal, and current-only launcher/documentation changes.
 
 The final baseline then runs:
 
