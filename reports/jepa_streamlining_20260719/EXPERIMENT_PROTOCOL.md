@@ -284,11 +284,14 @@ or policy state is reset after the gate.
 
 The 199,680-transition prefix must satisfy:
 
-- no seed-level catastrophic regression;
-- mean of seed means no more than 10 points below the frozen 200k controls;
-- mean failure rate no worse than the frozen controls;
+- minimum seed mean at least 500, ruling out a seed-level catastrophe;
+- mean of seed means at least 855.135, exactly 10 points below the frozen
+  200k control mean;
+- mean failure rate no more than 7%;
+- mean P10 at least 300 and mean CVaR10 at least 250;
+- normalized fixed-evaluation curve area at least 439.317, 90% of the frozen
+  control area;
 - finite world-model, actor, and critic metrics;
-- no material regression in fixed-evaluation curve area or lower-tail return.
 
 If the prefix fails, both jobs are terminated and no 500k result is reported
 for that candidate. If it passes, the same processes continue uninterrupted.
