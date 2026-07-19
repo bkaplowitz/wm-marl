@@ -219,8 +219,27 @@ Promotion gate:
 
 ## Combination Gate
 
-Only independently passing changes are combined. The combined candidate must
-first pass a fresh two-seed short-budget run before any 500k launch.
+Only independently passing changes are combined. The combined candidate is
+launched directly with the final 500k manifest, but both jobs are held at the
+first phase boundary at or after 200k training transitions. Their fixed
+50k/100k/150k/200k evaluations are compared with the frozen controls before
+the jobs are allowed to continue.
+
+This makes the gate an exact prefix of the final experiment. It avoids a
+throwaway 200k run whose budget-relative schedule would differ from the first
+200k transitions of the 500k algorithm. No optimizer, replay, RNG, simulator,
+or policy state is reset after the gate.
+
+The 200k prefix must satisfy:
+
+- no seed-level catastrophic regression;
+- mean of seed means no more than 10 points below the frozen 200k controls;
+- mean failure rate no worse than the frozen controls;
+- finite world-model, actor, and critic metrics;
+- no material regression in fixed-evaluation curve area or lower-tail return.
+
+If the prefix fails, both jobs are terminated and no 500k result is reported
+for that candidate. If it passes, the same processes continue uninterrupted.
 
 The final baseline then runs:
 
