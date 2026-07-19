@@ -140,6 +140,22 @@ Promotion gate:
 
 The EMA critic is not removed in this stage.
 
+## Early Replay Simplification
+
+The 500k baseline mixes 50% recent data into world-model batches before 50k
+training transitions, then uses uniform replay. This rule is plausible but was
+not isolated in the five-seed baseline.
+
+Diagnostic: set only `online_recent_world_model_fraction` from `0.5` to `0.0`
+under the historical 200k schedule, then run fresh seeds 1 and 2.
+
+Promotion gate:
+
+- no seed-level catastrophic regression;
+- equal or better mean, lower tail, and fixed-evaluation area under the curve;
+- a statistical tie removes the recent replay and its activation threshold,
+  because uniform replay is the simpler data path.
+
 ## Combination Gate
 
 Only independently passing changes are combined. The combined candidate must
