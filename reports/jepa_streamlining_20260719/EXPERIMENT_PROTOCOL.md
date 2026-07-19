@@ -68,6 +68,31 @@ DMC time-limit bootstrapping is not bundled into this stage. The earlier
 bundled terminal-contract candidate was rejected and cannot be promoted as
 evidence for this isolated change.
 
+### DMC time-limit bootstrap
+
+This stage is conditional on the physical-successor stage passing. It changes
+only bootstrap semantics at environment time limits:
+
+- `is_last` remains true, so sequence and target histories stop;
+- `is_terminal` follows the DMC discount, so a time limit with discount `1.0`
+  does not force continuation or the real critic bootstrap to zero.
+
+A direct `dm_control` rollout verified that `reacher/easy` reaches `LAST` at
+step 1,000 with discount `1.0`. The isolated implementation is commit
+`2cf6a01`; its adapter and runner tests pass.
+
+Diagnostic: fresh 200k seeds 1 and 2, launched only after the preceding stage
+passes.
+
+Promotion gate:
+
+- no seed-level catastrophic regression;
+- mean of seed means no more than 20 points below its physical-successor
+  parent;
+- mean failure rate no more than 2 percentage points above the parent;
+- prefer the candidate on a metric tie because it implements the environment's
+  explicit bootstrap contract.
+
 ## General Numerical Fixes
 
 ### Budget-relative milestones
