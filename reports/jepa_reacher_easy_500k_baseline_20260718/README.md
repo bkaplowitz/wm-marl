@@ -1,6 +1,7 @@
 # JEPA Reacher/Easy Five-Seed Baseline
 
-This directory freezes the maintained baseline before code cleanup.
+This directory preserves the immutable five-seed reference used to validate
+the streamlined implementation.
 
 ## Identity
 
@@ -16,11 +17,10 @@ The exact resolved configuration and update accounting are preserved in
 `manifest.json`. The five final evaluations and aggregate are preserved in
 `results.json`.
 
-The post-cleanup scientific review is split into:
-
-- `CODE_INVENTORY.md`: maintained and retired code paths;
-- `ALGORITHM_AUDIT.md`: core model, stabilization, and remaining complexity;
-- `IMPROVEMENT_ROADMAP.md`: ordered, publication-suitable next changes.
+The maintained algorithm is documented in
+[`src/world_marl/jepa/ARCHITECTURE.md`](../../src/world_marl/jepa/ARCHITECTURE.md).
+Controlled cleanup and simplification decisions are recorded in
+[`reports/jepa_streamlining_20260719/EXPERIMENT_PROTOCOL.md`](../jepa_streamlining_20260719/EXPERIMENT_PROTOCOL.md).
 
 ## Final Results
 
@@ -48,10 +48,9 @@ is `89.0%`.
 Evaluation transitions are reporting-only. They are excluded from the learning
 budget and never enter replay or select a checkpoint.
 
-## Cleanup Contract
+## Reproduction Contract
 
-The cleanup may change organization, naming, and implementation structure, but
-must preserve:
+Any behavior-preserving maintenance must preserve:
 
 1. the resolved `jepa_500k` algorithm configuration;
 2. latest-policy training and evaluation semantics;
@@ -60,5 +59,5 @@ must preserve:
 5. checkpoint and training-snapshot compatibility until an explicit migration
    is introduced.
 
-Algorithmic simplification is evaluated only after behavior-preserving cleanup
-has passed this contract.
+Algorithmic changes require an explicit controlled comparison and may not be
+presented as reproductions of this frozen baseline.
