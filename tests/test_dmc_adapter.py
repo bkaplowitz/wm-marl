@@ -202,9 +202,7 @@ def test_dmc_adapter_state_snapshot_round_trip(tmp_path):
         adapter._episode_lengths[0] = 17
         adapter._envs[0]._task._random.uniform()
         expected_random = adapter._envs[0]._task._random.uniform()
-        adapter._envs[0]._task._random.set_state(
-            np.random.RandomState(10).get_state()
-        )
+        adapter._envs[0]._task._random.set_state(np.random.RandomState(10).get_state())
         adapter._envs[0]._task._random.uniform()
         snapshot = tmp_path / "dmc_state.npz"
         adapter.save_state_npz(snapshot)

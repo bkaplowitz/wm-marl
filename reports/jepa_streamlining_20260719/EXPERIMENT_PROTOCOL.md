@@ -64,6 +64,20 @@ Promotion gate:
 - prefer the candidate on a metric tie because it removes an invalid
   reset-observation target.
 
+Result: rejected.
+
+| Metric | Frozen control | Physical successor |
+| --- | ---: | ---: |
+| Mean of seed means | 865.14 | 839.30 |
+| Mean failure rate | 7.0% | 8.5% |
+| Mean P10 | 427.05 | 434.75 |
+| Mean CVaR10 | 366.70 | 273.25 |
+| Normalized curve area | 488.13 | 581.47 |
+
+The candidate learned earlier on average, but its final mean was 25.84 points
+below control, exceeding the allowed 20-point margin. Commit `2c46ada` was
+therefore reverted from the canonical branch.
+
 DMC time-limit bootstrapping is not bundled into this stage. The earlier
 bundled terminal-contract candidate was rejected and cannot be promoted as
 evidence for this isolated change.
@@ -92,6 +106,8 @@ Promotion gate:
 - mean failure rate no more than 2 percentage points above the parent;
 - prefer the candidate on a metric tie because it implements the environment's
   explicit bootstrap contract.
+
+Result: not run. Its required parent failed the preceding gate.
 
 ## General Numerical Fixes
 
