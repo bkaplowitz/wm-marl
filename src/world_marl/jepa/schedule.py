@@ -137,6 +137,10 @@ def sample_replay_batch(
         return batches[0]
     return ReplayBatch(
         observations=jnp.concatenate([batch.observations for batch in batches], axis=0),
+        next_observations=jnp.concatenate(
+            [batch.next_observations for batch in batches],
+            axis=0,
+        ),
         actions=jnp.concatenate([batch.actions for batch in batches], axis=0),
         rewards=jnp.concatenate([batch.rewards for batch in batches], axis=0),
         is_last=jnp.concatenate([batch.is_last for batch in batches], axis=0),
