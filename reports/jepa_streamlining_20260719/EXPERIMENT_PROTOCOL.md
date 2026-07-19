@@ -166,6 +166,24 @@ Promotion gate:
   the misleading maintained short-budget preset rather than reporting it as
   the same algorithm.
 
+Result: rejected.
+
+| Metric | Frozen control | Proportional schedule |
+| --- | ---: | ---: |
+| Mean of seed means | 865.14 | 836.90 |
+| Seed-mean population std | 56.47 | 87.47 |
+| Mean failure rate | 7.0% | 8.0% |
+| Mean success rate | 73.5% | 68.5% |
+| Mean P10 | 427.05 | 468.00 |
+| Mean CVaR10 | 366.70 | 308.05 |
+| Normalized curve area | 488.13 | 565.45 |
+
+Proportional timing learned earlier but ended 28.24 points below control,
+increased cross-seed dispersion and failure, and reduced the final lower tail.
+The fixed 500k schedule is unchanged. The unvalidated `jepa_100k` and
+`jepa_200k` performance presets and their scaling machinery are removed rather
+than presented as equivalent versions of the 500k algorithm.
+
 ### Smooth actor scale
 
 Commit `5a621c2` is an isolated diagnostic based on the explicit replay schema.

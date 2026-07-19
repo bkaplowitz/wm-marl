@@ -147,7 +147,7 @@ def test_source_revision_records_current_checkout():
 
 
 def test_maintained_presets_are_small_and_unambiguous():
-    assert set(PRESETS) == {"smoke", "jepa_100k", "jepa_200k", "jepa_500k"}
+    assert set(PRESETS) == {"smoke", "jepa_500k"}
     forbidden = {
         "policy_selection_interval",
         "policy_confirmation_episodes",
@@ -159,41 +159,6 @@ def test_maintained_presets_are_small_and_unambiguous():
     }
     for params in PRESETS.values():
         assert forbidden.isdisjoint(params)
-
-
-def test_100k_preset_matches_the_reset_rich_interleaved_contract():
-    params = PRESETS["jepa_100k"]
-    accounting = step_accounting(params)
-
-    assert accounting["train_replay_env_steps"] == 98_304
-    assert accounting["validation_replay_env_steps"] == 1_280
-    assert accounting["train_plus_validation_env_steps"] == 99_584
-    assert accounting["world_model_updates"] == 94_464
-    assert accounting["policy_updates"] == 47_872
-    assert params["collect_steps"] == 320
-    assert params["initial_reset_interval"] == 80
-    assert params["initial_random_action_hold_steps"] == 1
-    assert params["online_iterations"] == 91
-    assert params["online_collect_steps"] == 64
-    assert params["online_train_steps"] == 1_024
-    assert params["online_policy_train_steps"] == 512
-    assert params["online_policy_actor_update_interval"] == 2
-    assert params["online_policy_actor_update_interval_start_env_steps"] == 10_000
-    assert params["online_freeze_encoder_after_env_steps"] == 20_275
-    assert params["online_recent_replay_steps"] == 320
-    assert params["online_recent_world_model_fraction"] == 0.5
-    assert params["online_recent_world_model_until_env_steps"] == 10_000
-    assert params["online_recent_replay_max_oversample"] == 10.0
-    assert params["policy_reset_start_fraction"] == 0.1
-    assert params["policy_reset_start_fraction_start_env_steps"] == 40_346
-    assert params["policy_reset_start_max_age"] == 63
-    assert params["policy_actor_kl_coef"] == 1.0
-    assert params["policy_actor_kl_target_per_dim"] == 0.1
-    assert params["policy_actor_kl_reference_interval"] == 512
-    assert params["value_clip_schedule_start_env_steps"] == 30_106
-    assert params["value_clip_schedule_end_env_steps"] == 50_176
-    assert accounting["actor_updates"] == 1_280 + 5 * 512 + 86 * 256
-    assert accounting["critic_updates"] == 1_280 + 91 * 512
 
 
 def test_actor_update_interval_override_is_accounted_separately(
@@ -208,11 +173,13 @@ def test_actor_update_interval_override_is_accounted_separately(
             "--out-root",
             str(tmp_path),
             "--preset",
-            "jepa_100k",
+            "jepa_500k",
             "--tasks",
             "reacher/easy",
             "--seeds",
             "1",
+            "--online-iterations",
+            "91",
             "--online-policy-actor-update-interval",
             "2",
             "--online-policy-actor-update-interval-start-env-steps",
@@ -247,25 +214,6 @@ def test_500k_preset_matches_the_current_running_model():
     assert params["validation_seed"] == 1_000_042
     assert params["final_policy_eval_seed"] == 9_000_000
     assert params["final_policy_eval_episodes"] == 100
-
-
-def test_200k_preset_scales_training_milestones_with_the_fixed_budget():
-    params = PRESETS["jepa_200k"]
-    accounting = step_accounting(params)
-
-    assert accounting["train_replay_env_steps"] == 199_680
-    assert accounting["validation_replay_env_steps"] == 1_280
-    assert accounting["train_plus_validation_env_steps"] == 200_960
-    assert accounting["world_model_updates"] == 195_840
-    assert accounting["policy_updates"] == 98_560
-    assert params["dreamer_report_budget_env_steps"] == 200_000
-    assert params["online_policy_actor_update_interval_start_env_steps"] == 20_000
-    assert params["online_freeze_encoder_after_env_steps"] == 40_550
-    assert params["online_recent_world_model_until_env_steps"] == 20_000
-    assert params["policy_reset_start_fraction_start_env_steps"] == 80_691
-    assert params["value_clip_schedule_start_env_steps"] == 60_211
-    assert params["value_clip_schedule_end_env_steps"] == 100_352
-    assert accounting["actor_updates"] == 1_280 + 15 * 512 + 175 * 256
 
 
 def test_launcher_can_disable_value_clipping():

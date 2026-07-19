@@ -40,6 +40,7 @@ _CANONICAL_BASE = MappingProxyType(
         "online_collect_steps": 64,
         "online_train_steps": 1_024,
         "online_policy_train_steps": 512,
+        "online_iterations": 483,
         "online_policy_actor_update_interval": 2,
         "online_policy_actor_update_interval_start_env_steps": 50_000,
         "online_freeze_encoder_after_env_steps": 101_376,
@@ -101,6 +102,7 @@ _CANONICAL_BASE = MappingProxyType(
         "final_policy_eval_num_envs": None,
         "final_policy_eval_seed": 9_000_000,
         "dreamer_report_window_env_steps": 10_000,
+        "dreamer_report_budget_env_steps": 500_000,
         "curve_eval_interval_env_steps": 50_000,
         "curve_eval_episodes": 20,
         "curve_eval_num_envs": 16,
@@ -112,56 +114,10 @@ _CANONICAL_BASE = MappingProxyType(
     }
 )
 
-_BUDGETS = MappingProxyType(
-    {
-        100_000: 91,
-        200_000: 190,
-        500_000: 483,
-    }
-)
+def canonical_jepa_config() -> dict[str, Any]:
+    """Return the mutable resolved configuration for the fixed 500k agent."""
 
-_REFERENCE_BUDGET_ENV_STEPS = 500_000
-_BUDGET_RELATIVE_SCHEDULE_KEYS = (
-    "online_policy_actor_update_interval_start_env_steps",
-    "online_freeze_encoder_after_env_steps",
-    "online_recent_world_model_until_env_steps",
-    "policy_reset_start_fraction_start_env_steps",
-    "value_clip_schedule_start_env_steps",
-    "value_clip_schedule_end_env_steps",
-)
-
-
-def canonical_jepa_config(*, budget_env_steps: int = 500_000) -> dict[str, Any]:
-    """Return a mutable resolved configuration for a maintained budget."""
-
-    try:
-        online_iterations = _BUDGETS[budget_env_steps]
-    except KeyError as exc:
-        supported = ", ".join(str(value) for value in _BUDGETS)
-        raise ValueError(
-            f"unsupported JEPA budget {budget_env_steps}; choose one of {supported}"
-        ) from exc
-    config = {
-        **_CANONICAL_BASE,
-        "online_iterations": online_iterations,
-        "dreamer_report_budget_env_steps": budget_env_steps,
-    }
-    for key in _BUDGET_RELATIVE_SCHEDULE_KEYS:
-        config[key] = _scale_reference_schedule(
-            int(_CANONICAL_BASE[key]),
-            budget_env_steps=budget_env_steps,
-        )
-    return config
-
-
-def _scale_reference_schedule(
-    reference_env_steps: int,
-    *,
-    budget_env_steps: int,
-) -> int:
-    """Scale a 500k training milestone while preserving that preset exactly."""
-
-    return round(reference_env_steps * budget_env_steps / _REFERENCE_BUDGET_ENV_STEPS)
+    return dict(_CANONICAL_BASE)
 
 
 def smoke_jepa_config() -> dict[str, Any]:

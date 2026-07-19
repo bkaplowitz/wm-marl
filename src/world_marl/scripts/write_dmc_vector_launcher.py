@@ -23,9 +23,7 @@ DEFAULT_TASKS = (
 
 PRESETS: dict[str, dict[str, Any]] = {
     "smoke": smoke_jepa_config(),
-    "jepa_100k": canonical_jepa_config(budget_env_steps=100_000),
-    "jepa_200k": canonical_jepa_config(budget_env_steps=200_000),
-    "jepa_500k": canonical_jepa_config(budget_env_steps=500_000),
+    "jepa_500k": canonical_jepa_config(),
 }
 
 OVERRIDABLE_PARAMS = (
@@ -312,7 +310,7 @@ def parse_args() -> argparse.Namespace:
         "--preset",
         choices=tuple(PRESETS),
         default="jepa_500k",
-        help="Use smoke to verify a machine, then run the fixed 100k or 500k preset.",
+        help="Use smoke to verify a machine, then run the fixed 500k preset.",
     )
     parser.add_argument("--tasks", nargs="+", default=list(DEFAULT_TASKS))
     parser.add_argument("--seeds", nargs="+", type=int, default=[0])
