@@ -36,6 +36,26 @@ The fixed 200k diagnostic controls use seeds 1 and 2:
 All candidate manifests preserve the same replay budget, update counts,
 evaluation seeds, and latest deterministic policy protocol.
 
+## Audit Disposition
+
+The review findings were checked against the canonical path before defining
+experiments:
+
+- ensemble-loss normalization and ensemble uncertainty gradients do not apply,
+  because the maintained model has no ensemble or uncertainty actor term;
+- champion EMA restoration does not apply, because training always retains and
+  reports the latest policy rather than selecting or restoring a champion;
+- squash-corrected tanh-Normal entropy, a valid two-hot constant-prediction
+  baseline, explicit collector cuts, actor/critic global gradient clips, and
+  adaptive gradient clipping are already implemented and tested;
+- actor return updates already use an EMA percentile scale and a full Gaussian
+  KL budget;
+- the encoder freeze keeps one optimizer state and masks gradients rather than
+  replacing the optimizer.
+
+These mechanisms are retained. Re-running removed alternatives would not
+answer an open question about the current algorithm.
+
 ## Correctness Stages
 
 ### Explicit replay schema
