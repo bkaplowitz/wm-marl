@@ -174,6 +174,27 @@ Promotion gate:
 - prefer the candidate on a return tie because it removes gradient-dead
   regions.
 
+Result: rejected.
+
+| Metric | Frozen control | Smooth scale |
+| --- | ---: | ---: |
+| Mean of seed means | 865.14 | 826.43 |
+| Seed-mean population std | 56.47 | 23.29 |
+| Mean failure rate | 7.0% | 4.5% |
+| Mean success rate | 73.5% | 71.0% |
+| Mean P10 | 427.05 | 374.55 |
+| Mean CVaR10 | 366.70 | 129.25 |
+| Normalized curve area | 488.13 | 637.15 |
+
+The smooth parameterization learned substantially earlier and reduced
+cross-seed dispersion and failure rate. Its actor metrics stayed finite and
+strictly inside both standard-deviation bounds. However, its final pair mean
+was 38.71 points below control, exceeding the allowed 10-point margin, and its
+final lower tail was worse. The fixed `+2` smooth-map offset changed the
+effective exploration distribution rather than acting as a behavior-neutral
+numerical correction. Commit `6ef6a3f` was therefore reverted from the
+canonical branch.
+
 ## Critic Simplification
 
 The canonical critic uses imagined return prediction, slow-value
