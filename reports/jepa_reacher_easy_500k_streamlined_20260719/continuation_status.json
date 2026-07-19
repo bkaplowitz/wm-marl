@@ -1,0 +1,13 @@
+{
+  "completed": true,
+  "source_commit": "15f6230b171d8c00fcd0f34e275830eb9cf52e6d",
+  "start_train_env_steps": 199680,
+  "statuses": {
+    "1": 0,
+    "2": 0
+  },
+  "wandb_ids": {
+    "1": "fu0o44p0",
+    "2": "vw4zalxj"
+  }
+}

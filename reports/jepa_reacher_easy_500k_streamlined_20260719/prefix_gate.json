@@ -1,0 +1,51 @@
+{
+  "aggregate": {
+    "auc": 613.5051666666666,
+    "cvar10": 349.1500129699707,
+    "failure": 0.065,
+    "mean": 846.08,
+    "minimum_seed_mean": 793.08,
+    "p10": 443.09999999999997,
+    "success": 0.605
+  },
+  "checks": {
+    "auc": true,
+    "cvar10": true,
+    "failure_rate": true,
+    "finite": true,
+    "minimum_seed_mean": true,
+    "p10": true,
+    "pair_mean": false
+  },
+  "gate_env_steps": 199680,
+  "gate_iteration": 190,
+  "passed": false,
+  "seeds": [
+    {
+      "auc": 671.691641025641,
+      "cvar10": 665.9000244140625,
+      "failure": 0.01,
+      "mean": 899.08,
+      "p10": 795.8,
+      "seed": 1,
+      "success": 0.62
+    },
+    {
+      "auc": 555.3186923076922,
+      "cvar10": 32.400001525878906,
+      "failure": 0.12,
+      "mean": 793.08,
+      "p10": 90.4,
+      "seed": 2,
+      "success": 0.59
+    }
+  ],
+  "thresholds": {
+    "maximum_failure_rate": 0.07,
+    "minimum_auc": 439.317,
+    "minimum_cvar10": 250.0,
+    "minimum_p10": 300.0,
+    "minimum_pair_mean": 855.135,
+    "minimum_seed_mean": 500.0
+  }
+}

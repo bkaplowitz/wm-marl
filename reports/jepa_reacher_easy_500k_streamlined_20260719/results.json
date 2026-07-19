@@ -1,0 +1,207 @@
+{
+  "status": "completed",
+  "algorithm": "single_agent_jepa_mbrl",
+  "environment": "dmc:reacher/easy",
+  "source": {
+    "branch": "jepa-streamlined-baseline-20260719",
+    "commit": "15f6230b171d8c00fcd0f34e275830eb9cf52e6d",
+    "archive_sha256": "8abbd77aaf58b42818f503f11383b2c0bd7095cb21d0d3b98e5faf6843086f1d",
+    "dirty": false
+  },
+  "protocol": {
+    "policy": "latest_deterministic",
+    "checkpoint_selection": false,
+    "evaluation_seed": 9000000,
+    "final_evaluation_episodes_per_seed": 100,
+    "train_replay_env_steps_per_seed": 499712,
+    "validation_replay_env_steps_per_seed": 1280,
+    "train_plus_validation_env_steps_per_seed": 500992,
+    "policy_evaluation_env_steps_per_seed": 400000,
+    "total_real_env_steps_per_seed": 900992,
+    "failure_return_threshold": 100.0,
+    "success_return_threshold": 900.0
+  },
+  "parameters": {
+    "total": 745155,
+    "world_model": 694912,
+    "actor": 16964,
+    "critic": 33279
+  },
+  "aggregate": {
+    "seed_count": 2,
+    "mean_of_seed_means": 909.85,
+    "population_std_of_seed_means": 47.33,
+    "mean_failure_rate": 0.02,
+    "mean_success_rate": 0.905,
+    "mean_final_training_window_return": 942.8125
+  },
+  "seeds": {
+    "1": {
+      "wandb_id": "fu0o44p0",
+      "wandb_url": "https://wandb.ai/osaze-obahor/world-marl/runs/fu0o44p0",
+      "mean_return": 957.18,
+      "std_return": 34.92717566594814,
+      "failure_count": 0,
+      "failure_rate": 0.0,
+      "success_count": 95,
+      "success_rate": 0.95,
+      "return_min": 790.0,
+      "return_p05": 909.45,
+      "return_p10": 921.9,
+      "return_p25": 945.0,
+      "return_cvar10": 880.7000122070312,
+      "return_max": 1000.0,
+      "nonfailure_mean_return": 957.1799926757812,
+      "final_training_window_mean_return": 953.9375,
+      "checkpoint_reload_max_abs_prediction_diff": 0.0
+    },
+    "2": {
+      "wandb_id": "vw4zalxj",
+      "wandb_url": "https://wandb.ai/osaze-obahor/world-marl/runs/vw4zalxj",
+      "mean_return": 862.52,
+      "std_return": 270.7616472102354,
+      "failure_count": 4,
+      "failure_rate": 0.04,
+      "success_count": 86,
+      "success_rate": 0.86,
+      "return_min": 0.0,
+      "return_p05": 111.85,
+      "return_p10": 170.0,
+      "return_p25": 926.5,
+      "return_cvar10": 90.9000015258789,
+      "return_max": 1000.0,
+      "nonfailure_mean_return": 897.3645629882812,
+      "final_training_window_mean_return": 931.6875,
+      "checkpoint_reload_max_abs_prediction_diff": 0.0
+    }
+  },
+  "curve": [
+    {
+      "train_env_steps": 50176,
+      "seed1_mean": 634.7,
+      "seed1_failure_rate": 0.1,
+      "seed1_success_rate": 0.3,
+      "seed2_mean": 317.75,
+      "seed2_failure_rate": 0.4,
+      "seed2_success_rate": 0.0
+    },
+    {
+      "train_env_steps": 100352,
+      "seed1_mean": 680.65,
+      "seed1_failure_rate": 0.25,
+      "seed1_success_rate": 0.5,
+      "seed2_mean": 741.75,
+      "seed2_failure_rate": 0.15,
+      "seed2_success_rate": 0.35
+    },
+    {
+      "train_env_steps": 150528,
+      "seed1_mean": 926.8,
+      "seed1_failure_rate": 0.0,
+      "seed1_success_rate": 0.75,
+      "seed2_mean": 769.85,
+      "seed2_failure_rate": 0.15,
+      "seed2_success_rate": 0.45
+    },
+    {
+      "train_env_steps": 199680,
+      "source": "prefix_gate",
+      "seed1_mean": 899.08,
+      "seed1_failure_rate": 0.01,
+      "seed1_success_rate": 0.62,
+      "seed2_mean": 793.08,
+      "seed2_failure_rate": 0.12,
+      "seed2_success_rate": 0.59
+    },
+    {
+      "train_env_steps": 200704,
+      "seed1_mean": 909.6,
+      "seed1_failure_rate": 0.0,
+      "seed1_success_rate": 0.7,
+      "seed2_mean": 697.05,
+      "seed2_failure_rate": 0.2,
+      "seed2_success_rate": 0.45
+    },
+    {
+      "train_env_steps": 250880,
+      "seed1_mean": 943.05,
+      "seed1_failure_rate": 0.0,
+      "seed1_success_rate": 0.85,
+      "seed2_mean": 719.35,
+      "seed2_failure_rate": 0.25,
+      "seed2_success_rate": 0.65
+    },
+    {
+      "train_env_steps": 300032,
+      "seed1_mean": 858.55,
+      "seed1_failure_rate": 0.05,
+      "seed1_success_rate": 0.85,
+      "seed2_mean": 895.55,
+      "seed2_failure_rate": 0.05,
+      "seed2_success_rate": 0.75
+    },
+    {
+      "train_env_steps": 350208,
+      "seed1_mean": 952.5,
+      "seed1_failure_rate": 0.0,
+      "seed1_success_rate": 0.95,
+      "seed2_mean": 879.65,
+      "seed2_failure_rate": 0.05,
+      "seed2_success_rate": 0.85
+    },
+    {
+      "train_env_steps": 400384,
+      "seed1_mean": 913.15,
+      "seed1_failure_rate": 0.05,
+      "seed1_success_rate": 0.9,
+      "seed2_mean": 893.6,
+      "seed2_failure_rate": 0.05,
+      "seed2_success_rate": 0.85
+    },
+    {
+      "train_env_steps": 450560,
+      "seed1_mean": 915.55,
+      "seed1_failure_rate": 0.05,
+      "seed1_success_rate": 0.95,
+      "seed2_mean": 826.3,
+      "seed2_failure_rate": 0.1,
+      "seed2_success_rate": 0.75
+    },
+    {
+      "train_env_steps": 499712,
+      "source": "final_100_episode_evaluation",
+      "seed1_mean": 957.18,
+      "seed1_failure_rate": 0.0,
+      "seed1_success_rate": 0.95,
+      "seed2_mean": 862.52,
+      "seed2_failure_rate": 0.04,
+      "seed2_success_rate": 0.86
+    }
+  ],
+  "prefix_gate": {
+    "train_env_steps": 199680,
+    "passed": false,
+    "pair_mean": 846.08,
+    "required_pair_mean": 855.135,
+    "all_other_checks_passed": true
+  },
+  "continuation": {
+    "restored_from_complete_training_snapshot": true,
+    "start_train_env_steps": 199680,
+    "source_or_configuration_changed": false,
+    "seed1_exit_status": 0,
+    "seed2_exit_status": 0
+  },
+  "artifacts": {
+    "manifest_sha256": "79d807e9f7b6165eaa23443d06c8eefb95953b9a08e1e5b6614e9f8e65d1f4b9",
+    "prefix_gate_sha256": "2ab438f0f96ce14633f9a6eeb99cfe14e181e87a9822d150e78f554e26f76e2f",
+    "continuation_status_sha256": "65dd856dbad683a2449aae6125e549653fc65aa5069e743e6e0896121f2f06e7",
+    "seed1_checkpoint_metadata_sha256": "4ddc3247ca728b338319efb22675c9a4277fe2c1663a91cb219e50842ac4e958",
+    "seed2_checkpoint_metadata_sha256": "e977203c8a56071b8257dc2aa1b091adf2652d31de3f968d6ac08ddde9fffc31"
+  },
+  "video": {
+    "requested": true,
+    "produced": false,
+    "reason": "Headless pod had no usable OpenGL context."
+  }
+}
