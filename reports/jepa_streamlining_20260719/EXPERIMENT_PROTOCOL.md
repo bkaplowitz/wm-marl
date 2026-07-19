@@ -84,30 +84,30 @@ evidence for this isolated change.
 
 ### DMC time-limit bootstrap
 
-This stage is conditional on the physical-successor stage passing. It changes
-only bootstrap semantics at environment time limits:
+The terminal contract is tested independently of the rejected physical
+successor change. It changes only bootstrap semantics at environment time
+limits:
 
 - `is_last` remains true, so sequence and target histories stop;
 - `is_terminal` follows the DMC discount, so a time limit with discount `1.0`
   does not force continuation or the real critic bootstrap to zero.
 
 A direct `dm_control` rollout verified that `reacher/easy` reaches `LAST` at
-step 1,000 with discount `1.0`. The isolated implementation is commit
-`2cf6a01`; its adapter and runner tests pass.
+step 1,000 with discount `1.0`. Commit `f5a1bc7` applies the isolated terminal
+semantics directly to the accepted replay schema; 90 focused adapter, replay,
+runner, and launcher tests pass.
 
-Diagnostic: fresh 200k seeds 1 and 2, launched only after the preceding stage
-passes.
+Diagnostic: fresh 200k seeds 1 and 2.
 
 Promotion gate:
 
 - no seed-level catastrophic regression;
-- mean of seed means no more than 20 points below its physical-successor
-  parent;
-- mean failure rate no more than 2 percentage points above the parent;
+- mean of seed means no more than 20 points below control;
+- mean failure rate no more than 2 percentage points above control;
 - prefer the candidate on a metric tie because it implements the environment's
   explicit bootstrap contract.
 
-Result: not run. Its required parent failed the preceding gate.
+Result: pending.
 
 ## General Numerical Fixes
 
