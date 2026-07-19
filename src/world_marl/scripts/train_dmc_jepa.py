@@ -332,10 +332,13 @@ def parse_args() -> argparse.Namespace:
     reproducibility = parser.add_argument_group("reproducibility and output")
     reproducibility.add_argument("--num-runs", type=int, default=1)
     reproducibility.add_argument("--seed", type=int, default=0)
+    # Retain the positive spelling for existing resolved launch manifests.
+    # Independent subsystem streams are mandatory.
     reproducibility.add_argument(
         "--isolated-rng-streams",
-        action=argparse.BooleanOptionalAction,
+        action="store_true",
         default=True,
+        help=argparse.SUPPRESS,
     )
     reproducibility.add_argument(
         "--deterministic-compute",
@@ -1121,17 +1124,17 @@ def run_one(
         logger.update_config(resolved_config)
         logger.write_json("versions.json", dependency_versions())
 
-        jax_rngs = JaxRngStreams.create(seed, isolated=args.isolated_rng_streams)
-        numpy_rngs = NumpyRngStreams.create(seed, isolated=args.isolated_rng_streams)
+        jax_rngs = JaxRngStreams.create(seed)
+        numpy_rngs = NumpyRngStreams.create(seed)
         validation_jax_rngs = (
             jax_rngs
             if args.validation_seed is None
-            else JaxRngStreams.create(validation_seed, isolated=True)
+            else JaxRngStreams.create(validation_seed)
         )
         validation_numpy_rngs = (
             numpy_rngs
             if args.validation_seed is None
-            else NumpyRngStreams.create(validation_seed, isolated=True)
+            else NumpyRngStreams.create(validation_seed)
         )
         validation_sampling_rng = validation_numpy_rngs.get("validation_replay")
         logger.write_json(

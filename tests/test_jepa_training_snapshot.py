@@ -52,10 +52,10 @@ def test_complete_training_snapshot_round_trip(tmp_path):
     state = create_train_state(jax.random.PRNGKey(3), (8, 8, 3), 3, IPPOConfig())
     replay = _replay()
     adapter = _SnapshotAdapter(17.0)
-    train_jax = JaxRngStreams.create(5, isolated=True)
-    validation_jax = JaxRngStreams.create(7, isolated=True)
-    train_numpy = NumpyRngStreams.create(11, isolated=True)
-    validation_numpy = NumpyRngStreams.create(13, isolated=True)
+    train_jax = JaxRngStreams.create(5)
+    validation_jax = JaxRngStreams.create(7)
+    train_numpy = NumpyRngStreams.create(11)
+    validation_numpy = NumpyRngStreams.create(13)
     train_jax.take("world_model")
     train_numpy.get("policy_replay").normal(size=5)
     snapshot_dir = tmp_path / "snapshot"
@@ -85,10 +85,10 @@ def test_complete_training_snapshot_round_trip(tmp_path):
         IPPOConfig(),
     )
     restored_adapter = _SnapshotAdapter(-1.0)
-    restored_train_jax = JaxRngStreams.create(5, isolated=True)
-    restored_validation_jax = JaxRngStreams.create(7, isolated=True)
-    restored_train_numpy = NumpyRngStreams.create(11, isolated=True)
-    restored_validation_numpy = NumpyRngStreams.create(13, isolated=True)
+    restored_train_jax = JaxRngStreams.create(5)
+    restored_validation_jax = JaxRngStreams.create(7)
+    restored_train_numpy = NumpyRngStreams.create(11)
+    restored_validation_numpy = NumpyRngStreams.create(13)
     loaded = load_training_snapshot(
         snapshot_dir,
         target_train_state=target_state,
