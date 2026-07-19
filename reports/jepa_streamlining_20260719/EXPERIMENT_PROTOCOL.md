@@ -67,6 +67,20 @@ updates.
 
 Decision: retain.
 
+### Mandatory independent RNG streams
+
+The maintained manifests already required independent JAX and NumPy streams
+for initialization, model fitting, policy fitting, replay sampling,
+collection, and evaluation. Commit `b7921b9` removes the unreachable shared
+stream implementation while retaining the hidden positive CLI spelling needed
+to replay existing resolved manifests. The default and canonical numerical
+paths are unchanged.
+
+Verification: all 90 maintained JEPA model, replay, DMC adapter, launcher,
+snapshot, evaluator, W&B, and CLI tests pass.
+
+Decision: retain.
+
 ### Physical reset-boundary successor
 
 Commit `2c46ada` retains the historical finite-episode bootstrap convention but
