@@ -186,7 +186,8 @@ def test_random_collection_marks_nonterminal_reset_cuts():
         replay.cuts[:, 0],
         np.asarray([0.0, 0.0, 1.0, 0.0, 0.0, 1.0]),
     )
-    np.testing.assert_array_equal(replay.dones[:, 0], np.zeros(6))
+    np.testing.assert_array_equal(replay.is_last[:, 0], np.zeros(6))
+    np.testing.assert_array_equal(replay.is_terminal[:, 0], np.zeros(6))
     np.testing.assert_array_equal(observations, np.asarray([[[300.0]]]))
 
 
@@ -431,10 +432,13 @@ def test_cli_accepts_recent_replay_and_curve_evaluation(monkeypatch):
         args,
         train_env_steps=49_999,
     ) == pytest.approx(0.4)
-    assert train_dmc_jepa._scheduled_recent_world_model_fraction(
-        args,
-        train_env_steps=50_000,
-    ) == 0.0
+    assert (
+        train_dmc_jepa._scheduled_recent_world_model_fraction(
+            args,
+            train_env_steps=50_000,
+        )
+        == 0.0
+    )
     assert args.online_recent_world_model_until_env_steps == 50_000
     assert args.online_recent_replay_steps == 128
     assert args.online_recent_replay_max_oversample == 10.0
@@ -456,6 +460,7 @@ def test_cli_accepts_recent_replay_and_curve_evaluation(monkeypatch):
     assert args.curve_eval_episodes == 20
     assert args.curve_eval_seed == 9_000_000
 
+
 def test_recent_replay_batch_respects_requested_fraction():
     def replay_with_reward(reward: float) -> SequenceReplayBuffer:
         replay = SequenceReplayBuffer(
@@ -470,7 +475,8 @@ def test_recent_replay_batch_respects_requested_fraction():
                 observations=np.asarray([[step]], dtype=np.float32),
                 actions=np.zeros((1, 1), dtype=np.float32),
                 rewards=np.asarray([reward], dtype=np.float32),
-                dones=np.zeros((1,), dtype=np.float32),
+                is_last=np.zeros((1,), dtype=np.float32),
+                is_terminal=np.zeros((1,), dtype=np.float32),
             )
         return replay
 
@@ -502,7 +508,8 @@ def test_policy_start_mixture_adds_reset_aligned_main_replay_states():
                 observations=np.asarray([[value]], dtype=np.float32),
                 actions=np.zeros((1, 1), dtype=np.float32),
                 rewards=np.zeros((1,), dtype=np.float32),
-                dones=np.zeros((1,), dtype=np.float32),
+                is_last=np.zeros((1,), dtype=np.float32),
+                is_terminal=np.zeros((1,), dtype=np.float32),
             )
         return replay
 

@@ -139,7 +139,11 @@ def sample_replay_batch(
         observations=jnp.concatenate([batch.observations for batch in batches], axis=0),
         actions=jnp.concatenate([batch.actions for batch in batches], axis=0),
         rewards=jnp.concatenate([batch.rewards for batch in batches], axis=0),
-        dones=jnp.concatenate([batch.dones for batch in batches], axis=0),
+        is_last=jnp.concatenate([batch.is_last for batch in batches], axis=0),
+        is_terminal=jnp.concatenate(
+            [batch.is_terminal for batch in batches],
+            axis=0,
+        ),
     )
 
 
@@ -214,8 +218,8 @@ def sample_policy_starts(
             chunk_length=config.context_window,
             max_horizon=1,
         )
-        done_context = np.asarray(batch.dones[:, : config.context_window])
-        valid_indices = np.flatnonzero(np.sum(done_context, axis=1) == 0.0)
+        last_context = np.asarray(batch.is_last[:, : config.context_window])
+        valid_indices = np.flatnonzero(np.sum(last_context, axis=1) == 0.0)
         if valid_indices.size == 0:
             continue
         valid_indices = valid_indices[: batch_size - collected]

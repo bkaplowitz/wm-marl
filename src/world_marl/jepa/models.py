@@ -382,7 +382,7 @@ class JepaWorldModel(nn.Module):
         actions: jax.Array,
         *,
         chunk_length: int,
-        dones: jax.Array | None = None,
+        is_last: jax.Array | None = None,
     ) -> dict[str, jax.Array]:
         latents = self.encode(observations)
         max_horizon = self.config.max_horizon
@@ -402,13 +402,13 @@ class JepaWorldModel(nn.Module):
             self.config.context_window,
             pad="zero",
         )
-        done_history = (
+        last_history = (
             None
-            if dones is None
+            if is_last is None
             else history_windows(
-                dones[:, :chunk_length],
+                is_last[:, :chunk_length],
                 self.config.context_window,
-                pad="done",
+                pad="last",
             )
         )
         predictions = []
@@ -425,12 +425,16 @@ class JepaWorldModel(nn.Module):
             flat_actions = action_history.reshape(
                 (flat_batch, self.config.context_window, *actions.shape[2:])
             )
-            flat_dones = (
+            flat_is_last = (
                 None
-                if done_history is None
-                else done_history.reshape((flat_batch, self.config.context_window))
+                if last_history is None
+                else last_history.reshape((flat_batch, self.config.context_window))
             )
-            h = self.dynamics_hidden(flat_latents, flat_actions, dones=flat_dones)
+            h = self.dynamics_hidden(
+                flat_latents,
+                flat_actions,
+                is_last=flat_is_last,
+            )
             last_h = h[:, -1]
             # Recurrent imagination calls the next-step API repeatedly with the
             # one-step horizon id. Train the autoregressive path with the same
@@ -442,9 +446,7 @@ class JepaWorldModel(nn.Module):
                 current_latents=current_latents,
             )
             predictions.append(
-                next_latents.reshape(
-                    (batch_size, chunk_length, self.config.latent_dim)
-                )
+                next_latents.reshape((batch_size, chunk_length, self.config.latent_dim))
             )
             targets.append(
                 jax.lax.stop_gradient(
@@ -477,10 +479,13 @@ class JepaWorldModel(nn.Module):
                     action_history,
                     actions[:, step_index + 1 : step_index + 1 + chunk_length],
                 )
-                if done_history is not None:
-                    done_history = append_history(
-                        done_history,
-                        dones[:, step_index + 1 : step_index + 1 + chunk_length],
+                if last_history is not None:
+                    last_history = append_history(
+                        last_history,
+                        is_last[
+                            :,
+                            step_index + 1 : step_index + 1 + chunk_length,
+                        ],
                     )
         predicted_latents = jnp.stack(predictions, axis=2)
         reward_logits = jnp.stack(reward_logits, axis=2)
@@ -500,7 +505,7 @@ class JepaWorldModel(nn.Module):
         latents: jax.Array,
         actions: jax.Array,
         *,
-        dones: jax.Array | None = None,
+        is_last: jax.Array | None = None,
     ) -> jax.Array:
         if latents.ndim != 3:
             raise ValueError("latents must be shaped [batch, time, latent_dim]")
@@ -509,7 +514,7 @@ class JepaWorldModel(nn.Module):
         mask = causal_attention_mask(
             time,
             context_window=self.config.context_window,
-            dones=dones,
+            is_last=is_last,
         )
         h = tokens
         for block in self.blocks:
@@ -571,24 +576,24 @@ def causal_attention_mask(
     time: int,
     *,
     context_window: int,
-    dones: jax.Array | None = None,
+    is_last: jax.Array | None = None,
 ) -> jax.Array:
     positions = jnp.arange(time)
     causal = positions[None, :] <= positions[:, None]
     local = (positions[:, None] - positions[None, :]) < context_window
     mask = causal & local
     mask = mask[None, None, :, :]
-    if dones is None:
+    if is_last is None:
         return mask
 
-    previous_dones = jnp.concatenate(
+    previous_is_last = jnp.concatenate(
         [
-            jnp.zeros((dones.shape[0], 1), dtype=dones.dtype),
-            dones[:, : time - 1],
+            jnp.zeros((is_last.shape[0], 1), dtype=is_last.dtype),
+            is_last[:, : time - 1],
         ],
         axis=1,
     )
-    segment_ids = jnp.cumsum(previous_dones.astype(jnp.int32), axis=1)
+    segment_ids = jnp.cumsum(previous_is_last.astype(jnp.int32), axis=1)
     same_segment = segment_ids[:, None, :, None] == segment_ids[:, None, None, :]
     return mask & same_segment
 
@@ -608,12 +613,12 @@ def history_windows(values: jax.Array, window: int, *, pad: str) -> jax.Array:
         pad_values = jnp.zeros(
             (values.shape[0], window - 1, *values.shape[2:]), dtype=values.dtype
         )
-    elif pad == "done":
+    elif pad == "last":
         pad_values = jnp.ones(
             (values.shape[0], window - 1, *values.shape[2:]), dtype=values.dtype
         )
     else:
-        raise ValueError("pad must be one of: edge, zero, done")
+        raise ValueError("pad must be one of: edge, zero, last")
     padded = jnp.concatenate([pad_values, values], axis=1)
     return jnp.stack(
         [padded[:, index : index + values.shape[1]] for index in range(window)],

@@ -51,7 +51,8 @@ def _batch(config: JepaConfig):
             observations=np.full((1, 4), step, dtype=np.float32),
             actions=np.asarray([step % config.action_dim], dtype=np.int32),
             rewards=np.asarray([1.0], dtype=np.float32),
-            dones=np.asarray([0.0], dtype=np.float32),
+            is_last=np.asarray([0.0], dtype=np.float32),
+            is_terminal=np.asarray([0.0], dtype=np.float32),
         )
     return replay.sample(
         np.random.default_rng(0),
@@ -110,7 +111,8 @@ def test_sequence_replay_samples_contiguous_chunks():
             observations=np.asarray([[step], [step + 100]], dtype=np.float32),
             actions=np.asarray([step % 2, (step + 1) % 2]),
             rewards=np.asarray([step, step + 100], dtype=np.float32),
-            dones=np.zeros((2,), dtype=np.float32),
+            is_last=np.zeros((2,), dtype=np.float32),
+            is_terminal=np.zeros((2,), dtype=np.float32),
         )
 
     batch = replay.sample(
@@ -135,7 +137,8 @@ def test_sequence_replay_does_not_sample_across_collector_cuts():
             observations=np.asarray([[step]], dtype=np.float32),
             actions=np.asarray([step % 2]),
             rewards=np.asarray([0.0], dtype=np.float32),
-            dones=np.asarray([0.0], dtype=np.float32),
+            is_last=np.asarray([0.0], dtype=np.float32),
+            is_terminal=np.asarray([0.0], dtype=np.float32),
             cuts=np.asarray([float(step == 4)], dtype=np.float32),
         )
 
@@ -156,7 +159,8 @@ def test_sequence_replay_finds_valid_starts_near_episode_boundaries():
             observations=np.asarray([[step]], dtype=np.float32),
             actions=np.asarray([step % 2]),
             rewards=np.asarray([0.0], dtype=np.float32),
-            dones=np.asarray([float(step == 10)], dtype=np.float32),
+            is_last=np.asarray([float(step == 10)], dtype=np.float32),
+            is_terminal=np.asarray([float(step == 10)], dtype=np.float32),
             cuts=np.asarray([float(step == 4)], dtype=np.float32),
         )
 
@@ -177,7 +181,8 @@ def test_sequence_replay_reset_starts_remain_correct_after_ring_wrap():
             observations=np.asarray([[step]], dtype=np.float32),
             actions=np.asarray([step % 2]),
             rewards=np.asarray([0.0], dtype=np.float32),
-            dones=np.asarray([float(step in {6, 11})], dtype=np.float32),
+            is_last=np.asarray([float(step in {6, 11})], dtype=np.float32),
+            is_terminal=np.asarray([float(step in {6, 11})], dtype=np.float32),
         )
 
     starts, envs = replay.episode_start_indices(
@@ -212,7 +217,8 @@ def test_sequence_replay_supports_continuous_action_vectors():
                 dtype=np.float32,
             ),
             rewards=np.asarray([step, step + 100], dtype=np.float32),
-            dones=np.zeros((2,), dtype=np.float32),
+            is_last=np.zeros((2,), dtype=np.float32),
+            is_terminal=np.zeros((2,), dtype=np.float32),
         )
 
     batch = replay.sample(
@@ -283,7 +289,8 @@ def test_continuous_action_jepa_model_step_is_finite():
         observations=observations,
         actions=actions,
         rewards=jnp.ones((3, 3), dtype=jnp.float32),
-        dones=jnp.zeros((3, 3), dtype=jnp.float32),
+        is_last=jnp.zeros((3, 3), dtype=jnp.float32),
+        is_terminal=jnp.zeros((3, 3), dtype=jnp.float32),
     )
     state, metrics = train_model_step(
         state,
@@ -368,7 +375,8 @@ def test_jepa_model_trains_recursive_overshooting_horizons():
         observations=observations,
         actions=actions,
         rewards=jnp.ones((3, 5), dtype=jnp.float32),
-        dones=jnp.zeros((3, 5), dtype=jnp.float32),
+        is_last=jnp.zeros((3, 5), dtype=jnp.float32),
+        is_terminal=jnp.zeros((3, 5), dtype=jnp.float32),
     )
     state, metrics = train_model_step(
         state,
@@ -567,7 +575,8 @@ def test_dreamer_style_policy_update_is_finite_and_keeps_world_model_frozen():
             maxval=1.0,
         ),
         rewards=jax.random.uniform(jax.random.PRNGKey(3), (4, 4)),
-        dones=jnp.zeros((4, 4), dtype=jnp.float32),
+        is_last=jnp.zeros((4, 4), dtype=jnp.float32),
+        is_terminal=jnp.zeros((4, 4), dtype=jnp.float32),
     )
 
     updated, metrics = continuous_policy_train_step(
@@ -730,17 +739,17 @@ def test_lambda_returns_bootstrap_from_next_values():
     np.testing.assert_allclose(np.asarray(returns[:, 0]), np.asarray([27.0, 32.0]))
 
 
-def test_prediction_validity_masks_terminal_crossing_targets():
-    dones = jnp.asarray([[0.0, 1.0, 0.0, 0.0]])
-    validity = prediction_validity(dones, chunk_length=2, max_horizon=2)
+def test_prediction_validity_masks_episode_boundary_crossing_targets():
+    is_last = jnp.asarray([[0.0, 1.0, 0.0, 0.0]])
+    validity = prediction_validity(is_last, chunk_length=2, max_horizon=2)
 
     expected = np.asarray([[[1.0, 0.0], [0.0, 0.0]]], dtype=np.float32)
     np.testing.assert_allclose(np.asarray(validity), expected)
 
 
-def test_transition_start_validity_keeps_terminal_transition_labels():
-    dones = jnp.asarray([[0.0, 1.0, 0.0, 0.0]])
-    validity = transition_start_validity(dones, chunk_length=2, max_horizon=2)
+def test_transition_start_validity_keeps_boundary_transition_labels():
+    is_last = jnp.asarray([[0.0, 1.0, 0.0, 0.0]])
+    validity = transition_start_validity(is_last, chunk_length=2, max_horizon=2)
 
     expected = np.asarray([[[1.0, 1.0], [1.0, 0.0]]], dtype=np.float32)
     np.testing.assert_allclose(np.asarray(validity), expected)
@@ -753,7 +762,8 @@ def test_open_loop_evaluation_masks_terminal_crossing_predictions():
         observations=jnp.zeros((2, 2, config.observation_dim), dtype=jnp.float32),
         actions=jnp.zeros((2, 1), dtype=jnp.int32),
         rewards=jnp.ones((2, 1), dtype=jnp.float32),
-        dones=jnp.asarray([[0.0], [1.0]], dtype=jnp.float32),
+        is_last=jnp.asarray([[0.0], [1.0]], dtype=jnp.float32),
+        is_terminal=jnp.asarray([[0.0], [1.0]], dtype=jnp.float32),
     )
 
     metrics = evaluate_open_loop(state, batch, config, horizon=1)
@@ -783,7 +793,15 @@ def test_open_loop_evaluation_supports_history_context():
         observations=jnp.zeros((3, 5, config.observation_dim), dtype=jnp.float32),
         actions=jnp.zeros((3, 4, config.action_dim), dtype=jnp.float32),
         rewards=jnp.ones((3, 4), dtype=jnp.float32),
-        dones=jnp.asarray(
+        is_last=jnp.asarray(
+            [
+                [0.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+            ],
+            dtype=jnp.float32,
+        ),
+        is_terminal=jnp.asarray(
             [
                 [0.0, 0.0, 0.0, 0.0],
                 [1.0, 0.0, 0.0, 0.0],

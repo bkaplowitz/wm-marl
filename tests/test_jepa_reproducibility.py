@@ -51,7 +51,8 @@ def test_replay_fingerprint_survives_round_trip_and_detects_changes(tmp_path):
         observations=np.arange(6, dtype=np.float32).reshape(2, 3),
         actions=np.asarray([[0.25], [-0.5]], dtype=np.float32),
         rewards=np.asarray([1.0, 0.0], dtype=np.float32),
-        dones=np.asarray([0.0, 1.0], dtype=np.float32),
+        is_last=np.asarray([0.0, 1.0], dtype=np.float32),
+        is_terminal=np.asarray([0.0, 1.0], dtype=np.float32),
         cuts=np.asarray([1.0, 0.0], dtype=np.float32),
     )
     expected = replay.fingerprint()
@@ -67,7 +68,8 @@ def test_replay_fingerprint_survives_round_trip_and_detects_changes(tmp_path):
         observations=np.zeros((2, 3), dtype=np.float32),
         actions=np.zeros((2, 1), dtype=np.float32),
         rewards=np.zeros(2, dtype=np.float32),
-        dones=np.zeros(2, dtype=np.float32),
+        is_last=np.zeros(2, dtype=np.float32),
+        is_terminal=np.zeros(2, dtype=np.float32),
     )
     assert restored.fingerprint() != expected
 
@@ -88,7 +90,8 @@ def test_replay_can_materialize_pre_generated_sample_indices():
             ),
             actions=np.asarray([[step], [-step]], dtype=np.float32),
             rewards=np.asarray([step, step + 1], dtype=np.float32),
-            dones=np.zeros(2, dtype=np.float32),
+            is_last=np.zeros(2, dtype=np.float32),
+            is_terminal=np.zeros(2, dtype=np.float32),
         )
 
     first_rng = np.random.default_rng(23)
@@ -111,11 +114,40 @@ def test_replay_can_materialize_pre_generated_sample_indices():
         chunk_length=3,
         max_horizon=2,
     )
-    for field in ("observations", "actions", "rewards", "dones"):
+    for field in (
+        "observations",
+        "actions",
+        "rewards",
+        "is_last",
+        "is_terminal",
+    ):
         np.testing.assert_array_equal(
             getattr(indexed, field),
             getattr(direct, field),
         )
+
+
+def test_legacy_replay_migrates_done_to_explicit_boundary_fields(tmp_path):
+    path = tmp_path / "legacy_replay.npz"
+    observations = np.arange(12, dtype=np.float32).reshape(4, 1, 3)
+    dones = np.asarray([[0.0], [1.0], [0.0], [0.0]], dtype=np.float32)
+    np.savez_compressed(
+        path,
+        observations=observations,
+        actions=np.zeros((4, 1, 1), dtype=np.float32),
+        rewards=np.zeros((4, 1), dtype=np.float32),
+        dones=dones,
+        capacity=np.asarray(8, dtype=np.int64),
+        num_envs=np.asarray(1, dtype=np.int64),
+        observation_shape=np.asarray([3], dtype=np.int64),
+        action_shape=np.asarray([1], dtype=np.int64),
+        action_dtype=np.asarray(np.dtype(np.float32).str),
+    )
+
+    replay = SequenceReplayBuffer.load_npz(path)
+
+    np.testing.assert_array_equal(replay.is_last[:4], dones)
+    np.testing.assert_array_equal(replay.is_terminal[:4], dones)
 
 
 def test_pytree_fingerprint_is_stable_and_value_sensitive():

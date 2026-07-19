@@ -14,10 +14,13 @@ from world_marl.jepa.reproducibility import fingerprint_arrays
 
 @struct.dataclass
 class ReplayBatch:
+    """Contiguous windows with explicit boundary and bootstrap semantics."""
+
     observations: jax.Array
     actions: jax.Array
     rewards: jax.Array
-    dones: jax.Array
+    is_last: jax.Array
+    is_terminal: jax.Array
 
 
 class SequenceReplayBuffer:
@@ -50,9 +53,13 @@ class SequenceReplayBuffer:
             dtype=self.action_dtype,
         )
         self.rewards = np.zeros((self.capacity, self.num_envs), dtype=np.float32)
-        self.dones = np.zeros((self.capacity, self.num_envs), dtype=np.float32)
+        self.is_last = np.zeros((self.capacity, self.num_envs), dtype=np.float32)
+        self.is_terminal = np.zeros(
+            (self.capacity, self.num_envs),
+            dtype=np.float32,
+        )
         # Cuts mark collector-imposed stream boundaries, such as reset-rich
-        # bootstrap segments. Unlike dones, they are not environment terminal
+        # bootstrap segments. They are neither episode-end nor Bellman-terminal
         # targets; sampled sequences simply must not cross them.
         self.cuts = np.zeros((self.capacity, self.num_envs), dtype=np.float32)
         self._position = 0
@@ -72,13 +79,14 @@ class SequenceReplayBuffer:
     def save_npz(self, path: str | Path) -> None:
         """Persist ordered replay contents for exact diagnostic reuse."""
 
-        observations, actions, rewards, dones = self._ordered_arrays()
+        observations, actions, rewards, is_last, is_terminal = self._ordered_arrays()
         np.savez_compressed(
             Path(path),
             observations=observations,
             actions=actions,
             rewards=rewards,
-            dones=dones,
+            is_last=is_last,
+            is_terminal=is_terminal,
             cuts=self._ordered_cuts(),
             capacity=np.asarray(self.capacity, dtype=np.int64),
             num_envs=np.asarray(self.num_envs, dtype=np.int64),
@@ -90,12 +98,13 @@ class SequenceReplayBuffer:
     def fingerprint(self) -> str:
         """Return a stable digest of ordered replay contents and metadata."""
 
-        observations, actions, rewards, dones = self._ordered_arrays()
+        observations, actions, rewards, is_last, is_terminal = self._ordered_arrays()
         arrays = {
             "observations": observations,
             "actions": actions,
             "rewards": rewards,
-            "dones": dones,
+            "is_last": is_last,
+            "is_terminal": is_terminal,
             "num_envs": np.asarray(self.num_envs, dtype=np.int64),
             "observation_shape": np.asarray(self.observation_shape, dtype=np.int64),
             "action_shape": np.asarray(self.action_shape, dtype=np.int64),
@@ -117,11 +126,27 @@ class SequenceReplayBuffer:
         observations = np.asarray(data["observations"], dtype=np.float32)
         actions = np.asarray(data["actions"])
         rewards = np.asarray(data["rewards"], dtype=np.float32)
-        dones = np.asarray(data["dones"], dtype=np.float32)
+        legacy_dones = (
+            np.asarray(data["dones"], dtype=np.float32)
+            if "dones" in data.files
+            else None
+        )
+        is_last = (
+            np.asarray(data["is_last"], dtype=np.float32)
+            if "is_last" in data.files
+            else legacy_dones
+        )
+        if is_last is None:
+            raise ValueError("saved replay is missing is_last/dones")
+        is_terminal = (
+            np.asarray(data["is_terminal"], dtype=np.float32)
+            if "is_terminal" in data.files
+            else np.asarray(is_last, dtype=np.float32)
+        )
         cuts = (
             np.asarray(data["cuts"], dtype=np.float32)
             if "cuts" in data.files
-            else np.zeros_like(dones)
+            else np.zeros_like(is_last)
         )
 
         if observations.ndim < 3:
@@ -154,7 +179,8 @@ class SequenceReplayBuffer:
         replay.observations[:size] = observations
         replay.actions[:size] = actions.astype(replay.action_dtype, copy=False)
         replay.rewards[:size] = rewards
-        replay.dones[:size] = dones
+        replay.is_last[:size] = is_last
+        replay.is_terminal[:size] = is_terminal
         replay.cuts[:size] = cuts
         replay._size = size
         replay._position = size % replay.capacity
@@ -167,7 +193,8 @@ class SequenceReplayBuffer:
         observations: np.ndarray,
         actions: np.ndarray,
         rewards: np.ndarray,
-        dones: np.ndarray,
+        is_last: np.ndarray,
+        is_terminal: np.ndarray,
         cuts: np.ndarray | None = None,
     ) -> None:
         obs = np.asarray(observations, dtype=np.float32).reshape(
@@ -181,9 +208,14 @@ class SequenceReplayBuffer:
         self.rewards[self._position] = np.asarray(rewards, dtype=np.float32).reshape(
             (self.num_envs,)
         )
-        self.dones[self._position] = np.asarray(dones, dtype=np.float32).reshape(
-            (self.num_envs,)
-        )
+        self.is_last[self._position] = np.asarray(
+            is_last,
+            dtype=np.float32,
+        ).reshape((self.num_envs,))
+        self.is_terminal[self._position] = np.asarray(
+            is_terminal,
+            dtype=np.float32,
+        ).reshape((self.num_envs,))
         cut_values = (
             np.zeros((self.num_envs,), dtype=np.float32)
             if cuts is None
@@ -280,9 +312,9 @@ class SequenceReplayBuffer:
                 f"need at least {sequence_length} steps to sample, have {self._size}"
             )
 
-        _, _, _, dones = self._ordered_arrays()
+        _, _, _, is_last, _ = self._ordered_arrays()
         cuts = self._ordered_cuts()
-        boundaries = (dones > 0.5) | (cuts > 0.5)
+        boundaries = (is_last > 0.5) | (cuts > 0.5)
         max_start = self._size - sequence_length
         starts: list[np.ndarray] = []
         envs: list[np.ndarray] = []
@@ -380,12 +412,13 @@ class SequenceReplayBuffer:
             indices = (self._position + indices) % self.capacity
 
         obs_batch = self.observations[indices, envs[:, None]]
-        # actions/rewards/dones align with transitions out of obs[t], so one fewer
+        # Transition fields align with transitions out of obs[t], so one fewer
         # item than the observation sequence is needed.
         trans_indices = indices[:, :-1]
         action_batch = self.actions[trans_indices, envs[:, None]]
         reward_batch = self.rewards[trans_indices, envs[:, None]]
-        done_batch = self.dones[trans_indices, envs[:, None]]
+        is_last_batch = self.is_last[trans_indices, envs[:, None]]
+        is_terminal_batch = self.is_terminal[trans_indices, envs[:, None]]
         return ReplayBatch(
             observations=jnp.asarray(obs_batch, dtype=jnp.float32),
             actions=jnp.asarray(
@@ -397,7 +430,8 @@ class SequenceReplayBuffer:
                 ),
             ),
             rewards=jnp.asarray(reward_batch, dtype=jnp.float32),
-            dones=jnp.asarray(done_batch, dtype=jnp.float32),
+            is_last=jnp.asarray(is_last_batch, dtype=jnp.float32),
+            is_terminal=jnp.asarray(is_terminal_batch, dtype=jnp.float32),
         )
 
     def _ordered_arrays(self):
@@ -406,7 +440,8 @@ class SequenceReplayBuffer:
                 self.observations[: self._size],
                 self.actions[: self._size],
                 self.rewards[: self._size],
-                self.dones[: self._size],
+                self.is_last[: self._size],
+                self.is_terminal[: self._size],
             )
         order = np.concatenate(
             [
@@ -418,7 +453,8 @@ class SequenceReplayBuffer:
             self.observations[order],
             self.actions[order],
             self.rewards[order],
-            self.dones[order],
+            self.is_last[order],
+            self.is_terminal[order],
         )
 
     def _ordered_cuts(self) -> np.ndarray:

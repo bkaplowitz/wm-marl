@@ -351,7 +351,7 @@ def world_model_loss_with_outputs(
         batch.observations,
         batch.actions,
         chunk_length=chunk_length,
-        dones=batch.dones,
+        is_last=batch.is_last,
         method=JepaWorldModel.sequence_outputs,
     )
     pred = _normalize(outputs["predicted_latents"])
@@ -365,19 +365,23 @@ def world_model_loss_with_outputs(
         ],
         axis=2,
     )
-    done_targets = jnp.stack(
+    terminal_targets = jnp.stack(
         [
-            batch.dones[:, offset : offset + chunk_length]
+            batch.is_terminal[:, offset : offset + chunk_length]
             for offset in range(max_horizon)
         ],
         axis=2,
     )
-    continue_targets = 1.0 - done_targets
+    continue_targets = 1.0 - terminal_targets
     reward_logits = outputs["reward_logits"]
     continue_logits = outputs["continue_logits"]
-    latent_validity = prediction_validity(batch.dones, chunk_length, max_horizon)
+    latent_validity = prediction_validity(
+        batch.is_last,
+        chunk_length,
+        max_horizon,
+    )
     transition_validity = transition_start_validity(
-        batch.dones,
+        batch.is_last,
         chunk_length,
         max_horizon,
     )
@@ -449,7 +453,7 @@ def world_model_loss_with_outputs(
         ),
         **terminal_prediction_metrics(
             continue_logits,
-            done_targets,
+            terminal_targets,
             mask=transition_validity,
         ),
         **{f"collapse/{key}": value for key, value in collapse.items()},
@@ -543,9 +547,7 @@ def continuous_policy_train_step(
             clip_value_targets(actor_returns, value_clip)
         )
         weights = survival_weights(rollout["continues"], gamma=config.gamma)
-        actor_scores = clipped_returns - jax.lax.stop_gradient(
-            rollout["fixed_values"]
-        )
+        actor_scores = clipped_returns - jax.lax.stop_gradient(rollout["fixed_values"])
         return_range = jnp.maximum(
             jnp.percentile(clipped_returns.reshape((-1,)), 95.0)
             - jnp.percentile(clipped_returns.reshape((-1,)), 5.0),
@@ -867,12 +869,12 @@ def continuous_policy_train_step(
                 0,
                 1,
             )
-            real_dones = jnp.swapaxes(
-                real_critic_batch.dones[:, :real_critic_horizon],
+            real_is_terminal = jnp.swapaxes(
+                real_critic_batch.is_terminal[:, :real_critic_horizon],
                 0,
                 1,
             )
-            real_continues = 1.0 - real_dones
+            real_continues = 1.0 - real_is_terminal
             model_params = jax.tree_util.tree_map(jax.lax.stop_gradient, params)
             real_z = state.apply_fn(
                 {"params": model_params},
@@ -1049,16 +1051,12 @@ def continuous_imagine_rollout(
         log_prob_actions = jax.lax.stop_gradient(raw_actions)
         gaussian_log_probs = (
             -0.5
-            * jnp.square(
-                (log_prob_actions - action_means) / jnp.exp(action_log_stds)
-            )
+            * jnp.square((log_prob_actions - action_means) / jnp.exp(action_log_stds))
             - action_log_stds
             - 0.5 * jnp.log(2.0 * jnp.pi)
         )
         squash_correction = 2.0 * (
-            jnp.log(2.0)
-            - log_prob_actions
-            - jax.nn.softplus(-2.0 * log_prob_actions)
+            jnp.log(2.0) - log_prob_actions - jax.nn.softplus(-2.0 * log_prob_actions)
         )
         action_log_prob = jnp.sum(
             gaussian_log_probs - squash_correction,
@@ -1280,7 +1278,7 @@ def evaluate_open_loop(
         )
     )
     validity = jnp.cumprod(
-        1.0 - batch.dones[:, : config.context_window + horizon],
+        1.0 - batch.is_last[:, : config.context_window + horizon],
         axis=1,
     )[:, config.context_window - 1 : config.context_window - 1 + horizon]
     cosine = jnp.sum(pred * target, axis=-1)
@@ -1414,22 +1412,22 @@ def _normalize(x: jax.Array) -> jax.Array:
 
 
 def prediction_validity(
-    dones: jax.Array,
+    is_last: jax.Array,
     chunk_length: int,
     max_horizon: int,
 ) -> jax.Array:
     validity = []
-    not_done = 1.0 - dones
+    not_last = 1.0 - is_last
     for horizon in range(1, max_horizon + 1):
         windows = [
-            not_done[:, offset : offset + chunk_length] for offset in range(horizon)
+            not_last[:, offset : offset + chunk_length] for offset in range(horizon)
         ]
         validity.append(jnp.prod(jnp.stack(windows, axis=0), axis=0))
     return jnp.stack(validity, axis=2)
 
 
 def transition_start_validity(
-    dones: jax.Array,
+    is_last: jax.Array,
     chunk_length: int,
     max_horizon: int,
 ) -> jax.Array:
@@ -1442,13 +1440,13 @@ def transition_start_validity(
     """
 
     masks = []
-    not_done = 1.0 - dones
+    not_last = 1.0 - is_last
     for horizon_index in range(max_horizon):
         if horizon_index == 0:
-            masks.append(jnp.ones_like(dones[:, :chunk_length]))
+            masks.append(jnp.ones_like(is_last[:, :chunk_length]))
             continue
         windows = [
-            not_done[:, offset : offset + chunk_length]
+            not_last[:, offset : offset + chunk_length]
             for offset in range(horizon_index)
         ]
         masks.append(jnp.prod(jnp.stack(windows, axis=0), axis=0))
@@ -1457,11 +1455,11 @@ def transition_start_validity(
 
 def terminal_prediction_metrics(
     continue_logits: jax.Array,
-    dones: jax.Array,
+    is_terminal: jax.Array,
     *,
     mask: jax.Array | None = None,
 ) -> dict[str, jax.Array]:
-    terminal_targets = dones.astype(jnp.float32)
+    terminal_targets = is_terminal.astype(jnp.float32)
     if mask is None:
         mask = jnp.ones_like(terminal_targets)
     terminal_probs = 1.0 - jax.nn.sigmoid(continue_logits)

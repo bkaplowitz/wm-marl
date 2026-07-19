@@ -865,11 +865,24 @@ def _prepare_training_prefix(
                 "environment_state_restored": True,
             },
         )
+        legacy_validation_dones = loaded.arrays.get("validation_dones")
+        validation_is_last = loaded.arrays.get(
+            "validation_is_last",
+            legacy_validation_dones,
+        )
+        if validation_is_last is None:
+            raise ValueError("training snapshot is missing validation boundaries")
         validation_batch = ReplayBatch(
             observations=jnp.asarray(loaded.arrays["validation_observations"]),
             actions=jnp.asarray(loaded.arrays["validation_actions"]),
             rewards=jnp.asarray(loaded.arrays["validation_rewards"]),
-            dones=jnp.asarray(loaded.arrays["validation_dones"]),
+            is_last=jnp.asarray(validation_is_last),
+            is_terminal=jnp.asarray(
+                loaded.arrays.get(
+                    "validation_is_terminal",
+                    validation_is_last,
+                )
+            ),
         )
         return _TrainingPrefix(
             state=loaded.train_state,
@@ -1625,7 +1638,8 @@ def _save_branch_training_snapshot(
             "validation_observations": jax.device_get(validation_batch.observations),
             "validation_actions": jax.device_get(validation_batch.actions),
             "validation_rewards": jax.device_get(validation_batch.rewards),
-            "validation_dones": jax.device_get(validation_batch.dones),
+            "validation_is_last": jax.device_get(validation_batch.is_last),
+            "validation_is_terminal": jax.device_get(validation_batch.is_terminal),
         },
         adapter=adapter,
         jax_rng_streams={
@@ -1748,7 +1762,8 @@ def _collect_random_steps(
             observations=observations[:, 0],
             actions=actions[:, 0],
             rewards=step.rewards[:, 0],
-            dones=step.dones[:, 0],
+            is_last=step.dones[:, 0],
+            is_terminal=step.dones[:, 0],
             cuts=(
                 np.ones((adapter.num_envs,), dtype=np.float32) if forced_reset else None
             ),
@@ -1816,7 +1831,8 @@ def _collect_policy_steps(
             observations=observations[:, 0],
             actions=actions,
             rewards=step.rewards[:, 0],
-            dones=step.dones[:, 0],
+            is_last=step.dones[:, 0],
+            is_terminal=step.dones[:, 0],
         )
         completed_count = len(step.completed_returns)
         completed_returns.extend(float(item[0]) for item in step.completed_returns)
@@ -1866,7 +1882,8 @@ def _add_replay_step(
     observations: np.ndarray,
     actions: np.ndarray,
     rewards: np.ndarray,
-    dones: np.ndarray,
+    is_last: np.ndarray,
+    is_terminal: np.ndarray,
     cuts: np.ndarray | None = None,
 ) -> None:
     buffers = replay if isinstance(replay, tuple) else (replay,)
@@ -1875,7 +1892,8 @@ def _add_replay_step(
             observations=observations,
             actions=actions,
             rewards=rewards,
-            dones=dones,
+            is_last=is_last,
+            is_terminal=is_terminal,
             cuts=cuts,
         )
 
@@ -2459,7 +2477,7 @@ def _reload_prediction_diff(
         batch.observations,
         batch.actions,
         chunk_length=chunk_length,
-        dones=batch.dones,
+        is_last=batch.is_last,
         method=JepaWorldModel.sequence_outputs,
     )["predicted_latents"]
     reloaded = fresh.apply_fn(
@@ -2467,7 +2485,7 @@ def _reload_prediction_diff(
         batch.observations,
         batch.actions,
         chunk_length=chunk_length,
-        dones=batch.dones,
+        is_last=batch.is_last,
         method=JepaWorldModel.sequence_outputs,
     )["predicted_latents"]
     return float(jnp.max(jnp.abs(original - reloaded)))
