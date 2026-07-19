@@ -287,6 +287,25 @@ Promotion gate:
 - a statistical tie removes the recent replay and its activation threshold,
   because uniform replay is the simpler data path.
 
+Result: rejected.
+
+| Metric | Frozen control | Uniform-only WM replay |
+| --- | ---: | ---: |
+| Mean of seed means | 865.14 | 795.63 |
+| Seed-mean population std | 56.47 | 73.01 |
+| Mean failure rate | 7.0% | 3.0% |
+| Mean success rate | 73.5% | 61.5% |
+| Mean P10 | 427.05 | 599.25 |
+| Mean CVaR10 | 366.70 | 236.35 |
+| Normalized curve area | 488.13 | 614.39 |
+
+Uniform-only replay learned faster and had a lower binary failure rate, but it
+ended 69.51 points below control with worse success, CVaR10, and cross-seed
+dispersion. Seed 1 reached 944.70 at 150,528 transitions and then fell to
+722.62 at the endpoint. The early 50% recent world-model replay phase is
+therefore retained as a necessary stabilization rather than removed on the
+strength of its early learning curve.
+
 ## Combination Gate
 
 Only independently passing changes are combined. The combined candidate is
