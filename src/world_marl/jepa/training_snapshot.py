@@ -70,9 +70,11 @@ def save_training_snapshot(
             replay_names.append(name)
 
         np.save(temporary / "observations.npy", np.asarray(observations))
-        saved_arrays = {} if arrays is None else {
-            name: np.asarray(value) for name, value in arrays.items()
-        }
+        saved_arrays = (
+            {}
+            if arrays is None
+            else {name: np.asarray(value) for name, value in arrays.items()}
+        )
         with (temporary / "arrays.npz").open("wb") as handle:
             np.savez_compressed(handle, **saved_arrays)
         if not hasattr(adapter, "save_state_npz"):
@@ -85,8 +87,7 @@ def save_training_snapshot(
             "replay_names": sorted(replay_names),
             "absent_replay_names": sorted(absent_replay_names),
             "jax_rng_streams": {
-                name: streams.state_dict()
-                for name, streams in jax_rng_streams.items()
+                name: streams.state_dict() for name, streams in jax_rng_streams.items()
             },
             "numpy_rng_streams": {
                 name: streams.state_dict()
