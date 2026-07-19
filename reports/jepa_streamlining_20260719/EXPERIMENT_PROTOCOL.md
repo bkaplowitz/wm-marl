@@ -76,7 +76,20 @@ Commit `4e8b444` scales the existing 500k milestones by declared training
 budget. The resolved 500k thresholds remain exactly unchanged. This is a
 protocol consistency fix and does not alter the target 500k baseline.
 
-Decision: retain.
+Diagnostic: fresh 200k seeds 1 and 2 compare the historical absolute
+milestones with the same milestones at their 500k-relative progress. This
+diagnostic changes the milestone bundle as one protocol-level intervention;
+individual schedule rules are not promoted or rejected from this comparison.
+
+Promotion gate:
+
+- the 500k resolved manifest remains exact;
+- no seed-level catastrophic regression at 200k;
+- improved or equal mean, lower tail, and area under the fixed-evaluation
+  curve favor the proportional schedule;
+- if proportional scheduling hurts, keep the exact 500k algorithm and remove
+  the misleading maintained short-budget preset rather than reporting it as
+  the same algorithm.
 
 ### Smooth actor scale
 
@@ -142,4 +155,3 @@ The final baseline then runs:
 - no checkpoint search or policy selection;
 - training snapshots at fixed reporting milestones for future exact
   continuation diagnostics.
-
