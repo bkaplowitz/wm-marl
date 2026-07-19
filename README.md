@@ -191,8 +191,8 @@ uv run python -m world_marl.scripts.write_dmc_vector_launcher \
 bash runs/jepa_500k/launcher.sh
 ```
 
-The 500K preset uses 497,664 training transitions plus 1,280 held-out
-world-model validation transitions. Final 20-episode evaluation is tracked
+The 500K preset uses 499,712 training transitions plus 1,280 held-out
+world-model validation transitions. Final 100-episode evaluation is tracked
 separately. All W&B curves use actual training environment steps on the x-axis,
 and the reported final score comes from the deterministic latest policy.
 
