@@ -53,6 +53,7 @@ from world_marl.jepa.schedule import (
     scheduled_policy_reset_start_fraction as _scheduled_policy_reset_start_fraction,
     scheduled_recent_world_model_fraction as _scheduled_recent_world_model_fraction,
     scheduled_value_clip as _scheduled_value_clip,
+    staged_actor_update_schedule as _staged_actor_update_schedule,
 )
 from world_marl.jepa.training import (
     continuous_policy_train_step,
@@ -277,6 +278,16 @@ def parse_args() -> argparse.Namespace:
             "online actor-update interval. Zero applies it immediately."
         ),
     )
+    online.add_argument(
+        "--online-policy-critic-first-steps",
+        type=int,
+        default=0,
+        help=(
+            "Critic-only updates at the start of each online policy phase. "
+            "Existing actor updates are moved later in the phase, preserving "
+            "the total actor and critic update counts."
+        ),
+    )
     online.add_argument("--online-checkpoint-interval", type=int, default=16)
     online.add_argument(
         "--online-freeze-encoder-after-env-steps",
@@ -436,6 +447,7 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         "online_train_steps",
         "online_policy_train_steps",
         "online_policy_actor_update_interval_start_env_steps",
+        "online_policy_critic_first_steps",
         "final_policy_eval_episodes",
         "dreamer_report_window_env_steps",
         "dreamer_report_budget_env_steps",
@@ -1048,6 +1060,7 @@ def _prepare_training_prefix(
         train_steps=args.policy_train_steps,
         reset_actor=True,
         actor_update_interval=1,
+        critic_first_steps=0,
         actor_entropy_coef=args.actor_entropy_coef,
         value_clip=_scheduled_value_clip(args, train_env_steps=train_env_steps),
     )
@@ -1309,6 +1322,7 @@ def run_one(
                 train_steps=args.online_policy_train_steps,
                 reset_actor=False,
                 actor_update_interval=actor_update_interval,
+                critic_first_steps=args.online_policy_critic_first_steps,
                 actor_entropy_coef=args.actor_entropy_coef,
                 value_clip=_scheduled_value_clip(
                     args,
@@ -2032,6 +2046,7 @@ def _train_policy(
     train_steps: int,
     reset_actor: bool,
     actor_update_interval: int,
+    critic_first_steps: int,
     actor_entropy_coef: float,
     value_clip: float,
     reset_start_fraction: float = 0.0,
@@ -2069,6 +2084,11 @@ def _train_policy(
         jax.lax.stop_gradient,
         state.params,
     )
+    actor_update_schedule, effective_critic_first_steps = _staged_actor_update_schedule(
+        train_steps=train_steps,
+        actor_update_interval=actor_update_interval,
+        critic_first_steps=critic_first_steps,
+    )
     actor_updates = 0
     progress = tqdm(
         range(1, train_steps + 1),
@@ -2077,7 +2097,7 @@ def _train_policy(
         disable=args.quiet,
     )
     for step_index in progress:
-        apply_actor_update = step_index % actor_update_interval == 0
+        apply_actor_update = actor_update_schedule[step_index - 1]
         if (
             apply_actor_update
             and actor_updates % args.policy_actor_kl_reference_interval == 0
@@ -2149,6 +2169,12 @@ def _train_policy(
                 {
                     "phase": f"{phase}_actor_critic",
                     "update": step_index,
+                    "policy/critic_first_active": float(
+                        step_index <= effective_critic_first_steps
+                    ),
+                    "policy/critic_first_effective_steps": (
+                        effective_critic_first_steps
+                    ),
                     **metrics,
                 }
             )
@@ -2163,6 +2189,8 @@ def _train_policy(
             "policy_train_steps": train_steps,
             "policy_actor_update_interval": actor_update_interval,
             "policy_actor_updates": actor_updates,
+            "policy_critic_first_requested_steps": critic_first_steps,
+            "policy_critic_first_effective_steps": effective_critic_first_steps,
             "policy_batch_size": args.policy_batch_size,
             "policy_imag_horizon": args.imag_horizon,
             "policy_return_mode": "lambda",

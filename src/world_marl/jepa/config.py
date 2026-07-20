@@ -43,6 +43,7 @@ _CANONICAL_BASE = MappingProxyType(
         "online_iterations": 483,
         "online_policy_actor_update_interval": 2,
         "online_policy_actor_update_interval_start_env_steps": 50_000,
+        "online_policy_critic_first_steps": 0,
         "online_freeze_encoder_after_env_steps": 101_376,
         "online_checkpoint_interval": 16,
         "online_recent_replay_steps": 320,
@@ -113,6 +114,7 @@ _CANONICAL_BASE = MappingProxyType(
         "resume_training_snapshot": None,
     }
 )
+
 
 def canonical_jepa_config() -> dict[str, Any]:
     """Return the mutable resolved configuration for the fixed 500k agent."""

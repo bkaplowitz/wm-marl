@@ -184,6 +184,8 @@ def test_actor_update_interval_override_is_accounted_separately(
             "2",
             "--online-policy-actor-update-interval-start-env-steps",
             "50000",
+            "--online-policy-critic-first-steps",
+            "256",
         ],
     )
 
@@ -194,6 +196,7 @@ def test_actor_update_interval_override_is_accounted_separately(
 
     assert params["online_policy_actor_update_interval"] == 2
     assert params["online_policy_actor_update_interval_start_env_steps"] == 50_000
+    assert params["online_policy_critic_first_steps"] == 256
     assert accounting["critic_updates"] == 1_280 + 91 * 512
     assert accounting["actor_updates"] == 1_280 + 44 * 512 + 47 * 256
 

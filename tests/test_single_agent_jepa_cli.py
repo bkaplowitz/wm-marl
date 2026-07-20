@@ -374,6 +374,37 @@ def test_online_actor_update_interval_can_start_after_warmup(monkeypatch):
     )
 
 
+def test_critic_first_schedule_preserves_actor_update_count():
+    baseline, baseline_critic_first = train_dmc_jepa._staged_actor_update_schedule(
+        train_steps=512,
+        actor_update_interval=2,
+        critic_first_steps=0,
+    )
+    staged, staged_critic_first = train_dmc_jepa._staged_actor_update_schedule(
+        train_steps=512,
+        actor_update_interval=2,
+        critic_first_steps=256,
+    )
+
+    assert baseline_critic_first == 0
+    assert baseline[1::2] == (True,) * 256
+    assert sum(baseline) == sum(staged) == 256
+    assert staged_critic_first == 256
+    assert staged[:256] == (False,) * 256
+    assert staged[256:] == (True,) * 256
+
+
+def test_critic_first_schedule_leaves_one_to_one_cadence_unchanged():
+    schedule, effective_critic_first = train_dmc_jepa._staged_actor_update_schedule(
+        train_steps=512,
+        actor_update_interval=1,
+        critic_first_steps=256,
+    )
+
+    assert effective_critic_first == 0
+    assert schedule == (True,) * 512
+
+
 def test_online_encoder_can_freeze_after_budget_threshold(monkeypatch):
     monkeypatch.setattr(
         sys,

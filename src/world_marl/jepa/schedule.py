@@ -267,6 +267,51 @@ def scheduled_online_actor_update_interval(
     return int(args.online_policy_actor_update_interval)
 
 
+def staged_actor_update_schedule(
+    *,
+    train_steps: int,
+    actor_update_interval: int,
+    critic_first_steps: int,
+) -> tuple[tuple[bool, ...], int]:
+    """Move actor updates later without changing their total count."""
+
+    if train_steps < 0:
+        raise ValueError("train_steps must be >= 0")
+    if actor_update_interval < 1:
+        raise ValueError("actor_update_interval must be >= 1")
+    if critic_first_steps < 0:
+        raise ValueError("critic_first_steps must be >= 0")
+    if train_steps == 0:
+        return (), 0
+    if critic_first_steps == 0:
+        return (
+            tuple(
+                step_index % actor_update_interval == 0
+                for step_index in range(1, train_steps + 1)
+            ),
+            0,
+        )
+
+    actor_updates = train_steps // actor_update_interval
+    effective_critic_first_steps = min(
+        critic_first_steps,
+        train_steps - actor_updates,
+    )
+    if actor_updates == 0:
+        return (
+            tuple(False for _ in range(train_steps)),
+            effective_critic_first_steps,
+        )
+
+    remaining_steps = train_steps - effective_critic_first_steps
+    schedule = [False] * effective_critic_first_steps
+    for relative_step in range(1, remaining_steps + 1):
+        updates_before = (relative_step - 1) * actor_updates // remaining_steps
+        updates_after = relative_step * actor_updates // remaining_steps
+        schedule.append(updates_after > updates_before)
+    return tuple(schedule), effective_critic_first_steps
+
+
 def scheduled_online_encoder_freeze(
     args: argparse.Namespace,
     *,
