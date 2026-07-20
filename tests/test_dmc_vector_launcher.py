@@ -293,8 +293,8 @@ def test_launcher_serializes_actor_kl_controls():
 def test_500k_preset_locks_current_architecture_and_control_stack():
     params = PRESETS["jepa_500k"]
 
-    assert params["latent_dim"] == 128
-    assert params["model_dim"] == 128
+    assert params["latent_dim"] == 144
+    assert params["model_dim"] == 144
     assert params["num_layers"] == 2
     assert params["num_heads"] == 4
     assert params["context_window"] == 8
@@ -324,6 +324,10 @@ def test_500k_preset_locks_current_architecture_and_control_stack():
     assert params["online_recent_world_model_until_env_steps"] == 50_000
     assert params["policy_reset_start_fraction"] == 0.1
     assert params["policy_reset_start_fraction_start_env_steps"] == 201_728
+    assert params["dreamer_report_window_env_steps"] == 10_000
+    assert params["dreamer_report_final_bins"] == 3
+    assert params["curve_eval_interval_env_steps"] == 0
+    assert params["curve_eval_episodes"] == 0
     assert params["model_grad_clip_norm"] == 0.0
     assert params["actor_grad_clip_norm"] == 10.0
     assert params["critic_grad_clip_norm"] == 100.0

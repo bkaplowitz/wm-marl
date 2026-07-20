@@ -259,6 +259,39 @@ def test_jepa_model_forward_and_model_step_are_finite():
     assert jnp.isfinite(metrics["model/total_loss"])
 
 
+def test_separate_actor_and_value_paths_match_combined_outputs():
+    config = _config()
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    model = JepaWorldModel(config)
+    latents = jax.random.normal(
+        jax.random.PRNGKey(1),
+        (7, config.latent_dim),
+    )
+
+    means, log_stds, values = state.apply_fn(
+        {"params": state.params},
+        latents,
+        method=model.actor_value_stats_from_latent,
+    )
+    separate_means, separate_log_stds = state.apply_fn(
+        {"params": state.params},
+        latents,
+        method=model.actor_stats_from_latent,
+    )
+    separate_values = state.apply_fn(
+        {"params": state.params},
+        latents,
+        method=model.value_from_latent,
+    )
+
+    np.testing.assert_array_equal(np.asarray(means), np.asarray(separate_means))
+    np.testing.assert_array_equal(
+        np.asarray(log_stds),
+        np.asarray(separate_log_stds),
+    )
+    np.testing.assert_array_equal(np.asarray(values), np.asarray(separate_values))
+
+
 def test_continuous_action_jepa_model_step_is_finite():
     config = JepaConfig(
         observation_dim=4,
@@ -300,6 +333,40 @@ def test_continuous_action_jepa_model_step_is_finite():
         chunk_length=2,
     )
     assert jnp.isfinite(metrics["model/total_loss"])
+
+
+def test_model_step_can_skip_diagnostics_without_changing_update():
+    config = _config()
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    key = jax.random.PRNGKey(1)
+    batch = _batch(config)
+
+    detailed_state, detailed_metrics = train_model_step(
+        state,
+        key,
+        batch,
+        config,
+        chunk_length=2,
+        compute_diagnostics=True,
+    )
+    fast_state, fast_metrics = train_model_step(
+        state,
+        key,
+        batch,
+        config,
+        chunk_length=2,
+        compute_diagnostics=False,
+    )
+
+    for detailed, fast in zip(
+        jax.tree_util.tree_leaves(detailed_state),
+        jax.tree_util.tree_leaves(fast_state),
+        strict=True,
+    ):
+        np.testing.assert_allclose(np.asarray(detailed), np.asarray(fast), atol=1e-7)
+    assert "collapse/latent_effective_rank" in detailed_metrics
+    assert "collapse/latent_effective_rank" not in fast_metrics
+    assert jnp.isfinite(fast_metrics["model/total_loss"])
 
 
 def test_model_step_can_freeze_only_the_observation_encoder():

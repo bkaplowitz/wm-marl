@@ -79,13 +79,24 @@ def dreamer_style_training_score(
     *,
     window_env_steps: int,
     budget_env_steps: int,
+    final_bins: int = 3,
 ) -> dict[str, Any]:
-    """Aggregate naturally completed training episodes in a trailing window."""
+    """Build the paper-style online score curve and final per-seed score.
 
-    enabled = window_env_steps > 0 and budget_env_steps > 0
+    Training episodes are assigned to disjoint ``window_env_steps`` bins by
+    their completion step. The per-seed final score is the unweighted mean of
+    the final populated bins, matching the DreamerV3 DMC table aggregation.
+    """
+
+    enabled = window_env_steps > 0 and budget_env_steps > 0 and final_bins > 0
     episodes: list[dict[str, Any]] = []
+    train_env_steps = 0
     for item in online_history:
         replay = item.get("actor_replay", {})
+        train_env_steps = max(
+            train_env_steps,
+            int(replay.get("train_replay_total_env_steps") or 0),
+        )
         returns = replay.get("returns") or []
         lengths = replay.get("lengths") or []
         finish_steps = replay.get("episode_finish_train_env_steps") or []
@@ -101,50 +112,116 @@ def dreamer_style_training_score(
                 }
             )
 
-    final_step = max(
+    final_episode_step = max(
         (item["finish_train_env_step"] for item in episodes),
-        default=None,
+        default=0,
     )
-    if not enabled or final_step is None:
+    train_env_steps = max(train_env_steps, final_episode_step)
+    if not enabled or train_env_steps <= 0:
         return {
             "enabled": enabled,
             "budget_env_steps": int(budget_env_steps),
             "window_env_steps": int(window_env_steps),
+            "final_bins": int(final_bins),
             "budget_reached": False,
-            "final_train_env_step": final_step,
+            "final_train_env_step": train_env_steps or None,
+            "final_episode_finish_env_step": final_episode_step or None,
             "window_start_env_step": None,
             "window_end_env_step": None,
             "episodes": 0,
             "mean_return": None,
             "std_return": None,
+            "episode_mean_return": None,
+            "episode_std_return": None,
             "returns": [],
             "episode_finish_train_env_steps": [],
+            "selected_bin_end_env_steps": [],
+            "selected_bin_means": [],
+            "curve": [],
         }
-    budget_reached = final_step >= budget_env_steps
-    window_end = budget_env_steps if budget_reached else final_step
-    window_start = max(0, window_end - window_env_steps)
+
+    budget_reached = train_env_steps >= budget_env_steps
+    curve_end = min(train_env_steps, budget_env_steps)
+    bins: dict[int, list[dict[str, Any]]] = {}
+    for episode in episodes:
+        finish_step = episode["finish_train_env_step"]
+        if finish_step <= 0 or finish_step > curve_end:
+            continue
+        bin_index = (finish_step - 1) // window_env_steps
+        bins.setdefault(bin_index, []).append(episode)
+
+    curve = []
+    for bin_index in sorted(bins):
+        records = bins[bin_index]
+        values = [record["return"] for record in records]
+        bin_start = bin_index * window_env_steps
+        bin_end = min((bin_index + 1) * window_env_steps, budget_env_steps)
+        curve.append(
+            {
+                "bin_index": int(bin_index),
+                "bin_start_env_step": int(bin_start),
+                "bin_end_env_step": int(bin_end),
+                "episodes": len(values),
+                "mean_return": float(np.mean(values)),
+                "std_return": float(np.std(values)),
+                "returns": values,
+                "episode_finish_train_env_steps": [
+                    record["finish_train_env_step"] for record in records
+                ],
+            }
+        )
+
+    selected_bins = curve[-final_bins:]
+    selected_bin_means = [item["mean_return"] for item in selected_bins]
+    selected_bin_ends = [item["bin_end_env_step"] for item in selected_bins]
+    selected_bin_indices = {item["bin_index"] for item in selected_bins}
     selected = [
-        item
-        for item in episodes
-        if window_start < item["finish_train_env_step"] <= window_end
+        episode
+        for episode in episodes
+        if (episode["finish_train_env_step"] - 1) // window_env_steps
+        in selected_bin_indices
+        and episode["finish_train_env_step"] <= curve_end
     ]
-    selected_returns = [item["return"] for item in selected]
+    selected_returns = [episode["return"] for episode in selected]
+    window_start = (
+        selected_bins[0]["bin_start_env_step"] if selected_bins else None
+    )
+    window_end = selected_bins[-1]["bin_end_env_step"] if selected_bins else None
     return {
         "enabled": True,
         "budget_env_steps": int(budget_env_steps),
         "window_env_steps": int(window_env_steps),
+        "final_bins": int(final_bins),
         "budget_reached": bool(budget_reached),
-        "final_train_env_step": int(final_step),
-        "window_start_env_step": int(window_start),
-        "window_end_env_step": int(window_end),
+        "final_train_env_step": int(train_env_steps),
+        "final_episode_finish_env_step": (
+            int(final_episode_step) if final_episode_step else None
+        ),
+        "window_start_env_step": (
+            int(window_start) if window_start is not None else None
+        ),
+        "window_end_env_step": int(window_end) if window_end is not None else None,
         "episodes": len(selected_returns),
-        "mean_return": (float(np.mean(selected_returns)) if selected_returns else None),
-        "std_return": float(np.std(selected_returns)) if selected_returns else None,
+        "mean_return": (
+            float(np.mean(selected_bin_means)) if selected_bin_means else None
+        ),
+        "std_return": (
+            float(np.std(selected_bin_means)) if selected_bin_means else None
+        ),
+        "episode_mean_return": (
+            float(np.mean(selected_returns)) if selected_returns else None
+        ),
+        "episode_std_return": (
+            float(np.std(selected_returns)) if selected_returns else None
+        ),
         "returns": selected_returns,
         "episode_finish_train_env_steps": [
             item["finish_train_env_step"] for item in selected
         ],
         "episode_records": selected,
+        "selected_bin_end_env_steps": selected_bin_ends,
+        "selected_bin_means": selected_bin_means,
+        "curve": curve,
     }
 
 

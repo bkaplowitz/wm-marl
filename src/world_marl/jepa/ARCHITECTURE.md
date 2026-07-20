@@ -81,16 +81,16 @@ environment.
 
 ### 3.1 Observation Encoder
 
-The encoder maps an observation to a 128-dimensional latent state:
+The encoder maps an observation to a 144-dimensional latent state:
 
 ```text
 o_t
  -> symlog
- -> Dense(128), SiLU
- -> Dense(128), SiLU
- -> Dense(128)
+ -> Dense(144), SiLU
+ -> Dense(144), SiLU
+ -> Dense(144)
  -> RMSNorm
- -> z_t in R^128
+ -> z_t in R^144
 ```
 
 The elementwise input transform is
@@ -118,7 +118,7 @@ representation-learning stage.
 Continuous actions are embedded as:
 
 ```text
-a_t -> Dense(128), SiLU -> Dense(128).
+a_t -> Dense(144), SiLU -> Dense(144).
 ```
 
 For every time step, the transformer input token is the sum of a projected
@@ -132,14 +132,14 @@ The temporal model is a local causal transformer:
 
 | Property | Value |
 | --- | ---: |
-| Transformer width | 128 |
+| Transformer width | 144 |
 | Context window | 8 transitions |
 | Transformer blocks | 2 |
 | Attention heads | 4 |
-| Dimension per head | 32 |
+| Dimension per head | 36 |
 | Attention position encoding | Rotary position embedding |
 | Feed-forward block | GEGLU |
-| Feed-forward inner width | 512 |
+| Feed-forward inner width | 576 |
 | Activation | SiLU |
 | Normalization | Pre-norm RMSNorm |
 | Dropout | None |
@@ -157,8 +157,8 @@ The final transformer state at a transition is consumed by three heads.
 
 ```text
 h_t + one_step_embedding
- -> Dense(128), SiLU
- -> Dense(128)
+ -> Dense(144), SiLU
+ -> Dense(144)
  -> add current latent z_t
  -> RMSNorm
  -> z_hat_{t+1}
@@ -170,7 +170,7 @@ not an unrelated absolute vector.
 **Reward prediction**
 
 ```text
-h_t -> Dense(128), SiLU -> Dense(255) reward logits.
+h_t -> Dense(144), SiLU -> Dense(255) reward logits.
 ```
 
 The logits parameterize a categorical distribution over 255 equally spaced
@@ -182,7 +182,7 @@ reward kernel is initialized to zero.
 **Continuation prediction**
 
 ```text
-h_t -> Dense(128), SiLU -> Dense(1) continue logit.
+h_t -> Dense(144), SiLU -> Dense(1) continue logit.
 ```
 
 The target is `1 - done`. During imagination, its sigmoid is used as the
@@ -545,36 +545,41 @@ two-dimensional action spaces of `reacher/easy` is:
 
 | Component | Trainable parameters |
 | --- | ---: |
-| Observation encoder | 34,048 |
-| Latent projection | 16,512 |
-| Continuous action encoder | 16,896 |
-| Two transformer blocks | 527,360 |
-| Dynamics RMSNorm | 128 |
-| Horizon embedding | 768 |
-| Latent predictor and RMSNorm | 33,152 |
-| Reward head | 49,407 |
-| Continue head | 16,641 |
-| **JEPA world model subtotal** | **694,912** |
-| Actor | 16,964 |
-| Critic | 33,279 |
-| **Total trainable parameters** | **745,155** |
+| Observation encoder | 42,912 |
+| Latent projection | 20,880 |
+| Continuous action encoder | 21,312 |
+| Two transformer blocks | 667,008 |
+| Dynamics RMSNorm | 144 |
+| Horizon embedding | 864 |
+| Latent predictor and RMSNorm | 41,904 |
+| Reward head | 57,855 |
+| Continue head | 21,025 |
+| **JEPA world model subtotal** | **873,904** |
+| Actor | 18,004 |
+| Critic | 34,319 |
+| **Total trainable parameters** | **926,227** |
 
 The EMA target critic introduces no additional trainable parameters. It keeps a
-delayed copy of the 33,279-parameter value head. Optimizer states are excluded
+delayed copy of the 34,319-parameter value head. Optimizer states are excluded
 from the table.
 
 ## 9. Evaluation and Reproducibility
 
 Performance during learning is reported from episodes completed naturally by
-the stochastic collection policy. These returns require no environment calls
-beyond the 499,712 training transitions.
+the stochastic collection policy. Episodes are grouped by their completion
+step into disjoint 10,000-transition bins. Each curve point is the mean return
+inside one populated bin. A run's final paper score is the unweighted mean of
+its last three populated bin means. Across seeds, curves are summarized as the
+seed mean and one population standard deviation. These returns require no
+environment calls beyond the 499,712 training transitions.
 
-The live experiments additionally run deterministic measurement-only
-evaluations every 50,000 training transitions and a deterministic 100-episode
-evaluation of the final latest policy. Evaluation transitions never enter
-replay, update parameters, gate training, or select a checkpoint. They are not
-part of the learning algorithm and are accounted separately from training
-transitions.
+Raw per-episode returns remain logged for auditing but are not the primary
+learning curve. After training, the experiment runs one deterministic,
+100-episode evaluation of the final latest policy. Those evaluation
+transitions never enter replay, update parameters, gate training, or select a
+checkpoint. They are a supplementary measurement and are accounted separately
+from training transitions. There are no periodic evaluation rollouts during
+training.
 
 The return thresholds 100 and 900 are reporting labels for Reacher failure and
 success rates. They do not affect rewards, losses, replay sampling, or actions.

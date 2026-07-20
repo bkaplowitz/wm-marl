@@ -50,6 +50,8 @@ OVERRIDABLE_PARAMS = (
     "model_dim",
     "num_layers",
     "num_heads",
+    "model_horizon",
+    "open_loop_horizon",
     "actor_hidden_dim",
     "critic_hidden_dim",
     "imag_horizon",
@@ -70,6 +72,7 @@ OVERRIDABLE_PARAMS = (
     "online_recent_world_model_until_env_steps",
     "online_recent_replay_max_oversample",
     "dreamer_report_budget_env_steps",
+    "dreamer_report_final_bins",
     "curve_eval_interval_env_steps",
     "curve_eval_episodes",
     "curve_eval_num_envs",
@@ -344,6 +347,8 @@ def parse_args() -> argparse.Namespace:
         "model_dim",
         "num_layers",
         "num_heads",
+        "model_horizon",
+        "open_loop_horizon",
         "actor_hidden_dim",
         "critic_hidden_dim",
         "imag_horizon",
@@ -356,6 +361,7 @@ def parse_args() -> argparse.Namespace:
         "curve_eval_num_envs",
         "curve_eval_seed",
         "dreamer_report_budget_env_steps",
+        "dreamer_report_final_bins",
     ):
         parser.add_argument("--" + name.replace("_", "-"), type=int, default=None)
     for name in (

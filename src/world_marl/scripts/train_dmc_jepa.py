@@ -336,6 +336,7 @@ def parse_args() -> argparse.Namespace:
         "--dreamer-report-window-env-steps", type=int, default=10_000
     )
     reporting.add_argument("--dreamer-report-budget-env-steps", type=int, default=0)
+    reporting.add_argument("--dreamer-report-final-bins", type=int, default=3)
     reporting.add_argument("--curve-eval-interval-env-steps", type=int, default=0)
     reporting.add_argument("--curve-eval-episodes", type=int, default=0)
     reporting.add_argument("--curve-eval-num-envs", type=int, default=None)
@@ -451,6 +452,7 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         "final_policy_eval_episodes",
         "dreamer_report_window_env_steps",
         "dreamer_report_budget_env_steps",
+        "dreamer_report_final_bins",
         "curve_eval_interval_env_steps",
         "curve_eval_episodes",
         "wandb_video_camera",
@@ -1194,6 +1196,16 @@ def run_one(
         online_history = prefix.online_history
         curve_evaluations = prefix.curve_evaluations
         next_curve_eval_step = prefix.next_curve_eval_step
+        logged_paper_bin_ends = {
+            int(item["bin_end_env_step"])
+            for item in _dreamer_style_training_score(
+                online_history,
+                window_env_steps=args.dreamer_report_window_env_steps,
+                budget_env_steps=args.dreamer_report_budget_env_steps,
+                final_bins=args.dreamer_report_final_bins,
+            ).get("curve", ())
+            if int(item["bin_end_env_step"]) <= train_env_steps
+        }
         training_snapshot_targets = set(args.training_snapshot_env_steps)
         for online_index in range(
             prefix.next_online_iteration,
@@ -1387,6 +1399,15 @@ def run_one(
                     "policy_actor_updates": policy_metrics["policy_actor_updates"],
                 }
             )
+            _log_completed_paper_score_bins(
+                logger,
+                online_history,
+                logged_bin_ends=logged_paper_bin_ends,
+                closed_through_env_steps=train_env_steps,
+                window_env_steps=args.dreamer_report_window_env_steps,
+                budget_env_steps=args.dreamer_report_budget_env_steps,
+                final_bins=args.dreamer_report_final_bins,
+            )
             if train_env_steps in training_snapshot_targets:
                 snapshot_dir = _save_branch_training_snapshot(
                     run_dir,
@@ -1438,11 +1459,30 @@ def run_one(
             online_history,
             window_env_steps=args.dreamer_report_window_env_steps,
             budget_env_steps=args.dreamer_report_budget_env_steps,
+            final_bins=args.dreamer_report_final_bins,
         )
         logger.write_json("dreamer_style_training_score.json", training_score)
         if training_score["enabled"]:
             logger.append_metrics(
-                {"phase": "dreamer_style_training_score", **training_score}
+                {
+                    "phase": "paper_online_score_final",
+                    "budget/train_env_steps": training_score[
+                        "final_train_env_step"
+                    ],
+                    "paper/online_return_final_bins_mean": training_score[
+                        "mean_return"
+                    ],
+                    "paper/online_return_final_bins_std": training_score[
+                        "std_return"
+                    ],
+                    "paper/online_return_final_bin_count": len(
+                        training_score["selected_bin_means"]
+                    ),
+                    "paper/online_return_final_episode_count": training_score[
+                        "episodes"
+                    ],
+                    "paper/budget_reached": training_score["budget_reached"],
+                }
             )
 
         final_metrics = _evaluate_model(
@@ -1589,6 +1629,24 @@ def run_one(
             "model/final_continue_loss": outcome["final_continue_loss"],
             "run/checkpoint_reload_verified": reload_diff <= 1e-6,
         }
+        if training_score["enabled"]:
+            final_row.update(
+                {
+                    "paper/online_return_final_bins_mean": training_score[
+                        "mean_return"
+                    ],
+                    "paper/online_return_final_bins_std": training_score[
+                        "std_return"
+                    ],
+                    "paper/online_return_final_bin_count": len(
+                        training_score["selected_bin_means"]
+                    ),
+                    "paper/online_return_final_episode_count": training_score[
+                        "episodes"
+                    ],
+                    "paper/budget_reached": training_score["budget_reached"],
+                }
+            )
         if final_policy_eval is not None:
             final_row.update(
                 {
@@ -1599,6 +1657,15 @@ def run_one(
                     "eval/failure_rate": final_policy_eval["failure_rate"],
                     "eval/success_rate": final_policy_eval["success_rate"],
                     "eval/episodes": final_policy_eval["episodes"],
+                    "evaluation/deterministic_latest_return_mean": (
+                        final_policy_eval["mean_return"]
+                    ),
+                    "evaluation/deterministic_latest_return_std": (
+                        final_policy_eval["std_return"]
+                    ),
+                    "evaluation/deterministic_latest_episodes": (
+                        final_policy_eval["episodes"]
+                    ),
                 }
             )
         logger.append_metrics(final_row)
@@ -1966,6 +2033,41 @@ def _log_collection_episode_reports(
         logger.append_metrics(row)
 
 
+def _log_completed_paper_score_bins(
+    logger: RunLogger,
+    online_history: list[dict[str, Any]],
+    *,
+    logged_bin_ends: set[int],
+    closed_through_env_steps: int,
+    window_env_steps: int,
+    budget_env_steps: int,
+    final_bins: int,
+) -> None:
+    """Log each completed online-score bin once at its true environment step."""
+
+    score = _dreamer_style_training_score(
+        online_history,
+        window_env_steps=window_env_steps,
+        budget_env_steps=budget_env_steps,
+        final_bins=final_bins,
+    )
+    for item in score.get("curve", ()):
+        bin_end = int(item["bin_end_env_step"])
+        if bin_end > closed_through_env_steps or bin_end in logged_bin_ends:
+            continue
+        logger.append_metrics(
+            {
+                "phase": "paper_online_score_bin",
+                "budget/train_env_steps": bin_end,
+                "paper/online_return_mean": item["mean_return"],
+                "paper/online_return_std": item["std_return"],
+                "paper/online_episode_count": item["episodes"],
+                "paper/bin_width_env_steps": window_env_steps,
+            }
+        )
+        logged_bin_ends.add(bin_end)
+
+
 def _fit_world_model(
     args: argparse.Namespace,
     logger: RunLogger,
@@ -1991,6 +2093,11 @@ def _fit_world_model(
         disable=args.quiet,
     )
     for step_index in progress:
+        log_step = (
+            step_index == 1
+            or step_index == steps
+            or step_index % args.eval_interval == 0
+        )
         batch = _sample_replay_batch(
             replay,
             np_rng,
@@ -2008,12 +2115,9 @@ def _fit_world_model(
             config,
             chunk_length=args.chunk_length,
             freeze_encoder=freeze_encoder,
+            compute_diagnostics=log_step,
         )
-        if (
-            step_index == 1
-            or step_index == steps
-            or step_index % args.eval_interval == 0
-        ):
+        if log_step:
             progress.set_postfix(
                 loss=f"{float(metrics['model/total_loss']):.4g}",
                 jepa=f"{float(metrics['model/jepa_loss']):.4g}",

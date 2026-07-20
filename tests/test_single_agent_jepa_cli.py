@@ -644,3 +644,43 @@ def test_collection_reports_use_actual_episode_finish_steps():
 
     assert [row["budget/train_env_steps"] for row in rows] == [16_000, 16_016]
     assert [row["report/episode_return"] for row in rows] == [100.0, 950.0]
+
+
+def test_completed_paper_bins_are_logged_once_at_the_bin_end():
+    rows = []
+    logger = SimpleNamespace(append_metrics=rows.append)
+    history = [
+        {
+            "iteration": 1,
+            "actor_replay": {
+                "returns": [900.0, 950.0],
+                "lengths": [1_000, 1_000],
+                "episode_finish_train_env_steps": [9_000, 19_000],
+                "train_replay_total_env_steps": 20_000,
+            },
+        }
+    ]
+    logged_bin_ends = set()
+
+    train_dmc_jepa._log_completed_paper_score_bins(
+        logger,
+        history,
+        logged_bin_ends=logged_bin_ends,
+        closed_through_env_steps=20_000,
+        window_env_steps=10_000,
+        budget_env_steps=500_000,
+        final_bins=3,
+    )
+    train_dmc_jepa._log_completed_paper_score_bins(
+        logger,
+        history,
+        logged_bin_ends=logged_bin_ends,
+        closed_through_env_steps=20_000,
+        window_env_steps=10_000,
+        budget_env_steps=500_000,
+        final_bins=3,
+    )
+
+    assert [row["budget/train_env_steps"] for row in rows] == [10_000, 20_000]
+    assert [row["paper/online_return_mean"] for row in rows] == [900.0, 950.0]
+    assert logged_bin_ends == {10_000, 20_000}

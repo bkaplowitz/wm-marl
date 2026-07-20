@@ -209,6 +209,7 @@ def _update_target_critic_params(
         "config",
         "chunk_length",
         "freeze_encoder",
+        "compute_diagnostics",
     ),
 )
 def train_model_step(
@@ -219,6 +220,7 @@ def train_model_step(
     *,
     chunk_length: int,
     freeze_encoder: bool = False,
+    compute_diagnostics: bool = True,
 ) -> tuple[JepaTrainState, dict[str, jax.Array]]:
     def loss_fn(params):
         loss, metrics = world_model_loss(
@@ -228,31 +230,35 @@ def train_model_step(
             batch,
             config,
             chunk_length=chunk_length,
+            compute_diagnostics=compute_diagnostics,
         )
         return loss, metrics
 
     (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
     del loss
-    encoder_grad_norm = optax.global_norm(grads["encoder"])
+    encoder_grad_norm = (
+        optax.global_norm(grads["encoder"]) if compute_diagnostics else None
+    )
     if freeze_encoder:
         grads = grads.copy(
             add_or_replace={
                 "encoder": jax.tree_util.tree_map(jnp.zeros_like, grads["encoder"])
             }
         )
-    metrics = {
-        **metrics,
-        "model/grad_norm": optax.global_norm(grads),
-        "model/encoder_grad_norm_unmasked": encoder_grad_norm,
-        "model/encoder_frozen": jnp.asarray(
-            float(freeze_encoder),
-            dtype=metrics["model/total_loss"].dtype,
-        ),
-        "model/grad_clip_norm": jnp.asarray(
-            config.model_grad_clip_norm,
-            dtype=metrics["model/total_loss"].dtype,
-        ),
-    }
+    if compute_diagnostics:
+        metrics = {
+            **metrics,
+            "model/grad_norm": optax.global_norm(grads),
+            "model/encoder_grad_norm_unmasked": encoder_grad_norm,
+            "model/encoder_frozen": jnp.asarray(
+                float(freeze_encoder),
+                dtype=metrics["model/total_loss"].dtype,
+            ),
+            "model/grad_clip_norm": jnp.asarray(
+                config.model_grad_clip_norm,
+                dtype=metrics["model/total_loss"].dtype,
+            ),
+        }
     return state.apply_model_gradients(
         grads,
         freeze_encoder=freeze_encoder,
@@ -283,6 +289,30 @@ def actor_value_stats_from_latent(
     )
 
 
+def actor_stats_from_latent(
+    apply_fn,
+    params: FrozenDict,
+    latents: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    return apply_fn(
+        {"params": params},
+        latents,
+        method=JepaWorldModel.actor_stats_from_latent,
+    )
+
+
+def value_from_latent(
+    apply_fn,
+    params: FrozenDict,
+    latents: jax.Array,
+) -> jax.Array:
+    return apply_fn(
+        {"params": params},
+        latents,
+        method=JepaWorldModel.value_from_latent,
+    )
+
+
 def actor_value_logits_from_latent(
     apply_fn,
     params: FrozenDict,
@@ -295,6 +325,18 @@ def actor_value_logits_from_latent(
     )
 
 
+def value_logits_from_latent(
+    apply_fn,
+    params: FrozenDict,
+    latents: jax.Array,
+) -> jax.Array:
+    return apply_fn(
+        {"params": params},
+        latents,
+        method=JepaWorldModel.value_logits_from_latent,
+    )
+
+
 def world_model_loss(
     params: FrozenDict,
     apply_fn,
@@ -303,6 +345,7 @@ def world_model_loss(
     config: JepaConfig,
     *,
     chunk_length: int,
+    compute_diagnostics: bool = True,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     loss, metrics, _ = world_model_loss_with_outputs(
         params,
@@ -311,6 +354,7 @@ def world_model_loss(
         batch,
         config,
         chunk_length=chunk_length,
+        compute_diagnostics=compute_diagnostics,
     )
     return loss, metrics
 
@@ -344,6 +388,7 @@ def world_model_loss_with_outputs(
     config: JepaConfig,
     *,
     chunk_length: int,
+    compute_diagnostics: bool = True,
 ) -> tuple[jax.Array, dict[str, jax.Array], dict[str, jax.Array]]:
     _, regularizer_key = jax.random.split(key)
     outputs = apply_fn(
@@ -405,6 +450,7 @@ def world_model_loss_with_outputs(
         outputs["context_latents"],
         regularizer_key,
         config,
+        compute_diagnostics=compute_diagnostics,
     )
     total_loss = (
         jepa_loss
@@ -412,52 +458,61 @@ def world_model_loss_with_outputs(
         + config.reward_weight * reward_loss
         + config.continue_weight * continue_loss
     )
-    constant_continue = jnp.full_like(continue_targets, jnp.mean(continue_targets))
-    reward_mean = masked_mean(reward_targets, transition_validity)
-    constant_reward = jnp.full_like(reward_targets, reward_mean)
-    constant_reward_loss = masked_mean(
-        constant_prediction_loss(
-            constant_reward,
-            reward_targets,
-            num_bins=config.twohot_bins,
-            low=config.twohot_min,
-            high=config.twohot_max,
-        ),
-        transition_validity,
-    )
     metrics = {
         "model/total_loss": total_loss,
         "model/jepa_loss": jepa_loss,
-        "model/jepa_pred_cosine": jepa_cosine,
-        "model/jepa_valid_fraction": jnp.mean(latent_validity),
-        "model/transition_valid_fraction": jnp.mean(transition_validity),
         "model/regularizer_loss": regularizer,
         "model/sigreg_loss": regularizer,
         "model/reward_loss": reward_loss,
-        "model/reward_constant_loss": constant_reward_loss,
-        "model/reward_prediction_mode_symlog_twohot": jnp.asarray(
-            1.0,
-            dtype=reward_loss.dtype,
-        ),
-        "model/reward_constant_mse": masked_mean(
-            jnp.square(constant_reward - reward_targets),
-            transition_validity,
-        ),
         "model/continue_loss": continue_loss,
-        "model/continue_constant_bce": masked_mean(
-            optax.sigmoid_binary_cross_entropy(
-                jnp.log(constant_continue / (1.0 - constant_continue + 1e-6) + 1e-6),
-                continue_targets,
+    }
+    if compute_diagnostics:
+        constant_continue = jnp.full_like(
+            continue_targets,
+            jnp.mean(continue_targets),
+        )
+        reward_mean = masked_mean(reward_targets, transition_validity)
+        constant_reward = jnp.full_like(reward_targets, reward_mean)
+        constant_reward_loss = masked_mean(
+            constant_prediction_loss(
+                constant_reward,
+                reward_targets,
+                num_bins=config.twohot_bins,
+                low=config.twohot_min,
+                high=config.twohot_max,
             ),
             transition_validity,
-        ),
-        **terminal_prediction_metrics(
-            continue_logits,
-            terminal_targets,
-            mask=transition_validity,
-        ),
-        **{f"collapse/{key}": value for key, value in collapse.items()},
-    }
+        )
+        metrics = {
+            **metrics,
+            "model/jepa_pred_cosine": jepa_cosine,
+            "model/jepa_valid_fraction": jnp.mean(latent_validity),
+            "model/transition_valid_fraction": jnp.mean(transition_validity),
+            "model/reward_constant_loss": constant_reward_loss,
+            "model/reward_prediction_mode_symlog_twohot": jnp.asarray(
+                1.0,
+                dtype=reward_loss.dtype,
+            ),
+            "model/reward_constant_mse": masked_mean(
+                jnp.square(constant_reward - reward_targets),
+                transition_validity,
+            ),
+            "model/continue_constant_bce": masked_mean(
+                optax.sigmoid_binary_cross_entropy(
+                    jnp.log(
+                        constant_continue / (1.0 - constant_continue + 1e-6) + 1e-6
+                    ),
+                    continue_targets,
+                ),
+                transition_validity,
+            ),
+            **terminal_prediction_metrics(
+                continue_logits,
+                terminal_targets,
+                mask=transition_validity,
+            ),
+            **{f"collapse/{key}": value for key, value in collapse.items()},
+        }
     return total_loss, metrics, outputs
 
 
@@ -576,7 +631,7 @@ def continuous_policy_train_step(
                 jax.lax.stop_gradient,
                 actor_reference_params,
             )
-            reference_means, reference_log_stds, _ = actor_value_stats_from_latent(
+            reference_means, reference_log_stds = actor_stats_from_latent(
                 state.apply_fn,
                 reference_params,
                 jax.lax.stop_gradient(rollout["latents"]),
@@ -619,7 +674,6 @@ def continuous_policy_train_step(
             rollout["rewards"],
             rollout["continues"],
             rollout["raw_rewards"],
-            rollout["values"],
             rollout["fixed_values"],
             actor_returns,
             clipped_returns,
@@ -788,7 +842,7 @@ def continuous_policy_train_step(
     }
     if apply_actor_update:
         state = state.apply_actor_gradients(actor_grads)
-    new_action_means, new_action_log_stds, _ = actor_value_stats_from_latent(
+    new_action_means, new_action_log_stds = actor_stats_from_latent(
         state.apply_fn,
         state.params,
         jax.lax.stop_gradient(critic_latents),
@@ -816,7 +870,7 @@ def continuous_policy_train_step(
     )
 
     def critic_loss_fn(params):
-        _, value_logits = actor_value_logits_from_latent(
+        value_logits = value_logits_from_latent(
             state.apply_fn,
             params,
             critic_latents,
@@ -835,7 +889,7 @@ def continuous_policy_train_step(
                 jax.lax.stop_gradient,
                 target_critic_params,
             )
-            _, slow_value_logits = actor_value_logits_from_latent(
+            slow_value_logits = value_logits_from_latent(
                 state.apply_fn,
                 slow_params,
                 critic_latents,
@@ -885,7 +939,7 @@ def continuous_policy_train_step(
                 jax.lax.stop_gradient,
                 target_critic_params if target_critic_params is not None else params,
             )
-            _, bootstrap_logits = actor_value_logits_from_latent(
+            bootstrap_logits = value_logits_from_latent(
                 state.apply_fn,
                 bootstrap_params,
                 real_z,
@@ -910,7 +964,7 @@ def continuous_policy_train_step(
                 value_clip,
             )
             real_targets = jax.lax.stop_gradient(real_targets)
-            _, real_value_logits = actor_value_logits_from_latent(
+            real_value_logits = value_logits_from_latent(
                 state.apply_fn,
                 params,
                 real_value_latents,
@@ -1036,7 +1090,7 @@ def continuous_imagine_rollout(
         context, action_context, rng = carry
         rng, action_key = jax.random.split(rng)
         current_z = context[:, -1]
-        action_means, action_log_stds, values = actor_value_stats_from_latent(
+        action_means, action_log_stds = actor_stats_from_latent(
             apply_fn,
             params,
             current_z,
@@ -1081,7 +1135,7 @@ def continuous_imagine_rollout(
             method=JepaWorldModel.predict_next_from_history,
         )
         continues = jax.nn.sigmoid(continue_logits)
-        _, fixed_values = actor_value_from_latent(
+        fixed_values = value_from_latent(
             apply_fn,
             value_params,
             current_z,
@@ -1105,7 +1159,6 @@ def continuous_imagine_rollout(
             "action_log_stds": action_log_stds,
             "action_entropy": action_entropy,
             "action_log_prob": action_log_prob,
-            "values": values,
             "fixed_values": fixed_values,
             "raw_rewards": raw_rewards,
             "rewards": raw_rewards,
@@ -1180,7 +1233,7 @@ def select_continuous_actions(
         flat_obs,
         method=JepaWorldModel.encode,
     )
-    action_means, action_log_stds, _ = actor_value_stats_from_latent(
+    action_means, action_log_stds = actor_stats_from_latent(
         state.apply_fn,
         state.params,
         z,
@@ -1327,8 +1380,10 @@ def representation_regularizer(
     latents: jax.Array,
     key: jax.Array,
     config: JepaConfig,
+    *,
+    compute_diagnostics: bool = True,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
-    collapse = latent_collapse_metrics(latents)
+    collapse = latent_collapse_metrics(latents) if compute_diagnostics else {}
     return (
         sigreg_loss(
             latents,

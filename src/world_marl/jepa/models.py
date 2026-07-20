@@ -343,7 +343,15 @@ class JepaWorldModel(nn.Module):
         self,
         latents: jax.Array,
     ) -> tuple[jax.Array, jax.Array, jax.Array]:
-        logits, value_logits = self.actor_value_logits_from_latent(latents)
+        means, log_stds = self.actor_stats_from_latent(latents)
+        values = self.value_from_latent(latents)
+        return means, log_stds, values
+
+    def actor_stats_from_latent(
+        self,
+        latents: jax.Array,
+    ) -> tuple[jax.Array, jax.Array]:
+        logits = self.actor_logits_from_latent(latents)
         if self.config.action_mode == "continuous":
             means, log_stds = jnp.split(logits, 2, axis=-1)
             log_stds = jnp.clip(
@@ -354,26 +362,37 @@ class JepaWorldModel(nn.Module):
         else:
             means = logits
             log_stds = jnp.zeros_like(means)
+        return means, log_stds
+
+    def value_from_latent(self, latents: jax.Array) -> jax.Array:
+        value_logits = self.value_logits_from_latent(latents)
         values = scalar_prediction_from_logits(
             value_logits,
             num_bins=self.config.twohot_bins,
             low=self.config.twohot_min,
             high=self.config.twohot_max,
         )
-        return means, log_stds, values
+        return values
 
     def actor_value_logits_from_latent(
         self,
         latents: jax.Array,
     ) -> tuple[jax.Array, jax.Array]:
+        return (
+            self.actor_logits_from_latent(latents),
+            self.value_logits_from_latent(latents),
+        )
+
+    def actor_logits_from_latent(self, latents: jax.Array) -> jax.Array:
         flat = latents.reshape((-1, self.config.latent_dim))
         logits = self.actor_head(flat)
+        return logits.reshape((*latents.shape[:-1], logits.shape[-1]))
+
+    def value_logits_from_latent(self, latents: jax.Array) -> jax.Array:
+        flat = latents.reshape((-1, self.config.latent_dim))
         value_logits = self.value_head(flat)
-        return (
-            logits.reshape((*latents.shape[:-1], logits.shape[-1])),
-            value_logits.reshape(
-                (*latents.shape[:-1], value_logits.shape[-1]),
-            ),
+        return value_logits.reshape(
+            (*latents.shape[:-1], value_logits.shape[-1]),
         )
 
     def sequence_outputs(
