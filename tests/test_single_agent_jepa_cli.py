@@ -684,3 +684,14 @@ def test_completed_paper_bins_are_logged_once_at_the_bin_end():
     assert [row["budget/train_env_steps"] for row in rows] == [10_000, 20_000]
     assert [row["paper/online_return_mean"] for row in rows] == [900.0, 950.0]
     assert logged_bin_ends == {10_000, 20_000}
+
+
+def test_default_wandb_run_name_is_stable_across_dmc_tasks():
+    assert (
+        train_dmc_jepa._default_wandb_run_name("dmc:reacher/easy", 2)
+        == "jepa_reacher_easy_seed2"
+    )
+    assert (
+        train_dmc_jepa._default_wandb_run_name("dmc:cheetah/run", 1)
+        == "jepa_cheetah_run_seed1"
+    )

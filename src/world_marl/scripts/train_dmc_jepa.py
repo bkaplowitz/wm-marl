@@ -751,8 +751,7 @@ def _wandb_run_config(
     if run_name and args.num_runs > 1:
         run_name = f"{run_name}-seed{seed}"
     if not run_name:
-        env_name = args.env.replace(":", "-").replace("/", "-")
-        run_name = f"{env_name}-seed{seed}"
+        run_name = _default_wandb_run_name(args.env, seed)
     return WandbConfig(
         project=args.wandb_project,
         entity=args.wandb_entity,
@@ -762,6 +761,14 @@ def _wandb_run_config(
         mode=args.wandb_mode,
         config={"args": vars(args), "run_index": run_index, "seed": seed},
     )
+
+
+def _default_wandb_run_name(env: str, seed: int) -> str:
+    """Return the stable JEPA run name used across tasks and seeds."""
+
+    task = env.split(":", maxsplit=1)[-1]
+    task_slug = task.replace("/", "_").replace("-", "_")
+    return f"jepa_{task_slug}_seed{seed}"
 
 
 def _jepa_config(args: argparse.Namespace, adapter) -> JepaConfig:
