@@ -298,7 +298,8 @@ def test_500k_preset_locks_current_architecture_and_control_stack():
     assert params["num_layers"] == 2
     assert params["num_heads"] == 4
     assert params["context_window"] == 8
-    assert params["model_horizon"] == 5
+    assert params["model_horizon"] == 8
+    assert params["open_loop_horizon"] == 8
     assert params["imag_horizon"] == 15
     assert params["actor_hidden_dim"] == 64
     assert params["critic_hidden_dim"] == 64

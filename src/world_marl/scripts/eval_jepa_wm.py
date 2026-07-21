@@ -329,9 +329,7 @@ def evaluate_model(
                 )
             )
         )
-        action_records.append(
-            to_jsonable(action_sensitivity(state, config, wm_batch))
-        )
+        action_records.append(to_jsonable(action_sensitivity(state, config, wm_batch)))
 
     open_loop: dict[str, Any] = {}
     for horizon in horizons:
@@ -585,6 +583,8 @@ def parse_int_list(value: str) -> list[int]:
     if not items or min(items) < 1:
         raise ValueError("integer list values must be >= 1")
     return sorted(set(items))
+
+
 def is_number(value: Any) -> bool:
     return isinstance(value, (int, float, np.integer, np.floating)) and np.isfinite(
         float(value)

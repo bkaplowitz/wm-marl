@@ -324,7 +324,7 @@ class MeltingPotVectorAdapter:
             shape = observation_space.shape
         if shape is None or len(shape) != 3:
             raise ValueError(f"expected RGB observation shape [H, W, C], got {shape}")
-        return tuple(int(dim) for dim in shape)
+        return (int(shape[0]), int(shape[1]), int(shape[2]))
 
     @staticmethod
     def _get_scalar_observation_keys(env: Any, agent: str) -> tuple[str, ...]:

@@ -22,6 +22,12 @@ class ReplayBatch:
     is_last: jax.Array
     is_terminal: jax.Array
 
+    @property
+    def dones(self) -> jax.Array:
+        """Legacy boundary alias for diagnostics written before `is_last`."""
+
+        return self.is_last
+
 
 class SequenceReplayBuffer:
     """Ring buffer that samples contiguous per-env stream windows."""
@@ -75,6 +81,12 @@ class SequenceReplayBuffer:
         """Number of collector-imposed boundaries in the stored replay."""
 
         return self._cut_count
+
+    @property
+    def dones(self) -> np.ndarray:
+        """Legacy boundary alias for diagnostics written before `is_last`."""
+
+        return self.is_last
 
     def save_npz(self, path: str | Path) -> None:
         """Persist ordered replay contents for exact diagnostic reuse."""

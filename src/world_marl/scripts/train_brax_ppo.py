@@ -9,9 +9,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 from brax import envs
 from brax.training.agents.ppo import train as ppo_train
+
+from world_marl.logging import to_jsonable
 
 
 def main() -> None:
@@ -22,18 +23,17 @@ def main() -> None:
 
     history: list[dict[str, Any]] = []
     history_path = out_dir / "history.jsonl"
+    history_path.unlink(missing_ok=True)
     started = time.time()
 
     def progress(num_steps: int, metrics: dict[str, Any]) -> None:
         row = {
             "num_steps": int(num_steps),
             "walltime_seconds": time.time() - started,
-            **jsonable(metrics),
+            **to_jsonable(metrics),
         }
         if row["walltime_seconds"] > 0:
-            row["training/sps_since_start"] = row["num_steps"] / row[
-                "walltime_seconds"
-            ]
+            row["training/sps_since_start"] = row["num_steps"] / row["walltime_seconds"]
         history.append(row)
         with history_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, sort_keys=True) + "\n")
@@ -68,9 +68,9 @@ def main() -> None:
 
     summary = {
         "env": env_name,
-        "args": jsonable(vars(args)),
+        "args": to_jsonable(vars(args)),
         "history": history,
-        "final_metrics": jsonable(final_metrics),
+        "final_metrics": to_jsonable(final_metrics),
         "best": best_history_row(history),
         "last": history[-1] if history else None,
     }
@@ -132,29 +132,6 @@ def make_env(env_name: str, args: argparse.Namespace):
     if args.backend:
         kwargs["backend"] = args.backend
     return envs.create(env_name, **kwargs)
-
-
-def jsonable(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(key): jsonable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [jsonable(item) for item in value]
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-
-    array = np.asarray(value)
-    if array.shape == ():
-        item = array.item()
-        if isinstance(item, (np.integer,)):
-            return int(item)
-        if isinstance(item, (np.floating,)):
-            return float(item)
-        if isinstance(item, (np.bool_,)):
-            return bool(item)
-        return item
-    return array.tolist()
 
 
 def best_history_row(history: list[dict[str, Any]]) -> dict[str, Any] | None:

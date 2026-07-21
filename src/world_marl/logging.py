@@ -62,7 +62,8 @@ def to_jsonable(value: Any) -> Any:
         try:
             return value.item()
         except (TypeError, ValueError):
-            pass
+            if hasattr(value, "__array__"):
+                return np.asarray(value).tolist()
     if isinstance(value, dict):
         return {str(key): to_jsonable(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -96,18 +97,24 @@ class RunLogger:
         run_dir: str | Path,
         *,
         wandb_config: WandbConfig | None = None,
+        wandb_run: Any = None,
     ) -> None:
+        if wandb_config is not None and wandb_run is not None:
+            raise ValueError("pass either wandb_config or wandb_run, not both")
         self.run_dir = Path(run_dir)
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.metrics_path = self.run_dir / "metrics.jsonl"
         self._wandb = None
         self._wandb_run = None
+        self._external_wandb_run = wandb_run is not None
         self._wandb_failed = False
         self._local_logging_failed = False
         self._row_index = 0
         self._train_env_steps: int | None = None
         if wandb_config is not None:
             self._init_wandb(wandb_config)
+        elif wandb_run is not None:
+            self._wandb_run = wandb_run
 
     @property
     def wandb_enabled(self) -> bool:
@@ -201,6 +208,9 @@ class RunLogger:
                 handle.write(json.dumps(to_jsonable(row), sort_keys=True) + "\n")
         except OSError as error:
             self._warn_local_logging("metric write", error)
+        if self._external_wandb_run:
+            self._log_wandb(to_jsonable(row))
+            return
         metrics = self._flatten_scalars(row)
         metrics["logger/row_index"] = self._row_index
         self._row_index += 1

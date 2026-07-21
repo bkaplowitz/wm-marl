@@ -22,3 +22,7 @@ dreamerv3-environment.json
 .cursorindexingignore
 AGENTS.md
 CLAUDE.md
+.env
+docs/superpowers/
+artifacts/
+reports/

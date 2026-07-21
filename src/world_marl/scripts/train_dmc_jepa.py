@@ -29,6 +29,15 @@ from world_marl.checkpointing import load_params, save_checkpoint
 from world_marl.envs.brax_adapter import BraxVectorAdapter, brax_env_name
 from world_marl.envs.dmc_adapter import DMCVectorAdapter, dmc_env_name
 from world_marl.jepa.config import canonical_jepa_config
+from world_marl.jepa.decoder import (
+    DecoderConfig,
+    create_decoder_train_state,
+    decode_open_loop_rollout,
+    decoder_reconstruction_mse,
+    encode_observations,
+    select_display_trajectories,
+    train_decoder_step,
+)
 from world_marl.jepa.models import JepaConfig, JepaWorldModel
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.reporting import (
@@ -74,6 +83,12 @@ from world_marl.logging import (
     dependency_versions,
     timestamp,
     to_jsonable,
+)
+from world_marl.scripts.plot_jepa_decoder import (
+    FRAMES_FILENAME,
+    TRACES_FILENAME,
+    save_rollout_frames_plot,
+    save_rollout_traces_plot,
 )
 
 
@@ -138,6 +153,30 @@ def parse_args() -> argparse.Namespace:
     world_model.add_argument("--twohot-bins", type=int, default=255)
     world_model.add_argument("--twohot-min", type=float, default=-20.0)
     world_model.add_argument("--twohot-max", type=float, default=20.0)
+
+    diagnostics = parser.add_argument_group("optional post-hoc diagnostics")
+    diagnostics.add_argument(
+        "--decoder-train-steps",
+        type=int,
+        default=0,
+        help=(
+            "Fit a frozen-latent observation decoder after training. This is "
+            "a diagnostic only and never changes the JEPA or policy (0 disables)."
+        ),
+    )
+    diagnostics.add_argument("--decoder-hidden-dim", type=int, default=256)
+    diagnostics.add_argument("--decoder-learning-rate", type=float, default=1e-3)
+    diagnostics.add_argument(
+        "--decoder-rollout-horizon",
+        type=int,
+        default=0,
+        help="Decoded rollout horizon; 0 uses --open-loop-horizon.",
+    )
+    diagnostics.add_argument(
+        "--decoder-rollout-trajectories",
+        type=int,
+        default=4,
+    )
 
     policy = parser.add_argument_group("actor and critic")
     policy.add_argument("--policy-train-steps", type=int, default=1280)
@@ -436,6 +475,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         "wandb_video_frame_stride",
         "wandb_video_size",
         "wandb_video_fps",
+        "decoder_hidden_dim",
+        "decoder_rollout_trajectories",
     )
     for name in positive:
         if getattr(args, name) < 1:
@@ -456,6 +497,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         "curve_eval_interval_env_steps",
         "curve_eval_episodes",
         "wandb_video_camera",
+        "decoder_train_steps",
+        "decoder_rollout_horizon",
     )
     for name in nonnegative:
         if getattr(args, name) < 0:
@@ -603,6 +646,14 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--wandb-videos requires --wandb-project")
     if args.wandb_videos and not args.env.startswith("dmc:"):
         parser.error("--wandb-videos currently supports DMC only")
+    if args.decoder_learning_rate <= 0.0:
+        parser.error("--decoder-learning-rate must be > 0")
+    if args.decoder_train_steps > 0:
+        decoder_horizon = args.decoder_rollout_horizon or args.open_loop_horizon
+        if args.validation_steps < args.context_window + decoder_horizon:
+            parser.error(
+                "--validation-steps must cover context-window + decoder rollout horizon"
+            )
     if args.resume_training_snapshot is not None and args.num_runs != 1:
         parser.error("--resume-training-snapshot requires --num-runs 1")
     if args.resume_training_snapshot is not None and not args.env.startswith("dmc:"):
@@ -1466,15 +1517,11 @@ def run_one(
             logger.append_metrics(
                 {
                     "phase": "paper_online_score_final",
-                    "budget/train_env_steps": training_score[
-                        "final_train_env_step"
-                    ],
+                    "budget/train_env_steps": training_score["final_train_env_step"],
                     "paper/online_return_final_bins_mean": training_score[
                         "mean_return"
                     ],
-                    "paper/online_return_final_bins_std": training_score[
-                        "std_return"
-                    ],
+                    "paper/online_return_final_bins_std": training_score["std_return"],
                     "paper/online_return_final_bin_count": len(
                         training_score["selected_bin_means"]
                     ),
@@ -1494,6 +1541,20 @@ def run_one(
             open_loop_horizon=args.open_loop_horizon,
         )
         logger.write_json("model_metrics_final.json", final_metrics)
+        decoder_summary = None
+        if args.decoder_train_steps > 0:
+            decoder_summary = _fit_decoder_diagnostic(
+                args,
+                logger,
+                state,
+                config,
+                replay,
+                validation_replay,
+                np_rng=np.random.default_rng(np.random.SeedSequence([seed, 50_001])),
+                key=jax.random.fold_in(jax.random.PRNGKey(seed), 50_001),
+                run_dir=run_dir,
+            )
+            logger.write_json("decoder_metrics.json", decoder_summary)
         logger.write_json(
             "reproducibility_final.json",
             _reproducibility_snapshot(
@@ -1575,6 +1636,7 @@ def run_one(
             "final_continue_loss": final_metrics["model/continue_loss"],
             "reload_max_abs_prediction_diff": reload_diff,
             "final_model_metrics": final_metrics,
+            "decoder_diagnostic": decoder_summary,
             "initial_policy_metrics": initial_policy_metrics,
             "latest_policy_metrics": (
                 online_history[-1]["policy"]
@@ -1635,9 +1697,7 @@ def run_one(
                     "paper/online_return_final_bins_mean": training_score[
                         "mean_return"
                     ],
-                    "paper/online_return_final_bins_std": training_score[
-                        "std_return"
-                    ],
+                    "paper/online_return_final_bins_std": training_score["std_return"],
                     "paper/online_return_final_bin_count": len(
                         training_score["selected_bin_means"]
                     ),
@@ -2133,6 +2193,136 @@ def _fit_world_model(
                 }
             )
     return state, rng, to_jsonable(metrics)
+
+
+def _fit_decoder_diagnostic(
+    args: argparse.Namespace,
+    logger: RunLogger,
+    state,
+    config: JepaConfig,
+    replay: SequenceReplayBuffer,
+    validation_replay: SequenceReplayBuffer,
+    *,
+    np_rng: np.random.Generator,
+    key: jax.Array,
+    run_dir: Path,
+) -> dict[str, Any]:
+    """Fit and render a frozen-latent probe without affecting training."""
+
+    horizon = args.decoder_rollout_horizon or args.open_loop_horizon
+    decoder_config = DecoderConfig(
+        latent_dim=config.latent_dim,
+        observation_dim=config.observation_dim,
+        hidden_dim=args.decoder_hidden_dim,
+        learning_rate=args.decoder_learning_rate,
+    )
+    decoder_state = create_decoder_train_state(key, decoder_config)
+
+    def flat_pairs(batch: ReplayBatch) -> tuple[jax.Array, jax.Array]:
+        latents = encode_observations(state, batch.observations)
+        return (
+            latents.reshape((-1, config.latent_dim)),
+            batch.observations.reshape((-1, config.observation_dim)),
+        )
+
+    final_loss = jnp.asarray(float("nan"), dtype=jnp.float32)
+    progress = tqdm(
+        range(1, args.decoder_train_steps + 1),
+        desc="fit frozen-latent decoder probe",
+        unit="update",
+        disable=args.quiet,
+    )
+    for step_index in progress:
+        batch = replay.sample(
+            np_rng,
+            batch_size=args.batch_size,
+            chunk_length=args.chunk_length,
+            max_horizon=1,
+        )
+        decoder_state, final_loss = train_decoder_step(
+            decoder_state,
+            *flat_pairs(batch),
+        )
+        if (
+            step_index == 1
+            or step_index == args.decoder_train_steps
+            or step_index % args.eval_interval == 0
+        ):
+            progress.set_postfix(recon=f"{float(final_loss):.4g}")
+            logger.append_metrics(
+                {
+                    "phase": "observation_decoder_diagnostic",
+                    "update": step_index,
+                    "decoder/reconstruction_loss": float(final_loss),
+                }
+            )
+
+    validation_batch = validation_replay.sample(
+        np_rng,
+        batch_size=args.batch_size,
+        chunk_length=args.chunk_length,
+        max_horizon=1,
+    )
+    validation_mse = float(
+        decoder_reconstruction_mse(decoder_state, *flat_pairs(validation_batch))
+    )
+    candidate_batch = validation_replay.sample(
+        np_rng,
+        batch_size=max(32, 8 * args.decoder_rollout_trajectories),
+        chunk_length=config.context_window,
+        max_horizon=horizon,
+    )
+    display_batch = select_display_trajectories(
+        candidate_batch,
+        context_window=config.context_window,
+        horizon=horizon,
+        count=args.decoder_rollout_trajectories,
+    )
+    rollout = decode_open_loop_rollout(
+        state,
+        decoder_state,
+        display_batch,
+        config,
+        horizon=horizon,
+    )
+    rollout_np = {name: np.asarray(value) for name, value in rollout.items()}
+    rollout_path = run_dir / "decoder_rollout.npz"
+    np.savez(rollout_path, **rollout_np)
+    title = (
+        f"{args.env}: frozen-latent decoder diagnostic "
+        f"(context={config.context_window}, horizon={horizon})"
+    )
+    frames_path = save_rollout_frames_plot(
+        rollout_np,
+        run_dir / FRAMES_FILENAME,
+        title=title,
+    )
+    traces_path = save_rollout_traces_plot(
+        rollout_np,
+        run_dir / TRACES_FILENAME,
+        title=title,
+    )
+    validity = rollout_np["validity"]
+    valid_total = float(validity.sum())
+    mean_cosine = (
+        float((rollout_np["open_loop_cosine"] * validity).sum() / valid_total)
+        if valid_total > 0.0
+        else None
+    )
+    return {
+        "role": "post_hoc_frozen_latent_probe",
+        "affects_training": False,
+        "decoder_config": dataclasses.asdict(decoder_config),
+        "train_steps": args.decoder_train_steps,
+        "final_train_reconstruction_mse": float(final_loss),
+        "validation_reconstruction_mse": validation_mse,
+        "rollout_horizon": horizon,
+        "rollout_trajectories": args.decoder_rollout_trajectories,
+        "open_loop_cosine": mean_cosine,
+        "rollout_path": str(rollout_path),
+        "frames_path": str(frames_path),
+        "traces_path": str(traces_path),
+    }
 
 
 def _train_policy(

@@ -183,9 +183,7 @@ def dreamer_style_training_score(
         and episode["finish_train_env_step"] <= curve_end
     ]
     selected_returns = [episode["return"] for episode in selected]
-    window_start = (
-        selected_bins[0]["bin_start_env_step"] if selected_bins else None
-    )
+    window_start = selected_bins[0]["bin_start_env_step"] if selected_bins else None
     window_end = selected_bins[-1]["bin_end_env_step"] if selected_bins else None
     return {
         "enabled": True,

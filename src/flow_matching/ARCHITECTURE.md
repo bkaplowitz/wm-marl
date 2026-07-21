@@ -1,7 +1,9 @@
+
+## Discrete diffusion model
 Let us begin by characterizing our state space $S$. Let $\mathcal{V}=\left\{v_1, \cdots, v_V\right\}$ be our vocabulary. The state space is given by $S=\mathcal{V}^d$ where $d \in \mathbb{N}$ is sequence length and $V \in \mathbb{N}$ is the vocabulary size. For language, $\left\{v_1, \cdots, v_V\right\}$ could enumerate our alphabet or a set of discrete tokens and $S$ would represent the set of sequences (or sentences) of length $d$. For DNA, $\left\{v_1, \cdots, v_V\right\}$ could be all 4 DNA bases and $S$ all DNA sequences of length $d$.
 
 Next, let $X_t$ be a stochastic process on $S$, i.e. a random trajectory $X:[0,1] \rightarrow S, t \mapsto X_t$ in $S$. We require $X_t$ to be a Markov process, i.e. a process that has no memory.
-## Algorithm 7 — Sampling from a Factorized CTMC Model (Euler / $\tau$-leaping)
+### Algorithm 7 — Sampling from a Factorized CTMC Model (Euler / $\tau$-leaping)
 
 **Require:** Rate network $Q_t^\theta$ (factorized), initial distribution $p_{\text{init}}$, number of steps $n$.
 

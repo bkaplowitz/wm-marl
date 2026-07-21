@@ -4,11 +4,12 @@ import json
 import sys
 from types import SimpleNamespace
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from world_marl import logging as run_logging
-from world_marl.logging import RunLogger, WandbConfig
+from world_marl.logging import RunLogger, WandbConfig, to_jsonable
 
 
 class _FakeConfig(dict):
@@ -41,6 +42,25 @@ def _fake_wandb(run: _FakeRun):
         Image=lambda path, caption=None: ("image", path, caption),
         Video=lambda path, format, caption=None: ("video", path, format, caption),
     )
+
+
+def test_to_jsonable_handles_scalar_and_vector_jax_arrays():
+    payload = {
+        "scalar": jnp.asarray(1.5),
+        "vector": jnp.arange(3, dtype=jnp.float32),
+        "nested": {"matrix": jnp.ones((2, 2))},
+        "numpy": np.arange(2),
+        "plain": [1, "a", None],
+    }
+
+    result = to_jsonable(payload)
+
+    assert result["scalar"] == 1.5
+    assert result["vector"] == [0.0, 1.0, 2.0]
+    assert result["nested"]["matrix"] == [[1.0, 1.0], [1.0, 1.0]]
+    assert result["numpy"] == [0, 1]
+    assert result["plain"] == [1, "a", None]
+    json.dumps(result)
 
 
 def test_run_logger_mirrors_scalars_and_keeps_local_metrics(tmp_path, monkeypatch):

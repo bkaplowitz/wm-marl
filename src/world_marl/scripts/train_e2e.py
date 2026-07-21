@@ -8,6 +8,7 @@ import json
 import math
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import numpy as np
+from omegaconf import OmegaConf
 
 from world_marl.algs.ippo import (
     IPPOConfig,
@@ -27,18 +29,22 @@ from world_marl.algs.mappo import (
     mappo_update,
 )
 from world_marl.checkpointing import load_metadata, load_params, save_checkpoint
-from world_marl.envs.jaxmarl_coin_adapter import (
-    JaxMARLCoinGameVectorAdapter,
-    coin_game_reward_done,
-)
+from world_marl.config import TrainConfig
 from world_marl.envs.gymnax_adapter import (
     GymnaxVectorAdapter,
     gymnax_env_name,
     is_gymnax_substrate,
 )
+from world_marl.envs.jaxmarl_coin_adapter import (
+    JaxMARLCoinGameVectorAdapter,
+    coin_game_reward_done,
+)
 from world_marl.envs.meltingpot_adapter import MeltingPotVectorAdapter
 from world_marl.evaluation import (
+    EvaluationResult,
     evaluate_policy,
+    evaluate_policy_scan,
+    evaluate_random_policy_scan,
     mappo_train_state_policy,
     random_policy,
     train_state_policy,
@@ -49,20 +55,19 @@ from world_marl.training import (
     central_observation_shape,
     collect_mappo_rollout,
     collect_rollout,
+    train_real_scan,
     training_window_means,
 )
 from world_marl.world_model import (
     VectorWorldModelConfig,
     create_world_model_state,
-    simulate_ippo_model_rollout,
-    simulate_mappo_model_rollout,
+    train_imagined_scan,
 )
 from world_marl.world_model_training import (
-    collect_policy_transition_batch,
-    collect_random_transition_batch,
+    collect_policy_transition_batch_scan,
+    collect_random_transition_batch_scan,
     concatenate_transition_batches,
     fit_world_model_steps,
-    sample_initial_states,
 )
 
 TrainingAdapter = (
@@ -84,13 +89,39 @@ class RunOutcome:
     first_window_mean: float
     final_window_mean: float
     checkpoint_dir: str
+    runtime_seconds: float
+    real_env_steps: int
+    imagined_env_steps: int
+    cumulative_real_episodes: int
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
 
 
+class RunTimer:
+    def __init__(self) -> None:
+        self._start = time.perf_counter()
+
+    def elapsed(self) -> float:
+        return time.perf_counter() - self._start
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"runtime_seconds": self.elapsed()}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="YAML file of defaults; explicit CLI flags override its values.",
+    )
+    parser.add_argument(
+        "--wandb",
+        action="store_true",
+        help="Mirror per-update metrics to Weights & Biases.",
+    )
+    parser.add_argument("--wandb-project", default="world-marl")
     parser.add_argument("--algorithm", choices=("ippo", "mappo"), default="ippo")
     parser.add_argument("--substrate", default="coins")
     parser.add_argument("--num-envs", type=int, default=4)
@@ -151,7 +182,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--wm-flow-type",
-        choices=("gaussian", "linear", "discrete"),
+        choices=("gaussian", "linear", "discrete", "transformer"),
         default="linear",
     )
     parser.add_argument(
@@ -180,6 +211,18 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=argparse.SUPPRESS,
     )
+
+    known, _ = parser.parse_known_args()
+    if known.config:
+        raw = OmegaConf.to_container(OmegaConf.load(known.config), resolve=True)
+        if not isinstance(raw, dict):
+            parser.error(f"{known.config} must contain a top-level mapping")
+        overrides = {str(key): value for key, value in raw.items()}
+        unknown = set(overrides) - set(vars(known))
+        if unknown:
+            parser.error(f"unknown keys in {known.config}: {sorted(unknown)}")
+        parser.set_defaults(**overrides)
+
     args = parser.parse_args()
     if args.prefit_world_model:
         if args.wm_random_rollouts < 1:
@@ -200,26 +243,26 @@ def parse_args() -> argparse.Namespace:
 
 
 def algorithm_config_from_args(
-    args: argparse.Namespace,
+    cfg: TrainConfig,
     control: str | None = None,
 ) -> IPPOConfig | MAPPOConfig:
-    config_cls = MAPPOConfig if args.algorithm == "mappo" else IPPOConfig
+    config_cls = MAPPOConfig if cfg.algorithm == "mappo" else IPPOConfig
     uses_vector_policy = (
-        args.substrate == "coins"
-        or is_gymnax_substrate(args.substrate)
-        or getattr(args, "prefit_world_model", False)
+        cfg.substrate == "coins"
+        or is_gymnax_substrate(cfg.substrate)
+        or getattr(cfg, "prefit_world_model", False)
     )
     config = config_cls(
-        learning_rate=args.learning_rate,
-        gamma=args.gamma,
-        gae_lambda=args.gae_lambda,
-        clip_eps=args.clip_eps,
-        ent_coef=args.ent_coef,
-        vf_coef=args.vf_coef,
-        max_grad_norm=args.max_grad_norm,
-        update_epochs=args.update_epochs,
-        num_minibatches=args.num_minibatches,
-        activation=args.activation,
+        learning_rate=cfg.learning_rate,
+        gamma=cfg.gamma,
+        gae_lambda=cfg.gae_lambda,
+        clip_eps=cfg.clip_eps,
+        ent_coef=cfg.ent_coef,
+        vf_coef=cfg.vf_coef,
+        max_grad_norm=cfg.max_grad_norm,
+        update_epochs=cfg.update_epochs,
+        num_minibatches=cfg.num_minibatches,
+        activation=cfg.activation,
         network_arch="mlp" if uses_vector_policy else "cnn",
     )
     if control == "shuffle-rewards":
@@ -239,6 +282,8 @@ def create_algorithm_train_state(
 ):
     observation_shape = _policy_observation_shape(adapter, observation_mode)
     if algorithm == "mappo":
+        if not isinstance(config, MAPPOConfig):
+            raise TypeError("MAPPO training requires a MAPPOConfig")
         return create_mappo_train_state(
             rng,
             observation_shape,
@@ -250,6 +295,8 @@ def create_algorithm_train_state(
             adapter.action_dim,
             config,
         )
+    if not isinstance(config, IPPOConfig):
+        raise TypeError("IPPO training requires an IPPOConfig")
     return create_ippo_train_state(
         rng,
         observation_shape,
@@ -289,59 +336,99 @@ def _policy_observation_shape(
     raise ValueError(f"unsupported observation_mode {observation_mode!r}")
 
 
-def _make_training_adapter(args: argparse.Namespace, *, seed: int) -> TrainingAdapter:
-    if args.substrate == "coins":
+def _make_training_adapter(cfg: TrainConfig, *, seed: int) -> TrainingAdapter:
+    if cfg.substrate == "coins":
         return JaxMARLCoinGameVectorAdapter(
-            num_envs=args.num_envs,
-            max_cycles=args.max_cycles,
+            num_envs=cfg.num_envs,
+            max_cycles=cfg.max_cycles,
             seed=seed,
         )
-    if is_gymnax_substrate(args.substrate):
+    if is_gymnax_substrate(cfg.substrate):
         return GymnaxVectorAdapter(
-            env_name=gymnax_env_name(args.substrate),
-            num_envs=args.num_envs,
-            max_cycles=args.max_cycles,
+            env_name=gymnax_env_name(cfg.substrate),
+            num_envs=cfg.num_envs,
+            max_cycles=cfg.max_cycles,
             seed=seed,
         )
     return MeltingPotVectorAdapter(
-        substrate=args.substrate,
-        num_envs=args.num_envs,
-        max_cycles=args.max_cycles,
-        observation_size=args.observation_size,
-        include_observation_scalars=args.include_observation_scalars,
-        append_agent_id=args.append_agent_id,
+        substrate=cfg.substrate,
+        num_envs=cfg.num_envs,
+        max_cycles=cfg.max_cycles,
+        observation_size=cfg.observation_size,
+        include_observation_scalars=cfg.include_observation_scalars,
+        append_agent_id=cfg.append_agent_id,
     )
 
 
-def _make_reward_done_fn(args: argparse.Namespace):
+def _make_reward_done_fn(cfg: TrainConfig):
     """Return the analytic reward/done callback for the world-model rollout.
 
     The world model predicts only next-state dynamics, so rewards/dones come from
     the environment's known reward function evaluated on the model's states.
     """
-    if args.substrate == "coins":
+    if cfg.substrate == "coins":
         return coin_game_reward_done
     raise NotImplementedError(
         "--prefit-world-model needs an analytic reward_done_fn for substrate "
-        f"{args.substrate!r}; only 'coins' is currently supported."
+        f"{cfg.substrate!r}; only 'coins' is currently supported."
     )
 
 
-def evaluate_checkpoint_mode(args: argparse.Namespace) -> None:
-    checkpoint_dir = Path(args.eval_checkpoint)
+def _evaluate_train_state(
+    *,
+    adapter: TrainingAdapter,
+    train_state,
+    algorithm: str,
+    observation_mode: ObservationMode,
+    deterministic: bool,
+    seed: int,
+    episodes: int,
+    max_steps: int | None,
+) -> EvaluationResult:
+    """Evaluate a train state on the accelerator for vector policies, else via
+    the Python loop (MeltingPot only). The scan reproduces the Python loop's
+    deterministic episodes exactly, so the logged value is unchanged -- only the
+    rollout leaves the CPU. The scan does not advance the adapter PRNG state;
+    callers reusing the adapter for training reset it afterwards.
+    """
+    if observation_mode == "vector" and hasattr(adapter, "scan_rewards_dones"):
+        return evaluate_policy_scan(
+            adapter,
+            train_state,
+            episodes=episodes,
+            deterministic=deterministic,
+            observation_mode=observation_mode,
+            seed=seed,
+            algorithm=algorithm,
+        )
+    return evaluate_policy(
+        adapter,
+        policy_from_train_state(
+            algorithm,
+            train_state,
+            adapter=adapter,
+            deterministic=deterministic,
+            seed=seed,
+            observation_mode=observation_mode,
+        ),
+        episodes=episodes,
+        max_steps=max_steps,
+    )
+
+
+def evaluate_checkpoint_mode(cfg: TrainConfig) -> None:
+    checkpoint_dir = Path(cfg.eval_checkpoint)
     metadata = load_metadata(checkpoint_dir)
     algorithm = metadata.get("algorithm", "ippo")
 
-    args.substrate = args.substrate or metadata["substrate"]
-    if args.observation_size is None:
-        args.observation_size = metadata.get("observation_size")
-    args.include_observation_scalars = args.include_observation_scalars or metadata.get(
+    cfg.substrate = cfg.substrate or metadata["substrate"]
+    if cfg.observation_size is None:
+        cfg.observation_size = metadata.get("observation_size")
+    cfg.include_observation_scalars = cfg.include_observation_scalars or metadata.get(
         "include_observation_scalars", False
     )
-    args.append_agent_id = args.append_agent_id or metadata.get(
-        "append_agent_id", False
-    )
-    adapter = _make_training_adapter(args, seed=args.seed)
+    cfg.append_agent_id = cfg.append_agent_id or metadata.get("append_agent_id", False)
+    adapter = _make_training_adapter(cfg, seed=cfg.seed)
     try:
         config_payload = metadata.get("algorithm_config", metadata.get("ippo_config"))
         if config_payload is None:
@@ -360,40 +447,44 @@ def evaluate_checkpoint_mode(args: argparse.Namespace) -> None:
         )
         params = load_params(checkpoint_dir / "checkpoint.msgpack", train_state.params)
         train_state = train_state.replace(params=params)
-        result = evaluate_policy(
-            adapter,
-            policy_from_train_state(
-                algorithm,
-                train_state,
-                adapter=adapter,
-                deterministic=not args.stochastic_eval,
-                seed=args.seed,
-                observation_mode=metadata.get("observation_mode", "image"),
-            ),
-            episodes=args.eval_episodes,
-            max_steps=args.eval_max_steps,
+        result = _evaluate_train_state(
+            adapter=adapter,
+            train_state=train_state,
+            algorithm=algorithm,
+            observation_mode=metadata.get("observation_mode", "image"),
+            deterministic=not cfg.stochastic_eval,
+            seed=cfg.seed,
+            episodes=cfg.eval_episodes,
+            max_steps=cfg.eval_max_steps,
         )
         print(json.dumps(to_jsonable(result.to_dict()), sort_keys=True))
     finally:
         adapter.close()
 
 
-def evaluate_random_baseline(args: argparse.Namespace, seed: int) -> dict[str, Any]:
-    adapter = _make_training_adapter(args, seed=seed)
+def evaluate_random_baseline(cfg: TrainConfig, seed: int) -> dict[str, Any]:
+    adapter = _make_training_adapter(cfg, seed=seed)
     try:
-        result = evaluate_policy(
-            adapter,
-            random_policy(adapter, np.random.default_rng(seed)),
-            episodes=args.eval_episodes,
-            max_steps=args.eval_max_steps,
-        )
+        if hasattr(adapter, "scan_rewards_dones"):
+            result = evaluate_random_policy_scan(
+                adapter,
+                episodes=cfg.eval_episodes,
+                seed=seed,
+            )
+        else:
+            result = evaluate_policy(
+                adapter,
+                random_policy(adapter, np.random.default_rng(seed)),
+                episodes=cfg.eval_episodes,
+                max_steps=cfg.eval_max_steps,
+            )
         return result.to_dict()
     finally:
         adapter.close()
 
 
 def evaluate_checkpoint_subprocess(
-    args: argparse.Namespace,
+    cfg: TrainConfig,
     checkpoint_dir: Path,
     *,
     seed: int,
@@ -405,26 +496,26 @@ def evaluate_checkpoint_subprocess(
         "--eval-checkpoint",
         str(checkpoint_dir),
         "--substrate",
-        args.substrate,
+        cfg.substrate,
         "--num-envs",
-        str(args.num_envs),
+        str(cfg.num_envs),
         "--eval-episodes",
-        str(args.eval_episodes),
+        str(cfg.eval_episodes),
         "--seed",
         str(seed),
         "--max-cycles",
-        str(args.max_cycles),
+        str(cfg.max_cycles),
     ]
-    if args.observation_size is not None:
-        command.extend(["--observation-size", str(args.observation_size)])
-    if args.include_observation_scalars:
+    if cfg.observation_size is not None:
+        command.extend(["--observation-size", str(cfg.observation_size)])
+    if cfg.include_observation_scalars:
         command.append("--include-observation-scalars")
-    if args.append_agent_id:
+    if cfg.append_agent_id:
         command.append("--append-agent-id")
-    if args.stochastic_eval:
+    if cfg.stochastic_eval:
         command.append("--stochastic-eval")
-    if args.eval_max_steps is not None:
-        command.extend(["--eval-max-steps", str(args.eval_max_steps)])
+    if cfg.eval_max_steps is not None:
+        command.extend(["--eval-max-steps", str(cfg.eval_max_steps)])
     result = subprocess.run(
         command,
         check=True,
@@ -435,7 +526,7 @@ def evaluate_checkpoint_subprocess(
 
 
 def _collect_real_env_rollout(
-    args: argparse.Namespace,
+    cfg: TrainConfig,
     collect_fn,
     adapter: TrainingAdapter,
     train_state,
@@ -445,133 +536,141 @@ def _collect_real_env_rollout(
     observation_mode: ObservationMode,
 ) -> Any:
     kwargs: dict[str, Any] = {}
-    if args.algorithm == "mappo":
+    if cfg.algorithm == "mappo":
         kwargs["observation_mode"] = observation_mode
     return collect_fn(
         adapter,
         train_state,
         observations,
         rollout_key,
-        rollout_steps=args.rollout_steps,
+        rollout_steps=cfg.rollout_steps,
         gamma=config.gamma,
         gae_lambda=config.gae_lambda,
         **kwargs,
     )
 
 
-def _warmup_policy_before_world_model(
-    args: argparse.Namespace,
+def _rows_from_stacked(
+    stacked: dict[str, Any],
     *,
-    adapter: TrainingAdapter,
-    train_state,
-    observations: np.ndarray,
-    rng: jax.Array,
-    config: IPPOConfig | MAPPOConfig,
-    update_fn,
-    collect_fn,
-    observation_mode: ObservationMode,
-    freeze_policy: bool,
-) -> tuple[Any, np.ndarray, jax.Array, list[dict[str, Any]]]:
-    rows: list[dict[str, Any]] = []
+    steps_per_update: int,
+    real: bool,
+    real_env_steps: int,
+    imagined_env_steps: int,
+    cumulative_real_episodes: int,
+    extra_fields: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], int, int, int]:
+    """Convert stacked scan metrics into host-schema rows, advancing the counters."""
+    host = {key: np.asarray(value) for key, value in jax.device_get(stacked).items()}
+    num_updates = int(host["rollout_mean_reward"].shape[0])
     env_steps = 0
-    for update in range(1, args.wm_policy_warmup_updates + 1):
-        rng, rollout_key, update_key = jax.random.split(rng, 3)
-        rollout = _collect_real_env_rollout(
-            args,
-            collect_fn,
-            adapter,
-            train_state,
-            observations,
-            rollout_key,
-            config,
-            observation_mode,
-        )
-        observations = rollout.next_observations
-        update_metrics: dict[str, Any] = {}
-        if not freeze_policy:
-            train_state, update_metrics = update_fn(
-                train_state,
-                rollout.batch,
-                rollout.last_values,
-                update_key,
-            )
-            jax.block_until_ready(jnp.asarray(update_metrics["total_loss"]))
-        env_steps += args.num_envs * args.rollout_steps
+    rows: list[dict[str, Any]] = []
+    for index in range(num_updates):
+        metrics: dict[str, Any] = {}
+        for key, values in host.items():
+            value = values[index]
+            if key == "completed_episodes":
+                metrics[key] = int(value)
+            elif key in {"episode_return_mean", "episode_length_mean"} and np.isnan(
+                value
+            ):
+                metrics[key] = None
+            else:
+                metrics[key] = float(value)
+        completed = metrics.get("completed_episodes", 0) if real else 0
+        env_steps += steps_per_update
+        if real:
+            real_env_steps += steps_per_update
+            cumulative_real_episodes += completed
+        else:
+            imagined_env_steps += steps_per_update
         rows.append(
-            to_jsonable(
-                {
-                    "update": update,
-                    "env_steps": env_steps,
-                    **rollout.metrics,
-                    **{f"ppo/{key}": value for key, value in update_metrics.items()},
-                }
-            )
+            {
+                "update": index + 1,
+                "env_steps": env_steps,
+                "real_env_steps": real_env_steps,
+                "imagined_env_steps": imagined_env_steps,
+                "completed_real_episodes": completed,
+                "cumulative_real_episodes": cumulative_real_episodes,
+                **(extra_fields or {}),
+                **metrics,
+            }
         )
-    return train_state, observations, rng, rows
+    return rows, real_env_steps, imagined_env_steps, cumulative_real_episodes
 
 
 def run_training(
-    args: argparse.Namespace,
+    cfg: TrainConfig,
     *,
     run_dir: Path,
     name: str,
     run_index: int,
     control: str | None,
 ) -> RunOutcome:
-    logger = RunLogger(run_dir)
-    seed = args.seed + run_index * 10_000 + (5_000 if control else 0)
+    wandb_run = None
+    if cfg.wandb:
+        import wandb
+
+        wandb_run = wandb.init(
+            project=cfg.wandb_project,
+            group=run_dir.parent.name,
+            name=name,
+            config=dataclasses.asdict(cfg),
+            reinit=True,
+        )
+    logger = RunLogger(run_dir, wandb_run=wandb_run)
+    timer = RunTimer()
+    seed = cfg.seed + run_index * 10_000 + (5_000 if control else 0)
     rng = jax.random.PRNGKey(seed)
-    config = algorithm_config_from_args(args, control)
+    config = algorithm_config_from_args(cfg, control)
     freeze_policy = control == "freeze-policy"
     observation_mode: ObservationMode = (
         "vector"
-        if args.substrate == "coins"
-        or is_gymnax_substrate(args.substrate)
-        or args.prefit_world_model
+        if cfg.substrate == "coins"
+        or is_gymnax_substrate(cfg.substrate)
+        or cfg.prefit_world_model
         else "image"
     )
 
     logger.write_json(
         "config.json",
         {
-            "args": vars(args),
+            "args": dataclasses.asdict(cfg),
             "run_index": run_index,
             "control": control,
             "seed": seed,
-            "algorithm": args.algorithm,
+            "algorithm": cfg.algorithm,
             "observation_mode": observation_mode,
             "algorithm_config": dataclasses.asdict(config),
         },
     )
     logger.write_json("versions.json", dependency_versions())
 
-    random_result = evaluate_random_baseline(args, seed=seed + 1)
+    random_result = evaluate_random_baseline(cfg, seed=seed + 1)
     logger.write_json("random_baseline.json", random_result)
 
-    adapter = _make_training_adapter(args, seed=seed)
+    adapter = _make_training_adapter(cfg, seed=seed)
+    scan_path = hasattr(adapter, "scan_rollout")
     rows: list[dict[str, Any]] = []
     try:
         observations = adapter.reset()
         rng, init_key = jax.random.split(rng)
         train_state = create_algorithm_train_state(
-            args.algorithm,
+            cfg.algorithm,
             init_key,
             adapter,
             config,
             observation_mode=observation_mode,
         )
-        initial_result = evaluate_policy(
-            adapter,
-            policy_from_train_state(
-                args.algorithm,
-                train_state,
-                adapter=adapter,
-                deterministic=not args.stochastic_eval,
-                seed=seed + 2,
-                observation_mode=observation_mode,
-            ),
-            episodes=args.eval_episodes,
-            max_steps=args.eval_max_steps,
+        initial_result = _evaluate_train_state(
+            adapter=adapter,
+            train_state=train_state,
+            algorithm=cfg.algorithm,
+            observation_mode=observation_mode,
+            deterministic=not cfg.stochastic_eval,
+            seed=seed + 2,
+            episodes=cfg.eval_episodes,
+            max_steps=cfg.eval_max_steps,
         ).to_dict()
         logger.write_json("initial_policy_evaluation.json", initial_result)
         observations = adapter.reset()
@@ -580,89 +679,87 @@ def run_training(
         model_start_states = None
         world_model_prefit_loss = None
         reward_done_fn = None
+        real_env_steps = 0
+        imagined_env_steps = 0
+        cumulative_real_episodes = 0
 
-        if args.algorithm == "mappo":
-            update_fn = jax.jit(
-                lambda state, batch, last_values, update_rng: mappo_update(
-                    state,
-                    batch,
-                    last_values,
-                    update_rng,
-                    config,
+        if cfg.prefit_world_model:
+            reward_done_fn = _make_reward_done_fn(cfg)
+            if cfg.wm_policy_warmup_updates:
+                train_state, observations, rng, warmup_stacked = train_real_scan(
+                    adapter,
+                    train_state,
+                    observations,
+                    rng,
+                    num_updates=cfg.wm_policy_warmup_updates,
+                    config=config,
+                    rollout_steps=cfg.rollout_steps,
+                    algorithm=cfg.algorithm,
+                    freeze_policy=freeze_policy,
                 )
-            )
-            collect_fn = collect_mappo_rollout
-        else:
-            update_fn = jax.jit(
-                lambda state, batch, last_values, update_rng: ppo_update(
-                    state,
-                    batch,
-                    last_values,
-                    update_rng,
-                    config,
-                )
-            )
-            collect_fn = collect_rollout
-
-        if args.prefit_world_model:
-            if args.wm_policy_warmup_updates:
-                train_state, observations, rng, warmup_rows = (
-                    _warmup_policy_before_world_model(
-                        args,
-                        adapter=adapter,
-                        train_state=train_state,
-                        observations=observations,
-                        rng=rng,
-                        config=config,
-                        update_fn=update_fn,
-                        collect_fn=collect_fn,
-                        observation_mode=observation_mode,
-                        freeze_policy=freeze_policy,
-                    )
+                (
+                    warmup_rows,
+                    real_env_steps,
+                    _,
+                    cumulative_real_episodes,
+                ) = _rows_from_stacked(
+                    warmup_stacked,
+                    steps_per_update=cfg.num_envs * cfg.rollout_steps,
+                    real=True,
+                    real_env_steps=real_env_steps,
+                    imagined_env_steps=0,
+                    cumulative_real_episodes=cumulative_real_episodes,
                 )
                 logger.write_json(
                     "world_model_policy_warmup.json",
                     {
-                        "updates": args.wm_policy_warmup_updates,
+                        "updates": cfg.wm_policy_warmup_updates,
                         "real_env_steps": (
-                            args.wm_policy_warmup_updates
-                            * args.num_envs
-                            * args.rollout_steps
+                            cfg.wm_policy_warmup_updates
+                            * cfg.num_envs
+                            * cfg.rollout_steps
                         ),
                         "rows": warmup_rows,
                     },
                 )
 
-            reward_done_fn = _make_reward_done_fn(args)
-            random_batch, observations, random_start_states = (
-                collect_random_transition_batch(
+            rng, random_collect_key = jax.random.split(rng)
+            random_batch, observations, random_start_states, random_stats = (
+                collect_random_transition_batch_scan(
                     adapter,
                     observations,
-                    np.random.default_rng(seed + 3),
-                    rollout_steps=args.wm_random_rollouts,
+                    random_collect_key,
+                    rollout_steps=cfg.wm_random_rollouts,
                 )
             )
+            real_env_steps += random_stats.real_env_steps
+            cumulative_real_episodes += random_stats.completed_episodes
             rng, policy_collect_key = jax.random.split(rng)
-            policy_batch, observations, rng, policy_start_states = (
-                collect_policy_transition_batch(
-                    adapter,
-                    train_state,
-                    observations,
-                    policy_collect_key,
-                    rollout_steps=args.wm_initial_rollouts,
-                    algorithm=args.algorithm,
-                )
+            (
+                policy_batch,
+                observations,
+                rng,
+                policy_start_states,
+                policy_stats,
+            ) = collect_policy_transition_batch_scan(
+                adapter,
+                train_state,
+                observations,
+                policy_collect_key,
+                rollout_steps=cfg.wm_initial_rollouts,
+                algorithm=cfg.algorithm,
             )
+            real_env_steps += policy_stats.real_env_steps
+            cumulative_real_episodes += policy_stats.completed_episodes
             prefit_batch = concatenate_transition_batches([random_batch, policy_batch])
             model_start_states = jnp.concatenate(
                 [random_start_states, policy_start_states],
                 axis=0,
             )
             state_dim = int(prefit_batch.states.shape[-1])
-            num_categories = (
-                args.wm_num_categories if args.wm_flow_type == "discrete" else 0
-            )
-            if args.wm_flow_type == "discrete":
+            is_discrete_flow = cfg.wm_flow_type in {"discrete", "transformer"}
+            num_categories = cfg.wm_num_categories if is_discrete_flow else 0
+            if is_discrete_flow:
                 transition_dim = adapter.num_agents * state_dim
                 if num_categories <= 0 or transition_dim % num_categories != 0:
                     raise ValueError(
@@ -674,11 +771,14 @@ def run_training(
                 state_dim=state_dim,
                 num_agents=adapter.num_agents,
                 action_dim=adapter.action_dim,
-                hidden_dims=(args.wm_hidden_dim, args.wm_hidden_dim),
-                learning_rate=args.wm_learning_rate,
-                integration_steps=args.wm_integration_steps,
-                flow_type=args.wm_flow_type,
+                hidden_dims=(cfg.wm_hidden_dim, cfg.wm_hidden_dim),
+                learning_rate=cfg.wm_learning_rate,
+                integration_steps=cfg.wm_integration_steps,
+                flow_type="discrete" if is_discrete_flow else cfg.wm_flow_type,
                 num_categories=num_categories,
+                discrete_arch=(
+                    "transformer" if cfg.wm_flow_type == "transformer" else "mlp"
+                ),
             )
             rng, world_model_key = jax.random.split(rng)
             world_model_state = create_world_model_state(
@@ -695,22 +795,40 @@ def run_training(
                 rng,
                 prefit_batch,
                 world_model_config,
-                steps=args.wm_fit_steps,
+                steps=cfg.wm_fit_steps,
             )
-            jax.block_until_ready(world_model_loss_history)
             loss_history = [float(value) for value in world_model_loss_history]
             logger.write_json(
                 "world_model_prefit.json",
                 {
-                    "random_rollouts": args.wm_random_rollouts,
-                    "initial_policy_rollouts": args.wm_initial_rollouts,
-                    "policy_warmup_updates": args.wm_policy_warmup_updates,
+                    "random_rollouts": cfg.wm_random_rollouts,
+                    "initial_policy_rollouts": cfg.wm_initial_rollouts,
+                    "policy_warmup_updates": cfg.wm_policy_warmup_updates,
                     "policy_warmup_real_env_steps": (
-                        args.wm_policy_warmup_updates
-                        * args.num_envs
-                        * args.rollout_steps
+                        cfg.wm_policy_warmup_updates * cfg.num_envs * cfg.rollout_steps
                     ),
-                    "fit_steps": args.wm_fit_steps,
+                    "random_real_env_steps": random_stats.real_env_steps,
+                    "random_completed_episodes": random_stats.completed_episodes,
+                    "random_episode_return_mean": random_stats.episode_return_mean,
+                    "random_episode_length_mean": random_stats.episode_length_mean,
+                    "initial_policy_real_env_steps": policy_stats.real_env_steps,
+                    "initial_policy_completed_episodes": (
+                        policy_stats.completed_episodes
+                    ),
+                    "initial_policy_episode_return_mean": (
+                        policy_stats.episode_return_mean
+                    ),
+                    "initial_policy_episode_length_mean": (
+                        policy_stats.episode_length_mean
+                    ),
+                    "prefit_real_env_steps": (
+                        random_stats.real_env_steps + policy_stats.real_env_steps
+                    ),
+                    "prefit_completed_episodes": (
+                        random_stats.completed_episodes
+                        + policy_stats.completed_episodes
+                    ),
+                    "fit_steps": cfg.wm_fit_steps,
                     "transition_count": int(prefit_batch.states.shape[0]),
                     "loss": float(world_model_prefit_loss),
                     "loss_history": loss_history,
@@ -720,46 +838,108 @@ def run_training(
             logger.plot_world_model_loss(loss_history)
             observations = adapter.reset()
 
-        updates = max(1, args.total_env_steps // (args.num_envs * args.rollout_steps))
-        env_steps = 0
-        for update in range(1, updates + 1):
-            if args.prefit_world_model:
-                if (
-                    world_model_state is None
-                    or world_model_config is None
-                    or model_start_states is None
-                ):
-                    raise RuntimeError("world model prefit did not initialize")
-                rng, rollout_key, start_key, update_key = jax.random.split(rng, 4)
-                initial_states = sample_initial_states(
-                    model_start_states,
-                    start_key,
-                    num_envs=args.num_envs,
+        updates = max(1, cfg.total_env_steps // (cfg.num_envs * cfg.rollout_steps))
+        if cfg.prefit_world_model:
+            if (
+                world_model_state is None
+                or world_model_config is None
+                or model_start_states is None
+                or reward_done_fn is None
+                or world_model_prefit_loss is None
+            ):
+                raise RuntimeError("world model prefit did not initialize")
+            train_state, rng, main_stacked = train_imagined_scan(
+                world_model_state,
+                train_state,
+                model_start_states,
+                rng,
+                num_updates=updates,
+                policy_config=config,
+                world_model_config=world_model_config,
+                rollout_steps=cfg.rollout_steps,
+                reward_done_fn=reward_done_fn,
+                num_envs=cfg.num_envs,
+                algorithm=cfg.algorithm,
+                freeze_policy=freeze_policy,
+            )
+            (
+                main_rows,
+                real_env_steps,
+                imagined_env_steps,
+                cumulative_real_episodes,
+            ) = _rows_from_stacked(
+                main_stacked,
+                steps_per_update=cfg.num_envs * cfg.rollout_steps,
+                real=False,
+                real_env_steps=real_env_steps,
+                imagined_env_steps=imagined_env_steps,
+                cumulative_real_episodes=cumulative_real_episodes,
+                extra_fields={
+                    "control": control,
+                    "world_model/prefit_loss": float(world_model_prefit_loss),
+                },
+            )
+        elif scan_path:
+            train_state, observations, rng, main_stacked = train_real_scan(
+                adapter,
+                train_state,
+                observations,
+                rng,
+                num_updates=updates,
+                config=config,
+                rollout_steps=cfg.rollout_steps,
+                algorithm=cfg.algorithm,
+                freeze_policy=freeze_policy,
+            )
+            (
+                main_rows,
+                real_env_steps,
+                imagined_env_steps,
+                cumulative_real_episodes,
+            ) = _rows_from_stacked(
+                main_stacked,
+                steps_per_update=cfg.num_envs * cfg.rollout_steps,
+                real=True,
+                real_env_steps=real_env_steps,
+                imagined_env_steps=imagined_env_steps,
+                cumulative_real_episodes=cumulative_real_episodes,
+                extra_fields={"control": control},
+            )
+        else:
+            if cfg.algorithm == "mappo":
+                if not isinstance(config, MAPPOConfig):
+                    raise TypeError("MAPPO updates require a MAPPOConfig")
+                mappo_config = config
+                update_fn = jax.jit(
+                    lambda state, batch, last_values, update_rng: mappo_update(
+                        state,
+                        batch,
+                        last_values,
+                        update_rng,
+                        mappo_config,
+                    )
                 )
-                if args.algorithm == "mappo":
-                    rollout = simulate_mappo_model_rollout(
-                        world_model_state,
-                        train_state,
-                        initial_states,
-                        rollout_key,
-                        rollout_steps=args.rollout_steps,
-                        config=world_model_config,
-                        reward_done_fn=reward_done_fn,
-                    )
-                else:
-                    rollout = simulate_ippo_model_rollout(
-                        world_model_state,
-                        train_state,
-                        initial_states,
-                        rollout_key,
-                        rollout_steps=args.rollout_steps,
-                        config=world_model_config,
-                        reward_done_fn=reward_done_fn,
-                    )
+                collect_fn = collect_mappo_rollout
             else:
+                if not isinstance(config, IPPOConfig):
+                    raise TypeError("IPPO updates require an IPPOConfig")
+                ippo_config = config
+                update_fn = jax.jit(
+                    lambda state, batch, last_values, update_rng: ppo_update(
+                        state,
+                        batch,
+                        last_values,
+                        update_rng,
+                        ippo_config,
+                    )
+                )
+                collect_fn = collect_rollout
+            main_rows = []
+            env_steps = 0
+            for update in range(1, updates + 1):
                 rng, rollout_key, update_key = jax.random.split(rng, 3)
                 rollout = _collect_real_env_rollout(
-                    args,
+                    cfg,
                     collect_fn,
                     adapter,
                     train_state,
@@ -769,26 +949,36 @@ def run_training(
                     observation_mode,
                 )
                 observations = rollout.next_observations
-            update_metrics: dict[str, Any] = {}
-            if not freeze_policy:
-                train_state, update_metrics = update_fn(
-                    train_state,
-                    rollout.batch,
-                    rollout.last_values,
-                    update_key,
+                real_env_steps += cfg.num_envs * cfg.rollout_steps
+                completed_real_episodes = int(
+                    rollout.metrics.get("completed_episodes") or 0
                 )
-                jax.block_until_ready(jnp.asarray(update_metrics["total_loss"]))
-
-            env_steps += args.num_envs * args.rollout_steps
-            row = {
-                "update": update,
-                "env_steps": env_steps,
-                "control": control,
-                **rollout.metrics,
-                **{f"ppo/{key}": value for key, value in update_metrics.items()},
-            }
-            if world_model_prefit_loss is not None:
-                row["world_model/prefit_loss"] = world_model_prefit_loss
+                cumulative_real_episodes += completed_real_episodes
+                update_metrics: dict[str, Any] = {}
+                if not freeze_policy:
+                    train_state, update_metrics = update_fn(
+                        train_state,
+                        rollout.batch,
+                        rollout.last_values,
+                        update_key,
+                    )
+                env_steps += cfg.num_envs * cfg.rollout_steps
+                main_rows.append(
+                    {
+                        "update": update,
+                        "env_steps": env_steps,
+                        "real_env_steps": real_env_steps,
+                        "imagined_env_steps": imagined_env_steps,
+                        "completed_real_episodes": completed_real_episodes,
+                        "cumulative_real_episodes": cumulative_real_episodes,
+                        "control": control,
+                        **rollout.metrics,
+                        **{
+                            f"ppo/{key}": value for key, value in update_metrics.items()
+                        },
+                    }
+                )
+        for row in main_rows:
             rows.append(to_jsonable(row))
             logger.append_metrics(row)
 
@@ -800,8 +990,8 @@ def run_training(
             checkpoint_dir,
             train_state,
             metadata={
-                "substrate": args.substrate,
-                "num_envs": args.num_envs,
+                "substrate": cfg.substrate,
+                "num_envs": cfg.num_envs,
                 "num_agents": adapter.num_agents,
                 "observation_shape": adapter.observation_shape,
                 "raw_observation_shape": adapter.raw_observation_shape,
@@ -809,7 +999,7 @@ def run_training(
                 "include_observation_scalars": adapter.include_observation_scalars,
                 "scalar_observation_keys": adapter.scalar_observation_keys,
                 "append_agent_id": adapter.append_agent_id,
-                "algorithm": args.algorithm,
+                "algorithm": cfg.algorithm,
                 "observation_mode": observation_mode,
                 "central_observation_shape": (
                     central_observation_shape(
@@ -817,15 +1007,15 @@ def run_training(
                         adapter.num_agents,
                         observation_mode=observation_mode,
                     )
-                    if args.algorithm == "mappo"
+                    if cfg.algorithm == "mappo"
                     else None
                 ),
                 "action_dim": adapter.action_dim,
                 "algorithm_config": dataclasses.asdict(config),
                 "ippo_config": (
-                    dataclasses.asdict(config) if args.algorithm == "ippo" else None
+                    dataclasses.asdict(config) if cfg.algorithm == "ippo" else None
                 ),
-                "prefit_world_model": args.prefit_world_model,
+                "prefit_world_model": cfg.prefit_world_model,
                 "world_model_config": (
                     dataclasses.asdict(world_model_config)
                     if world_model_config is not None
@@ -839,11 +1029,13 @@ def run_training(
         adapter.close()
 
     reload_result = evaluate_checkpoint_subprocess(
-        args,
+        cfg,
         checkpoint_dir,
         seed=seed + 2,
     )
     logger.write_json("reload_evaluation.json", reload_result)
+    timing = timer.to_dict()
+    logger.write_json("timings.json", timing)
 
     random_mean = float(random_result["mean_return_per_agent"])
     initial_mean = float(initial_result["mean_return_per_agent"])
@@ -863,8 +1055,14 @@ def run_training(
         first_window_mean=first_window_mean,
         final_window_mean=final_window_mean,
         checkpoint_dir=str(checkpoint_dir),
+        runtime_seconds=float(timing["runtime_seconds"]),
+        real_env_steps=real_env_steps,
+        imagined_env_steps=imagined_env_steps,
+        cumulative_real_episodes=cumulative_real_episodes,
     )
     logger.write_json("outcome.json", outcome.to_dict())
+    if wandb_run is not None:
+        wandb_run.finish()
     return outcome
 
 
@@ -936,39 +1134,47 @@ def summarize(
     }
 
 
+def append_progress(experiment_dir: Path, outcome: RunOutcome) -> None:
+    row = {"completed_at": timestamp(), **outcome.to_dict()}
+    with (experiment_dir / "progress.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(to_jsonable(row), sort_keys=True) + "\n")
+
+
 def main() -> None:
-    args = parse_args()
-    if args.eval_checkpoint:
-        evaluate_checkpoint_mode(args)
+    cfg = TrainConfig.from_namespace(parse_args())
+    if cfg.eval_checkpoint:
+        evaluate_checkpoint_mode(cfg)
         return
 
-    experiment_dir = Path(args.out_dir) / f"e2e_{timestamp()}"
+    experiment_dir = Path(cfg.out_dir) / f"e2e_{timestamp()}"
     experiment_dir.mkdir(parents=True, exist_ok=True)
-    outcomes = [
-        run_training(
-            args,
+    outcomes = []
+    for run_index in range(cfg.num_runs):
+        outcome = run_training(
+            cfg,
             run_dir=experiment_dir / f"run_{run_index:03d}",
             name=f"run_{run_index:03d}",
             run_index=run_index,
             control=None,
         )
-        for run_index in range(args.num_runs)
-    ]
+        append_progress(experiment_dir, outcome)
+        outcomes.append(outcome)
 
     control_outcome = None
-    if args.negative_control != "none":
+    if cfg.negative_control != "none":
         control_outcome = run_training(
-            args,
-            run_dir=experiment_dir / f"control_{args.negative_control}",
-            name=f"control_{args.negative_control}",
-            run_index=args.num_runs,
-            control=args.negative_control,
+            cfg,
+            run_dir=experiment_dir / f"control_{cfg.negative_control}",
+            name=f"control_{cfg.negative_control}",
+            run_index=cfg.num_runs,
+            control=cfg.negative_control,
         )
+        append_progress(experiment_dir, control_outcome)
 
     summary = summarize(
         outcomes,
         control_outcome,
-        min_improvement=args.min_improvement,
+        min_improvement=cfg.min_improvement,
     )
     RunLogger(experiment_dir).write_json("summary.json", summary)
     print(json.dumps(to_jsonable(summary), indent=2, sort_keys=True))

@@ -8,10 +8,7 @@ from world_marl.determinism import configure_deterministic_environment
 
 
 def main() -> None:
-    requested = (
-        "--deterministic-compute" in sys.argv
-        and "--no-deterministic-compute" not in sys.argv
-    )
+    requested = "--no-deterministic-compute" not in sys.argv
     if requested:
         configure_deterministic_environment()
 

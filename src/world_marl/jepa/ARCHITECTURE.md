@@ -189,21 +189,24 @@ The target is `1 - done`. During imagination, its sigmoid is used as the
 probability that the imagined trajectory remains active.
 
 The live model has one deterministic dynamics head. It has no stochastic latent
-state, decoder, reconstruction objective, KL objective, or dynamics ensemble.
+state, reconstruction objective, KL objective, or dynamics ensemble. The
+optional observation decoder is a post-hoc probe trained on frozen latents after
+the agent finishes; it is not part of the agent and cannot affect its parameters,
+actions, evaluation, or parameter count.
 
 ### 3.4 Recurrent Multi-Step Training
 
-The supervised world-model horizon is five transitions. Starting from real
+The supervised world-model horizon is eight transitions. Starting from real
 latent/action histories, the first next latent is predicted. That prediction is
 then fed back into the temporal model for the next transition, and this process
-is repeated for five steps:
+is repeated for eight steps:
 
 ```text
-z_t -> z_hat_{t+1} -> z_hat_{t+2} -> ... -> z_hat_{t+5}.
+z_t -> z_hat_{t+1} -> z_hat_{t+2} -> ... -> z_hat_{t+8}.
 ```
 
 Thus, later losses train the same recurrent path used by actor imagination;
-they are not five independent one-step teacher-forced predictions. Reward and
+they are not eight independent one-step teacher-forced predictions. Reward and
 continuation are supervised at every recurrent step. Targets that would cross
 an episode boundary are masked.
 
@@ -515,7 +518,7 @@ The complete stabilization stack is:
 | SiLU and RMSNorm | Keeps activation and normalization behavior consistent across the model and policy. |
 | Stopped JEPA target | Prevents the predictor branch from moving its own target within one gradient calculation. |
 | SIGReg | Prevents latent collapse while retaining a decoder-free objective. |
-| Five-step recurrent supervision | Trains the exact autoregressive path used in imagination. |
+| Eight-step recurrent supervision | Trains the exact autoregressive path used in imagination. |
 | Done-aware masks and replay cuts | Prevent prediction and attention across unrelated episodes or forced resets. |
 | Reward and value two-hot distributions | Makes regression robust across return scales and outliers. |
 | Zero-initialized reward/value outputs | Starts imagined rewards and values conservatively. |

@@ -43,12 +43,10 @@ class MLPVectorField(nn.Module):
 
 
 class TokenizedDiscreteDenoiser(nn.Module):
-    """Posterior network f_theta for discrete flow matching (discrete.md Alg 8).
+    """MLP-based encoder for discrete flow matching (discrete.md Alg 8).
 
     Maps integer tokens ``(B, d)`` to per-factor logits ``(B, d, V)`` via a token
-    embedding rather than a one-hot input, so the input embedding and the d*V
-    classification head are sized independently (unlike :class:`MLPVectorField`,
-    whose head is tied to its input width).
+    embedding. Does not use one-hot encoding unlike :class:`MLPVectorField`.
     """
 
     num_categories: int
@@ -88,20 +86,23 @@ def sinusoidal_time_embedding(t: jax.Array, dim: int) -> jax.Array:
 
 
 class TokenizedDiscreteTransformer(nn.Module):
-    """Transformer posterior network f_theta for discrete flow matching (Alg 8).
+    """Transformer encoder for discrete flow matching.
 
     Treats the d factors as a length-d sequence with bidirectional self-attention
     and a prepended conditioning token carrying (sinusoidal-t, cond_vars). Honors
     the same ``(tokens, t, cond_vars) -> (B, d, V)`` contract as
     :class:`TokenizedDiscreteDenoiser`; dropout-free so the apply signature needs
-    no rng.
+    no rng. Width (``model_dim``, ``num_heads``) and depth/FFN width
+    (``ffn_hidden_dims``: one entry per layer) are configurable so this CTMC-flow
+    baseline can be parameter-matched against the MLP and LLaDA2 arms. It keeps
+    LayerNorm + learned absolute position embeddings (RoPE is reserved for the
+    block-diffusion arm, where extrapolation matters).
     """
 
     num_categories: int
     model_dim: int = 64
     num_heads: int = 4
-    num_layers: int = 2
-    mlp_ratio: int = 4
+    ffn_hidden_dims: Sequence[int] = (256, 256)
 
     @nn.compact
     def __call__(
@@ -122,14 +123,13 @@ class TokenizedDiscreteTransformer(nn.Module):
             c = c + nn.Dense(self.model_dim)(cond_vars)
         h = jnp.concatenate([c[:, None, :], h], axis=1)
 
-        for _ in range(self.num_layers):
+        for ffn_dim in self.ffn_hidden_dims:
             x = nn.LayerNorm()(h)
             h = h + nn.MultiHeadDotProductAttention(num_heads=self.num_heads)(
                 x, x, deterministic=True
             )
             y = nn.LayerNorm()(h)
-            y = nn.Dense(self.mlp_ratio * self.model_dim)(y)
-            y = nn.gelu(y)
+            y = nn.silu(nn.Dense(ffn_dim)(y))
             h = h + nn.Dense(self.model_dim)(y)
 
         h = nn.LayerNorm()(h)[:, 1:, :]
