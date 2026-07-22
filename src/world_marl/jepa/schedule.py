@@ -257,6 +257,26 @@ def scheduled_value_clip(
     return float(args.value_clip + progress * (final_clip - args.value_clip))
 
 
+def scheduled_actor_entropy_coef(
+    args: argparse.Namespace,
+    *,
+    train_env_steps: int,
+) -> float:
+    final_coef = args.actor_entropy_coef_final
+    start = args.actor_entropy_schedule_start_env_steps
+    end = args.actor_entropy_schedule_end_env_steps
+    if final_coef is None or start is None or end is None:
+        return float(args.actor_entropy_coef)
+    if train_env_steps <= start:
+        return float(args.actor_entropy_coef)
+    if train_env_steps >= end:
+        return float(final_coef)
+    progress = (train_env_steps - start) / (end - start)
+    return float(
+        args.actor_entropy_coef + progress * (final_coef - args.actor_entropy_coef)
+    )
+
+
 def scheduled_online_actor_update_interval(
     args: argparse.Namespace,
     *,

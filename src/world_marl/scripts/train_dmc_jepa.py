@@ -57,6 +57,7 @@ from world_marl.jepa.schedule import (
     recent_oversample_ratio as _recent_oversample_ratio,
     sample_policy_starts_with_reset_mix as _sample_policy_starts_with_reset_mix,
     sample_replay_batch as _sample_replay_batch,
+    scheduled_actor_entropy_coef as _scheduled_actor_entropy_coef,
     scheduled_online_actor_update_interval as _scheduled_online_actor_update_interval,
     scheduled_online_encoder_freeze as _scheduled_online_encoder_freeze,
     scheduled_policy_reset_start_fraction as _scheduled_policy_reset_start_fraction,
@@ -225,6 +226,27 @@ def parse_args() -> argparse.Namespace:
         default=True,
     )
     policy.add_argument("--actor-entropy-coef", type=float, default=3e-3)
+    policy.add_argument(
+        "--actor-entropy-coef-final",
+        type=float,
+        default=None,
+        help=(
+            "Optional final actor entropy coefficient for a linear "
+            "training-step schedule. Requires both entropy schedule boundaries."
+        ),
+    )
+    policy.add_argument(
+        "--actor-entropy-schedule-start-env-steps",
+        type=int,
+        default=None,
+        help="Training transition at which to begin changing actor entropy.",
+    )
+    policy.add_argument(
+        "--actor-entropy-schedule-end-env-steps",
+        type=int,
+        default=None,
+        help="Training transition at which to reach the final entropy coefficient.",
+    )
     policy.add_argument(
         "--actor-log-std-min",
         type=float,
@@ -593,6 +615,32 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         )
     if args.actor_log_std_min >= args.actor_log_std_max:
         parser.error("--actor-log-std-min must be below --actor-log-std-max")
+    entropy_schedule = (
+        args.actor_entropy_coef_final,
+        args.actor_entropy_schedule_start_env_steps,
+        args.actor_entropy_schedule_end_env_steps,
+    )
+    if any(value is not None for value in entropy_schedule):
+        if not all(value is not None for value in entropy_schedule):
+            parser.error(
+                "--actor-entropy-coef-final and both entropy schedule "
+                "boundaries must be set together"
+            )
+        assert args.actor_entropy_coef_final is not None
+        assert args.actor_entropy_schedule_start_env_steps is not None
+        assert args.actor_entropy_schedule_end_env_steps is not None
+        if args.actor_entropy_coef_final < 0.0:
+            parser.error("--actor-entropy-coef-final must be >= 0")
+        if args.actor_entropy_schedule_start_env_steps < 0:
+            parser.error("--actor-entropy-schedule-start-env-steps must be >= 0")
+        if (
+            args.actor_entropy_schedule_end_env_steps
+            <= args.actor_entropy_schedule_start_env_steps
+        ):
+            parser.error(
+                "--actor-entropy-schedule-end-env-steps must be greater than "
+                "--actor-entropy-schedule-start-env-steps"
+            )
     if not 0.0 <= args.policy_return_ema_decay < 1.0:
         parser.error("--policy-return-ema-decay must be in [0, 1)")
     if not 0.0 <= args.target_critic_ema_decay < 1.0:
@@ -1121,7 +1169,10 @@ def _prepare_training_prefix(
         reset_actor=True,
         actor_update_interval=1,
         critic_first_steps=0,
-        actor_entropy_coef=args.actor_entropy_coef,
+        actor_entropy_coef=_scheduled_actor_entropy_coef(
+            args,
+            train_env_steps=train_env_steps,
+        ),
         value_clip=_scheduled_value_clip(args, train_env_steps=train_env_steps),
     )
     jax_rngs.update("policy", policy_rng)
@@ -1393,7 +1444,10 @@ def run_one(
                 reset_actor=False,
                 actor_update_interval=actor_update_interval,
                 critic_first_steps=args.online_policy_critic_first_steps,
-                actor_entropy_coef=args.actor_entropy_coef,
+                actor_entropy_coef=_scheduled_actor_entropy_coef(
+                    args,
+                    train_env_steps=train_env_steps,
+                ),
                 value_clip=_scheduled_value_clip(
                     args,
                     train_env_steps=train_env_steps,

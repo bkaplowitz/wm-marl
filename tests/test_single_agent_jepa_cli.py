@@ -609,11 +609,39 @@ def test_cli_rejects_partial_entropy_decay(monkeypatch):
     monkeypatch.setattr(
         sys,
         "argv",
-        _minimal_args("--actor-entropy-final-coef", "0.0003"),
+        _minimal_args("--actor-entropy-coef-final", "0.0003"),
     )
 
     with pytest.raises(SystemExit):
         train_dmc_jepa.parse_args()
+
+
+def test_actor_entropy_schedule_interpolates_by_training_steps(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _minimal_args(
+            "--actor-entropy-coef",
+            "0.003",
+            "--actor-entropy-coef-final",
+            "0.0003",
+            "--actor-entropy-schedule-start-env-steps",
+            "100000",
+            "--actor-entropy-schedule-end-env-steps",
+            "200000",
+        ),
+    )
+    args = train_dmc_jepa.parse_args()
+
+    assert train_dmc_jepa._scheduled_actor_entropy_coef(
+        args, train_env_steps=50_000
+    ) == pytest.approx(3e-3)
+    assert train_dmc_jepa._scheduled_actor_entropy_coef(
+        args, train_env_steps=150_000
+    ) == pytest.approx(1.65e-3)
+    assert train_dmc_jepa._scheduled_actor_entropy_coef(
+        args, train_env_steps=250_000
+    ) == pytest.approx(3e-4)
 
 
 def test_cli_rejects_removed_checkpoint_search_flags(monkeypatch):

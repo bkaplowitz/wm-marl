@@ -254,6 +254,28 @@ def test_launcher_serializes_value_clip_schedule():
     ]
 
 
+def test_launcher_serializes_actor_entropy_schedule():
+    command = params_to_shell_args(
+        {
+            "actor_entropy_coef": 3e-3,
+            "actor_entropy_coef_final": 3e-4,
+            "actor_entropy_schedule_start_env_steps": 100_000,
+            "actor_entropy_schedule_end_env_steps": 250_000,
+        }
+    )
+
+    assert command.replace("\\\n", " ").split() == [
+        "--actor-entropy-coef",
+        "0.003",
+        "--actor-entropy-coef-final",
+        "0.0003",
+        "--actor-entropy-schedule-start-env-steps",
+        "100000",
+        "--actor-entropy-schedule-end-env-steps",
+        "250000",
+    ]
+
+
 def test_launcher_serializes_training_snapshot_controls():
     command = params_to_shell_args(
         {
