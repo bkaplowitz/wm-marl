@@ -32,6 +32,7 @@ OVERRIDABLE_PARAMS = (
     "collect_steps",
     "initial_reset_interval",
     "initial_random_action_hold_steps",
+    "initial_random_action_hold_schedule",
     "validation_steps",
     "validation_seed",
     "online_iterations",
@@ -58,6 +59,8 @@ OVERRIDABLE_PARAMS = (
     "learning_rate",
     "actor_learning_rate",
     "actor_entropy_coef",
+    "policy_pathwise_reward_coef",
+    "policy_pathwise_horizon",
     "actor_entropy_coef_final",
     "actor_entropy_schedule_start_env_steps",
     "actor_entropy_schedule_end_env_steps",
@@ -355,6 +358,7 @@ def parse_args() -> argparse.Namespace:
         "actor_hidden_dim",
         "critic_hidden_dim",
         "imag_horizon",
+        "policy_pathwise_horizon",
         "final_policy_eval_episodes",
         "final_policy_eval_seed",
         "value_clip_schedule_start_env_steps",
@@ -373,6 +377,7 @@ def parse_args() -> argparse.Namespace:
         "learning_rate",
         "actor_learning_rate",
         "actor_entropy_coef",
+        "policy_pathwise_reward_coef",
         "actor_entropy_coef_final",
         "value_clip",
         "value_clip_final",
@@ -383,6 +388,12 @@ def parse_args() -> argparse.Namespace:
         "online_recent_replay_max_oversample",
     ):
         parser.add_argument("--" + name.replace("_", "-"), type=float, default=None)
+    parser.add_argument(
+        "--initial-random-action-hold-schedule",
+        nargs="+",
+        type=int,
+        default=None,
+    )
     parser.add_argument(
         "--training-snapshot-env-steps",
         nargs="*",

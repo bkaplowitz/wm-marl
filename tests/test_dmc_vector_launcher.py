@@ -60,6 +60,28 @@ def test_launcher_serializes_canonical_replay_and_evaluation_controls():
     assert tokens[tokens.index("--curve-eval-seed") + 1] == "9000000"
 
 
+def test_launcher_serializes_generalization_controls():
+    command = params_to_shell_args(
+        {
+            "initial_random_action_hold_schedule": (1, 2, 4, 8, 16),
+            "policy_pathwise_reward_coef": 0.1,
+            "policy_pathwise_horizon": 4,
+        }
+    )
+
+    tokens = command.replace("\\\n", " ").split()
+    schedule_index = tokens.index("--initial-random-action-hold-schedule")
+    assert tokens[schedule_index + 1 : schedule_index + 6] == [
+        "1",
+        "2",
+        "4",
+        "8",
+        "16",
+    ]
+    assert tokens[tokens.index("--policy-pathwise-reward-coef") + 1] == "0.1"
+    assert tokens[tokens.index("--policy-pathwise-horizon") + 1] == "4"
+
+
 def test_launcher_serializes_budget_relative_encoder_freeze():
     command = params_to_shell_args(
         {

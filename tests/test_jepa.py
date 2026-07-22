@@ -605,6 +605,73 @@ def test_stochastic_continuous_policy_update_reports_entropy_and_samples_actions
     )
 
 
+def test_short_pathwise_reward_auxiliary_changes_only_actor_update():
+    config = JepaConfig(
+        observation_dim=4,
+        action_dim=2,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=2,
+        context_window=1,
+        actor_hidden_dim=16,
+        critic_hidden_dim=16,
+        actor_num_layers=2,
+        critic_num_layers=2,
+        sigreg_num_proj=8,
+    )
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    observations = jax.random.normal(jax.random.PRNGKey(2), (8, 4))
+    action_low = -jnp.ones((2,), dtype=jnp.float32)
+    action_high = jnp.ones((2,), dtype=jnp.float32)
+
+    baseline, _ = continuous_policy_train_step(
+        state,
+        jax.random.PRNGKey(1),
+        observations,
+        config,
+        action_low,
+        action_high,
+        imag_horizon=4,
+    )
+    hybrid, metrics = continuous_policy_train_step(
+        state,
+        jax.random.PRNGKey(1),
+        observations,
+        config,
+        action_low,
+        action_high,
+        imag_horizon=4,
+        pathwise_reward_coef=0.5,
+        pathwise_horizon=2,
+    )
+
+    assert metrics["policy/gradient_mode_reinforce"] == 1.0
+    assert metrics["policy/gradient_mode_pathwise_reward"] == 1.0
+    assert metrics["policy/pathwise_reward_coef"] == pytest.approx(0.5)
+    assert jnp.isfinite(metrics["policy/pathwise_reward_objective"])
+    assert _tree_changed(baseline.params["actor_head"], hybrid.params["actor_head"])
+    for group in (
+        "encoder",
+        "latent_proj",
+        "action_encoder_hidden",
+        "action_encoder_out",
+        "dynamics_norm",
+        "predictor",
+        "predictor_norm",
+        "reward_head",
+        "continue_head",
+    ):
+        for before, after in zip(
+            jax.tree_util.tree_leaves(state.params[group]),
+            jax.tree_util.tree_leaves(hybrid.params[group]),
+            strict=True,
+        ):
+            np.testing.assert_allclose(np.asarray(before), np.asarray(after))
+
+
 def test_dreamer_style_policy_update_is_finite_and_keeps_world_model_frozen():
     config = JepaConfig(
         observation_dim=4,

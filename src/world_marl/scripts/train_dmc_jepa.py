@@ -118,6 +118,17 @@ def parse_args() -> argparse.Namespace:
             "action; 1 preserves per-step i.i.d. random collection."
         ),
     )
+    environment.add_argument(
+        "--initial-random-action-hold-schedule",
+        type=int,
+        nargs="*",
+        default=(),
+        help=(
+            "Optional per-environment bootstrap action hold schedule. Values "
+            "are assigned cyclically across vector environments; an empty "
+            "schedule uses --initial-random-action-hold-steps."
+        ),
+    )
     environment.add_argument("--validation-steps", type=int, default=80)
     environment.add_argument("--validation-seed", type=int, default=None)
     environment.add_argument("--replay-capacity", type=int, default=1_000_000)
@@ -226,6 +237,21 @@ def parse_args() -> argparse.Namespace:
         default=True,
     )
     policy.add_argument("--actor-entropy-coef", type=float, default=3e-3)
+    policy.add_argument(
+        "--policy-pathwise-reward-coef",
+        type=float,
+        default=0.0,
+        help=(
+            "Coefficient for a short, reward-only pathwise actor auxiliary "
+            "through frozen JEPA dynamics (0 disables)."
+        ),
+    )
+    policy.add_argument(
+        "--policy-pathwise-horizon",
+        type=int,
+        default=4,
+        help="Imagined horizon for the optional pathwise reward auxiliary.",
+    )
     policy.add_argument(
         "--actor-entropy-coef-final",
         type=float,
@@ -487,6 +513,7 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         "critic_num_layers",
         "critic_horizon",
         "imag_horizon",
+        "policy_pathwise_horizon",
         "policy_replay_critic_batch_size",
         "policy_replay_critic_horizon",
         "online_collect_steps",
@@ -534,12 +561,17 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         "value_output_scale",
         "reward_output_scale",
         "actor_entropy_coef",
+        "policy_pathwise_reward_coef",
         "policy_replay_critic_loss_coef",
         "policy_slow_value_regularization_coef",
     )
     for name in nonnegative_float:
         if getattr(args, name) < 0.0:
             parser.error(f"--{name.replace('_', '-')} must be >= 0")
+    if any(value < 1 for value in args.initial_random_action_hold_schedule):
+        parser.error("--initial-random-action-hold-schedule values must be >= 1")
+    if args.policy_pathwise_horizon > args.imag_horizon:
+        parser.error("--policy-pathwise-horizon must be <= --imag-horizon")
     min_sequence_steps = args.chunk_length + max(
         args.model_horizon,
         args.open_loop_horizon,
@@ -1056,7 +1088,10 @@ def _prepare_training_prefix(
             tuple(bootstrap_replays),
             steps=args.collect_steps,
             reset_interval=args.initial_reset_interval,
-            action_hold_steps=args.initial_random_action_hold_steps,
+            action_hold_steps=(
+                args.initial_random_action_hold_schedule
+                or args.initial_random_action_hold_steps
+            ),
             desc="collect reset-rich bootstrap replay",
             quiet=args.quiet,
         )
@@ -1073,6 +1108,9 @@ def _prepare_training_prefix(
             "collector_cut_count": replay.cut_count,
             "initial_reset_interval": args.initial_reset_interval,
             "initial_random_action_hold_steps": args.initial_random_action_hold_steps,
+            "initial_random_action_hold_schedule": list(
+                args.initial_random_action_hold_schedule
+            ),
             "initial_segments_per_env": (
                 math.ceil(args.collect_steps / args.initial_reset_interval)
                 if args.initial_reset_interval is not None
@@ -1954,10 +1992,14 @@ def _collect_random_steps(
     *,
     steps: int,
     reset_interval: int | None = None,
-    action_hold_steps: int = 1,
+    action_hold_steps: int | tuple[int, ...] | list[int] = 1,
     desc: str,
     quiet: bool,
 ) -> tuple[np.ndarray, int]:
+    hold_steps_by_env = _action_hold_steps_by_env(
+        action_hold_steps,
+        num_envs=adapter.num_envs,
+    )
     held_actions = None
     held_steps = np.zeros((adapter.num_envs,), dtype=np.int64)
     for step_index in tqdm(range(steps), desc=desc, unit="step", disable=quiet):
@@ -1965,7 +2007,7 @@ def _collect_random_steps(
             held_actions = adapter.sample_actions(rng)
             held_steps.fill(0)
         else:
-            resample_mask = held_steps >= action_hold_steps
+            resample_mask = held_steps >= hold_steps_by_env
             if np.any(resample_mask):
                 replacement_actions = adapter.sample_actions(rng)
                 held_actions = np.array(held_actions, copy=True)
@@ -1996,7 +2038,7 @@ def _collect_random_steps(
         else:
             observations = step.observations
             done_mask = np.asarray(step.dones[:, 0]) > 0.0
-            resample_done_mask = done_mask & (held_steps < action_hold_steps)
+            resample_done_mask = done_mask & (held_steps < hold_steps_by_env)
             if np.any(resample_done_mask):
                 replacement_actions = adapter.sample_actions(rng)
                 held_actions = np.array(held_actions, copy=True)
@@ -2005,6 +2047,19 @@ def _collect_random_steps(
                 ]
                 held_steps[resample_done_mask] = 0
     return observations, steps * adapter.num_envs
+
+
+def _action_hold_steps_by_env(
+    action_hold_steps: int | tuple[int, ...] | list[int],
+    *,
+    num_envs: int,
+) -> np.ndarray:
+    schedule = np.asarray(action_hold_steps, dtype=np.int64).reshape((-1,))
+    if schedule.size == 0:
+        raise ValueError("action hold schedule must not be empty")
+    if np.any(schedule < 1):
+        raise ValueError("action hold steps must be >= 1")
+    return np.resize(schedule, num_envs)
 
 
 def _collect_policy_steps(
@@ -2513,6 +2568,8 @@ def _train_policy(
             action_saturation_threshold=0.95,
             start_actions=start_actions,
             actor_entropy_coef=actor_entropy_coef,
+            pathwise_reward_coef=args.policy_pathwise_reward_coef,
+            pathwise_horizon=args.policy_pathwise_horizon,
             target_critic_params=(
                 state.target_critic_params
                 if args.target_critic_ema_decay > 0.0
@@ -2571,6 +2628,8 @@ def _train_policy(
             "policy_gradient_mode": "reinforce",
             "policy_stochastic_actor": True,
             "policy_actor_entropy_coef": actor_entropy_coef,
+            "policy_pathwise_reward_coef": args.policy_pathwise_reward_coef,
+            "policy_pathwise_horizon": args.policy_pathwise_horizon,
             "policy_value_clip": value_clip,
             "policy_value_clip_initial": args.value_clip,
             "policy_value_clip_final": args.value_clip_final,

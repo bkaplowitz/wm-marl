@@ -560,11 +560,80 @@ def reset_policy_heads(
     )
 
 
+def continuous_pathwise_reward_objective(
+    params: FrozenDict,
+    apply_fn,
+    start_observations: jax.Array,
+    config: JepaConfig,
+    action_low: jax.Array,
+    action_high: jax.Array,
+    *,
+    horizon: int,
+    start_actions: jax.Array | None = None,
+) -> jax.Array:
+    """Differentiate a short reward-only rollout through frozen JEPA dynamics."""
+
+    model_params = jax.tree_util.tree_map(jax.lax.stop_gradient, params)
+    context, action_context = initial_imagination_context(
+        apply_fn,
+        model_params,
+        start_observations,
+        start_actions,
+        config,
+    )
+
+    def step(carry, _):
+        current_context, current_action_context = carry
+        action_means, _ = actor_stats_from_latent(
+            apply_fn,
+            params,
+            current_context[:, -1],
+        )
+        actions = scale_normalized_actions(
+            jnp.tanh(action_means),
+            action_low,
+            action_high,
+        )
+        model_action_context = replace_last_action_context(
+            current_action_context,
+            actions,
+            config,
+        )
+        next_z, rewards, continue_logits = apply_fn(
+            {"params": model_params},
+            current_context,
+            model_action_context,
+            method=JepaWorldModel.predict_next_from_history,
+        )
+        continues = jax.nn.sigmoid(continue_logits)
+        next_context = jnp.concatenate(
+            [current_context[:, 1:], next_z[:, None, :]],
+            axis=1,
+        )
+        next_action_context = append_action_context(
+            model_action_context,
+            jnp.zeros_like(actions),
+            config,
+        )
+        return (next_context, next_action_context), (rewards, continues)
+
+    _, (rewards, continues) = jax.lax.scan(
+        step,
+        (context, action_context),
+        xs=None,
+        length=horizon,
+    )
+    weights = jax.lax.stop_gradient(survival_weights(continues, gamma=config.gamma))
+    return weighted_mean(rewards, weights)
+
+
 @partial(
     jax.jit,
     static_argnames=(
         "config",
         "imag_horizon",
+        "pathwise_reward_coef",
+        "pathwise_horizon",
         "target_critic_ema_decay",
         "real_critic_loss_enabled",
         "real_critic_horizon",
@@ -589,6 +658,8 @@ def continuous_policy_train_step(
     action_saturation_threshold: float = 0.95,
     start_actions: jax.Array | None = None,
     actor_entropy_coef: float = 0.0,
+    pathwise_reward_coef: float = 0.0,
+    pathwise_horizon: int = 4,
     target_critic_params: FrozenDict | None = None,
     target_critic_ema_decay: float = 0.0,
     real_critic_batch: ReplayBatch | None = None,
@@ -646,6 +717,19 @@ def continuous_policy_train_step(
         )
         actor_objective = weighted_mean(policy_terms, weights)
         return_loss = -actor_objective
+        if pathwise_reward_coef > 0.0:
+            pathwise_reward_objective = continuous_pathwise_reward_objective(
+                params,
+                state.apply_fn,
+                start_observations,
+                config,
+                action_low,
+                action_high,
+                horizon=pathwise_horizon,
+                start_actions=start_actions,
+            )
+        else:
+            pathwise_reward_objective = jnp.asarray(0.0, dtype=return_loss.dtype)
         entropy_bonus = weighted_mean(rollout["action_entropy"], weights)
         if actor_reference_params is None:
             reference_kl = jnp.zeros_like(weights)
@@ -681,7 +765,12 @@ def continuous_policy_train_step(
             target_per_dim=actor_kl_target_per_dim,
             reference_available=reference_available,
         )
-        actor_loss = return_loss - actor_entropy_coef * entropy_bonus + actor_kl_penalty
+        actor_loss = (
+            return_loss
+            - actor_entropy_coef * entropy_bonus
+            - pathwise_reward_coef * pathwise_reward_objective
+            + actor_kl_penalty
+        )
         action_saturation = jnp.mean(
             (
                 jnp.abs(rollout["normalized_actions"]) >= action_saturation_threshold
@@ -705,6 +794,7 @@ def continuous_policy_train_step(
             normalized_actor_scores,
             reference_kl,
             actor_kl_penalty,
+            pathwise_reward_objective,
             actor_loss,
         )
         metrics = {
@@ -761,6 +851,19 @@ def continuous_policy_train_step(
             "policy/clipped_imagined_return": weighted_mean(clipped_returns, weights),
             "policy/actor_score": weighted_mean(actor_scores, weights),
             "policy/actor_objective_score": actor_objective,
+            "policy/pathwise_reward_objective": pathwise_reward_objective,
+            "policy/pathwise_reward_coef": jnp.asarray(
+                pathwise_reward_coef,
+                dtype=actor_loss.dtype,
+            ),
+            "policy/pathwise_reward_horizon": jnp.asarray(
+                pathwise_horizon,
+                dtype=actor_loss.dtype,
+            ),
+            "policy/gradient_mode_pathwise_reward": jnp.asarray(
+                float(pathwise_reward_coef > 0.0),
+                dtype=actor_loss.dtype,
+            ),
             "policy/actor_score_std": weighted_std(actor_scores, weights),
             "policy/advantage_mean": weighted_mean(actor_scores, weights),
             "policy/advantage_std": weighted_std(actor_scores, weights),

@@ -131,6 +131,51 @@ def test_cli_accepts_temporally_coherent_random_bootstrap(monkeypatch):
     assert args.initial_random_action_hold_steps == 4
 
 
+def test_cli_accepts_mixed_timescale_random_bootstrap(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _minimal_args(
+            "--initial-random-action-hold-schedule",
+            "1",
+            "2",
+            "4",
+            "8",
+        ),
+    )
+
+    args = train_dmc_jepa.parse_args()
+
+    assert args.initial_random_action_hold_schedule == [1, 2, 4, 8]
+    np.testing.assert_array_equal(
+        train_dmc_jepa._action_hold_steps_by_env(
+            args.initial_random_action_hold_schedule,
+            num_envs=6,
+        ),
+        np.asarray([1, 2, 4, 8, 1, 2]),
+    )
+
+
+def test_cli_accepts_short_pathwise_reward_auxiliary(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _minimal_args(
+            "--imag-horizon",
+            "8",
+            "--policy-pathwise-reward-coef",
+            "0.1",
+            "--policy-pathwise-horizon",
+            "4",
+        ),
+    )
+
+    args = train_dmc_jepa.parse_args()
+
+    assert args.policy_pathwise_reward_coef == pytest.approx(0.1)
+    assert args.policy_pathwise_horizon == 4
+
+
 def test_random_collection_marks_nonterminal_reset_cuts():
     class Adapter:
         num_envs = 1
