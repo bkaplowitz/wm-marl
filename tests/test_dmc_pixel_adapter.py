@@ -17,10 +17,11 @@ class _Spec:
 
 
 class _TimeStep:
-    def __init__(self, observation, reward=0.0, last=False):
+    def __init__(self, observation, reward=0.0, last=False, discount=None):
         self.observation = observation
         self.reward = reward
         self._last = last
+        self.discount = discount
 
     def last(self):
         return self._last
@@ -104,6 +105,8 @@ def test_dmc_pixel_adapter_preserves_environment_semantics(num_workers):
         assert actions.shape == (2, 1, 2)
         np.testing.assert_allclose(first.rewards[:, 0], actions[:, 0].sum(axis=-1))
         assert second.dones.tolist() == [[1.0], [1.0]]
+        assert second.is_last.tolist() == [[1.0], [1.0]]
+        assert second.is_terminal.tolist() == [[1.0], [1.0]]
         assert second.completed_lengths == (2, 2)
         assert len(second.completed_returns) == 2
         assert second.observations.shape == (2, 1, 6, 8, 3)
@@ -134,6 +137,8 @@ def test_dmc_pixel_adapter_marks_adapter_time_limit_as_truncation():
         adapter.reset()
         step = adapter.step(np.zeros((1, 1, 2), dtype=np.float32))
         assert step.dones.tolist() == [[1.0]]
+        assert step.is_last.tolist() == [[1.0]]
+        assert step.is_terminal.tolist() == [[0.0]]
         assert step.infos[0]["terminated"] is False
         assert step.infos[0]["truncated"] is True
     finally:

@@ -166,6 +166,8 @@ def test_world_model_evaluator_collects_with_explicit_terminal_contract(monkeypa
                 observations=np.zeros((1, 1, 2), dtype=np.float32),
                 rewards=np.ones((1, 1), dtype=np.float32),
                 dones=np.ones((1, 1), dtype=np.float32),
+                is_last=np.ones((1, 1), dtype=np.float32),
+                is_terminal=np.zeros((1, 1), dtype=np.float32),
             )
 
         def close(self):
@@ -191,4 +193,4 @@ def test_world_model_evaluator_collects_with_explicit_terminal_contract(monkeypa
     )
 
     np.testing.assert_array_equal(replay.is_last[:2, 0], np.ones(2))
-    np.testing.assert_array_equal(replay.is_terminal[:2, 0], np.ones(2))
+    np.testing.assert_array_equal(replay.is_terminal[:2, 0], np.zeros(2))

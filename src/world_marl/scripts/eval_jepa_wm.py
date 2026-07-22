@@ -256,12 +256,22 @@ def collect_dmc_replay(
                     )
                 )
             step = adapter.step(actions[:, None, :])
+            step_is_last = getattr(step, "is_last", None)
+            step_is_terminal = getattr(step, "is_terminal", None)
             replay.add_step(
                 observations=observations[:, 0],
                 actions=actions,
                 rewards=step.rewards[:, 0],
-                is_last=step.dones[:, 0],
-                is_terminal=step.dones[:, 0],
+                is_last=(
+                    step.dones[:, 0]
+                    if step_is_last is None
+                    else step_is_last[:, 0]
+                ),
+                is_terminal=(
+                    step.dones[:, 0]
+                    if step_is_terminal is None
+                    else step_is_terminal[:, 0]
+                ),
             )
             observations = step.observations
         return replay, {

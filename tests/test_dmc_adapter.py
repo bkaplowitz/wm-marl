@@ -14,10 +14,11 @@ class _Spec:
 
 
 class _TimeStep:
-    def __init__(self, observation, reward=0.0, last=False):
+    def __init__(self, observation, reward=0.0, last=False, discount=None):
         self.observation = observation
         self.reward = reward
         self._last = last
+        self.discount = discount
 
     def last(self):
         return self._last
@@ -99,6 +100,8 @@ def test_dmc_adapter_reset_step_and_completion(num_workers):
         assert first.observations.shape == (2, 1, 3)
         assert first.rewards.shape == (2, 1)
         assert second.dones.tolist() == [[1.0], [1.0]]
+        assert second.is_last.tolist() == [[1.0], [1.0]]
+        assert second.is_terminal.tolist() == [[1.0], [1.0]]
         assert len(second.completed_returns) == 2
         assert second.completed_lengths == (2, 2)
     finally:
@@ -144,6 +147,61 @@ def test_dmc_adapter_can_reset_selected_vector_members():
         np.asarray([10.0, 0.0, 0.5]),
     )
     assert following.dones.tolist() == [[0.0], [1.0]]
+
+
+@pytest.mark.parametrize(
+    ("discount", "expected_terminal"),
+    [(1.0, 0.0), (0.0, 1.0)],
+)
+def test_dmc_adapter_separates_last_from_terminal(discount, expected_terminal):
+    class BoundaryEnv(_FakeDMCEnv):
+        def step(self, action):
+            self.count += 1
+            return _TimeStep(
+                self._observation(),
+                reward=float(np.asarray(action).sum()),
+                last=True,
+                discount=discount,
+            )
+
+    adapter = DMCVectorAdapter(
+        "fake/task",
+        num_envs=1,
+        max_cycles=5,
+        seed=10,
+        env_factory=lambda seed: BoundaryEnv(seed),
+    )
+    try:
+        adapter.reset()
+        step = adapter.step(np.zeros((1, 1, 2), dtype=np.float32))
+    finally:
+        adapter.close()
+
+    assert step.dones.tolist() == [[1.0]]
+    assert step.is_last.tolist() == [[1.0]]
+    assert step.is_terminal.tolist() == [[expected_terminal]]
+    assert step.infos[0]["terminated"] is bool(expected_terminal)
+    assert step.infos[0]["truncated"] is (not bool(expected_terminal))
+
+
+def test_dmc_adapter_marks_local_time_limit_as_nonterminal_boundary():
+    adapter = DMCVectorAdapter(
+        "fake/task",
+        num_envs=1,
+        max_cycles=1,
+        seed=10,
+        env_factory=lambda seed: _FakeDMCEnv(seed),
+    )
+    try:
+        adapter.reset()
+        step = adapter.step(np.zeros((1, 1, 2), dtype=np.float32))
+    finally:
+        adapter.close()
+
+    assert step.is_last.tolist() == [[1.0]]
+    assert step.is_terminal.tolist() == [[0.0]]
+    assert step.infos[0]["terminated"] is False
+    assert step.infos[0]["truncated"] is True
 
 
 class _FakePhysicsData:

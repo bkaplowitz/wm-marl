@@ -1931,6 +1931,21 @@ def _new_replay_buffer(
     )
 
 
+def _step_boundary_arrays(step) -> tuple[np.ndarray, np.ndarray]:
+    """Read explicit reset and terminal masks with legacy-adapter fallback."""
+
+    is_last = getattr(step, "is_last", None)
+    is_terminal = getattr(step, "is_terminal", None)
+    if is_last is None:
+        is_last = step.dones
+    if is_terminal is None:
+        is_terminal = step.dones
+    return (
+        np.asarray(is_last, dtype=np.float32)[:, 0],
+        np.asarray(is_terminal, dtype=np.float32)[:, 0],
+    )
+
+
 def _collect_random_steps(
     adapter,
     observations: np.ndarray,
@@ -1958,6 +1973,7 @@ def _collect_random_steps(
                 held_steps[resample_mask] = 0
         actions = held_actions
         step = adapter.step(actions)
+        step_is_last, step_is_terminal = _step_boundary_arrays(step)
         held_steps += 1
         forced_reset = (
             reset_interval is not None and (step_index + 1) % reset_interval == 0
@@ -1967,8 +1983,8 @@ def _collect_random_steps(
             observations=observations[:, 0],
             actions=actions[:, 0],
             rewards=step.rewards[:, 0],
-            is_last=step.dones[:, 0],
-            is_terminal=step.dones[:, 0],
+            is_last=step_is_last,
+            is_terminal=step_is_terminal,
             cuts=(
                 np.ones((adapter.num_envs,), dtype=np.float32) if forced_reset else None
             ),
@@ -2031,13 +2047,14 @@ def _collect_policy_steps(
             )
         )
         step = adapter.step(actions[:, None, :])
+        step_is_last, step_is_terminal = _step_boundary_arrays(step)
         _add_replay_step(
             replay,
             observations=observations[:, 0],
             actions=actions,
             rewards=step.rewards[:, 0],
-            is_last=step.dones[:, 0],
-            is_terminal=step.dones[:, 0],
+            is_last=step_is_last,
+            is_terminal=step_is_terminal,
         )
         completed_count = len(step.completed_returns)
         completed_returns.extend(float(item[0]) for item in step.completed_returns)

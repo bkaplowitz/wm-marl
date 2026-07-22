@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 
+from world_marl.envs.dmc_adapter import dmc_boundary_flags
 from world_marl.envs.meltingpot_adapter import VectorStep
 
 
@@ -157,6 +158,8 @@ class DMCPixelAdapter:
         observations = []
         rewards = np.zeros((self.num_envs, 1), dtype=np.float32)
         dones = np.zeros((self.num_envs, 1), dtype=np.float32)
+        is_last = np.zeros((self.num_envs, 1), dtype=np.float32)
+        is_terminal = np.zeros((self.num_envs, 1), dtype=np.float32)
         completed_returns: list[tuple[float, ...]] = []
         completed_lengths: list[int] = []
         infos: list[dict[str, Any]] = []
@@ -167,20 +170,25 @@ class DMCPixelAdapter:
             reward = 0.0 if timestep.reward is None else float(timestep.reward)
             self._episode_returns[env_index, 0] += reward
             self._episode_lengths[env_index] += 1
-            terminated = bool(timestep.last())
-            truncated = bool(self._episode_lengths[env_index] >= self.max_cycles)
-            done = terminated or truncated
+            last, terminal = dmc_boundary_flags(
+                timestep,
+                max_cycles_reached=(
+                    self._episode_lengths[env_index] >= self.max_cycles
+                ),
+            )
             rewards[env_index, 0] = reward
-            dones[env_index, 0] = float(done)
+            dones[env_index, 0] = float(last)
+            is_last[env_index, 0] = float(last)
+            is_terminal[env_index, 0] = float(terminal)
 
-            if done:
+            if last:
                 completed_returns.append((float(self._episode_returns[env_index, 0]),))
                 completed_lengths.append(int(self._episode_lengths[env_index]))
                 infos.append(
                     {
                         "env_index": int(env_index),
-                        "terminated": terminated,
-                        "truncated": truncated,
+                        "terminated": terminal,
+                        "truncated": not terminal,
                         "agent_infos": {},
                     }
                 )
@@ -199,6 +207,8 @@ class DMCPixelAdapter:
             completed_lengths=tuple(completed_lengths),
             step_infos=tuple({} for _ in range(self.num_envs)),
             infos=tuple(infos),
+            is_last=is_last,
+            is_terminal=is_terminal,
         )
 
     def sample_actions(self, rng: np.random.Generator) -> np.ndarray:

@@ -240,6 +240,49 @@ def test_random_collection_holds_actions_and_resamples_after_forced_reset():
     )
 
 
+def test_random_collection_preserves_explicit_nonterminal_boundaries():
+    class Adapter:
+        num_envs = 1
+
+        def reset(self):
+            return np.zeros((1, 1, 1), dtype=np.float32)
+
+        def sample_actions(self, rng):
+            del rng
+            return np.zeros((1, 1, 1), dtype=np.float32)
+
+        def step(self, actions):
+            del actions
+            return SimpleNamespace(
+                observations=np.zeros((1, 1, 1), dtype=np.float32),
+                rewards=np.zeros((1, 1), dtype=np.float32),
+                dones=np.ones((1, 1), dtype=np.float32),
+                is_last=np.ones((1, 1), dtype=np.float32),
+                is_terminal=np.zeros((1, 1), dtype=np.float32),
+            )
+
+    replay = SequenceReplayBuffer(
+        capacity=2,
+        num_envs=1,
+        observation_shape=(1,),
+        action_shape=(1,),
+        action_dtype=np.float32,
+    )
+    adapter = Adapter()
+    train_dmc_jepa._collect_random_steps(
+        adapter,
+        adapter.reset(),
+        np.random.default_rng(0),
+        replay,
+        steps=1,
+        desc="test",
+        quiet=True,
+    )
+
+    np.testing.assert_array_equal(replay.is_last[:1, 0], np.ones(1))
+    np.testing.assert_array_equal(replay.is_terminal[:1, 0], np.zeros(1))
+
+
 def test_cli_accepts_wandb_video_controls(monkeypatch):
     monkeypatch.setattr(
         sys,

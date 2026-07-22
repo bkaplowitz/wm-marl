@@ -28,6 +28,10 @@ class VectorStep:
     completed_lengths: tuple[int, ...]
     step_infos: tuple[dict[str, Any], ...]
     infos: tuple[dict[str, Any], ...]
+    # Optional explicit boundary semantics for value-learning consumers.
+    # ``dones`` remains the reset mask used by the generic adapter contract.
+    is_last: np.ndarray | None = None
+    is_terminal: np.ndarray | None = None
 
 
 def make_meltingpot_env(substrate: str, max_cycles: int = 1000):

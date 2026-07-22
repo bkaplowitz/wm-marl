@@ -15,6 +15,28 @@ from world_marl.envs.meltingpot_adapter import VectorStep
 DMCEnvFactory = Callable[[int], Any]
 
 
+def dmc_boundary_flags(
+    timestep: Any,
+    *,
+    max_cycles_reached: bool,
+) -> tuple[bool, bool]:
+    """Return DMC sequence-boundary and Bellman-terminal flags.
+
+    DeepMind Control uses ``LAST`` with ``discount=1`` for time-limit
+    truncations and ``discount=0`` for true task terminals. Older test or
+    third-party timestep objects may omit ``discount``; those retain the
+    historical behavior where ``LAST`` is treated as terminal.
+    """
+
+    environment_last = bool(timestep.last())
+    is_last = environment_last or bool(max_cycles_reached)
+    discount = getattr(timestep, "discount", None)
+    is_terminal = environment_last and (
+        discount is None or float(np.asarray(discount)) <= 0.0
+    )
+    return is_last, is_terminal
+
+
 def make_dmc_env(env_id: str, *, seed: int):
     """Build a DeepMind Control Suite environment.
 
@@ -141,6 +163,8 @@ class DMCVectorAdapter:
         observations = []
         rewards = np.zeros((self.num_envs, 1), dtype=np.float32)
         dones = np.zeros((self.num_envs, 1), dtype=np.float32)
+        is_last = np.zeros((self.num_envs, 1), dtype=np.float32)
+        is_terminal = np.zeros((self.num_envs, 1), dtype=np.float32)
         completed_returns: list[tuple[float, ...]] = []
         completed_lengths: list[int] = []
         infos: list[dict[str, Any]] = []
@@ -165,21 +189,25 @@ class DMCVectorAdapter:
             self._episode_returns[env_index, 0] += reward
             self._episode_lengths[env_index] += 1
 
-            done = bool(timestep.last()) or (
-                self._episode_lengths[env_index] >= self.max_cycles
+            last, terminal = dmc_boundary_flags(
+                timestep,
+                max_cycles_reached=(
+                    self._episode_lengths[env_index] >= self.max_cycles
+                ),
             )
             rewards[env_index, 0] = reward
-            dones[env_index, 0] = float(done)
+            dones[env_index, 0] = float(last)
+            is_last[env_index, 0] = float(last)
+            is_terminal[env_index, 0] = float(terminal)
 
-            if done:
+            if last:
                 completed_returns.append((float(self._episode_returns[env_index, 0]),))
                 completed_lengths.append(int(self._episode_lengths[env_index]))
                 infos.append(
                     {
                         "env_index": int(env_index),
-                        "terminated": bool(timestep.last()),
-                        "truncated": self._episode_lengths[env_index]
-                        >= self.max_cycles,
+                        "terminated": terminal,
+                        "truncated": not terminal,
                         "agent_infos": {},
                     }
                 )
@@ -198,6 +226,8 @@ class DMCVectorAdapter:
             completed_lengths=tuple(completed_lengths),
             step_infos=tuple({} for _ in range(self.num_envs)),
             infos=tuple(infos),
+            is_last=is_last,
+            is_terminal=is_terminal,
         )
 
     def sample_actions(self, rng: np.random.Generator) -> np.ndarray:
