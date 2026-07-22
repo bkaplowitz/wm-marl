@@ -25,7 +25,7 @@ import jax.numpy as jnp
 import numpy as np
 from tqdm.auto import tqdm
 
-from world_marl.checkpointing import load_params, save_checkpoint
+from world_marl.checkpointing import load_metadata, load_params, save_checkpoint
 from world_marl.envs.brax_adapter import BraxVectorAdapter, brax_env_name
 from world_marl.envs.dmc_adapter import DMCVectorAdapter, dmc_env_name
 from world_marl.jepa.config import canonical_jepa_config
@@ -50,6 +50,7 @@ from world_marl.jepa.reporting import (
 from world_marl.jepa.reproducibility import (
     JaxRngStreams,
     NumpyRngStreams,
+    fingerprint_json,
     fingerprint_pytree,
 )
 from world_marl.jepa.schedule import (
@@ -91,6 +92,96 @@ from world_marl.scripts.plot_jepa_decoder import (
     save_rollout_frames_plot,
     save_rollout_traces_plot,
 )
+
+
+_NON_TRAINING_PROTOCOL_ARGUMENTS = frozenset(
+    {
+        "env",
+        "seed",
+        "num_runs",
+        "out_dir",
+        "quiet",
+        "eval_interval",
+        "online_checkpoint_interval",
+        "training_snapshot_env_steps",
+        "resume_training_snapshot",
+        "decoder_train_steps",
+        "decoder_hidden_dim",
+        "decoder_learning_rate",
+        "decoder_rollout_horizon",
+        "decoder_rollout_trajectories",
+        "final_policy_eval_episodes",
+        "final_policy_eval_num_envs",
+        "final_policy_eval_seed",
+        "dreamer_report_window_env_steps",
+        "dreamer_report_budget_env_steps",
+        "dreamer_report_final_bins",
+        "curve_eval_interval_env_steps",
+        "curve_eval_episodes",
+        "curve_eval_num_envs",
+        "curve_eval_seed",
+        "failure_return_threshold",
+        "success_return_threshold",
+        "wandb_project",
+        "wandb_entity",
+        "wandb_name",
+        "wandb_group",
+        "wandb_tags",
+        "wandb_mode",
+        "wandb_videos",
+        "wandb_video_frame_stride",
+        "wandb_video_size",
+        "wandb_video_fps",
+        "wandb_video_camera",
+    }
+)
+
+
+def _training_protocol_config(args: argparse.Namespace) -> dict[str, Any]:
+    """Return the normalized settings that can change learner behavior."""
+
+    return {
+        name: to_jsonable(value)
+        for name, value in sorted(vars(args).items())
+        if name not in _NON_TRAINING_PROTOCOL_ARGUMENTS
+    }
+
+
+def _validate_resumed_training_protocol(
+    metadata: dict[str, Any],
+    args: argparse.Namespace,
+) -> None:
+    """Reject snapshots created by a different learning protocol."""
+
+    saved_protocol = metadata.get("training_protocol_config")
+    saved_fingerprint = metadata.get("training_protocol_sha256")
+    if saved_protocol is None or saved_fingerprint is None:
+        raise ValueError(
+            "training snapshot predates complete protocol validation and cannot "
+            "be resumed safely"
+        )
+    if fingerprint_json(saved_protocol) != saved_fingerprint:
+        raise ValueError("training snapshot protocol fingerprint is invalid")
+
+    current_protocol = _training_protocol_config(args)
+    saved_protocol = dict(saved_protocol)
+    saved_iterations = int(saved_protocol.pop("online_iterations"))
+    current_iterations = int(current_protocol.pop("online_iterations"))
+    mismatches = sorted(
+        name
+        for name in set(saved_protocol) | set(current_protocol)
+        if saved_protocol.get(name) != current_protocol.get(name)
+    )
+    if mismatches:
+        raise ValueError(
+            "training snapshot protocol does not match current learner settings: "
+            + ", ".join(mismatches)
+        )
+    if current_iterations < saved_iterations:
+        raise ValueError(
+            "resumed online iteration budget cannot be smaller than the snapshot "
+            f"protocol budget ({current_iterations} < {saved_iterations})"
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -568,6 +659,16 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
     for name in nonnegative_float:
         if getattr(args, name) < 0.0:
             parser.error(f"--{name.replace('_', '-')} must be >= 0")
+    for name in ("learning_rate", "actor_learning_rate", "optimizer_epsilon"):
+        if getattr(args, name) <= 0.0:
+            parser.error(f"--{name.replace('_', '-')} must be > 0")
+    for name in ("regularizer_weight", "reward_weight", "continue_weight"):
+        if getattr(args, name) < 0.0:
+            parser.error(f"--{name.replace('_', '-')} must be >= 0")
+    if not 0.0 < args.gamma <= 1.0:
+        parser.error("--gamma must be in (0, 1]")
+    if not 0.0 <= args.lambda_return <= 1.0:
+        parser.error("--lambda-return must be in [0, 1]")
     if any(value < 1 for value in args.initial_random_action_hold_schedule):
         parser.error("--initial-random-action-hold-schedule values must be >= 1")
     if args.policy_pathwise_horizon > args.imag_horizon:
@@ -580,11 +681,32 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--collect-steps is too short for the configured sequences")
     if args.validation_steps < min_sequence_steps:
         parser.error("--validation-steps is too short for the configured sequences")
+    replay_capacity_per_env = math.ceil(args.replay_capacity / args.num_envs)
+    if replay_capacity_per_env < min_sequence_steps:
+        parser.error("--replay-capacity is too small for the configured sequences")
+    if (
+        args.online_recent_world_model_fraction > 0.0
+        and args.online_recent_replay_steps < min_sequence_steps
+    ):
+        parser.error("--online-recent-replay-steps is too short for model sequences")
+    if args.policy_replay_critic_loss_coef > 0.0:
+        critic_sequence_steps = args.policy_replay_critic_horizon + 1
+        if args.collect_steps < critic_sequence_steps:
+            parser.error("--collect-steps is too short for the replay-critic horizon")
+        if replay_capacity_per_env < critic_sequence_steps:
+            parser.error("--replay-capacity is too small for the replay-critic horizon")
     if args.initial_reset_interval is not None:
         if args.initial_reset_interval < min_sequence_steps:
             parser.error("--initial-reset-interval is too short for model sequences")
         if args.initial_reset_interval > args.collect_steps:
             parser.error("--initial-reset-interval must be <= --collect-steps")
+        if (
+            args.policy_replay_critic_loss_coef > 0.0
+            and args.initial_reset_interval <= args.policy_replay_critic_horizon
+        ):
+            parser.error(
+                "--initial-reset-interval must exceed the replay-critic horizon"
+            )
     if (
         args.online_recent_world_model_until_env_steps is not None
         and args.online_recent_world_model_until_env_steps < 0
@@ -597,6 +719,25 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--online-freeze-encoder-after-env-steps must be >= 0")
     if args.chunk_length < args.context_window:
         parser.error("--chunk-length must be >= --context-window")
+    planned_train_env_steps = args.num_envs * (
+        args.collect_steps + args.online_iterations * args.online_collect_steps
+    )
+    if (
+        args.dreamer_report_budget_env_steps > 0
+        and args.dreamer_report_budget_env_steps > planned_train_env_steps
+    ):
+        parser.error(
+            "--dreamer-report-budget-env-steps exceeds the planned training data"
+        )
+    online_phase_env_steps = args.num_envs * args.online_collect_steps
+    if (
+        args.curve_eval_interval_env_steps > 0
+        and args.online_iterations > 0
+        and args.curve_eval_interval_env_steps < online_phase_env_steps
+    ):
+        parser.error(
+            "--curve-eval-interval-env-steps must be at least one online phase"
+        )
     if not (args.env.startswith("dmc:") or args.env.startswith("brax:")):
         parser.error("--env must be dmc:<domain>/<task> or brax:<env>")
     if args.validation_seed is not None and args.validation_seed < 0:
@@ -987,6 +1128,7 @@ def _prepare_training_prefix(
             raise ValueError(
                 "training snapshot JEPA architecture/config does not match"
             )
+        _validate_resumed_training_protocol(metadata, args)
         canonical_replays = {"main", "online_recent", "validation"}
         legacy_replays = canonical_replays | {"bootstrap_start"}
         if set(loaded.replays) not in (canonical_replays, legacy_replays):
@@ -1270,6 +1412,7 @@ def run_one(
     try:
         adapter = _make_vector_adapter(args, seed=seed)
         config = _jepa_config(args, adapter)
+        training_protocol_config = _training_protocol_config(args)
         resolved_config = {
             "args": vars(args),
             "run_index": run_index,
@@ -1280,6 +1423,8 @@ def run_one(
             "action_high": adapter.action_high,
             "env_backend": _env_backend(args.env),
             "jepa_config": dataclasses.asdict(config),
+            "training_protocol_config": training_protocol_config,
+            "training_protocol_sha256": fingerprint_json(training_protocol_config),
             "protocol": _protocol_name(args),
         }
         logger.write_json("config.json", resolved_config)
@@ -1594,7 +1739,7 @@ def run_one(
                     },
                 )
             if checkpoint_phase:
-                _save_recovery_checkpoint(
+                _save_latest_model_checkpoint(
                     run_dir,
                     state,
                     args=args,
@@ -1664,54 +1809,37 @@ def run_one(
         )
 
         checkpoint_dir = run_dir / "checkpoint"
-        try:
-            save_checkpoint(
-                checkpoint_dir,
-                state,
-                metadata={
-                    "algorithm": "single_agent_jepa_mbrl",
-                    "checkpoint_kind": "final_latest_policy",
-                    "env": args.env,
-                    "env_backend": _env_backend(args.env),
-                    "jepa_config": dataclasses.asdict(config),
-                    "seed": seed,
-                    "train_replay_env_steps": train_env_steps,
-                },
-            )
-        except OSError as error:
-            warnings.warn(
-                f"Final checkpoint write failed: {error}",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            recovery_dir = run_dir / "checkpoint_latest"
-            if (recovery_dir / "checkpoint.msgpack").is_file():
-                checkpoint_dir = recovery_dir
-        try:
-            reload_diff = _reload_prediction_diff(
-                state,
-                config,
-                checkpoint_dir=checkpoint_dir,
-                batch=validation_batch,
-                seed=seed + 99,
-                chunk_length=args.chunk_length,
-            )
-        except OSError as error:
-            warnings.warn(
-                f"Checkpoint reload validation failed: {error}",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            reload_diff = float("inf")
-        logger.write_json(
-            "reload_evaluation.json",
-            {"reload_max_abs_prediction_diff": reload_diff},
+        params_sha256 = fingerprint_pytree(state.params)
+        save_checkpoint(
+            checkpoint_dir,
+            state,
+            metadata={
+                "algorithm": "single_agent_jepa_mbrl",
+                "checkpoint_kind": "final_latest_policy",
+                "env": args.env,
+                "env_backend": _env_backend(args.env),
+                "jepa_config": dataclasses.asdict(config),
+                "seed": seed,
+                "train_replay_env_steps": train_env_steps,
+                "params_sha256": params_sha256,
+            },
         )
+        evaluation_state, reload_evaluation = _reload_and_verify_checkpoint(
+            state,
+            config,
+            checkpoint_dir=checkpoint_dir,
+            batch=validation_batch,
+            seed=seed + 99,
+            chunk_length=args.chunk_length,
+        )
+        reload_diff = reload_evaluation["reload_max_abs_output_diff"]
+        reload_prediction_diff = reload_evaluation["reload_max_abs_prediction_diff"]
+        logger.write_json("reload_evaluation.json", reload_evaluation)
 
         final_policy_eval = _final_policy_evaluation(
             args,
             logger,
-            state,
+            evaluation_state,
             config,
             seed=seed,
             action_low=adapter.action_low,
@@ -1733,7 +1861,8 @@ def run_one(
             "final_open_loop_loss": final_metrics["model/open_loop_loss"],
             "final_reward_loss": final_metrics["model/reward_loss"],
             "final_continue_loss": final_metrics["model/continue_loss"],
-            "reload_max_abs_prediction_diff": reload_diff,
+            "reload_max_abs_prediction_diff": reload_prediction_diff,
+            "reload_max_abs_output_diff": reload_diff,
             "final_model_metrics": final_metrics,
             "decoder_diagnostic": decoder_summary,
             "initial_policy_metrics": initial_policy_metrics,
@@ -1867,6 +1996,7 @@ def _save_branch_training_snapshot(
     next_online_iteration: int,
 ) -> Path:
     snapshot_dir = run_dir / "training_snapshots" / f"env_{train_env_steps:09d}"
+    training_protocol_config = _training_protocol_config(args)
     return save_training_snapshot(
         snapshot_dir,
         train_state=state,
@@ -1898,6 +2028,8 @@ def _save_branch_training_snapshot(
             "checkpoint_kind": "complete_phase_boundary_training_snapshot",
             "env": args.env,
             "jepa_config": dataclasses.asdict(config),
+            "training_protocol_config": training_protocol_config,
+            "training_protocol_sha256": fingerprint_json(training_protocol_config),
             "seed": seed,
             "initial_train_env_steps": initial_train_env_steps,
             "train_env_steps": train_env_steps,
@@ -1920,7 +2052,7 @@ def _save_branch_training_snapshot(
     )
 
 
-def _save_recovery_checkpoint(
+def _save_latest_model_checkpoint(
     run_dir: Path,
     state,
     *,
@@ -1936,18 +2068,19 @@ def _save_recovery_checkpoint(
             state,
             metadata={
                 "algorithm": "single_agent_jepa_mbrl",
-                "checkpoint_kind": "online_recovery_latest_policy",
+                "checkpoint_kind": "online_latest_model",
                 "env": args.env,
                 "env_backend": _env_backend(args.env),
                 "jepa_config": dataclasses.asdict(config),
                 "online_iteration": online_iteration,
                 "seed": seed,
                 "train_replay_env_steps": train_env_steps,
+                "params_sha256": fingerprint_pytree(state.params),
             },
         )
     except OSError as error:
         warnings.warn(
-            f"Recovery checkpoint write failed; training continues: {error}",
+            f"Latest-model checkpoint write failed; training continues: {error}",
             RuntimeWarning,
             stacklevel=2,
         )
@@ -2486,7 +2619,37 @@ def _train_policy(
             {
                 "policy_training_enabled": False,
                 "policy_phase": phase,
+                "policy_reset_actor": reset_actor,
                 "policy_train_steps": 0,
+                "policy_actor_update_interval": actor_update_interval,
+                "policy_actor_updates": 0,
+                "policy_critic_first_requested_steps": critic_first_steps,
+                "policy_critic_first_effective_steps": 0,
+                "policy_batch_size": args.policy_batch_size,
+                "policy_imag_horizon": args.imag_horizon,
+                "policy_return_mode": "lambda",
+                "policy_actor_baseline": "value",
+                "policy_return_normalization": "ema-percentile",
+                "policy_gradient_mode": "reinforce",
+                "policy_stochastic_actor": True,
+                "policy_actor_entropy_coef": actor_entropy_coef,
+                "policy_pathwise_reward_coef": args.policy_pathwise_reward_coef,
+                "policy_pathwise_horizon": args.policy_pathwise_horizon,
+                "policy_value_clip": value_clip,
+                "policy_value_clip_initial": args.value_clip,
+                "policy_value_clip_final": args.value_clip_final,
+                "policy_reset_start_fraction": reset_start_fraction,
+                "policy_reset_start_max_age": reset_start_max_age,
+                "policy_reset_start_candidate_count": 0,
+                "policy_target_critic_ema_decay": args.target_critic_ema_decay,
+                "policy_actor_kl_coef": args.policy_actor_kl_coef,
+                "policy_actor_kl_target_per_dim": args.policy_actor_kl_target_per_dim,
+                "policy_actor_kl_reference_interval": (
+                    args.policy_actor_kl_reference_interval
+                ),
+                "policy_actor_kl_reference_mode": "phase",
+                "policy_replay_critic_loss_coef": args.policy_replay_critic_loss_coef,
+                "policy_final_metrics": {},
             },
         )
     if reset_actor:
@@ -2921,7 +3084,7 @@ def _evaluate_model(
     return to_jsonable(metrics)
 
 
-def _reload_prediction_diff(
+def _reload_and_verify_checkpoint(
     state,
     config: JepaConfig,
     *,
@@ -2929,28 +3092,74 @@ def _reload_prediction_diff(
     batch: ReplayBatch,
     seed: int,
     chunk_length: int,
-) -> float:
+) -> tuple[Any, dict[str, Any]]:
+    metadata = load_metadata(checkpoint_dir)
+    original_params_sha256 = fingerprint_pytree(state.params)
+    expected_params_sha256 = metadata.get("params_sha256")
+    if expected_params_sha256 != original_params_sha256:
+        raise RuntimeError("checkpoint metadata does not identify the final parameters")
+
     fresh = create_jepa_train_state(jax.random.PRNGKey(seed), config)
-    fresh = fresh.replace(
-        params=load_params(checkpoint_dir / "checkpoint.msgpack", fresh.params)
+    reloaded_params = load_params(
+        checkpoint_dir / "checkpoint.msgpack",
+        fresh.params,
     )
-    original = state.apply_fn(
-        {"params": state.params},
-        batch.observations,
-        batch.actions,
-        chunk_length=chunk_length,
-        is_last=batch.is_last,
-        method=JepaWorldModel.sequence_outputs,
-    )["predicted_latents"]
-    reloaded = fresh.apply_fn(
-        {"params": fresh.params},
-        batch.observations,
-        batch.actions,
-        chunk_length=chunk_length,
-        is_last=batch.is_last,
-        method=JepaWorldModel.sequence_outputs,
-    )["predicted_latents"]
-    return float(jnp.max(jnp.abs(original - reloaded)))
+    reloaded_params_sha256 = fingerprint_pytree(reloaded_params)
+    if reloaded_params_sha256 != original_params_sha256:
+        raise RuntimeError(
+            "reloaded checkpoint parameters do not match final parameters"
+        )
+    fresh = fresh.replace(params=reloaded_params)
+
+    def outputs(candidate_state) -> dict[str, jax.Array]:
+        sequence = candidate_state.apply_fn(
+            {"params": candidate_state.params},
+            batch.observations,
+            batch.actions,
+            chunk_length=chunk_length,
+            is_last=batch.is_last,
+            method=JepaWorldModel.sequence_outputs,
+        )
+        latents = candidate_state.apply_fn(
+            {"params": candidate_state.params},
+            batch.observations[:, 0],
+            method=JepaWorldModel.encode,
+        )
+        actor_logits, value_logits = candidate_state.apply_fn(
+            {"params": candidate_state.params},
+            latents,
+            method=JepaWorldModel.actor_value_logits_from_latent,
+        )
+        return {
+            "predicted_latents": sequence["predicted_latents"],
+            "reward_logits": sequence["reward_logits"],
+            "continue_logits": sequence["continue_logits"],
+            "actor_logits": actor_logits,
+            "value_logits": value_logits,
+        }
+
+    original_outputs = outputs(state)
+    reloaded_outputs = outputs(fresh)
+    output_diffs = {
+        name: float(jnp.max(jnp.abs(original_outputs[name] - reloaded_outputs[name])))
+        for name in original_outputs
+    }
+    max_output_diff = max(output_diffs.values(), default=0.0)
+    if max_output_diff > 1e-6:
+        raise RuntimeError(
+            "reloaded checkpoint outputs differ from final in-memory outputs: "
+            f"{max_output_diff}"
+        )
+    return fresh, {
+        "original_params_sha256": original_params_sha256,
+        "metadata_params_sha256": expected_params_sha256,
+        "reloaded_params_sha256": reloaded_params_sha256,
+        "parameter_fingerprint_match": True,
+        "output_max_abs_diffs": output_diffs,
+        "reload_max_abs_prediction_diff": output_diffs["predicted_latents"],
+        "reload_max_abs_output_diff": max_output_diff,
+        "final_evaluation_uses_reloaded_checkpoint": True,
+    }
 
 
 def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2976,7 +3185,11 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
             outcomes,
             "final_policy_eval_mean",
         ),
-        "aggregate_final_policy_eval_std": _mean(
+        "aggregate_final_policy_eval_std": _std(
+            outcomes,
+            "final_policy_eval_mean",
+        ),
+        "aggregate_final_policy_eval_mean_within_seed_episode_std": _mean(
             outcomes,
             "final_policy_eval_std",
         ),
@@ -3008,10 +3221,15 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
             outcomes,
             "dreamer_style_train_return_mean",
         ),
-        "aggregate_dreamer_style_train_return_std": _mean(
+        "aggregate_dreamer_style_train_return_std": _std(
+            outcomes,
+            "dreamer_style_train_return_mean",
+        ),
+        "aggregate_dreamer_style_train_return_mean_within_seed_bin_std": _mean(
             outcomes,
             "dreamer_style_train_return_std",
         ),
+        "aggregate_dreamer_style_curve": _aggregate_training_curves(outcomes),
         "aggregate_dreamer_style_train_return_episodes": _mean(
             outcomes,
             "dreamer_style_train_return_episodes",
@@ -3043,6 +3261,36 @@ def summarize(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
 def _mean(rows: list[dict[str, Any]], key: str) -> float | None:
     values = [row[key] for row in rows if row.get(key) is not None]
     return float(np.mean(values)) if values else None
+
+
+def _std(rows: list[dict[str, Any]], key: str) -> float | None:
+    values = [row[key] for row in rows if row.get(key) is not None]
+    return float(np.std(values)) if values else None
+
+
+def _aggregate_training_curves(outcomes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Align per-seed paper curves and report population variation across seeds."""
+
+    bins: dict[int, list[dict[str, Any]]] = {}
+    for outcome in outcomes:
+        score = outcome.get("dreamer_style_training_score") or {}
+        for item in score.get("curve") or ():
+            bins.setdefault(int(item["bin_end_env_step"]), []).append(item)
+
+    aggregate = []
+    for bin_end, items in sorted(bins.items()):
+        seed_means = [float(item["mean_return"]) for item in items]
+        aggregate.append(
+            {
+                "bin_start_env_step": int(items[0]["bin_start_env_step"]),
+                "bin_end_env_step": bin_end,
+                "seed_count": len(seed_means),
+                "mean_return": float(np.mean(seed_means)),
+                "std_return_across_seed_means": float(np.std(seed_means)),
+                "seed_mean_returns": seed_means,
+            }
+        )
+    return aggregate
 
 
 if __name__ == "__main__":

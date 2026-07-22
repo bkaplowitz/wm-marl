@@ -475,8 +475,11 @@ Two reward-agnostic corrections are used:
    once a competent policy exists, without using rewards, failure labels, task
    coordinates, or additional environment interactions.
 
-The real replay-critic loss remains uniformly sampled. There is no
-failure-conditioned, reward-conditioned, or task-specific replay rule.
+The real replay-critic loss remains uniformly sampled. Windows never cross
+collector cuts, and lambda-return recursion stops at either `is_last` or
+`is_terminal`, so rewards and reset observations from a new episode cannot
+affect targets from the previous episode. There is no failure-conditioned,
+reward-conditioned, or task-specific replay rule.
 
 ### 6.5 Exact Training Budget
 
@@ -553,14 +556,18 @@ two-dimensional action spaces of `reacher/easy` is:
 | Continuous action encoder | 21,312 |
 | Two transformer blocks | 667,008 |
 | Dynamics RMSNorm | 144 |
-| Horizon embedding | 864 |
+| Horizon embedding | 1,296 |
 | Latent predictor and RMSNorm | 41,904 |
 | Reward head | 57,855 |
 | Continue head | 21,025 |
-| **JEPA world model subtotal** | **873,904** |
+| **JEPA world model subtotal** | **874,336** |
 | Actor | 18,004 |
 | Critic | 34,319 |
-| **Total trainable parameters** | **926,227** |
+| **Total trainable parameters** | **926,659** |
+
+The recurrent predictor uses the one-step row of the nine-row horizon table on
+every rollout step; all allocated rows are nevertheless included in the exact
+count. The table is retained for checkpoint compatibility.
 
 The EMA target critic introduces no additional trainable parameters. It keeps a
 delayed copy of the 34,319-parameter value head. Optimizer states are excluded
@@ -593,10 +600,15 @@ For reproducibility, the run uses:
   replay, policy replay, imagination, and validation;
 - deterministic accelerator reductions and highest JAX matrix multiplication
   precision;
-- resolved configuration, dependency, replay, parameter, and target-critic
-  fingerprints;
-- recovery checkpoints every 16 online phases;
-- final checkpoint reload verification.
+- resolved configuration, complete learning-protocol, dependency, replay,
+  parameter, and target-critic fingerprints;
+- latest-model checkpoints every 16 online phases;
+- optional complete phase-boundary snapshots containing optimizer, replay, RNG,
+  simulator, and protocol state;
+- final checkpoint parameter and output verification followed by evaluation of
+  the reloaded parameters.
 
-Recovery checkpoints exist only for fault tolerance. The reported final policy
-is the latest policy after the final update.
+Periodic latest-model checkpoints preserve inference parameters but are not
+advertised as exact training-resume points. Exact continuation requires a
+complete phase-boundary snapshot. The reported final policy is the latest policy
+after the final update, reloaded from the final checkpoint before evaluation.

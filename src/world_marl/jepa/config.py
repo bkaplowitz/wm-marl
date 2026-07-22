@@ -109,7 +109,10 @@ _CANONICAL_BASE = MappingProxyType(
         "final_policy_eval_num_envs": None,
         "final_policy_eval_seed": 9_000_000,
         "dreamer_report_window_env_steps": 10_000,
-        "dreamer_report_budget_env_steps": 500_000,
+        # The fixed vectorized schedule collects exactly 499,712 learning
+        # transitions. Use that exact endpoint so the final 10k bin is neither
+        # mislabeled as 500k nor omitted from the logged curve.
+        "dreamer_report_budget_env_steps": 499_712,
         "dreamer_report_final_bins": 3,
         "curve_eval_interval_env_steps": 0,
         "curve_eval_episodes": 0,

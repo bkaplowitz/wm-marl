@@ -228,6 +228,7 @@ def test_500k_preset_matches_the_current_running_model():
     accounting = step_accounting(params)
 
     assert accounting["train_replay_env_steps"] == 499_712
+    assert params["dreamer_report_budget_env_steps"] == 499_712
     assert accounting["validation_replay_env_steps"] == 1_280
     assert accounting["train_plus_validation_env_steps"] == 500_992
     assert accounting["world_model_updates"] == 495_872

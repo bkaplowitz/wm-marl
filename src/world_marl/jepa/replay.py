@@ -117,12 +117,14 @@ class SequenceReplayBuffer:
             "rewards": rewards,
             "is_last": is_last,
             "is_terminal": is_terminal,
+            "capacity": np.asarray(self.capacity, dtype=np.int64),
             "num_envs": np.asarray(self.num_envs, dtype=np.int64),
             "observation_shape": np.asarray(self.observation_shape, dtype=np.int64),
             "action_shape": np.asarray(self.action_shape, dtype=np.int64),
+            "action_dtype": np.asarray(self.action_dtype.str),
         }
-        # Preserve fingerprints for legacy and ordinary replays that contain
-        # no collector-imposed cuts.
+        # Omit an all-zero cut array so ordinary replay hashes describe the
+        # stored transition stream without an optional empty field.
         if self._cut_count:
             arrays["cuts"] = self._ordered_cuts()
         return fingerprint_arrays(arrays)
@@ -271,7 +273,11 @@ class SequenceReplayBuffer:
         chunk_length: int,
         max_horizon: int,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Draw logical sequence starts and environment indices."""
+        """Draw logical sequence starts and environment indices.
+
+        World-model batches may cross natural episode boundaries because their
+        losses carry explicit masks. Collector-imposed cuts are always excluded.
+        """
 
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1")
@@ -297,10 +303,18 @@ class SequenceReplayBuffer:
                 starts[~valid] = rng.integers(0, max_start + 1, size=(count,))
                 envs[~valid] = rng.integers(0, self.num_envs, size=(count,))
             else:
-                raise ValueError(
-                    "replay cuts leave no sampleable contiguous sequence for "
-                    f"sequence length {sequence_length}"
+                valid_starts, valid_envs = self._valid_start_pairs(
+                    max_start=max_start,
+                    sequence_length=sequence_length,
                 )
+                if valid_starts.size == 0:
+                    raise ValueError(
+                        "replay cuts leave no sampleable contiguous "
+                        f"sequence for sequence length {sequence_length}"
+                    )
+                choices = rng.integers(0, valid_starts.size, size=(batch_size,))
+                starts = valid_starts[choices]
+                envs = valid_envs[choices]
         return starts.astype(np.int64), envs.astype(np.int64)
 
     def episode_start_indices(
@@ -385,7 +399,19 @@ class SequenceReplayBuffer:
         indices = starts[:, None] + transition_offsets[None, :]
         if self._size == self.capacity:
             indices = (self._position + indices) % self.capacity
-        return ~np.any(self.cuts[indices, envs[:, None]] > 0.5, axis=1)
+        cuts = self.cuts[indices, envs[:, None]] > 0.5
+        return ~np.any(cuts, axis=1)
+
+    def _valid_start_pairs(
+        self,
+        *,
+        max_start: int,
+        sequence_length: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        starts = np.repeat(np.arange(max_start + 1, dtype=np.int64), self.num_envs)
+        envs = np.tile(np.arange(self.num_envs, dtype=np.int64), max_start + 1)
+        valid = self._starts_avoid_cuts(starts, envs, sequence_length)
+        return starts[valid], envs[valid]
 
     def sample_from_indices(
         self,
@@ -415,6 +441,8 @@ class SequenceReplayBuffer:
             raise ValueError(f"starts must be in [0, {max_start}]")
         if np.any(envs < 0) or np.any(envs >= self.num_envs):
             raise ValueError(f"envs must be in [0, {self.num_envs})")
+        if not np.all(self._starts_avoid_cuts(starts, envs, sequence_length)):
+            raise ValueError("indexed replay sequences must not cross collector cuts")
 
         offsets = np.arange(sequence_length)
         indices = starts[:, None] + offsets[None, :]

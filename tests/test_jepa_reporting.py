@@ -87,6 +87,27 @@ def test_dreamer_score_budget_comes_from_replay_not_last_episode_finish():
     assert score["mean_return"] == 950.0
 
 
+def test_dreamer_score_labels_the_exact_vectorized_training_endpoint():
+    score = dreamer_style_training_score(
+        [
+            _phase(
+                1,
+                train_env_steps=499_712,
+                returns=[940.0, 960.0],
+                finish_steps=[491_000, 499_000],
+            )
+        ],
+        window_env_steps=10_000,
+        budget_env_steps=499_712,
+    )
+
+    assert score["budget_reached"]
+    assert score["final_train_env_step"] == 499_712
+    assert score["curve"][-1]["bin_start_env_step"] == 490_000
+    assert score["curve"][-1]["bin_end_env_step"] == 499_712
+    assert score["selected_bin_end_env_steps"] == [499_712]
+
+
 def test_dreamer_score_can_be_disabled():
     score = dreamer_style_training_score(
         [],

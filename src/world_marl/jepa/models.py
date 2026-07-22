@@ -55,6 +55,28 @@ class JepaConfig:
     def __post_init__(self) -> None:
         if self.action_mode not in ("discrete", "continuous"):
             raise ValueError("action_mode must be one of: discrete, continuous")
+        for name in (
+            "observation_dim",
+            "action_dim",
+            "latent_dim",
+            "model_dim",
+            "num_layers",
+            "num_heads",
+            "mlp_ratio",
+        ):
+            if getattr(self, name) < 1:
+                raise ValueError(f"{name} must be >= 1")
+        if self.learning_rate <= 0.0:
+            raise ValueError("learning_rate must be > 0")
+        if self.actor_learning_rate <= 0.0:
+            raise ValueError("actor_learning_rate must be > 0")
+        for name in ("regularizer_weight", "reward_weight", "continue_weight"):
+            if getattr(self, name) < 0.0:
+                raise ValueError(f"{name} must be >= 0")
+        if not 0.0 < self.gamma <= 1.0:
+            raise ValueError("gamma must be in (0, 1]")
+        if not 0.0 <= self.lambda_return <= 1.0:
+            raise ValueError("lambda_return must be in [0, 1]")
         if self.twohot_bins < 3:
             raise ValueError("twohot_bins must be >= 3")
         if self.twohot_min >= self.twohot_max:

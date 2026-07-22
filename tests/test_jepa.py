@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from world_marl.checkpointing import save_checkpoint
 from world_marl.jepa.models import (
     JepaConfig,
     JepaWorldModel,
@@ -21,13 +22,18 @@ from world_marl.jepa.training import (
     latent_collapse_metrics,
     masked_mean,
     prediction_validity,
+    replay_return_continues,
     reset_policy_heads,
     select_continuous_actions,
     tanh_normal_entropy_sample,
     train_model_step,
     transition_start_validity,
 )
-from world_marl.scripts.train_dmc_jepa import summarize as summarize_dmc_jepa
+from world_marl.jepa.reproducibility import fingerprint_pytree
+from world_marl.scripts.train_dmc_jepa import (
+    _reload_and_verify_checkpoint,
+    summarize as summarize_dmc_jepa,
+)
 
 
 def _config() -> JepaConfig:
@@ -71,6 +77,100 @@ def _tree_changed(left, right) -> bool:
             strict=True,
         )
     )
+
+
+def test_canonical_reacher_parameter_count_is_exact():
+    config = JepaConfig(
+        observation_dim=6,
+        action_dim=2,
+        action_mode="continuous",
+        latent_dim=144,
+        model_dim=144,
+        num_layers=2,
+        num_heads=4,
+        mlp_ratio=4,
+        max_horizon=8,
+        context_window=8,
+        actor_hidden_dim=64,
+        critic_hidden_dim=64,
+        actor_num_layers=3,
+        critic_num_layers=3,
+        actor_layer_norm=True,
+        critic_layer_norm=True,
+        twohot_bins=255,
+    )
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    counts = {
+        name: sum(
+            int(np.prod(leaf.shape)) for leaf in jax.tree_util.tree_leaves(params)
+        )
+        for name, params in state.params.items()
+    }
+
+    assert counts["horizon_embed"] == 1_296
+    assert counts["actor_head"] == 18_004
+    assert counts["value_head"] == 34_319
+    assert sum(counts.values()) == 926_659
+
+
+def test_final_checkpoint_verification_covers_every_prediction_head(tmp_path):
+    config = JepaConfig(
+        observation_dim=4,
+        action_dim=2,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=16,
+        num_layers=1,
+        num_heads=2,
+        max_horizon=2,
+        context_window=1,
+        actor_hidden_dim=16,
+        critic_hidden_dim=16,
+        actor_num_layers=2,
+        critic_num_layers=2,
+        sigreg_num_proj=8,
+    )
+    state = create_jepa_train_state(jax.random.PRNGKey(0), config)
+    batch = ReplayBatch(
+        observations=jax.random.normal(jax.random.PRNGKey(1), (3, 4, 4)),
+        actions=jax.random.uniform(
+            jax.random.PRNGKey(2),
+            (3, 3, 2),
+            minval=-1.0,
+            maxval=1.0,
+        ),
+        rewards=jnp.zeros((3, 3), dtype=jnp.float32),
+        is_last=jnp.zeros((3, 3), dtype=jnp.float32),
+        is_terminal=jnp.zeros((3, 3), dtype=jnp.float32),
+    )
+    checkpoint_dir = tmp_path / "checkpoint"
+    params_sha256 = fingerprint_pytree(state.params)
+    save_checkpoint(
+        checkpoint_dir,
+        state,
+        metadata={"params_sha256": params_sha256},
+    )
+
+    restored, verification = _reload_and_verify_checkpoint(
+        state,
+        config,
+        checkpoint_dir=checkpoint_dir,
+        batch=batch,
+        seed=99,
+        chunk_length=2,
+    )
+
+    assert fingerprint_pytree(restored.params) == params_sha256
+    assert verification["parameter_fingerprint_match"]
+    assert verification["reload_max_abs_prediction_diff"] == 0.0
+    assert verification["reload_max_abs_output_diff"] == 0.0
+    assert set(verification["output_max_abs_diffs"]) == {
+        "predicted_latents",
+        "reward_logits",
+        "continue_logits",
+        "actor_logits",
+        "value_logits",
+    }
 
 
 def test_rotary_position_embedding_preserves_norms():
@@ -150,6 +250,45 @@ def test_sequence_replay_does_not_sample_across_collector_cuts():
     )
 
     assert set(starts.tolist()) <= {0, 5}
+
+
+def test_sequence_replay_rejects_indexed_sequence_across_collector_cut():
+    replay = SequenceReplayBuffer(capacity=10, num_envs=1, observation_shape=(1,))
+    for step in range(10):
+        replay.add_step(
+            observations=np.asarray([[step]], dtype=np.float32),
+            actions=np.asarray([step % 2]),
+            rewards=np.asarray([0.0], dtype=np.float32),
+            is_last=np.asarray([0.0], dtype=np.float32),
+            is_terminal=np.asarray([0.0], dtype=np.float32),
+            cuts=np.asarray([float(step == 4)], dtype=np.float32),
+        )
+
+    with pytest.raises(ValueError, match="must not cross collector cuts"):
+        replay.sample_from_indices(
+            np.asarray([2]),
+            np.asarray([0]),
+            chunk_length=3,
+            max_horizon=2,
+        )
+
+
+def test_replay_returns_do_not_leak_rewards_across_nonterminal_reset():
+    rewards = jnp.asarray([[1.0], [1.0], [1_000.0]], dtype=jnp.float32)
+    is_last = jnp.asarray([[0.0], [1.0], [0.0]], dtype=jnp.float32)
+    is_terminal = jnp.zeros_like(is_last)
+    continues = replay_return_continues(is_last, is_terminal)
+
+    returns = lambda_returns(
+        rewards,
+        continues,
+        jnp.zeros_like(rewards),
+        jnp.zeros((1,), dtype=jnp.float32),
+        gamma=1.0,
+        lambda_return=1.0,
+    )
+
+    np.testing.assert_allclose(np.asarray(returns[:, 0]), [2.0, 1.0, 1_000.0])
 
 
 def test_sequence_replay_finds_valid_starts_near_episode_boundaries():
@@ -851,6 +990,14 @@ def test_jepa_config_enforces_world_model_constraints():
         JepaConfig(observation_dim=4, action_dim=2, max_horizon=0)
     with pytest.raises(ValueError, match="context_window"):
         JepaConfig(observation_dim=4, action_dim=2, context_window=0)
+    with pytest.raises(ValueError, match="num_heads"):
+        JepaConfig(observation_dim=4, action_dim=2, num_heads=0)
+    with pytest.raises(ValueError, match="learning_rate"):
+        JepaConfig(observation_dim=4, action_dim=2, learning_rate=0.0)
+    with pytest.raises(ValueError, match="gamma"):
+        JepaConfig(observation_dim=4, action_dim=2, gamma=1.1)
+    with pytest.raises(ValueError, match="lambda_return"):
+        JepaConfig(observation_dim=4, action_dim=2, lambda_return=-0.1)
     assert JepaConfig(observation_dim=4, action_dim=2, max_horizon=2)
     assert JepaConfig(observation_dim=4, action_dim=2, context_window=2)
 
@@ -1024,3 +1171,56 @@ def test_dmc_jepa_summary_reports_latest_policy_results():
     assert summary["protocol"] == "reset_rich_interleaved_latest_policy"
     assert summary["aggregate_final_policy_eval_mean"] == 950.0
     assert summary["aggregate_real_train_replay_env_steps"] == 497_664
+
+
+def test_dmc_jepa_summary_separates_seed_variation_from_episode_variation():
+    outcomes = [
+        {
+            "final_policy_eval_mean": 900.0,
+            "final_policy_eval_std": 20.0,
+            "dreamer_style_train_return_mean": 800.0,
+            "dreamer_style_train_return_std": 15.0,
+            "dreamer_style_training_score": {
+                "curve": [
+                    {
+                        "bin_start_env_step": 0,
+                        "bin_end_env_step": 10_000,
+                        "mean_return": 700.0,
+                    }
+                ]
+            },
+        },
+        {
+            "final_policy_eval_mean": 1_000.0,
+            "final_policy_eval_std": 40.0,
+            "dreamer_style_train_return_mean": 900.0,
+            "dreamer_style_train_return_std": 25.0,
+            "dreamer_style_training_score": {
+                "curve": [
+                    {
+                        "bin_start_env_step": 0,
+                        "bin_end_env_step": 10_000,
+                        "mean_return": 900.0,
+                    }
+                ]
+            },
+        },
+    ]
+
+    summary = summarize_dmc_jepa(outcomes)
+
+    assert summary["aggregate_final_policy_eval_mean"] == 950.0
+    assert summary["aggregate_final_policy_eval_std"] == 50.0
+    assert summary["aggregate_final_policy_eval_mean_within_seed_episode_std"] == 30.0
+    assert summary["aggregate_dreamer_style_train_return_mean"] == 850.0
+    assert summary["aggregate_dreamer_style_train_return_std"] == 50.0
+    assert summary["aggregate_dreamer_style_curve"] == [
+        {
+            "bin_start_env_step": 0,
+            "bin_end_env_step": 10_000,
+            "seed_count": 2,
+            "mean_return": 800.0,
+            "std_return_across_seed_means": 100.0,
+            "seed_mean_returns": [700.0, 900.0],
+        }
+    ]

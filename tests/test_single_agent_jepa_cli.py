@@ -28,6 +28,10 @@ def _minimal_args(*extra: str) -> list[str]:
         "2",
         "--context-window",
         "2",
+        "--policy-replay-critic-loss-coef",
+        "0",
+        "--dreamer-report-budget-env-steps",
+        "0",
         *extra,
     ]
 
@@ -39,6 +43,85 @@ def test_direct_cli_defaults_match_the_canonical_500k_configuration(monkeypatch)
 
     expected = canonical_jepa_config()
     assert {name: getattr(args, name) for name in expected} == expected
+
+
+def test_resume_protocol_rejects_learning_changes_but_allows_output_changes():
+    original = SimpleNamespace(
+        online_iterations=10,
+        actor_entropy_coef=3e-3,
+        out_dir="first",
+        wandb_name="first",
+    )
+    protocol = train_dmc_jepa._training_protocol_config(original)
+    metadata = {
+        "training_protocol_config": protocol,
+        "training_protocol_sha256": train_dmc_jepa.fingerprint_json(protocol),
+    }
+
+    output_change = SimpleNamespace(
+        online_iterations=12,
+        actor_entropy_coef=3e-3,
+        out_dir="second",
+        wandb_name="second",
+    )
+    train_dmc_jepa._validate_resumed_training_protocol(metadata, output_change)
+
+    learning_change = SimpleNamespace(
+        online_iterations=12,
+        actor_entropy_coef=1e-3,
+        out_dir="second",
+        wandb_name="second",
+    )
+    with pytest.raises(ValueError, match="actor_entropy_coef"):
+        train_dmc_jepa._validate_resumed_training_protocol(metadata, learning_change)
+
+
+def test_resume_protocol_rejects_legacy_or_tampered_metadata():
+    args = SimpleNamespace(online_iterations=10, actor_entropy_coef=3e-3)
+    with pytest.raises(ValueError, match="predates complete protocol"):
+        train_dmc_jepa._validate_resumed_training_protocol({}, args)
+
+    protocol = train_dmc_jepa._training_protocol_config(args)
+    with pytest.raises(ValueError, match="fingerprint is invalid"):
+        train_dmc_jepa._validate_resumed_training_protocol(
+            {
+                "training_protocol_config": protocol,
+                "training_protocol_sha256": "not-the-real-fingerprint",
+            },
+            args,
+        )
+
+
+def test_disabled_online_policy_training_returns_complete_summary_schema():
+    args = SimpleNamespace(**canonical_jepa_config())
+    state = object()
+    rng = object()
+
+    returned_state, returned_rng, metrics = train_dmc_jepa._train_policy(
+        args,
+        logger=None,
+        state=state,
+        config=None,
+        replay=None,
+        np_rng=np.random.default_rng(0),
+        rng=rng,
+        action_low=np.asarray([-1.0], dtype=np.float32),
+        action_high=np.asarray([1.0], dtype=np.float32),
+        phase="disabled",
+        train_steps=0,
+        reset_actor=False,
+        actor_update_interval=2,
+        critic_first_steps=0,
+        actor_entropy_coef=3e-3,
+        value_clip=100.0,
+    )
+
+    assert returned_state is state
+    assert returned_rng is rng
+    assert not metrics["policy_training_enabled"]
+    assert metrics["policy_train_steps"] == 0
+    assert metrics["policy_actor_updates"] == 0
+    assert metrics["policy_final_metrics"] == {}
 
 
 def test_cli_accepts_dmc_and_brax_environments(monkeypatch):
@@ -367,6 +450,8 @@ def test_cli_uses_single_current_actor_critic_objective(monkeypatch):
             "0.98",
             "--policy-replay-critic-loss-coef",
             "0.3",
+            "--policy-replay-critic-horizon",
+            "4",
             "--policy-slow-value-regularization-coef",
             "1.0",
         ),

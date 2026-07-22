@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -204,3 +205,15 @@ def fingerprint_pytree(tree: Any) -> str:
         digest.update(np.asarray(value.shape, dtype=np.int64).tobytes())
         digest.update(np.ascontiguousarray(value).tobytes())
     return digest.hexdigest()
+
+
+def fingerprint_json(value: Any) -> str:
+    """Return a stable SHA-256 digest for a JSON-compatible value."""
+
+    payload = json.dumps(
+        _json_compatible(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()

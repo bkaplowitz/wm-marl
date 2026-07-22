@@ -1055,7 +1055,18 @@ def continuous_policy_train_step(
                 0,
                 1,
             )
-            real_continues = 1.0 - real_is_terminal
+            real_is_last = jnp.swapaxes(
+                real_critic_batch.is_last[:, :real_critic_horizon],
+                0,
+                1,
+            )
+            # The DMC adapter auto-resets and therefore stores the next episode's
+            # reset observation after a time-limit boundary. Never bootstrap or
+            # recurse through that observation in the auxiliary replay critic.
+            real_continues = replay_return_continues(
+                real_is_last,
+                real_is_terminal,
+            )
             model_params = jax.tree_util.tree_map(jax.lax.stop_gradient, params)
             real_z = state.apply_fn(
                 {"params": model_params},
@@ -1416,6 +1427,18 @@ def lambda_returns(
         (rewards[::-1], continues[::-1], next_values[::-1]),
     )
     return returns[::-1]
+
+
+def replay_return_continues(
+    is_last: jax.Array,
+    is_terminal: jax.Array,
+) -> jax.Array:
+    """Stop auxiliary replay returns at terminals and auto-reset boundaries."""
+
+    return 1.0 - jnp.maximum(
+        is_last.astype(jnp.float32),
+        is_terminal.astype(jnp.float32),
+    )
 
 
 def open_loop_predicted_latents(
