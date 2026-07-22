@@ -260,7 +260,8 @@ def collect_dmc_replay(
                 observations=observations[:, 0],
                 actions=actions,
                 rewards=step.rewards[:, 0],
-                dones=step.dones[:, 0],
+                is_last=step.dones[:, 0],
+                is_terminal=step.dones[:, 0],
             )
             observations = step.observations
         return replay, {
@@ -373,7 +374,7 @@ def per_horizon_metrics(
         batch.observations,
         batch.actions,
         chunk_length=chunk_length,
-        dones=batch.dones,
+        is_last=batch.is_last,
         method=JepaWorldModel.sequence_outputs,
     )
     pred = normalize(outputs["predicted_latents"])
@@ -397,9 +398,13 @@ def per_horizon_metrics(
         reward_std = jnp.zeros_like(reward_values)
         continue_std = jnp.zeros_like(continue_probs)
 
-    latent_validity = prediction_validity(batch.dones, chunk_length, config.max_horizon)
+    latent_validity = prediction_validity(
+        batch.is_last,
+        chunk_length,
+        config.max_horizon,
+    )
     transition_validity = transition_start_validity(
-        batch.dones,
+        batch.is_last,
         chunk_length,
         config.max_horizon,
     )
@@ -412,7 +417,7 @@ def per_horizon_metrics(
     )
     done_targets = jnp.stack(
         [
-            batch.dones[:, offset : offset + chunk_length]
+            batch.is_terminal[:, offset : offset + chunk_length]
             for offset in range(config.max_horizon)
         ],
         axis=2,
@@ -526,7 +531,7 @@ def masked_mean(values: jax.Array, mask: jax.Array) -> jax.Array:
 
 
 def replay_stats(replay: SequenceReplayBuffer) -> dict[str, Any]:
-    observations, actions, rewards, dones = replay._ordered_arrays()
+    observations, actions, rewards, is_last, is_terminal = replay._ordered_arrays()
     return {
         "observation_mean_abs": float(np.mean(np.abs(observations))),
         "observation_std": float(np.std(observations)),
@@ -536,7 +541,8 @@ def replay_stats(replay: SequenceReplayBuffer) -> dict[str, Any]:
         "reward_std": float(np.std(rewards)),
         "reward_min": float(np.min(rewards)),
         "reward_max": float(np.max(rewards)),
-        "done_fraction": float(np.mean(dones)),
+        "is_last_fraction": float(np.mean(is_last)),
+        "is_terminal_fraction": float(np.mean(is_terminal)),
     }
 
 

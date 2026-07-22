@@ -143,3 +143,52 @@ def test_world_model_evaluator_ignores_removed_checkpoint_config_keys():
         "imagined_reward_max",
         "imagined_reward_min",
     ]
+
+
+def test_world_model_evaluator_collects_with_explicit_terminal_contract(monkeypatch):
+    class FakeAdapter:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+            self.num_envs = 1
+            self.action_low = np.asarray([-1.0], dtype=np.float32)
+            self.action_high = np.asarray([1.0], dtype=np.float32)
+
+        def reset(self):
+            return np.zeros((1, 1, 2), dtype=np.float32)
+
+        def sample_actions(self, rng):
+            del rng
+            return np.zeros((1, 1, 1), dtype=np.float32)
+
+        def step(self, actions):
+            del actions
+            return SimpleNamespace(
+                observations=np.zeros((1, 1, 2), dtype=np.float32),
+                rewards=np.ones((1, 1), dtype=np.float32),
+                dones=np.ones((1, 1), dtype=np.float32),
+            )
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(eval_jepa_wm, "DMCVectorAdapter", FakeAdapter)
+    args = SimpleNamespace(
+        num_envs=1,
+        max_cycles=2,
+        env_workers=1,
+        collect_steps=2,
+        collect_policy="random",
+        quiet=True,
+    )
+    config = SimpleNamespace(observation_dim=2, action_dim=1)
+
+    replay, _ = eval_jepa_wm.collect_dmc_replay(
+        args,
+        state=None,
+        config=config,
+        env="dmc:fake/task",
+        seed=0,
+    )
+
+    np.testing.assert_array_equal(replay.is_last[:2, 0], np.ones(2))
+    np.testing.assert_array_equal(replay.is_terminal[:2, 0], np.ones(2))
