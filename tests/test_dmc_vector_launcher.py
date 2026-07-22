@@ -223,6 +223,30 @@ def test_actor_update_interval_override_is_accounted_separately(
     assert accounting["actor_updates"] == 1_280 + 44 * 512 + 47 * 256
 
 
+def test_launcher_can_clear_schedule_cutoffs(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "write_dmc_vector_launcher.py",
+            "--out-root",
+            str(tmp_path),
+            "--disable-online-encoder-freeze",
+            "--persistent-online-recent-world-model",
+        ],
+    )
+
+    args = launcher.parse_args()
+    params = dict(launcher.PRESETS[args.preset])
+    launcher.apply_optional_overrides(args, params)
+
+    assert params["online_freeze_encoder_after_env_steps"] is None
+    assert params["online_recent_world_model_until_env_steps"] is None
+    command = params_to_shell_args(params)
+    assert "--online-freeze-encoder-after-env-steps" not in command
+    assert "--online-recent-world-model-until-env-steps" not in command
+
+
 def test_500k_preset_matches_the_current_running_model():
     params = PRESETS["jepa_500k"]
     accounting = step_accounting(params)

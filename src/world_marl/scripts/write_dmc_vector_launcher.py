@@ -416,9 +416,36 @@ def parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=None,
     )
+    parser.add_argument(
+        "--disable-online-encoder-freeze",
+        action="store_true",
+        help="Keep the online observation encoder trainable for the full run.",
+    )
+    parser.add_argument(
+        "--persistent-online-recent-world-model",
+        action="store_true",
+        help="Apply recent-replay world-model sampling for the full run.",
+    )
     parser.add_argument("--no-sync", dest="sync", action="store_false", default=True)
     parser.add_argument("--start", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if (
+        args.disable_online_encoder_freeze
+        and args.online_freeze_encoder_after_env_steps is not None
+    ):
+        parser.error(
+            "--disable-online-encoder-freeze conflicts with "
+            "--online-freeze-encoder-after-env-steps"
+        )
+    if (
+        args.persistent_online_recent_world_model
+        and args.online_recent_world_model_until_env_steps is not None
+    ):
+        parser.error(
+            "--persistent-online-recent-world-model conflicts with "
+            "--online-recent-world-model-until-env-steps"
+        )
+    return args
 
 
 def apply_optional_overrides(args: argparse.Namespace, params: dict[str, Any]) -> None:
@@ -426,6 +453,10 @@ def apply_optional_overrides(args: argparse.Namespace, params: dict[str, Any]) -
         value = getattr(args, name)
         if value is not None:
             params[name] = value
+    if args.disable_online_encoder_freeze:
+        params["online_freeze_encoder_after_env_steps"] = None
+    if args.persistent_online_recent_world_model:
+        params["online_recent_world_model_until_env_steps"] = None
 
 
 def write_run_one(out_root: Path, params: dict[str, Any]) -> None:
