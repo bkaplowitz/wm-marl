@@ -45,6 +45,25 @@ def test_direct_cli_defaults_match_the_canonical_500k_configuration(monkeypatch)
     assert {name: getattr(args, name) for name in expected} == expected
 
 
+def test_cli_can_clear_canonical_online_schedule_cutoffs(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "world-marl-train-dmc-jepa",
+            "--disable-online-encoder-freeze",
+            "--persistent-online-recent-world-model",
+        ],
+    )
+
+    args = train_dmc_jepa.parse_args()
+
+    assert args.disable_online_encoder_freeze is True
+    assert args.online_freeze_encoder_after_env_steps is None
+    assert args.persistent_online_recent_world_model is True
+    assert args.online_recent_world_model_until_env_steps is None
+
+
 def test_resume_protocol_rejects_learning_changes_but_allows_output_changes():
     original = SimpleNamespace(
         online_iterations=10,

@@ -455,8 +455,10 @@ def apply_optional_overrides(args: argparse.Namespace, params: dict[str, Any]) -
             params[name] = value
     if args.disable_online_encoder_freeze:
         params["online_freeze_encoder_after_env_steps"] = None
+        params["disable_online_encoder_freeze"] = True
     if args.persistent_online_recent_world_model:
         params["online_recent_world_model_until_env_steps"] = None
+        params["persistent_online_recent_world_model"] = True
 
 
 def write_run_one(out_root: Path, params: dict[str, Any]) -> None:

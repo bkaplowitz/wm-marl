@@ -478,6 +478,11 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     online.add_argument(
+        "--disable-online-encoder-freeze",
+        action="store_true",
+        help="Keep the online observation encoder trainable for the full run.",
+    )
+    online.add_argument(
         "--online-recent-world-model-fraction",
         type=float,
         default=0.0,
@@ -492,6 +497,11 @@ def parse_args() -> argparse.Namespace:
             "phase starts below this many training environment steps, then "
             "switch world-model batches to uniform replay."
         ),
+    )
+    online.add_argument(
+        "--persistent-online-recent-world-model",
+        action="store_true",
+        help="Apply recent-replay world-model sampling for the full run.",
     )
     online.add_argument("--online-recent-replay-steps", type=int, default=320)
     online.add_argument(
@@ -572,6 +582,10 @@ def parse_args() -> argparse.Namespace:
 
     parser.set_defaults(**canonical_jepa_config())
     args = parser.parse_args()
+    if args.disable_online_encoder_freeze:
+        args.online_freeze_encoder_after_env_steps = None
+    if args.persistent_online_recent_world_model:
+        args.online_recent_world_model_until_env_steps = None
     _validate_args(parser, args)
     return args
 

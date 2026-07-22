@@ -245,6 +245,8 @@ def test_launcher_can_clear_schedule_cutoffs(monkeypatch, tmp_path):
     command = params_to_shell_args(params)
     assert "--online-freeze-encoder-after-env-steps" not in command
     assert "--online-recent-world-model-until-env-steps" not in command
+    assert "--disable-online-encoder-freeze" in command
+    assert "--persistent-online-recent-world-model" in command
 
 
 def test_500k_preset_matches_the_current_running_model():
