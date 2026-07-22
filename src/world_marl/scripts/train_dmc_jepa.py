@@ -285,6 +285,16 @@ def parse_args() -> argparse.Namespace:
     policy.add_argument("--policy-train-steps", type=int, default=1280)
     policy.add_argument("--policy-batch-size", type=int, default=1024)
     policy.add_argument(
+        "--policy-recent-start-fraction",
+        type=float,
+        default=0.0,
+        help=(
+            "Fraction of online actor imagination starts sampled from the "
+            "bounded recent-policy replay. The remaining non-reset starts are "
+            "sampled uniformly from full replay."
+        ),
+    )
+    policy.add_argument(
         "--policy-reset-start-fraction",
         type=float,
         default=0.0,
@@ -776,6 +786,13 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--online-recent-world-model-fraction must be in [0, 1]")
     if not 0.0 <= args.policy_reset_start_fraction <= 1.0:
         parser.error("--policy-reset-start-fraction must be in [0, 1]")
+    if not 0.0 <= args.policy_recent_start_fraction <= 1.0:
+        parser.error("--policy-recent-start-fraction must be in [0, 1]")
+    if args.policy_reset_start_fraction + args.policy_recent_start_fraction > 1.0:
+        parser.error(
+            "--policy-reset-start-fraction and --policy-recent-start-fraction "
+            "must sum to at most 1"
+        )
     if args.policy_reset_start_fraction_start_env_steps < 0:
         parser.error("--policy-reset-start-fraction-start-env-steps must be >= 0")
     if args.policy_reset_start_max_age < 0:
@@ -1654,6 +1671,8 @@ def run_one(
                     train_env_steps=train_env_steps,
                 ),
                 reset_start_max_age=args.policy_reset_start_max_age,
+                recent_replay=online_recent_replay,
+                recent_start_fraction=args.policy_recent_start_fraction,
             )
             jax_rngs.update("policy", policy_rng)
 
@@ -2625,6 +2644,8 @@ def _train_policy(
     value_clip: float,
     reset_start_fraction: float = 0.0,
     reset_start_max_age: int = 63,
+    recent_replay: SequenceReplayBuffer | None = None,
+    recent_start_fraction: float = 0.0,
 ) -> tuple[Any, jax.Array, dict[str, Any]]:
     if train_steps == 0:
         return (
@@ -2655,6 +2676,10 @@ def _train_policy(
                 "policy_reset_start_fraction": reset_start_fraction,
                 "policy_reset_start_max_age": reset_start_max_age,
                 "policy_reset_start_candidate_count": 0,
+                "policy_recent_start_fraction": recent_start_fraction,
+                "policy_recent_replay_size_per_env": (
+                    recent_replay.size if recent_replay is not None else 0
+                ),
                 "policy_target_critic_ema_decay": args.target_critic_ema_decay,
                 "policy_actor_kl_coef": args.policy_actor_kl_coef,
                 "policy_actor_kl_target_per_dim": args.policy_actor_kl_target_per_dim,
@@ -2684,6 +2709,10 @@ def _train_policy(
             raise ValueError(
                 "main replay contains no valid reset-aligned policy starts"
             )
+    if recent_start_fraction > 0.0 and recent_replay is None:
+        raise ValueError(
+            "recent replay is required when policy recent starts are enabled"
+        )
     actor_reference_params = jax.tree_util.tree_map(
         jax.lax.stop_gradient,
         state.params,
@@ -2717,6 +2746,8 @@ def _train_policy(
             batch_size=args.policy_batch_size,
             reset_start_indices=reset_start_indices,
             reset_start_fraction=reset_start_fraction,
+            recent_replay=recent_replay,
+            recent_start_fraction=recent_start_fraction,
         )
         real_critic_batch = None
         if args.policy_replay_critic_loss_coef > 0.0:
@@ -2816,6 +2847,10 @@ def _train_policy(
                 int(reset_start_indices[0].size)
                 if reset_start_indices is not None
                 else 0
+            ),
+            "policy_recent_start_fraction": recent_start_fraction,
+            "policy_recent_replay_size_per_env": (
+                recent_replay.size if recent_replay is not None else 0
             ),
             "policy_target_critic_ema_decay": args.target_critic_ema_decay,
             "policy_actor_kl_coef": args.policy_actor_kl_coef,

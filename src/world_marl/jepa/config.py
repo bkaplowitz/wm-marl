@@ -52,6 +52,7 @@ _CANONICAL_BASE = MappingProxyType(
         "online_recent_world_model_until_env_steps": 50_000,
         "online_recent_replay_max_oversample": 10.0,
         "policy_batch_size": 1_024,
+        "policy_recent_start_fraction": 0.0,
         "policy_reset_start_fraction": 0.1,
         "policy_reset_start_fraction_start_env_steps": 201_728,
         "policy_reset_start_max_age": 63,

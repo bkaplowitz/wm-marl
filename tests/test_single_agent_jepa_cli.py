@@ -765,6 +765,58 @@ def test_policy_start_mixture_adds_reset_aligned_main_replay_states():
     np.testing.assert_array_equal(endpoint_values[-2:], 4.0)
 
 
+def test_policy_start_mixture_adds_recent_and_reset_states():
+    def replay_with_values(values: list[float]) -> SequenceReplayBuffer:
+        replay = SequenceReplayBuffer(
+            capacity=len(values),
+            num_envs=1,
+            observation_shape=(1,),
+            action_shape=(1,),
+            action_dtype=np.float32,
+        )
+        for value in values:
+            replay.add_step(
+                observations=np.asarray([[value]], dtype=np.float32),
+                actions=np.zeros((1, 1), dtype=np.float32),
+                rewards=np.zeros((1,), dtype=np.float32),
+                is_last=np.zeros((1,), dtype=np.float32),
+                is_terminal=np.zeros((1,), dtype=np.float32),
+            )
+        return replay
+
+    config = train_dmc_jepa.JepaConfig(
+        observation_dim=1,
+        action_dim=1,
+        action_mode="continuous",
+        latent_dim=8,
+        model_dim=8,
+        num_layers=1,
+        num_heads=2,
+        mlp_ratio=2,
+        max_horizon=2,
+        context_window=2,
+        sigreg_num_proj=4,
+        sigreg_knots=3,
+        twohot_bins=7,
+    )
+    replay = replay_with_values([4.0, 4.0, *([1.0] * 10)])
+    recent_replay = replay_with_values([9.0] * 12)
+    observations, _ = train_dmc_jepa._sample_policy_starts_with_reset_mix(
+        replay,
+        np.random.default_rng(0),
+        config=config,
+        batch_size=10,
+        reset_start_indices=(np.asarray([0]), np.asarray([0])),
+        reset_start_fraction=0.2,
+        recent_replay=recent_replay,
+        recent_start_fraction=0.3,
+    )
+
+    endpoint_values = np.asarray(observations[:, -1, 0])
+    np.testing.assert_array_equal(endpoint_values[5:8], 9.0)
+    np.testing.assert_array_equal(endpoint_values[-2:], 4.0)
+
+
 def test_recent_replay_oversample_cap_decays_fraction_with_replay_size():
     early_fraction = train_dmc_jepa._effective_recent_fraction(
         0.5,

@@ -36,6 +36,7 @@ def test_launcher_serializes_canonical_replay_and_evaluation_controls():
             "online_recent_world_model_fraction": 0.5,
             "online_recent_world_model_until_env_steps": 50_000,
             "policy_reset_start_fraction": 0.05,
+            "policy_recent_start_fraction": 0.25,
             "policy_reset_start_max_age": 63,
             "online_recent_replay_steps": 320,
             "online_recent_replay_max_oversample": 10.0,
@@ -52,6 +53,7 @@ def test_launcher_serializes_canonical_replay_and_evaluation_controls():
         == "50000"
     )
     assert tokens[tokens.index("--policy-reset-start-fraction") + 1] == "0.05"
+    assert tokens[tokens.index("--policy-recent-start-fraction") + 1] == "0.25"
     assert tokens[tokens.index("--policy-reset-start-max-age") + 1] == "63"
     assert tokens[tokens.index("--online-recent-replay-steps") + 1] == "320"
     assert tokens[tokens.index("--online-recent-replay-max-oversample") + 1] == "10.0"

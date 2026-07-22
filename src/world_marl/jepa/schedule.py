@@ -155,18 +155,25 @@ def sample_policy_starts_with_reset_mix(
     batch_size: int,
     reset_start_indices: tuple[np.ndarray, np.ndarray] | None = None,
     reset_start_fraction: float = 0.0,
+    recent_replay: SequenceReplayBuffer | None = None,
+    recent_start_fraction: float = 0.0,
 ) -> tuple[jax.Array, jax.Array]:
     reset_size = int(round(batch_size * reset_start_fraction))
+    recent_size = int(round(batch_size * recent_start_fraction))
     if reset_size > 0 and reset_start_indices is None:
         raise ValueError("reset_start_indices are required for reset-start sampling")
-    if reset_size == 0:
+    if recent_size > 0 and recent_replay is None:
+        raise ValueError("recent_replay is required for recent-start sampling")
+    if reset_size + recent_size > batch_size:
+        raise ValueError("reset and recent policy starts exceed batch size")
+    if reset_size == 0 and recent_size == 0:
         return sample_policy_starts(
             replay,
             rng,
             config=config,
             batch_size=batch_size,
         )
-    full_size = batch_size - reset_size
+    full_size = batch_size - reset_size - recent_size
     chunks = []
     if full_size:
         chunks.append(
@@ -177,21 +184,32 @@ def sample_policy_starts_with_reset_mix(
                 batch_size=full_size,
             )
         )
-    assert reset_start_indices is not None
-    candidate_starts, candidate_envs = reset_start_indices
-    selected = rng.integers(0, candidate_starts.size, size=(reset_size,))
-    reset_batch = replay.sample_from_indices(
-        candidate_starts[selected],
-        candidate_envs[selected],
-        chunk_length=config.context_window,
-        max_horizon=1,
-    )
-    chunks.append(
-        (
-            reset_batch.observations[:, : config.context_window],
-            reset_batch.actions[:, : config.context_window],
+    if recent_size:
+        assert recent_replay is not None
+        chunks.append(
+            sample_policy_starts(
+                recent_replay,
+                rng,
+                config=config,
+                batch_size=recent_size,
+            )
         )
-    )
+    if reset_size:
+        assert reset_start_indices is not None
+        candidate_starts, candidate_envs = reset_start_indices
+        selected = rng.integers(0, candidate_starts.size, size=(reset_size,))
+        reset_batch = replay.sample_from_indices(
+            candidate_starts[selected],
+            candidate_envs[selected],
+            chunk_length=config.context_window,
+            max_horizon=1,
+        )
+        chunks.append(
+            (
+                reset_batch.observations[:, : config.context_window],
+                reset_batch.actions[:, : config.context_window],
+            )
+        )
     return (
         jnp.concatenate([chunk[0] for chunk in chunks], axis=0),
         jnp.concatenate([chunk[1] for chunk in chunks], axis=0),
