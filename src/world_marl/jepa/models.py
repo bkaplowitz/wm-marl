@@ -128,6 +128,19 @@ def apply_activation(x: jax.Array) -> jax.Array:
     return nn.silu(x)
 
 
+def smooth_bounded_log_std(
+    raw_stds: jax.Array,
+    log_std_min: float,
+    log_std_max: float,
+) -> jax.Array:
+    """Map unconstrained actor outputs to bounded standard deviations smoothly."""
+
+    min_std = jnp.exp(jnp.asarray(log_std_min, dtype=raw_stds.dtype))
+    max_std = jnp.exp(jnp.asarray(log_std_max, dtype=raw_stds.dtype))
+    stds = min_std + (max_std - min_std) * jax.nn.sigmoid(raw_stds + 2.0)
+    return jnp.log(stds)
+
+
 def normalization_module(*, name: str):
     return nn.RMSNorm(name=name)
 
@@ -375,9 +388,9 @@ class JepaWorldModel(nn.Module):
     ) -> tuple[jax.Array, jax.Array]:
         logits = self.actor_logits_from_latent(latents)
         if self.config.action_mode == "continuous":
-            means, log_stds = jnp.split(logits, 2, axis=-1)
-            log_stds = jnp.clip(
-                log_stds,
+            means, raw_stds = jnp.split(logits, 2, axis=-1)
+            log_stds = smooth_bounded_log_std(
+                raw_stds,
                 self.config.actor_log_std_min,
                 self.config.actor_log_std_max,
             )
