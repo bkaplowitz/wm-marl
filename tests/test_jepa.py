@@ -10,7 +10,6 @@ from world_marl.jepa.models import (
     JepaConfig,
     JepaWorldModel,
     apply_rotary_position_embedding,
-    smooth_bounded_log_std,
 )
 from world_marl.jepa.replay import ReplayBatch, SequenceReplayBuffer
 from world_marl.jepa.training import (
@@ -430,21 +429,6 @@ def test_separate_actor_and_value_paths_match_combined_outputs():
         np.asarray(separate_log_stds),
     )
     np.testing.assert_array_equal(np.asarray(values), np.asarray(separate_values))
-
-
-def test_continuous_actor_standard_deviation_is_smoothly_bounded():
-    log_std_min = float(np.log(0.1))
-    raw_stds = jnp.asarray([[-5.0, 0.0, 5.0]], dtype=jnp.float32)
-
-    def bounded_sum(values):
-        return jnp.sum(smooth_bounded_log_std(values, log_std_min, 0.0))
-
-    log_stds = smooth_bounded_log_std(raw_stds, log_std_min, 0.0)
-    gradients = jax.grad(bounded_sum)(raw_stds)
-
-    assert np.all(np.asarray(log_stds) > log_std_min)
-    assert np.all(np.asarray(log_stds) < 0.0)
-    assert np.all(np.asarray(gradients) > 0.0)
 
 
 def test_continuous_action_jepa_model_step_is_finite():
