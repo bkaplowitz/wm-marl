@@ -47,6 +47,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    overrides = list(args.override)
+    if args.debug:
+        # The upstream debug regex shrinks the CNN depth without updating its
+        # hand-computed output width. Keep only that width production-shaped.
+        overrides.append("agent.enc.simple.depth=64")
     experiment_dir = args.experiment_dir or (
         args.output_root / args.task / f"seed_{args.seed}" / timestamp()
     )
@@ -62,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         save_every_seconds=args.save_every_seconds,
         wandb_project=args.wandb_project,
         wandb_entity=args.wandb_entity,
-        extra_args=_overrides(args.override),
+        extra_args=_overrides(overrides),
     )
     print(f"Experiment: {spec.experiment_dir}")
     return run_training(spec, resume=args.resume, dry_run=args.dry_run)

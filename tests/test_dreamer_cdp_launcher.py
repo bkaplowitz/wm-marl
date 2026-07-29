@@ -10,6 +10,7 @@ from world_marl.baselines.dreamer_cdp.config import (
     default_upstream_root,
 )
 from world_marl.baselines.dreamer_cdp.launcher import run_training, verify_upstream
+from world_marl.scripts.train_dmc_dreamer_cdp import main as train_main
 
 
 def test_pinned_official_dreamer_cdp_checkout_is_present():
@@ -44,6 +45,26 @@ def test_debug_config_can_only_follow_visual_profile(tmp_path):
     )
     start = spec.command.index("--configs") + 1
     assert spec.command[start : start + 2] == ["dmc_vision", "debug"]
+
+
+def test_debug_launcher_repairs_only_upstream_encoder_width(tmp_path):
+    experiment = tmp_path / "debug"
+    assert train_main(
+        [
+            "--experiment-dir",
+            str(experiment),
+            "--platform",
+            "cpu",
+            "--python",
+            sys.executable,
+            "--debug",
+            "--dry-run",
+        ]
+    ) == 0
+    launch = json.loads((experiment / "launch.json").read_text())
+    command = launch["command"]
+    index = command.index("--agent.enc.simple.depth")
+    assert command[index + 1] == "64"
 
 
 def test_dry_run_records_exact_source_and_representation_contract(tmp_path):
