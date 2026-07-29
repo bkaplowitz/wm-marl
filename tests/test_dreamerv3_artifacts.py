@@ -98,6 +98,25 @@ def test_training_normalization_writes_shared_artifacts(tmp_path):
     assert (experiment / "normalized" / "training_curve.png").is_file()
 
 
+def test_training_normalization_accepts_named_implementation(tmp_path):
+    experiment = tmp_path / "run"
+    _write_scores(
+        experiment / "upstream" / "scores.jsonl",
+        [{"step": 10, "episode/score": 1.0}],
+    )
+    upstream = tmp_path / "empty-upstream"
+    upstream.mkdir()
+    summary = normalize_training_artifacts(
+        experiment,
+        upstream_root=upstream,
+        task="dmc_reacher_easy",
+        seed=0,
+        train_steps_budget=10,
+        implementation="fmi-basel/Dreamer-CDP",
+    )
+    assert summary["implementation"] == "fmi-basel/Dreamer-CDP"
+
+
 def test_evaluation_normalization_counts_eval_steps_separately(tmp_path):
     eval_dir = tmp_path / "eval"
     _write_scores(

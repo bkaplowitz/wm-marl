@@ -192,6 +192,7 @@ def normalize_training_artifacts(
     seed: int,
     train_steps_budget: int,
     bin_size: int = 10_000,
+    implementation: str = "danijar/dreamerv3",
 ) -> dict[str, Any]:
     experiment_dir = Path(experiment_dir)
     normalized_dir = experiment_dir / "normalized"
@@ -210,7 +211,7 @@ def normalize_training_artifacts(
     except FileNotFoundError:
         pass
     summary = {
-        "implementation": "danijar/dreamerv3",
+        "implementation": implementation,
         "task": task,
         "seed": seed,
         "train_env_steps_budget": train_steps_budget,

@@ -9,7 +9,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from world_marl.baselines.dreamerv3.artifacts import normalize_evaluation_artifacts
 from world_marl.baselines.dreamerv3.checkpoints import latest_checkpoint
@@ -96,6 +96,7 @@ def run_evaluation(
     spec: DreamerV3EvaluationSpec,
     *,
     dry_run: bool = False,
+    verify_fn: Callable[[str | Path], str] = verify_upstream,
 ) -> tuple[int, Path]:
     eval_dir = (
         spec.experiment_dir
@@ -105,7 +106,7 @@ def run_evaluation(
     if eval_dir.exists():
         raise FileExistsError(f"evaluation directory already exists: {eval_dir}")
     command, launch = evaluation_command(spec, eval_dir=eval_dir)
-    verify_upstream(launch["upstream_root"])
+    verify_fn(launch["upstream_root"])
     eval_dir.mkdir(parents=True)
     metadata = {
         "created_at": timestamp(),
