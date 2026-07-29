@@ -35,6 +35,17 @@ def test_m2_command_is_visual_and_uses_250k_budget(tmp_path):
     assert "train/rep_ent" in metric_filter
 
 
+def test_debug_config_can_only_follow_visual_profile(tmp_path):
+    spec = DreamerCDPRunSpec(
+        experiment_dir=tmp_path / "run",
+        python=Path(sys.executable),
+        platform="cpu",
+        configs=("dmc_vision", "debug"),
+    )
+    start = spec.command.index("--configs") + 1
+    assert spec.command[start : start + 2] == ["dmc_vision", "debug"]
+
+
 def test_dry_run_records_exact_source_and_representation_contract(tmp_path):
     spec = DreamerCDPRunSpec(
         experiment_dir=tmp_path / "run",

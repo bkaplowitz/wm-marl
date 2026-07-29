@@ -37,6 +37,7 @@ class DreamerCDPRunSpec:
     seed: int = 0
     train_steps: int = M2_TRAIN_STEPS
     platform: str = "cuda"
+    configs: tuple[str, ...] = (OFFICIAL_DMC_VISION_CONFIG,)
     upstream_root: Path = dataclasses.field(default_factory=default_upstream_root)
     python: Path = dataclasses.field(default_factory=default_dreamer_cdp_python)
     save_every_seconds: int | None = 1_800
@@ -58,6 +59,8 @@ class DreamerCDPRunSpec:
             raise ValueError("train_steps must be >= 1")
         if self.platform not in {"cpu", "cuda", "tpu"}:
             raise ValueError("platform must be one of: cpu, cuda, tpu")
+        if not self.configs or self.configs[0] != OFFICIAL_DMC_VISION_CONFIG:
+            raise ValueError("the first Dreamer-CDP config must be 'dmc_vision'")
         if self.save_every_seconds is not None and self.save_every_seconds < 1:
             raise ValueError("save_every_seconds must be >= 1")
 
@@ -76,7 +79,7 @@ class DreamerCDPRunSpec:
             "--logdir",
             str(self.upstream_logdir),
             "--configs",
-            OFFICIAL_DMC_VISION_CONFIG,
+            *self.configs,
             "--task",
             self.task,
             "--seed",
@@ -114,7 +117,7 @@ class DreamerCDPRunSpec:
             "total_real_env_steps_budget": self.train_steps,
             "platform": self.platform,
             "observation_mode": "vision",
-            "configs": [OFFICIAL_DMC_VISION_CONFIG],
+            "configs": list(self.configs),
             "save_every_seconds": self.save_every_seconds,
             "wandb_project": self.wandb_project,
             "wandb_entity": self.wandb_entity,

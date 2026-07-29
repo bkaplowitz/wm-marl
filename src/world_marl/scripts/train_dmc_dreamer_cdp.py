@@ -42,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--save-every-seconds", type=int, default=1_800)
     parser.add_argument("--wandb-project")
     parser.add_argument("--wandb-entity")
+    parser.add_argument("--debug", action="store_true")
     parser.add_argument("--override", action="append", default=[])
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -55,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
         train_steps=args.total_env_steps,
         platform=args.platform,
+        configs=("dmc_vision", "debug") if args.debug else ("dmc_vision",),
         upstream_root=args.upstream_root,
         python=args.python,
         save_every_seconds=args.save_every_seconds,
