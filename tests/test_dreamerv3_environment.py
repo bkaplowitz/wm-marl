@@ -12,7 +12,7 @@ def test_cpu_requirements_only_adapt_platform_specific_jax_packages():
         requirement.startswith("nvidia-cuda-") for requirement in requirements
     )
     assert "dm_control" in requirements
-    assert "wandb" in requirements
+    assert "wandb[media]" in requirements
 
 
 def test_cuda_requirements_preserve_official_jax_pin():

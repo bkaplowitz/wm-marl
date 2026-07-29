@@ -42,7 +42,9 @@ def resolved_requirements(
             continue
         requirements.append(stripped)
     requirements.append("dm_control")
-    requirements.append("wandb")
+    # Upstream logs raw rollout arrays as W&B videos. The media extra provides
+    # MoviePy and its encoder dependencies before the first episode is logged.
+    requirements.append("wandb[media]")
     return requirements
 
 
