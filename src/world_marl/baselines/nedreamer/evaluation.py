@@ -108,6 +108,8 @@ def run_evaluation(
     env = os.environ.copy()
     env.setdefault("MUJOCO_GL", "egl")
     env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env.setdefault("WANDB_MODE", "disabled")
     with (eval_dir / "process.log").open("w", encoding="utf-8") as log:
         process = subprocess.Popen(
             command,

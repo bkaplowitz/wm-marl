@@ -130,6 +130,7 @@ def run_evaluation(
     env = os.environ.copy()
     if "MUJOCO_GL" not in env:
         env["MUJOCO_GL"] = "glfw" if platform.system() == "Darwin" else "egl"
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     with (eval_dir / "process.log").open("w", encoding="utf-8") as log:
         process = subprocess.Popen(
             command,

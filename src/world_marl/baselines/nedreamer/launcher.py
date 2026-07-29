@@ -40,7 +40,7 @@ def verify_upstream(upstream_root: str | Path) -> str:
             f"found {revision}"
         )
     status = subprocess.run(
-        ["git", "status", "--porcelain"],
+        ["git", "status", "--porcelain", "--untracked-files=no"],
         cwd=upstream_root,
         check=True,
         capture_output=True,
@@ -61,6 +61,8 @@ def _environment(spec: NEDreamerRunSpec) -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("MUJOCO_GL", "egl")
     env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env.setdefault("WANDB_DIR", str(spec.experiment_dir))
     if spec.wandb_project:
         env["WANDB_PROJECT"] = spec.wandb_project
     if spec.wandb_entity:

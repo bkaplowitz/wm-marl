@@ -48,7 +48,7 @@ def verify_upstream(upstream_root: str | Path) -> str:
             f"found {revision}"
         )
     status = subprocess.run(
-        ["git", "status", "--porcelain"],
+        ["git", "status", "--porcelain", "--untracked-files=no"],
         cwd=upstream_root,
         check=True,
         capture_output=True,
@@ -71,6 +71,8 @@ def _process_environment(spec: DreamerV3RunSpec) -> dict[str, str]:
     if "MUJOCO_GL" not in env:
         env["MUJOCO_GL"] = "glfw" if platform.system() == "Darwin" else "egl"
     env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env.setdefault("WANDB_DIR", str(spec.experiment_dir))
     if spec.wandb_project:
         env["WANDB_PROJECT"] = spec.wandb_project
     if spec.wandb_entity:

@@ -18,10 +18,7 @@ def source_manifest_path() -> Path:
 
 def protocol_manifest_path() -> Path:
     return (
-        repository_root()
-        / "configs"
-        / "jepatransformer"
-        / "visual_dmc_protocol.toml"
+        repository_root() / "configs" / "jepatransformer" / "visual_dmc_protocol.toml"
     )
 
 
@@ -63,7 +60,7 @@ def verify_foundation(root: str | Path | None = None) -> dict[str, Any]:
                 f"source revision mismatch for {source['id']}: "
                 f"expected {source['commit']}, found {revision}"
             )
-        status = _git_output(checkout, "status", "--porcelain")
+        status = _git_output(checkout, "status", "--porcelain", "--untracked-files=no")
         if status:
             raise RuntimeError(f"pinned source {source['id']} has local modifications")
         verified_sources.append(
