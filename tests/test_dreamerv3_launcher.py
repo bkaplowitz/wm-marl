@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from world_marl.baselines.dreamerv3.config import (
+    OFFICIAL_DMC_VISION_CONFIG,
     OFFICIAL_DREAMERV3_COMMIT,
     DreamerV3RunSpec,
     default_upstream_root,
@@ -41,6 +42,27 @@ def test_canonical_command_uses_only_official_config_and_explicit_budget(tmp_pat
     assert command[command.index("--run.steps") + 1] == "500000"
     assert "--agent.imag_length" not in command
     assert "--batch_size" not in command
+
+
+def test_visual_command_uses_explicit_upstream_profile(tmp_path):
+    spec = DreamerV3RunSpec(
+        experiment_dir=tmp_path / "visual-run",
+        python=Path(sys.executable),
+        platform="cpu",
+        observation_mode="vision",
+    )
+    command = spec.command
+    assert command[command.index("--configs") + 1] == OFFICIAL_DMC_VISION_CONFIG
+    assert spec.to_dict()["observation_mode"] == "vision"
+
+
+def test_observation_mode_must_match_first_upstream_config(tmp_path):
+    with pytest.raises(ValueError, match="first upstream config"):
+        DreamerV3RunSpec(
+            experiment_dir=tmp_path / "invalid-run",
+            observation_mode="vision",
+            configs=("dmc_proprio",),
+        )
 
 
 def test_wandb_is_an_upstream_logger_override(tmp_path):

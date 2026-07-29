@@ -10,7 +10,14 @@ from pathlib import Path
 
 OFFICIAL_DREAMERV3_REPOSITORY = "https://github.com/danijar/dreamerv3.git"
 OFFICIAL_DREAMERV3_COMMIT = "e3f02248693a79dc8b0ebd62c93683888ddaccfe"
-OFFICIAL_DMC_CONFIG = "dmc_proprio"
+OFFICIAL_DMC_PROPRIO_CONFIG = "dmc_proprio"
+OFFICIAL_DMC_VISION_CONFIG = "dmc_vision"
+# Backwards-compatible name for the established proprioceptive baseline.
+OFFICIAL_DMC_CONFIG = OFFICIAL_DMC_PROPRIO_CONFIG
+DMC_OBSERVATION_CONFIGS = {
+    "proprio": OFFICIAL_DMC_PROPRIO_CONFIG,
+    "vision": OFFICIAL_DMC_VISION_CONFIG,
+}
 OFFICIAL_DMC_TRAIN_STEPS = 1_100_000
 COMPARISON_DMC_TRAIN_STEPS = 500_000
 
@@ -47,7 +54,8 @@ class DreamerV3RunSpec:
     seed: int = 0
     train_steps: int = COMPARISON_DMC_TRAIN_STEPS
     platform: str = "cuda"
-    configs: tuple[str, ...] = (OFFICIAL_DMC_CONFIG,)
+    observation_mode: str = "proprio"
+    configs: tuple[str, ...] = ()
     upstream_root: Path = dataclasses.field(default_factory=default_upstream_root)
     python: Path = dataclasses.field(default_factory=default_dreamerv3_python)
     save_every_seconds: int | None = None
@@ -69,8 +77,16 @@ class DreamerV3RunSpec:
             raise ValueError("train_steps must be >= 1")
         if self.platform not in {"cpu", "cuda", "tpu"}:
             raise ValueError("platform must be one of: cpu, cuda, tpu")
+        if self.observation_mode not in DMC_OBSERVATION_CONFIGS:
+            raise ValueError("observation_mode must be one of: proprio, vision")
+        expected_config = DMC_OBSERVATION_CONFIGS[self.observation_mode]
         if not self.configs:
-            raise ValueError("at least one upstream config is required")
+            object.__setattr__(self, "configs", (expected_config,))
+        elif self.configs[0] != expected_config:
+            raise ValueError(
+                "the first upstream config must match observation_mode: "
+                f"expected {expected_config!r}, found {self.configs[0]!r}"
+            )
         if self.save_every_seconds is not None and self.save_every_seconds < 1:
             raise ValueError("save_every_seconds must be >= 1")
 
@@ -118,6 +134,7 @@ class DreamerV3RunSpec:
             "eval_env_steps_budget": 0,
             "total_real_env_steps_budget": self.train_steps,
             "platform": self.platform,
+            "observation_mode": self.observation_mode,
             "configs": list(self.configs),
             "save_every_seconds": self.save_every_seconds,
             "wandb_project": self.wandb_project,

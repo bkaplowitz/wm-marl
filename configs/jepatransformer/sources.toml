@@ -1,0 +1,75 @@
+schema_version = 1
+snapshot_date = "2026-07-29"
+
+[[implementations]]
+id = "dreamerv3"
+role = "reconstruction baseline and matched JAX backbone"
+repository = "https://github.com/danijar/dreamerv3.git"
+commit = "e3f02248693a79dc8b0ebd62c93683888ddaccfe"
+local_path = "external/dreamerv3"
+license = "MIT"
+required_phase = 1
+
+[[implementations]]
+id = "dreamer-cdp"
+role = "primary exact reconstruction-free objective reference"
+repository = "https://github.com/fmi-basel/Dreamer-CDP.git"
+commit = "a851fa3e3d70b624b094ee1810ad4bb602346092"
+local_path = "external/dreamer-cdp"
+license = "MIT"
+required_phase = 2
+
+[[implementations]]
+id = "ne-dreamer"
+role = "official decoder-free baseline and pre-registered fallback"
+repository = "https://github.com/corl-team/nedreamer.git"
+commit = "11cd3a978b83743f795cbfa81c2e095344912c17"
+local_path = "external/nedreamer"
+license = "MIT"
+required_phase = 1
+
+[[papers]]
+id = "dreamer-cdp"
+source = "arxiv:2603.07083v2"
+relevance = "continuous deterministic next-embedding prediction in DreamerV3"
+
+[[papers]]
+id = "ne-dreamer"
+source = "arxiv:2603.02765v1"
+relevance = "next-embedding prediction with an auxiliary temporal Transformer"
+
+[[papers]]
+id = "storm"
+source = "arxiv:2310.09615"
+relevance = "single-agent stochastic Transformer world model"
+
+[[papers]]
+id = "jedi"
+source = "arxiv:2605.13013v1"
+relevance = "online JEPA latent-diffusion world-model policy learning"
+
+[[papers]]
+id = "marie"
+source = "arxiv:2406.15836v1"
+relevance = "decentralized Transformer dynamics with centralized aggregation"
+
+[[papers]]
+id = "matwm"
+source = "arxiv:2506.18537v1"
+relevance = "visual Transformer multi-agent model-based RL"
+code_status = "paper-linked repository unavailable at snapshot date"
+
+[[papers]]
+id = "dima"
+source = "arxiv:2505.20922"
+relevance = "diffusion-inspired joint multi-agent world modeling"
+
+[[papers]]
+id = "mmsa"
+source = "arxiv:2602.12520"
+relevance = "joint state-action learned embeddings in multi-agent MBRL"
+
+[[papers]]
+id = "mira"
+source = "arxiv:2607.05352v2"
+relevance = "large-scale multiplayer interactive generative world model"

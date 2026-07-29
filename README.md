@@ -1,5 +1,35 @@
 # World MARL
 
+## JEPA Transformer Programme
+
+The new visual world-model programme is defined in
+[`docs/jepatransformer/ROADMAP.md`](docs/jepatransformer/ROADMAP.md). Its pinned
+reference sources and matched visual-DMC protocol live in
+`configs/jepatransformer/`.
+
+Initialize and verify the immutable research foundation:
+
+```bash
+git submodule update --init --recursive
+uv run world-marl-verify-jepatransformer
+```
+
+Run the unmodified official DreamerV3 visual baseline with the explicit visual
+profile:
+
+```bash
+uv run world-marl-train-dmc-dreamerv3 \
+  --observation-mode vision \
+  --task dmc_walker_walk \
+  --seed 0 \
+  --official-budget \
+  --platform cuda
+```
+
+The current branch prepares source pinning, protocol enforcement, and visual
+baseline parity only. It does not yet claim or contain the proposed JEPA
+Transformer algorithm.
+
 ## Official DreamerV3 Baseline
 
 The DreamerV3 baseline runs the pinned `danijar/dreamerv3` implementation as

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from world_marl.baselines.dreamerv3.config import (
     COMPARISON_DMC_TRAIN_STEPS,
-    OFFICIAL_DMC_CONFIG,
+    DMC_OBSERVATION_CONFIGS,
     OFFICIAL_DMC_TRAIN_STEPS,
     DreamerV3RunSpec,
     default_dreamerv3_python,
@@ -33,6 +33,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", default="dmc_reacher_easy")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--observation-mode",
+        choices=tuple(DMC_OBSERVATION_CONFIGS),
+        default="proprio",
+        help="Use the pinned upstream proprioceptive or 64x64 visual DMC profile.",
+    )
     budget = parser.add_mutually_exclusive_group()
     budget.add_argument(
         "--total-env-steps",
@@ -54,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--config",
         action="append",
         default=[],
-        help="Additional upstream config applied after dmc_proprio.",
+        help="Additional upstream config applied after the selected DMC profile.",
     )
     parser.add_argument(
         "--override",
@@ -76,10 +82,13 @@ def main(argv: list[str] | None = None) -> int:
     train_steps = (
         OFFICIAL_DMC_TRAIN_STEPS if args.official_budget else args.total_env_steps
     )
+    default_output = args.output_root
+    if args.observation_mode == "vision":
+        default_output /= "dmc_vision"
     experiment_dir = args.experiment_dir or (
-        args.output_root / args.task / f"seed_{args.seed}" / timestamp()
+        default_output / args.task / f"seed_{args.seed}" / timestamp()
     )
-    configs = [OFFICIAL_DMC_CONFIG, *args.config]
+    configs = [DMC_OBSERVATION_CONFIGS[args.observation_mode], *args.config]
     if args.debug:
         configs.append("debug")
     spec = DreamerV3RunSpec(
@@ -88,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
         train_steps=train_steps,
         platform=args.platform,
+        observation_mode=args.observation_mode,
         configs=tuple(configs),
         upstream_root=args.upstream_root,
         python=args.python,

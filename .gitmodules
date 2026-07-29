@@ -1,3 +1,9 @@
 [submodule "external/dreamerv3"]
 	path = external/dreamerv3
 	url = https://github.com/danijar/dreamerv3.git
+[submodule "external/dreamer-cdp"]
+	path = external/dreamer-cdp
+	url = https://github.com/fmi-basel/Dreamer-CDP.git
+[submodule "external/nedreamer"]
+	path = external/nedreamer
+	url = https://github.com/corl-team/nedreamer.git
