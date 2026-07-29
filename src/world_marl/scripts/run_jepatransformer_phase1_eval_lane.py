@@ -96,6 +96,12 @@ def main(argv: list[str] | None = None) -> int:
         default=repository_root() / "runs" / "jepatransformer" / "phase1",
     )
     parser.add_argument("--poll-seconds", type=int, default=60)
+    parser.add_argument(
+        "--implementations",
+        nargs="+",
+        choices=IMPLEMENTATIONS,
+        default=list(IMPLEMENTATIONS),
+    )
     args = parser.parse_args(argv)
     pid = int(args.lane_pid_file.read_text(encoding="utf-8").strip())
     while _alive(pid):
@@ -106,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     env["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
     env["PYTHONUNBUFFERED"] = "1"
     failed = 0
-    for implementation in IMPLEMENTATIONS:
+    for implementation in args.implementations:
         for task in TASKS:
             run_dir = args.output_root / implementation / task / f"seed_{args.seed}"
             if not _training_completed(run_dir):

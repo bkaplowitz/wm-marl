@@ -110,7 +110,8 @@ def prepare_environment(
         [
             str(python),
             "-c",
-            "import dm_control, embodied, elements, jax, wandb; print(jax.devices())",
+            "import dm_control, embodied, elements, jax, moviepy, wandb; "
+            "print(jax.devices())",
         ],
         cwd=upstream_root,
         check=True,
