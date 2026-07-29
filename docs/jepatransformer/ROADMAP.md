@@ -57,6 +57,12 @@ Reproduce unmodified DreamerV3 and NE-Dreamer on visual Walker Walk and Cheetah
 Run with seeds 0 and 1. Normalize both into the same transition accounting and
 latest-policy evaluation artifacts without modifying upstream source.
 
+The native action repeat remains part of each immutable upstream baseline:
+DreamerV3 uses repeat 1 and NE-Dreamer uses repeat 2. Manifests report both real
+simulator transitions and agent decisions. This native reproduction is not
+presented as a matched-protocol ablation; matched comparisons begin only after
+an explicit common environment contract is introduced.
+
 ### M2: Exact JEPA-RSSM
 
 Port only the official Dreamer-CDP delta into the pinned Dreamer backbone:
