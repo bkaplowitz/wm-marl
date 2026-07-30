@@ -41,4 +41,5 @@ def test_m3_overlay_encodes_the_registered_temporal_and_replay_contract():
     assert "policy(sg(carry))" in source
     assert "sg(slow_tokens)" in source
     assert "replay_context: 64" in M3_PROFILE
+    assert "jax.profiler: False" in M3_PROFILE
     assert "context: 64" in M3_DYNAMICS_DEFAULT

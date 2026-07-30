@@ -31,6 +31,7 @@ M3_PROFILE = """
 
 jepa_transformer:
   replay_context: 64
+  jax.profiler: False
   agent:
     dyn:
       typ: jepa_transformer
@@ -133,6 +134,12 @@ def prepare_runtime(
         RSSM_DEFAULT,
         f"{RSSM_DEFAULT}\n{M3_DYNAMICS_DEFAULT}",
         label="dynamics configuration schema",
+    )
+    config = _replace_once(
+        config,
+        "    enable_policy: True\n",
+        "    enable_policy: True\n    profiler: True\n",
+        label="profiler configuration schema",
     )
     config_path.write_text(
         config + M3_PROFILE,

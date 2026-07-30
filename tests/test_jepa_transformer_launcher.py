@@ -21,7 +21,7 @@ def test_m3_command_keeps_visual_cdp_control_settings(tmp_path):
     start = command.index("--configs") + 1
     assert command[start : start + 2] == ["dmc_vision", "jepa_transformer"]
     assert command[command.index("--run.steps") + 1] == "25000"
-    assert command[command.index("--jax.profiler") + 1] == "False"
+    assert "--jax.profiler" not in command
     assert "--agent.imag_length" not in command
     assert "--run.train_ratio" not in command
     assert spec.to_dict()["overlay_fingerprint"] == runtime_fingerprint()
