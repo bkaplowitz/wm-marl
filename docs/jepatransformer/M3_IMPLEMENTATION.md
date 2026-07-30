@@ -41,34 +41,53 @@ Consequently, `h_t` cannot depend on `z_t`, `a_t`, `o_t`, or any future
 quantity. `is_first_t` clears all preceding temporal history before `h_t` is
 computed.
 
-## Two Equivalent Execution Paths
+## Execution Path
 
-Training uses a parallel causal pass over replay sequences. Collection and
-imagination use a fixed-size recurrent cache. Both paths share every parameter
-and must agree numerically while the active episode fits in the context window.
-
-The initial implementation in
+Training, collection, and imagination use the same fixed-size recurrent KV
+cache and the same Transformer parameters. Training scans over replay time with
+JAX/Ninjax, while collection and imagination append one completed pair at a
+time. The preliminary independent kernel in
 `src/world_marl/jepa_transformer/temporal.py` establishes:
 
 - strict shifted-input alignment;
 - episode-segment causal masking;
 - reset-safe recurrent caches;
-- shared parallel and recurrent parameters;
+- recurrent and full-sequence numerical equivalence;
 - fixed context and memory bounds;
 - a state projection compatible with the existing Dreamer heads.
+
+The upstream integration is implemented in
+`src/world_marl/jepa_transformer/upstream/m3_rssm.py`. A generated runtime
+copies the immutable Dreamer-CDP source and applies only this registered
+overlay; the official checkout is never modified.
 
 ## Imagination Start States
 
 Dreamer starts imagined trajectories from multiple replay positions. A GRU
 state can be copied directly; a Transformer state also requires its preceding
-context. Milestone 3 therefore reconstructs each selected start cache from the
-causal replay window ending immediately before that state.
+context. Milestone 3 therefore reconstructs the chunk-entry cache from a
+64-transition replay prefix. During the subsequent 64 training transitions,
+cache snapshots are retained only inside the compiled update and selected
+directly for imagination starts.
 
 The replay entry stores only one pair and its boundary metadata per time step.
 It does **not** store a full context or per-layer KV cache at every transition.
-When starts are selected, a bounded sliding-window gather constructs the
-required caches. This preserves the existing number and distribution of
-imagination starts without quadratic replay storage.
+This preserves the existing number and distribution of imagination starts
+without quadratic replay storage.
+
+## Registered Model
+
+The causal Transformer has width 512, four pre-norm blocks, eight attention
+heads, a 4x feed-forward expansion, rotary positions, and a 64-pair context.
+It projects its output to the unchanged 8192-dimensional deterministic feature.
+The categorical state remains 32 variables with 64 classes. The actor still
+uses 15 imagined transitions and all Dreamer-CDP optimization settings remain
+unchanged.
+
+The measured full system has 164,884,230 trainable parameters. Of these,
+94,427,648 belong to the complete dynamics module, including the Transformer,
+prior, posterior, and JEPA predictor. The matched JEPA-RSSM reference has
+216,280,326 parameters.
 
 Reducing `imag_last`, shortening imagination, or using history-free starts is
 not permitted in the primary M2-to-M3 comparison because each would change the
@@ -91,7 +110,8 @@ policy-learning problem in addition to the temporal architecture.
    - parameters, peak VRAM, update speed, and imagined-step speed are logged;
    - no representation or stochastic-state collapse is observed.
 4. **Control gate**
-   - seed-0 short runs precede the registered two-seed comparison;
+   - a 25,000-transition Reacher Easy seed-0 run precedes the registered
+     two-seed comparison;
    - final promotion requires at least 95% of JEPA-RSSM aggregate AUC;
    - a memory-sensitive task and rollout efficiency must justify the change.
 

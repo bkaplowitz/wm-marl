@@ -1,6 +1,7 @@
 .DS_Store
 .venv/
 .venv-dreamerv3/
+.runtime/
 __pycache__/
 *.py[cod]
 .pytest_cache/
