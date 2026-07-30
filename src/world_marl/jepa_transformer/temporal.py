@@ -94,15 +94,24 @@ class TemporalBlock(nn.Module):
             qkv_features=cfg.model_dim,
             out_features=cfg.model_dim,
             dropout_rate=0.0,
+            precision=jax.lax.Precision.HIGHEST,
             name="attention",
         )(x, x, mask=mask, deterministic=True)
         x = residual + x
         residual = x
         x = nn.RMSNorm(name="ffn_norm")(x)
-        x = nn.Dense(2 * cfg.mlp_ratio * cfg.model_dim, name="ffn_in")(x)
+        x = nn.Dense(
+            2 * cfg.mlp_ratio * cfg.model_dim,
+            precision=jax.lax.Precision.HIGHEST,
+            name="ffn_in",
+        )(x)
         value, gate = jnp.split(x, 2, axis=-1)
         x = value * nn.gelu(gate)
-        x = nn.Dense(cfg.model_dim, name="ffn_out")(x)
+        x = nn.Dense(
+            cfg.model_dim,
+            precision=jax.lax.Precision.HIGHEST,
+            name="ffn_out",
+        )(x)
         return residual + x
 
 
@@ -133,7 +142,12 @@ class CausalTemporalTransformer(nn.Module):
         """Compute ``h_t = Transformer((z,a)_<t)`` for a replay sequence."""
         cfg = self.config
         self._validate_parallel_inputs(pairs, is_first)
-        projected = nn.Dense(cfg.model_dim, name="pair_projection")(pairs)
+        pair_projection = nn.Dense(
+            cfg.model_dim,
+            precision=jax.lax.Precision.HIGHEST,
+            name="pair_projection",
+        )
+        projected = jax.vmap(pair_projection, in_axes=1, out_axes=1)(pairs)
         shifted = jnp.concatenate(
             [jnp.zeros_like(projected[:, :1]), projected[:, :-1]], axis=1
         )
@@ -142,9 +156,23 @@ class CausalTemporalTransformer(nn.Module):
         )
         tokens = jnp.where(is_first[..., None], start, shifted)
         positions = episode_positions(is_first)
-        mask = segment_causal_mask(is_first)[:, None]
-        hidden = self._transform(tokens, positions, mask)
-        return nn.Dense(cfg.state_dim, name="state_projection")(hidden)
+        sequence_length = pairs.shape[1]
+        padding = cfg.context_length - sequence_length
+        tokens = jnp.pad(tokens, ((0, 0), (padding, 0), (0, 0)))
+        positions = jnp.pad(positions, ((0, 0), (padding, 0)))
+        sequence_mask = segment_causal_mask(is_first)
+        mask = jnp.pad(
+            sequence_mask,
+            ((0, 0), (padding, 0), (padding, 0)),
+            constant_values=False,
+        )[:, None]
+        hidden = self._transform(tokens, positions, mask)[:, -sequence_length:]
+        state_projection = nn.Dense(
+            cfg.state_dim,
+            precision=jax.lax.Precision.HIGHEST,
+            name="state_projection",
+        )
+        return jax.vmap(state_projection, in_axes=1, out_axes=1)(hidden)
 
     @nn.compact
     def step(
@@ -156,7 +184,11 @@ class CausalTemporalTransformer(nn.Module):
         """Advance one recurrent state without observing the current pair."""
         cfg = self.config
         self._validate_step_inputs(cache, previous_pair, is_first)
-        projected = nn.Dense(cfg.model_dim, name="pair_projection")(previous_pair)
+        projected = nn.Dense(
+            cfg.model_dim,
+            precision=jax.lax.Precision.HIGHEST,
+            name="pair_projection",
+        )(previous_pair)
         start = self.param(
             "start_token", nn.initializers.normal(0.02), (cfg.model_dim,)
         )
@@ -177,7 +209,11 @@ class CausalTemporalTransformer(nn.Module):
         causal = jnp.arange(length)[None, :] <= jnp.arange(length)[:, None]
         mask = causal[None] & valid[:, None, :]
         hidden = self._transform(tokens, positions, mask[:, None])
-        state = nn.Dense(cfg.state_dim, name="state_projection")(hidden[:, -1])
+        state = nn.Dense(
+            cfg.state_dim,
+            precision=jax.lax.Precision.HIGHEST,
+            name="state_projection",
+        )(hidden[:, -1])
         return TemporalCache(tokens, valid, positions, position), state
 
     def _transform(
