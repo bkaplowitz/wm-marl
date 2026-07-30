@@ -74,6 +74,8 @@ class JEPATransformerRunSpec:
             str(self.train_steps),
             "--jax.platform",
             self.platform,
+            "--jax.profiler",
+            "False",
             "--logger.outputs",
             *outputs,
             "--logger.filter",

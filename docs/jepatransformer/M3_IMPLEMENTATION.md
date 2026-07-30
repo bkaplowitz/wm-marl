@@ -89,6 +89,10 @@ The measured full system has 164,884,230 trainable parameters. Of these,
 prior, posterior, and JEPA predictor. The matched JEPA-RSSM reference has
 216,280,326 parameters.
 
+The upstream JAX trace profiler is disabled for training runs because it can
+block after update 100 in the isolated runtime. This changes instrumentation
+only; model parameters, gradients, data, and update schedules are unaffected.
+
 Reducing `imag_last`, shortening imagination, or using history-free starts is
 not permitted in the primary M2-to-M3 comparison because each would change the
 policy-learning problem in addition to the temporal architecture.
