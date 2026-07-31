@@ -16,6 +16,7 @@ from world_marl.dreamarl.foundation import verify_foundation
 def _batch(**overrides) -> MultiAgentSequenceBatch:
     values = {
         "observations": np.zeros((4, 2, 3, 5), dtype=np.float32),
+        "next_observations": np.ones((4, 2, 3, 5), dtype=np.float32),
         "actions": np.zeros((4, 2, 3), dtype=np.int32),
         "rewards": np.zeros((4, 2, 3), dtype=np.float32),
         "team_rewards": np.zeros((4, 2), dtype=np.float32),
@@ -23,6 +24,7 @@ def _batch(**overrides) -> MultiAgentSequenceBatch:
         "is_last": np.zeros((4, 2), dtype=bool),
         "is_terminal": np.zeros((4, 2), dtype=bool),
         "agent_alive": np.ones((4, 2, 3), dtype=bool),
+        "next_agent_alive": np.ones((4, 2, 3), dtype=bool),
         "agent_ids": ("a", "b", "c"),
     }
     values.update(overrides)
@@ -33,7 +35,9 @@ def test_contract_keeps_explicit_agent_axis_through_jax() -> None:
     batch = _batch()
     jax_batch = sequence_batch_to_jax(batch)
     assert jax_batch.observations.shape == (4, 2, 3, 5)
+    assert jax_batch.next_observations.shape == (4, 2, 3, 5)
     assert jax_batch.actions.shape == (4, 2, 3)
+    assert jax_batch.action_mask.shape == (4, 2, 3, 0)
     assert jax.default_backend() in {"cpu", "gpu", "tpu"}
 
 
@@ -42,6 +46,13 @@ def test_terminal_transition_must_also_end_the_joint_sequence() -> None:
     terminal[2, 0] = True
     with pytest.raises(ValueError, match="terminal transition"):
         _batch(is_terminal=terminal)
+
+
+def test_reset_boundary_must_align_between_contiguous_records() -> None:
+    first = np.zeros((4, 2), dtype=bool)
+    first[2, 0] = True
+    with pytest.raises(ValueError, match="is_first"):
+        _batch(is_first=first)
 
 
 def test_joint_actions_use_registered_agent_order() -> None:
@@ -61,6 +72,7 @@ def test_coin_game_collection_marks_cuts_but_not_terminals() -> None:
         seed=0,
     )
     assert batch.observations.shape == (12, 2, 2, 36)
+    assert batch.next_observations.shape == (12, 2, 2, 36)
     assert batch.actions.shape == (12, 2, 2)
     assert batch.is_last[:, 0].tolist() == [
         False,
@@ -92,6 +104,11 @@ def test_coin_game_collection_marks_cuts_but_not_terminals() -> None:
     ]
     assert not np.any(batch.is_terminal)
     assert np.all(batch.agent_alive)
+    assert np.all(batch.next_agent_alive)
+    assert batch.action_mask.shape == (12, 2, 2, 5)
+    # The successor of a time-limit transition is retained before the reset
+    # observation becomes the next record's current observation.
+    assert not np.array_equal(batch.next_observations[3], batch.observations[4])
 
 
 def test_foundation_gate_runs_end_to_end(tmp_path) -> None:

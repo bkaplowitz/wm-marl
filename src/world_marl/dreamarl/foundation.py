@@ -33,16 +33,20 @@ def verify_foundation(
     @jax.jit
     def summarize(values):
         alive_rewards = values.rewards * values.agent_alive
+        active_count = jnp.maximum(values.agent_alive.sum(axis=-1), 1)
+        reward_mean = alive_rewards.sum(axis=-1) / active_count
         return (
-            alive_rewards.sum(),
+            reward_mean.sum(),
             values.team_rewards.sum(),
             values.is_last.sum(),
             values.is_terminal.sum(),
         )
 
-    reward_sum, team_reward_sum, last_count, terminal_count = summarize(jax_batch)
-    if not jnp.allclose(reward_sum, team_reward_sum):
-        raise AssertionError("team reward must equal the collected per-agent sum")
+    reward_mean_sum, team_reward_sum, last_count, terminal_count = summarize(
+        jax_batch
+    )
+    if not jnp.allclose(reward_mean_sum, team_reward_sum):
+        raise AssertionError("team reward must equal active-agent mean reward")
     expected_boundaries = time_steps // max_cycles * num_envs
     if int(last_count) != expected_boundaries:
         raise AssertionError(
@@ -63,7 +67,7 @@ def verify_foundation(
         "action_shape": list(batch.actions.shape),
         "is_last_count": int(last_count),
         "is_terminal_count": int(terminal_count),
-        "reward_sum": float(reward_sum),
+        "team_reward_sum": float(team_reward_sum),
     }
     if output is not None:
         output.parent.mkdir(parents=True, exist_ok=True)
