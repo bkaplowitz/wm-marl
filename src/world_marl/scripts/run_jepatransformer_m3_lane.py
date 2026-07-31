@@ -79,6 +79,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gpu", type=int, required=True)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument(
+        "--tasks",
+        nargs="+",
+        choices=TASKS,
+        default=TASKS,
+        help="Registered tasks to run, in the supplied order.",
+    )
+    parser.add_argument(
         "--output-root",
         type=Path,
         default=(
@@ -98,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     env["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
     env["PYTHONUNBUFFERED"] = "1"
     failed = 0
-    for task in TASKS:
+    for task in args.tasks:
         run_dir = args.output_root / task / f"seed_{args.seed}"
         if not _completed(run_dir / "outcome.json"):
             command = training_command(

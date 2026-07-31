@@ -1,6 +1,9 @@
+import subprocess
+
 from world_marl.scripts.run_jepatransformer_m3_lane import (
     TASKS,
     evaluation_command,
+    main,
     training_command,
 )
 
@@ -29,3 +32,31 @@ def test_m3_lane_keeps_the_registered_task_order():
         "dmc_cheetah_run",
         "dmc_hopper_hop",
     )
+
+
+def test_m3_lane_accepts_a_registered_task_subset(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert (
+        main(
+            [
+                "--gpu",
+                "0",
+                "--seed",
+                "0",
+                "--tasks",
+                "dmc_walker_walk",
+                "--output-root",
+                str(tmp_path),
+            ]
+        )
+        == 0
+    )
+    assert len(calls) == 2
+    assert "dmc_walker_walk" in calls[0]
+    assert "world_marl.scripts.eval_dmc_jepa_transformer" in calls[1]
