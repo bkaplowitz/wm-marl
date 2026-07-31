@@ -31,3 +31,19 @@ def test_evaluation_uses_final_checkpoint_and_fixed_protocol(tmp_path):
     assert command[command.index("--episodes") + 1] == "20"
     assert command[command.index("--eval-seed") + 1] == "10000"
     assert launch["train_real_transition_budget"] == 1_100_000
+
+
+def test_evaluation_preserves_virtual_environment_python_symlink(tmp_path):
+    system_python = tmp_path / "system-python"
+    system_python.touch()
+    venv_python = tmp_path / "venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.symlink_to(system_python)
+
+    spec = NEDreamerEvaluationSpec(
+        experiment_dir=tmp_path / "run",
+        python=venv_python,
+    )
+
+    assert spec.python == venv_python
+    assert spec.python != system_python

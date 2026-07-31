@@ -29,7 +29,10 @@ class NEDreamerEvaluationSpec:
             self, "experiment_dir", Path(self.experiment_dir).expanduser().resolve()
         )
         if self.python is not None:
-            object.__setattr__(self, "python", Path(self.python).expanduser().resolve())
+            # Preserve the virtual-environment interpreter symlink. Resolving it
+            # selects the system Python and silently drops the venv packages.
+            python = Path(os.path.abspath(self.python.expanduser()))
+            object.__setattr__(self, "python", python)
         if self.episodes < 1:
             raise ValueError("episodes must be >= 1")
 
