@@ -62,12 +62,23 @@ def load_dreamarl_checkpoint(
 
     root = Path(directory)
     replay.load(root)
-    learner = load_train_state(root / "learner.msgpack", learner_template)
+    learner = jax.tree.map(
+        _restore_device_leaf,
+        load_train_state(root / "learner.msgpack", learner_template),
+    )
     driver, context = _load_array_tree(
         root / "runtime.npz", (driver_template, policy_context_template)
     )
     metadata = json.loads((root / "metadata.json").read_text(encoding="utf-8"))
     return learner, driver, context, metadata
+
+
+def _restore_device_leaf(value: Any) -> Any:
+    """Move serialized learner arrays back to JAX without touching metadata."""
+
+    if isinstance(value, (np.ndarray, np.generic)):
+        return jnp.asarray(value)
+    return value
 
 
 def _save_array_tree(path: Path, tree: Any) -> None:

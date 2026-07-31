@@ -11,6 +11,7 @@ from world_marl.dreamarl.config import ReplayConfig
 from world_marl.dreamarl.contracts import (
     sequence_batch_to_jax,
     sequence_batch_to_numpy,
+    stack_sequence_batches,
 )
 from world_marl.dreamarl.environments import CoinGameAdapter
 from world_marl.dreamarl.learner import DreaMARLLearner
@@ -85,3 +86,12 @@ def test_checkpoint_roundtrip_restores_every_training_state(tmp_path) -> None:
             np.testing.assert_array_equal(
                 getattr(expected_sample, field), getattr(actual_sample, field)
             )
+
+    update = learner.train_steps(
+        restored,
+        stack_sequence_batches([sequence_batch_to_jax(actual_sample)]),
+    )
+    jax.block_until_ready(update.state.rng)
+    for leaf in jax.tree.leaves(update.state):
+        if hasattr(leaf, "dtype"):
+            assert bool(np.all(np.isfinite(np.asarray(leaf))))
