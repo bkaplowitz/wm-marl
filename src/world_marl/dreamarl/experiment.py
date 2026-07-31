@@ -35,11 +35,11 @@ class DreaMARLExperimentConfig:
 
     seed: int = 0
     total_environment_steps: int = 100_000
-    num_envs: int = 64
+    num_envs: int = 32
     max_episode_steps: int = 64
     initial_random_steps: int = 4_096
     initial_learner_updates: int = 64
-    collect_steps: int = 16
+    collect_steps: int = 32
     learner_updates_per_collect: int = 16
     evaluation_interval: int = 10_000
     evaluation_episodes: int = 128

@@ -188,7 +188,7 @@ legal-action prediction 0.25. KL free nats is 1.0 and categorical unimix is
 
 ## Training Protocol
 
-The maintained CoinGame control gate uses 64 parallel environments, 4,096
+The maintained CoinGame control gate uses 32 parallel environments, 4,096
 initial uniformly random transitions, 64 initial learner updates, then
 alternates 1,024 newly collected transitions with 16 prefetched compiled
 model/actor/critic update transactions. These are protocol settings rather

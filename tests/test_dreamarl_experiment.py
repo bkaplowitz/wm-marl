@@ -16,6 +16,14 @@ from world_marl.dreamarl.experiment import (
 from world_marl.logging import RunLogger
 
 
+def test_default_experiment_is_an_exact_100k_protocol() -> None:
+    experiment = DreaMARLExperimentConfig()
+    assert experiment.total_environment_steps == 100_000
+    assert experiment.total_environment_steps % experiment.num_envs == 0
+    assert experiment.initial_random_steps % experiment.num_envs == 0
+    assert experiment.num_envs * experiment.collect_steps == 1_024
+
+
 def test_end_to_end_experiment_uses_latest_policy_and_exact_budget(tmp_path) -> None:
     model = DreaMARLConfig(
         max_agents=2,
