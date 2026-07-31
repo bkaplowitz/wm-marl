@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import pickle
 import sys
 from pathlib import Path
 
 from world_marl.jepa_transformer.config import JEPATransformerRunSpec
 from world_marl.jepa_transformer.launcher import run_training
 from world_marl.jepa_transformer.runtime import runtime_fingerprint
+from world_marl.scripts.eval_dmc_jepa_transformer import main as eval_main
 from world_marl.scripts.train_dmc_jepa_transformer import main as train_main
 
 
@@ -63,3 +65,37 @@ def test_cli_override_is_explicit_and_manifested(tmp_path):
     launch = json.loads((experiment / "launch.json").read_text())
     index = launch["command"].index("--run.log_every")
     assert launch["command"][index + 1] == "60"
+
+
+def test_latest_checkpoint_evaluation_uses_the_registered_runtime(tmp_path):
+    runtime = tmp_path / "runtime"
+    experiment = tmp_path / "experiment"
+    spec = JEPATransformerRunSpec(
+        experiment_dir=experiment,
+        runtime_root=runtime,
+        python=Path(sys.executable),
+        platform="cpu",
+    )
+    assert run_training(spec, dry_run=True) == 0
+    checkpoint_root = spec.upstream_logdir / "ckpt"
+    checkpoint = checkpoint_root / "checkpoint-123"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "done").touch()
+    with (checkpoint / "step.pkl").open("wb") as handle:
+        pickle.dump(123, handle)
+    (checkpoint_root / "latest").write_text(checkpoint.name)
+
+    assert eval_main([str(experiment), "--python", sys.executable, "--dry-run"]) == 0
+    metadata = json.loads(
+        (
+            experiment
+            / "evaluation"
+            / "latest_20eps_seed10000"
+            / "evaluation_launch.json"
+        ).read_text()
+    )
+    command = metadata["command"]
+    assert command[1] == str(runtime / "dreamerv3" / "main.py")
+    start = command.index("--configs") + 1
+    assert command[start : start + 2] == ["dmc_vision", "jepa_transformer"]
+    assert command[command.index("--run.from_checkpoint") + 1] == str(checkpoint)

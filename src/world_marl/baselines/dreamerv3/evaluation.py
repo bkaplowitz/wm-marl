@@ -59,7 +59,7 @@ def evaluation_command(
     eval_dir: Path,
 ) -> tuple[list[str], dict[str, Any]]:
     launch = _read_json(spec.experiment_dir / "launch.json")
-    upstream_root = Path(launch["upstream_root"])
+    upstream_root = Path(launch.get("upstream_root") or launch["runtime_root"])
     python = spec.python or Path(launch.get("python", default_dreamerv3_python()))
     checkpoint = latest_checkpoint(spec.experiment_dir / "upstream" / "ckpt")
     command = [

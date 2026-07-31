@@ -93,6 +93,7 @@ class JEPATransformerRunSpec:
             "overlay_fingerprint": runtime_fingerprint(),
             "experiment_dir": str(self.experiment_dir),
             "upstream_logdir": str(self.upstream_logdir),
+            "upstream_root": str(self.runtime_root),
             "runtime_root": str(self.runtime_root),
             "python": str(self.python),
             "task": self.task,

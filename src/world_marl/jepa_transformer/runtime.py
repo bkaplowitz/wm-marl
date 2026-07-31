@@ -59,6 +59,22 @@ def default_runtime_root() -> Path:
     )
 
 
+def verify_runtime(runtime_root: str | Path) -> str:
+    """Verify that a generated runtime matches the registered M3 overlay."""
+    revision = verify_upstream(default_upstream_root())
+    runtime_root = Path(runtime_root).resolve()
+    marker = runtime_root / ".jepa-transformer-runtime"
+    expected = f"{revision}\n{runtime_fingerprint()}\n"
+    if not (runtime_root / "dreamerv3" / "main.py").is_file():
+        raise FileNotFoundError(f"JEPA Transformer runtime is missing: {runtime_root}")
+    if not marker.is_file() or marker.read_text(encoding="utf-8") != expected:
+        raise RuntimeError(f"JEPA Transformer runtime marker mismatch: {runtime_root}")
+    installed_overlay = runtime_root / "dreamerv3" / "m3_rssm.py"
+    if installed_overlay.read_bytes() != overlay_path().read_bytes():
+        raise RuntimeError(f"JEPA Transformer runtime overlay mismatch: {runtime_root}")
+    return revision
+
+
 def _replace_once(text: str, old: str, new: str, *, label: str) -> str:
     count = text.count(old)
     if count != 1:
