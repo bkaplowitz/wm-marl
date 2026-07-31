@@ -46,11 +46,27 @@ class TemporalLayer(nn.Module):
 
     def setup(self) -> None:
         self.attention_norm = nn.RMSNorm(name="attention_norm")
-        self.qkv = nn.Dense(3 * self.model_dim, name="qkv")
-        self.attention_out = nn.Dense(self.model_dim, name="attention_out")
+        self.qkv = nn.Dense(
+            3 * self.model_dim,
+            precision=jax.lax.Precision.HIGHEST,
+            name="qkv",
+        )
+        self.attention_out = nn.Dense(
+            self.model_dim,
+            precision=jax.lax.Precision.HIGHEST,
+            name="attention_out",
+        )
         self.ffn_norm = nn.RMSNorm(name="ffn_norm")
-        self.ffn_in = nn.Dense(2 * self.mlp_ratio * self.model_dim, name="ffn_in")
-        self.ffn_out = nn.Dense(self.model_dim, name="ffn_out")
+        self.ffn_in = nn.Dense(
+            2 * self.mlp_ratio * self.model_dim,
+            precision=jax.lax.Precision.HIGHEST,
+            name="ffn_in",
+        )
+        self.ffn_out = nn.Dense(
+            self.model_dim,
+            precision=jax.lax.Precision.HIGHEST,
+            name="ffn_out",
+        )
 
     def __call__(self, inputs: jax.Array, mask: jax.Array) -> jax.Array:
         batch, length, _ = inputs.shape
@@ -61,11 +77,21 @@ class TemporalLayer(nn.Module):
             item.reshape((batch, length, self.num_heads, head_dim))
             for item in jnp.split(qkv, 3, axis=-1)
         ]
-        logits = jnp.einsum("bqhd,bkhd->bhqk", query, key)
+        logits = jnp.einsum(
+            "bqhd,bkhd->bhqk",
+            query,
+            key,
+            precision=jax.lax.Precision.HIGHEST,
+        )
         logits = logits.astype(jnp.float32) / jnp.sqrt(float(head_dim))
         logits = jnp.where(mask, logits, -1e30)
         weights = jax.nn.softmax(logits, axis=-1).astype(inputs.dtype)
-        attended = jnp.einsum("bhqk,bkhd->bqhd", weights, value)
+        attended = jnp.einsum(
+            "bhqk,bkhd->bqhd",
+            weights,
+            value,
+            precision=jax.lax.Precision.HIGHEST,
+        )
         attended = attended.reshape((batch, length, self.model_dim))
         x = residual + self.attention_out(attended)
         residual = x
@@ -89,11 +115,21 @@ class TemporalLayer(nn.Module):
         ]
         keys = jnp.concatenate([cached_keys[:, 1:], key[:, None]], axis=1)
         values = jnp.concatenate([cached_values[:, 1:], value[:, None]], axis=1)
-        logits = jnp.einsum("bhd,bkhd->bhk", query, keys)
+        logits = jnp.einsum(
+            "bhd,bkhd->bhk",
+            query,
+            keys,
+            precision=jax.lax.Precision.HIGHEST,
+        )
         logits = logits.astype(jnp.float32) / jnp.sqrt(float(head_dim))
         logits = jnp.where(valid[:, None], logits, -1e30)
         weights = jax.nn.softmax(logits, axis=-1).astype(inputs.dtype)
-        attended = jnp.einsum("bhk,bkhd->bhd", weights, values)
+        attended = jnp.einsum(
+            "bhk,bkhd->bhd",
+            weights,
+            values,
+            precision=jax.lax.Precision.HIGHEST,
+        )
         x = residual + self.attention_out(attended.reshape((batch, self.model_dim)))
         residual = x
         value_ff, gate = jnp.split(
@@ -113,7 +149,11 @@ class CausalKVTransformer(nn.Module):
     context_length: int
 
     def setup(self) -> None:
-        self.pair_projection = nn.Dense(self.model_dim, name="pair_projection")
+        self.pair_projection = nn.Dense(
+            self.model_dim,
+            precision=jax.lax.Precision.HIGHEST,
+            name="pair_projection",
+        )
         self.start_token = self.param(
             "start_token", nn.initializers.normal(0.02), (self.model_dim,)
         )
