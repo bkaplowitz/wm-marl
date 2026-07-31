@@ -60,3 +60,30 @@ def test_m3_lane_accepts_a_registered_task_subset(monkeypatch, tmp_path):
     assert len(calls) == 2
     assert "dmc_walker_walk" in calls[0]
     assert "world_marl.scripts.eval_dmc_jepa_transformer" in calls[1]
+
+
+def test_m3_lane_stops_after_a_failed_training_run(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 1)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert (
+        main(
+            [
+                "--gpu",
+                "0",
+                "--seed",
+                "0",
+                "--tasks",
+                "dmc_walker_walk",
+                "dmc_cheetah_run",
+                "--output-root",
+                str(tmp_path),
+            ]
+        )
+        == 1
+    )
+    assert len(calls) == 1

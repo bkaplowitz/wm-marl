@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import pickle
+import shutil
 import sys
 from pathlib import Path
 
+import pytest
+
 from world_marl.jepa_transformer.config import JEPATransformerRunSpec
-from world_marl.jepa_transformer.launcher import run_training
+from world_marl.jepa_transformer.launcher import require_free_disk, run_training
 from world_marl.jepa_transformer.runtime import runtime_fingerprint
 from world_marl.scripts.eval_dmc_jepa_transformer import main as eval_main
 from world_marl.scripts.train_dmc_jepa_transformer import main as train_main
@@ -77,6 +80,10 @@ def test_latest_checkpoint_evaluation_uses_the_registered_runtime(tmp_path):
         platform="cpu",
     )
     assert run_training(spec, dry_run=True) == 0
+    launch_path = experiment / "launch.json"
+    launch = json.loads(launch_path.read_text())
+    launch.pop("upstream_root")
+    launch_path.write_text(json.dumps(launch))
     checkpoint_root = spec.upstream_logdir / "ckpt"
     checkpoint = checkpoint_root / "checkpoint-123"
     checkpoint.mkdir(parents=True)
@@ -99,3 +106,13 @@ def test_latest_checkpoint_evaluation_uses_the_registered_runtime(tmp_path):
     start = command.index("--configs") + 1
     assert command[start : start + 2] == ["dmc_vision", "jepa_transformer"]
     assert command[command.index("--run.from_checkpoint") + 1] == str(checkpoint)
+
+
+def test_training_refuses_an_exhausted_output_volume(monkeypatch, tmp_path):
+    usage = shutil.disk_usage(tmp_path)
+    monkeypatch.setattr(
+        "world_marl.jepa_transformer.launcher.shutil.disk_usage",
+        lambda path: usage._replace(free=1024),
+    )
+    with pytest.raises(RuntimeError, match="insufficient free disk"):
+        require_free_disk(tmp_path)

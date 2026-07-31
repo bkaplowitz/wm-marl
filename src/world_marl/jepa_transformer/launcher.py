@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -19,12 +20,25 @@ from world_marl.jepa_transformer.config import JEPATransformerRunSpec
 from world_marl.jepa_transformer.runtime import prepare_runtime, runtime_fingerprint
 
 
+MIN_FREE_DISK_BYTES = 10 * 1024**3
+
+
 def timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def require_free_disk(path: Path, minimum: int = MIN_FREE_DISK_BYTES) -> None:
+    free = shutil.disk_usage(path).free
+    if free < minimum:
+        raise RuntimeError(
+            f"insufficient free disk at {path}: "
+            f"{free / 1024**3:.1f} GiB available, "
+            f"{minimum / 1024**3:.1f} GiB required"
+        )
 
 
 def run_training(
@@ -61,6 +75,7 @@ def run_training(
     if dry_run:
         print(" ".join(spec.command))
         return 0
+    require_free_disk(spec.experiment_dir)
     if not spec.python.exists():
         raise FileNotFoundError(f"Dreamer-CDP Python is missing: {spec.python}")
 

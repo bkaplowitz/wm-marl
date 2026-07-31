@@ -137,8 +137,7 @@ def main(argv: list[str] | None = None) -> int:
                 },
             )
             if returncode:
-                failed += 1
-                continue
+                return 1
         eval_outcome = (
             run_dir / "evaluation" / "latest_20eps_seed10000" / "outcome.json"
         )

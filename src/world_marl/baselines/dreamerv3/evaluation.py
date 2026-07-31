@@ -106,7 +106,7 @@ def run_evaluation(
     if eval_dir.exists():
         raise FileExistsError(f"evaluation directory already exists: {eval_dir}")
     command, launch = evaluation_command(spec, eval_dir=eval_dir)
-    verify_fn(launch["upstream_root"])
+    verify_fn(launch.get("upstream_root") or launch["runtime_root"])
     eval_dir.mkdir(parents=True)
     metadata = {
         "created_at": timestamp(),
