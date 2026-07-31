@@ -8,6 +8,10 @@ from pathlib import Path
 
 import pytest
 
+from world_marl.baselines.dreamerv3.evaluation import (
+    DreamerV3EvaluationSpec,
+    run_evaluation,
+)
 from world_marl.jepa_transformer.config import JEPATransformerRunSpec
 from world_marl.jepa_transformer.launcher import require_free_disk, run_training
 from world_marl.jepa_transformer.runtime import runtime_fingerprint
@@ -116,3 +120,51 @@ def test_training_refuses_an_exhausted_output_volume(monkeypatch, tmp_path):
     )
     with pytest.raises(RuntimeError, match="insufficient free disk"):
         require_free_disk(tmp_path)
+
+
+def test_legacy_manifest_runtime_is_used_as_evaluation_cwd(monkeypatch, tmp_path):
+    runtime = tmp_path / "runtime"
+    experiment = tmp_path / "experiment"
+    spec = JEPATransformerRunSpec(
+        experiment_dir=experiment,
+        runtime_root=runtime,
+        python=Path(sys.executable),
+        platform="cpu",
+    )
+    assert run_training(spec, dry_run=True) == 0
+    launch_path = experiment / "launch.json"
+    launch = json.loads(launch_path.read_text())
+    launch.pop("upstream_root")
+    launch_path.write_text(json.dumps(launch))
+    checkpoint = spec.upstream_logdir / "ckpt" / "checkpoint-123"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "done").touch()
+    with (checkpoint / "step.pkl").open("wb") as handle:
+        pickle.dump(123, handle)
+    (checkpoint.parent / "latest").write_text(checkpoint.name)
+
+    observed = {}
+
+    class FakeProcess:
+        stdout = iter(())
+
+        def wait(self):
+            return 0
+
+    def fake_popen(command, *, cwd, **kwargs):
+        observed["cwd"] = cwd
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        "world_marl.baselines.dreamerv3.evaluation.subprocess.Popen", fake_popen
+    )
+    monkeypatch.setattr(
+        "world_marl.baselines.dreamerv3.evaluation.normalize_evaluation_artifacts",
+        lambda *args, **kwargs: {"completed_episodes": 20},
+    )
+    returncode, _ = run_evaluation(
+        DreamerV3EvaluationSpec(experiment_dir=experiment),
+        verify_fn=lambda path: "verified",
+    )
+    assert returncode == 0
+    assert observed["cwd"] == str(runtime)

@@ -106,7 +106,8 @@ def run_evaluation(
     if eval_dir.exists():
         raise FileExistsError(f"evaluation directory already exists: {eval_dir}")
     command, launch = evaluation_command(spec, eval_dir=eval_dir)
-    verify_fn(launch.get("upstream_root") or launch["runtime_root"])
+    runtime_root = launch.get("upstream_root") or launch["runtime_root"]
+    verify_fn(runtime_root)
     eval_dir.mkdir(parents=True)
     metadata = {
         "created_at": timestamp(),
@@ -135,7 +136,7 @@ def run_evaluation(
     with (eval_dir / "process.log").open("w", encoding="utf-8") as log:
         process = subprocess.Popen(
             command,
-            cwd=launch["upstream_root"],
+            cwd=runtime_root,
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
