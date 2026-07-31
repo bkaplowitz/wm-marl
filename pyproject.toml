@@ -89,6 +89,7 @@ world-marl-train-dmc-jepa-transformer = "world_marl.scripts.train_dmc_jepa_trans
 world-marl-eval-dmc-jepa-transformer = "world_marl.scripts.eval_dmc_jepa_transformer:main"
 world-marl-run-jepatransformer-m3-lane = "world_marl.scripts.run_jepatransformer_m3_lane:main"
 world-marl-verify-jepatransformer = "world_marl.scripts.verify_jepatransformer_foundation:main"
+world-marl-verify-dreamarl = "world_marl.scripts.verify_dreamarl_foundation:main"
 world-marl-train-genie2-continuous-jax = "world_marl.scripts.train_genie2_continuous_jax:main"
 world-marl-train-single-genwm = "world_marl.scripts.train_single_genwm:main"
 world-marl-verify-install = "world_marl.scripts.verify_install:main"
