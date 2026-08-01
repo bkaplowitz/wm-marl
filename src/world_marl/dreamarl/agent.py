@@ -482,7 +482,7 @@ class Agent(embodied.jax.Agent):
         _, (new_carry, entries, outs, mets, _) = self.loss(
             carry, obs, prevact, training=False
         )
-        mets.update(mets)
+        metrics.update(mets)
 
         # Grad norms
         if self.config.report_gradnorms:

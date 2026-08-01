@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import ruamel.yaml as yaml
 from world_marl.dreamarl.axes import (
     broadcast_global_batch,
     broadcast_global_sequence,
@@ -202,3 +203,20 @@ def test_retired_independent_learner_is_absent() -> None:
         "world_model.py",
     }
     assert retired.isdisjoint(path.name for path in package.glob("*.py"))
+
+
+def test_report_merges_world_model_metrics() -> None:
+    source = (algorithm_root() / "agent.py").read_text(encoding="utf-8")
+    assert "metrics.update(mets)" in source
+    assert "mets.update(mets)" not in source
+
+
+def test_locked_baseline_uses_only_uniform_replay() -> None:
+    configs = yaml.YAML(typ="safe").load(
+        (algorithm_root() / "configs.yaml").read_text(encoding="utf-8")
+    )
+    assert configs["defaults"]["replay"]["fracs"] == {
+        "uniform": 1.0,
+        "priority": 0.0,
+        "recency": 0.0,
+    }
