@@ -120,8 +120,9 @@ def build_source(
     if source == "none":
         shape = (*tensors["stoch"].shape[:3], 0)
         return jnp.zeros(shape, jnp.float32)
-    stoch = tensors["stoch"].reshape((*tensors["stoch"].shape[:3], -1))
-    action = tensors["pair"][..., stoch.shape[-1] :]
+    latent_width = int(np.prod(tensors["stoch"].shape[-2:]))
+    stoch = tensors["pair"][..., :latent_width]
+    action = tensors["pair"][..., latent_width:]
     if source == "actions":
         values = jnp.concatenate([jnp.zeros_like(stoch), action], -1)
     elif source == "latents":

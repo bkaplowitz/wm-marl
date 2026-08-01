@@ -57,11 +57,12 @@ def test_leave_one_out_is_permutation_equivariant():
 
 def test_paired_source_preserves_state_action_correspondence():
     tensors = _tensors()
-    source = build_source(tensors, Intervention.PAIRED_PREDICTOR)
     latent_width = np.prod(tensors["stoch"].shape[-2:])
+    tensors["pair"] = tensors["pair"].at[..., :latent_width].add(1000)
+    source = build_source(tensors, Intervention.PAIRED_PREDICTOR)
     np.testing.assert_array_equal(
         source[..., :latent_width],
-        tensors["stoch"].reshape(source.shape[:-1] + (-1,)),
+        tensors["pair"][..., :latent_width],
     )
     np.testing.assert_array_equal(
         source[..., latent_width:], tensors["pair"][..., latent_width:]
