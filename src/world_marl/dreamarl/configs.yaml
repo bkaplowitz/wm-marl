@@ -199,6 +199,7 @@ dmc_vision:
 meltingpot_vision:
   task: meltingpot_coop_mining
   run: {steps: 5e4, train_ratio: 256, envs: 1}
+  jax.prealloc: False
 
 bsuite:
   task: bsuite_mnist/0

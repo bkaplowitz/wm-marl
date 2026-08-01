@@ -113,6 +113,9 @@ class DreaMARLRunSpec:
             "algorithm_overrides": [],
             "platform": self.platform,
             "observation_mode": "vision",
+            "accelerator_memory_preallocation": not self.task.startswith(
+                "meltingpot_"
+            ),
             "configs": [
                 (
                     "meltingpot_vision"
