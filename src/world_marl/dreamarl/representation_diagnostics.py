@@ -168,13 +168,13 @@ def adapter_residual(
 ) -> Array:
     """Apply the shared adapter to grouped ``[B,T,A,D]`` elements."""
 
-    context = leave_one_out_mean(source)
-    projected = jnp.einsum("btad,dh->btah", context, params["input_kernel"])
-    projected = projected + params["input_bias"]
+    elements = jnp.einsum("btad,dh->btah", source, params["input_kernel"])
+    elements = jax.nn.silu(elements + params["input_bias"])
+    context = leave_one_out_mean(elements)
     if recurrent:
         initial = jnp.zeros(
-            (source.shape[0], source.shape[2], projected.shape[-1]),
-            projected.dtype,
+            (source.shape[0], source.shape[2], context.shape[-1]),
+            context.dtype,
         )
 
         def step(carry, current):
@@ -185,10 +185,10 @@ def adapter_residual(
             )
             return carry, carry
 
-        _, hidden = jax.lax.scan(step, initial, projected.swapaxes(0, 1))
+        _, hidden = jax.lax.scan(step, initial, context.swapaxes(0, 1))
         hidden = hidden.swapaxes(0, 1)
     else:
-        hidden = jax.nn.silu(projected)
+        hidden = context
     return (
         jnp.einsum("btah,hd->btad", hidden, params["output_kernel"])
         + params["output_bias"]

@@ -105,6 +105,16 @@ def test_recurrent_adapter_is_causal():
     )
 
 
+def test_adapter_is_permutation_equivariant():
+    source = jax.random.normal(jax.random.key(5), (2, 4, 5, 7))
+    params = init_adapter(jax.random.key(6), 7, 3, 8)
+    params = {**params, "output_kernel": jnp.ones((8, 3))}
+    permutation = jnp.array([3, 1, 4, 0, 2])
+    expected = adapter_residual(params, source)[:, :, permutation]
+    actual = adapter_residual(params, source[:, :, permutation])
+    np.testing.assert_allclose(actual, expected, atol=1e-6)
+
+
 def test_controls_keep_shape_and_null_information():
     values = jnp.arange(3 * 2 * 4 * 5).reshape(3, 2, 4, 5)
     key = jax.random.key(4)
