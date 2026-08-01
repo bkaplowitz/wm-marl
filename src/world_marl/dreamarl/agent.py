@@ -468,6 +468,39 @@ class Agent(embodied.jax.Agent):
         flat_carry, metrics = self._report_local(flat_carry, self._fold_replay(data))
         return unfold_tree_batch(flat_carry, self.num_agents), metrics
 
+    def representation_diagnostics(self, carry, data):
+        """Extract grouped frozen-model tensors without altering learner state."""
+
+        flat_carry = fold_tree_batch(carry, self.num_agents)
+        flat_data = self._fold_replay(data)
+        flat_carry, obs, prevact, _ = self._apply_replay_context(
+            flat_carry, flat_data
+        )
+        enc_carry, dyn_carry, dec_carry = flat_carry
+        reset = obs["is_first"]
+        enc_carry, _, tokens = self.enc(
+            enc_carry, obs, reset, training=False
+        )
+        slow_tokens = None
+        if self.slowenc is not None:
+            _, _, slow_tokens = self.slowenc(
+                enc_carry, obs, reset, training=False
+            )
+        dyn_carry, tensors = self.dyn.representation_diagnostics(
+            dyn_carry,
+            tokens,
+            prevact,
+            reset,
+            training=False,
+            slow_tokens=slow_tokens,
+        )
+        grouped = {
+            key: unfold_agent_sequence(value, self.num_agents)
+            for key, value in tensors.items()
+        }
+        next_carry = (enc_carry, dyn_carry, dec_carry)
+        return unfold_tree_batch(next_carry, self.num_agents), grouped
+
     def _report_local(self, carry, data):
         if not self.config.report:
             return carry, {}

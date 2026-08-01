@@ -321,6 +321,28 @@ class TransformerRSSM(rssm.RSSM):
         metrics["rep_ent"] = self._dist(post).entropy().mean()
         return carry, entries, losses, feat, metrics, None
 
+    def representation_diagnostics(
+        self, carry, tokens, acts, reset, training=False, slow_tokens=None
+    ):
+        """Return transition-aligned frozen-model tensors for offline studies."""
+
+        carry, entries, feat, _ = self.observe(
+            carry, tokens, acts, reset, training
+        )
+        prior = self._prior(feat["deter"])
+        pred_token = self.predictor(feat["deter"])
+        target_token = tokens if slow_tokens is None else slow_tokens
+        return carry, {
+            "pair": f32(entries["pair"]),
+            "deter": f32(feat["deter"]),
+            "stoch": f32(feat["stoch"]),
+            "post_logit": f32(feat["logit"]),
+            "prior_logit": f32(prior),
+            "pred_token": f32(pred_token),
+            "target_token": f32(target_token),
+            "reset": reset,
+        }
+
     def _cache(self, carry):
         return {key: carry[key] for key in ("keys", "values", "valid", "position")}
 
