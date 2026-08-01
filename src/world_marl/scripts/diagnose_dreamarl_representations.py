@@ -144,6 +144,14 @@ def _json_metrics(metrics: dict[str, jax.Array]) -> dict[str, float]:
 def run(args: argparse.Namespace) -> dict[str, object]:
     tensors = _load(args.dataset)
     train, validation = _split(tensors, args.validation_fraction, args.seed)
+    teacher_forced_validation = {
+        key: validation[key] for key in REQUIRED_KEYS if key in validation
+    }
+    _, teacher_forced_metrics = loss_and_metrics(
+        None,
+        teacher_forced_validation,
+        Intervention.BASELINE,
+    )
     config = AdapterConfig(
         hidden=args.hidden,
         learning_rate=args.learning_rate,
@@ -209,6 +217,9 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "steps": config.steps,
             "batch_size": config.batch_size,
             "seed": config.seed,
+        },
+        "references": {
+            "teacher_forced_baseline": _json_metrics(teacher_forced_metrics),
         },
         "interventions": results,
     }
