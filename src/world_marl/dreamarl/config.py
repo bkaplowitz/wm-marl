@@ -61,6 +61,11 @@ class DreaMARLRunSpec:
         outputs = ["jsonl", "scope"]
         if self.wandb_project:
             outputs.append("wandb")
+        suite_config = (
+            "meltingpot_vision"
+            if self.task.startswith("meltingpot_")
+            else "dmc_vision"
+        )
         command = [
             str(self.python),
             "-m",
@@ -68,7 +73,7 @@ class DreaMARLRunSpec:
             "--logdir",
             str(self.logdir),
             "--configs",
-            "dmc_vision",
+            suite_config,
             "jepa_transformer",
             "--task",
             self.task,
@@ -108,7 +113,14 @@ class DreaMARLRunSpec:
             "algorithm_overrides": [],
             "platform": self.platform,
             "observation_mode": "vision",
-            "configs": ["dmc_vision", "jepa_transformer"],
+            "configs": [
+                (
+                    "meltingpot_vision"
+                    if self.task.startswith("meltingpot_")
+                    else "dmc_vision"
+                ),
+                "jepa_transformer",
+            ],
             "source_fingerprint": runtime_fingerprint(),
             "save_every_seconds": self.save_every_seconds,
             "wandb_project": self.wandb_project,

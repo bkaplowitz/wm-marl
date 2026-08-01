@@ -51,7 +51,7 @@ def verify_m3_reduction_contract(spec: DreaMARLRunSpec) -> dict[str, object]:
 
     oracle = JEPATransformerRunSpec(
         experiment_dir=spec.experiment_dir,
-        task=spec.task,
+        task=(spec.task if spec.task.startswith("dmc_") else "dmc_reacher_easy"),
         seed=spec.seed,
         train_steps=spec.train_steps,
         platform=spec.platform,
@@ -62,7 +62,12 @@ def verify_m3_reduction_contract(spec: DreaMARLRunSpec) -> dict[str, object]:
         wandb_entity=spec.wandb_entity,
         extra_args=(),
     )
-    if _semantic_arguments(spec.command) != _semantic_arguments(oracle.command):
+    normalize_environment = not spec.task.startswith("dmc_")
+    if _semantic_arguments(
+        spec.command, normalize_environment=normalize_environment
+    ) != _semantic_arguments(
+        oracle.command, normalize_environment=normalize_environment
+    ):
         raise RuntimeError("first-party DreaMARL training regime diverged from M3")
     return {
         "verified_official_commit": revision,
@@ -76,7 +81,9 @@ def verify_m3_reduction_contract(spec: DreaMARLRunSpec) -> dict[str, object]:
     }
 
 
-def _semantic_arguments(command: list[str]) -> list[str]:
+def _semantic_arguments(
+    command: list[str], *, normalize_environment: bool = False
+) -> list[str]:
     """Normalize source/log paths and the shape-only axis declaration."""
 
     arguments = list(command[3:] if command[1] == "-m" else command[2:])
@@ -85,4 +92,9 @@ def _semantic_arguments(command: list[str]) -> list[str]:
         del arguments[index : index + 2]
     logdir = arguments.index("--logdir") + 1
     arguments[logdir] = "<logdir>"
+    if normalize_environment:
+        configs = arguments.index("--configs") + 1
+        arguments[configs] = "<environment-config>"
+        task = arguments.index("--task") + 1
+        arguments[task] = "<task>"
     return arguments

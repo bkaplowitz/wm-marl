@@ -213,6 +213,13 @@ def make_replay(config, folder, mode='train'):
 
 def make_env(config, index, **overrides):
   suite, task = config.task.split('_', 1)
+  if suite == 'meltingpot':
+    from .meltingpot import MeltingPotEnv
+    kwargs = config.env.get(suite, {})
+    kwargs.update(overrides)
+    if kwargs.pop('use_seed', False):
+      kwargs['seed'] = hash((config.seed, index)) % (2 ** 32 - 1)
+    return wrap_env(MeltingPotEnv(task, **kwargs), config)
   if suite == 'memmaze':
     from embodied.envs import from_gym
     import memory_maze  # noqa

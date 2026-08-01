@@ -75,6 +75,22 @@ def test_multi_agent_invocation_keeps_the_m3_regime(tmp_path: Path) -> None:
     assert verification["algorithm_overrides"] == []
 
 
+def test_meltingpot_invocation_changes_environment_only(tmp_path: Path) -> None:
+    spec = _spec(
+        tmp_path,
+        task="meltingpot_coop_mining",
+        num_agents=6,
+        train_steps=50_000,
+    )
+    verification = verify_m3_reduction_contract(spec)
+    assert verification["num_agents"] == 6
+    assert verification["algorithm_overrides"] == []
+    assert spec.to_dict()["configs"] == [
+        "meltingpot_vision",
+        "jepa_transformer",
+    ]
+
+
 def test_agent_count_never_selects_learner_computation() -> None:
     source = (algorithm_root() / "agent.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
