@@ -14,9 +14,6 @@ import elements
 import embodied
 import numpy as np
 
-from world_marl.envs.meltingpot_adapter import make_meltingpot_env
-
-
 BENCHMARK_SUBSTRATES = (
     "chicken_in_the_matrix__arena",
     "coop_mining",
@@ -40,9 +37,15 @@ class MeltingPotEnv(embodied.Env):
         seed: int | None = None,
         parallel_env=None,
     ):
-        self._env = parallel_env or make_meltingpot_env(
-            substrate, max_cycles=max_cycles
-        )
+        if parallel_env is None:
+            from shimmy import MeltingPotCompatibilityV0
+
+            parallel_env = MeltingPotCompatibilityV0(
+                substrate_name=substrate,
+                max_cycles=max_cycles,
+                render_mode=None,
+            )
+        self._env = parallel_env
         self._agents = tuple(self._env.possible_agents)
         if not self._agents:
             raise ValueError("Melting Pot must expose at least one agent")
