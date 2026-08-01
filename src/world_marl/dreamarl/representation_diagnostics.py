@@ -123,9 +123,9 @@ def build_source(
     stoch = tensors["stoch"].reshape((*tensors["stoch"].shape[:3], -1))
     action = tensors["pair"][..., stoch.shape[-1] :]
     if source == "actions":
-        values = action
+        values = jnp.concatenate([jnp.zeros_like(stoch), action], -1)
     elif source == "latents":
-        values = stoch
+        values = jnp.concatenate([stoch, jnp.zeros_like(action)], -1)
     elif source == "paired":
         values = jnp.concatenate([stoch, action], -1)
     else:

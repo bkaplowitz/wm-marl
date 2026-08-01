@@ -67,6 +67,20 @@ def test_paired_source_preserves_state_action_correspondence():
     )
 
 
+def test_predictor_sources_have_parameter_matched_widths():
+    tensors = _tensors()
+    widths = {
+        build_source(tensors, intervention).shape[-1]
+        for intervention in (
+            Intervention.ACTIONS_PREDICTOR,
+            Intervention.LATENTS_PREDICTOR,
+            Intervention.PAIRED_PREDICTOR,
+            Intervention.PAIRED_SHUFFLED_PREDICTOR,
+        )
+    }
+    assert widths == {tensors["pair"].shape[-1]}
+
+
 def test_zero_initialized_adapter_is_exact_baseline():
     tensors = _tensors()
     source = build_source(tensors, Intervention.PAIRED_PREDICTOR)
