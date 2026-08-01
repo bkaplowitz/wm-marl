@@ -1,231 +1,194 @@
 # DreaMARL Architecture
 
-## Purpose
+## 1. Design Invariant
 
-DreaMARL is a reconstruction-free stochastic Transformer world model for
-cooperative multi-agent reinforcement learning. It learns a single coherent
-latent world, advances every agent from the same joint state and joint action,
-and trains shared decentralized policies with centralized value learning.
+DreaMARL is the multi-agent scaling of the registered M3 algorithm. It is one
+agent-axis-native architecture, not a collection of single-agent and
+multi-agent implementations.
 
-The maintained implementation is first-party code under
-`world_marl.dreamarl`. Pinned external repositories are evaluation baselines;
-they are not runtime dependencies of DreaMARL.
-
-## Non-Negotiable Design Rules
-
-1. All time, environment, and agent axes remain explicit.
-2. Environment resets, true terminals, and agent lifecycles have separate
-   representations.
-3. The actor observes only the focal agent's latent belief. The critic may
-   observe all active agents' beliefs.
-4. Every imagined transition consumes one complete joint action and advances
-   all agents together.
-5. Pixel reconstruction is not a training objective. Future observations are
-   supervised through stopped target-encoder embeddings.
-6. Collection, sequence learning, and imagination use JAX transformations;
-   Python loops are orchestration only.
-7. CoinGame is a contract and control gate, not a special case in the model.
-
-## Trajectory Contract
-
-Replay is transition-centric so terminal observations are never replaced by
-auto-reset observations:
+All collected and replayed trajectories use an explicit agent axis:
 
 ```text
-observations        [T, env, agent, ...]
-next_observations   [T, env, agent, ...]
-actions        [T, env, agent, ...]
-rewards        [T, env, agent]
-team_rewards   [T, env]
-agent_alive         [T, env, agent]
-next_agent_alive    [T, env, agent]
-action_mask         [T, env, agent, action]  # discrete actions, optional
-next_action_mask    [T, env, agent, action]  # discrete actions, optional
-is_first       [T, env]
-is_last        [T, env]
-is_terminal    [T, env]
-valid          [T, env]
+policy: [batch, agent, ...]
+replay: [batch, time, agent, ...]
 ```
 
-`is_last` cuts temporal state before the next replay record. `is_terminal`
-alone disables Bellman bootstrapping. `agent_alive` masks inactive agents
-without ending the joint environment. Adapters must preserve the real
-successor in `next_observations` and put any auto-reset observation into the
-next record's `observations` with `is_first = True`.
+The encoder, decoder, world model, actor, critic, losses, and optimizers share
+their parameters across that axis. Neural computation folds `batch * agent`,
+runs the unchanged M3 modules, and restores the explicit axis afterward. Loss
+reductions average over agents in the same way M3 averages over batch items.
 
-Replay samples are `[time, batch, agent, ...]` views of this contract. The
-first state of every sampled window is an artificial temporal cut, not an
-environment terminal.
+There is no conditional module activation, alternate learner, or changed
+training regime based on the number of agents. For one agent, every fold and
+unfold is an identity reshape. The resulting parameter tree and numerical
+computation therefore reduce to M3.
 
-## World Model
+## 2. First-Party Source
 
-For each agent `i` at state `t`:
+The executable implementation is maintained under `world_marl.dreamarl`.
+DreaMARL executes its own `main.py`, `agent.py`, configuration, and environment
+contracts directly. It uses the pinned Dreamer-CDP checkout only for the
+Embodied runtime, replay storage, device distribution, and utility libraries.
 
-```text
-e_t^i = Encoder(o_t^i)
-h_t^i = LocalTransformer(history_<t^i)
-p(z_t^i | h_t^i)                         prior
-q(z_t^i | h_t^i, e_t^i)                  posterior
-b_t^i = concat(h_t^i, z_t^i)             local belief
-```
+The exact registered M3 source is preserved under `world_marl.dreamarl.m3` as
+the reduction oracle. Its provenance is:
 
-The encoder and local temporal Transformer share parameters across agents.
-The stochastic state is a set of categorical variables trained with balanced
-prior/posterior KL and free bits.
+- Dreamer-CDP commit `a851fa3e3d70b624b094ee1810ad4bb602346092`;
+- the registered causal-Transformer RSSM integration from this repository;
+- the upstream MIT license retained beside the source.
 
-One masked cross-agent block receives every active local belief and action:
+No generated overlay or prior M3 launcher is used by the DreaMARL executable.
 
-```text
-c_t^{1:A} = CrossAgent({b_t^i, a_t^i}_{i=1}^A, alive_t)
-```
+## 3. Shared M3 Model Lifted Across Agents
 
-Because each action-tagged token attends to every other active token, each
-transition is conditioned on the complete joint action. The resulting context
-is appended to each local temporal history, producing the next temporal state,
-stochastic prior, reward, continuation, and embedding prediction.
+Every agent uses the same shared model parameters. Agent count is only a
+tensor extent supplied by the environment contract. It is not a mode flag:
+no model component, loss, optimizer, schedule, or replay rule is enabled or
+disabled when that extent changes.
 
-The representation target is:
+### Visual representation
 
-```text
-target_t+1^i = stop_gradient(TargetEncoder(o_t+1^i))
-```
+- Input image: `64 x 64 x 3` pixels.
+- Encoder: the M3 convolutional visual encoder.
+- Decoder: the M3 visual decoder, retained for reconstruction training and
+  open-loop reporting.
+- Reconstruction targets do not backpropagate through the representation when
+  `dec_grad: false`, matching the registered configuration.
 
-The target encoder is an exponential moving average of the online encoder.
-There is no observation decoder in the learning path.
+### Stochastic state
 
-Lifecycle and legal-action heads receive the masked local context, pooled
-joint context, and a slot identity. Inactive agents cannot affect active-agent
-dynamics, but the model can still predict a later respawn from the joint
-state. Agent death is therefore not hard-coded as irreversible.
+- 32 categorical variables;
+- 64 classes per variable;
+- 2,048-dimensional flattened stochastic sample;
+- 1% uniform mixture for categorical regularization.
 
-The world-model objective is:
+### Causal Transformer dynamics
 
-```text
-L_world =
-    L_JEPA
-  + beta_dyn * L_prior
-  + beta_rep * L_posterior
-  + beta_reward * L_team_reward
-  + beta_agent_reward * L_agent_reward
-  + beta_continue * L_continue
-  + beta_alive * L_agent_alive
-  + beta_action_mask * L_action_mask
-```
+- model width: 512;
+- layers: 4;
+- attention heads: 8;
+- feed-forward expansion: 4;
+- recurrent KV context: 64 transitions;
+- deterministic output state: 8,192 dimensions;
+- RMS normalization, SiLU activations, and rotary position encoding.
 
-Losses are masked by transition validity, lifecycle, and reset boundaries.
-Reported loss terms are normalized independently; adding agents or ensemble
-members must not silently multiply optimizer scale.
+At each time step the temporal input is the previous stochastic state joined
+with the previous bounded action. The recurrent KV cache summarizes causal
+history. The posterior combines the current encoded observation with the
+Transformer state; the prior predicts the stochastic state from the
+Transformer state alone.
 
-Team reward is the mean over active-agent rewards, which keeps its scale
-independent of team size. Team reward, per-agent reward, and centralized value
-use a shared 255-bin symlog two-hot representation over [-20, 20]; raw
-task-scale returns are never clipped before this transform.
+### Prediction heads
 
-## Actor-Critic and Imagination
+The shared latent state feeds:
 
-The shared actor maps one local belief and local action mask to one agent's
-action distribution:
+- reward prediction;
+- continuation prediction;
+- visual reconstruction;
+- the bounded-Normal actor;
+- the distributional value critic.
 
-```text
-pi(a_t^i | b_t^i)
-```
+### JEPA objective
 
-The actor never receives another agent's private observation or belief. The
-centralized critic receives the masked set of all beliefs and predicts team
-return. Parameter sharing supports different active-agent counts while an
-optional learned identity embedding handles heterogeneous roles.
+The deterministic state predicts the current encoder token. The target is a
+stopped-gradient token from the same encoder because `slowenc.enable: false`
+in the registered M3 configuration. The loss is cosine distance with weight
+500. KL dynamics and representation losses retain the original free-nat and
+loss-scale settings.
 
-Imagined rollouts begin from posterior replay states. At every imagined step:
+## 4. Control
 
-1. all active actors produce one joint action;
-2. the cross-agent transition consumes the complete joint action;
-3. every local Transformer cache advances exactly once;
-4. all next stochastic beliefs are sampled from their priors;
-5. centralized reward, continuation, and value predictions form lambda
-   returns;
-6. actor and critic updates use the same coherent imagined world.
+The actor and critic are unchanged from M3:
 
-No focal-agent rollout is permitted to evolve while teammate states remain
-fixed or are independently resampled.
+- actor: three hidden layers of width 1,024;
+- continuous distribution: bounded Normal with standard deviation in
+  `[0.1, 1.0]` and 1% action mixture;
+- critic: three hidden layers of width 1,024 with a 255-bin symlog two-hot
+  output;
+- imagination length: 15;
+- effective return horizon: 333;
+- lambda: 0.95;
+- actor entropy coefficient: `3e-4`;
+- slow-value update rate: `0.02` every update;
+- replay-value loss enabled.
 
-Actor advantages are normalized by a checkpointed exponential moving average
-of the 5th-to-95th percentile lambda-return range. The critic still learns the
-unclipped task-scale return through its symlog two-hot distribution.
+The actor is decentralized in the out-of-the-box scaling: each agent acts from
+its own M3 latent state, while all agents share one policy. No agent-count-
+dependent actor or critic is introduced.
 
-## Maintained Default Configuration
+The current reduction baseline applies the same temporal model independently
+to each folded agent trajectory. This is a uniform operation for every agent
+count, including one; it is not a conditional fallback. Any future
+cross-agent operator must likewise be defined over the agent axis for every
+axis extent and have an explicit one-agent reduction. It must never be
+activated by an `if num_agents > 1` branch.
 
-The model defaults are task-independent. Environment adapters supply only the
-number of agent slots and discrete action count.
+## 5. Training Regime
 
-| Component | Maintained setting |
-| --- | --- |
-| Shared vector encoder | 2 x 256 MLP, SiLU, RMSNorm |
-| Shared visual encoder | 4 stride-2 CNN blocks, depth 32/64/128/256 |
-| Embedding width | 128 |
-| Local temporal model | 3 causal Transformer layers |
-| Temporal width / heads / context | 256 / 4 / 64 |
-| Stochastic state | 16 categorical variables x 16 classes |
-| Cross-agent model | 1 masked attention layer, width 256, 4 heads |
-| Shared actor | 2 x 256 MLP, categorical policy |
-| Centralized critic | masked agent attention plus 256-wide value head |
-| Imagination | horizon 15, discount 0.99, lambda 0.95 |
-| Replay | 100,000 joint transitions, sequences 64, batch 16 |
-| World / actor / critic LR | 1e-4 / 3e-5 / 1e-4 |
-| Encoder / critic EMA decay | 0.99 / 0.98 |
-| Entropy coefficient | 3e-4 |
-| Global gradient clipping | 100 for world model and actor-critic |
+Agent count does not change the M3 training configuration:
 
-For two-agent CoinGame with five actions and 36-dimensional local vector
-observations, this resolves to 5,130,385 world-model parameters, 264,965 actor
-parameters, and 1,315,839 critic parameters: 6,711,189 trainable parameters in
-total. The run manifest recomputes these counts from initialized parameter
-trees because visual encoder size depends on image geometry.
+- batch size: 16 joint sequences;
+- sequence length: 64 plus 64 replay-context transitions;
+- replay capacity: 5 million joint transitions;
+- replay sampling: uniform and online;
+- visual-DMC train ratio: 256;
+- optimizer: the registered M3 multi-transform optimizer;
+- encoder learning rate: `6e-6`;
+- dynamics learning rate: `4e-4`;
+- remaining module learning rate: `4e-5`;
+- AGC: `0.3`;
+- BF16 compute;
+- identical warmup, checkpoint, RNG, reporting, and evaluation semantics.
 
-The loss coefficients are JEPA 1.0, dynamics KL 0.5, representation KL 0.1,
-team reward 1.0, per-agent reward 0.25, continuation 1.0, lifecycle 0.5, and
-legal-action prediction 0.25. KL free nats is 1.0 and categorical unimix is
-0.01.
+One environment step remains one joint environment step regardless of agent
+count. Increasing the number of agents adds aligned observations and actions to
+that joint transition; it does not multiply the update cadence or silently
+change the real-to-replay ratio.
 
-## Training Protocol
+The registered one-agent model has 164,884,230 trainable parameters. Parameter
+sharing means this count is independent of the number of agents in the current
+out-of-the-box scaling.
 
-The maintained CoinGame control gate uses 32 parallel environments, 4,096
-initial uniformly random transitions, 64 initial learner updates, then
-alternates 1,024 newly collected transitions with 16 prefetched compiled
-model/actor/critic update transactions. These are protocol settings rather
-than environment-specific model changes.
+## 6. Lifecycle Contract
 
-Evaluation uses deterministic actions from the latest policy. It never
-selects or restores a better checkpoint. Evaluation interactions are recorded
-separately and never counted in the training budget. A checkpoint contains
-all optimizer states, target networks, return-normalization state, PRNG state,
-environment state, temporal caches, replay contents, replay cursor, and replay
-sampler RNG.
+Joint lifecycle fields remain environment-level scalars:
 
-## Computational Contract
+- `is_first` resets all recurrent agent states at a joint episode boundary;
+- `is_last` marks any episode or time-limit boundary;
+- `is_terminal` alone disables continuation bootstrapping;
+- `reward` is the cooperative environment reward used by every shared-policy
+  agent.
 
-- Environments and agents are batched with `vmap` or equivalent fused axes.
-- Time, recurrent collection, and imagination use `lax.scan`.
-- Recurrent temporal inference uses a bounded KV cache shared with the
-  parallel sequence path.
-- Shapes are static within a compiled run; inactive agents use masks.
-- Replay transfer is prefetched and contains contiguous sequence windows.
-- The run manifest records parameter count, learner and environment
-  throughput, and imagined-to-real ratio.
+These fields are broadcast across the agent axis immediately before the M3
+loss. Local observations, actions, recurrent entries, and decoder entries keep
+the explicit agent axis in replay.
 
-## Required Gates
+## 7. Single-Agent Reduction Gate
 
-The maintained learner cannot be promoted unless all of these pass:
+Before interpreting any MARL result, the singleton geometry must pass:
 
-1. shape and lifecycle contract tests;
-2. temporal causality and episode-isolation tests;
-3. recurrent KV-cache versus parallel-sequence equivalence;
-4. inactive-agent and illegal-action masking;
-5. complete-joint-action sensitivity;
-6. target-encoder stop-gradient and EMA routing;
-7. coherent-imagination alignment across agents;
-8. tiny-dataset world-model overfit;
-9. deterministic rerun equivalence;
-10. a real-environment control gate against MAPPO under matched accounting.
+1. frozen M3 source and configuration identity;
+2. equal parameter names, shapes, dtypes, and total count;
+3. equal outputs and recurrent state on fixed inputs and RNG seeds;
+4. equal loss terms and gradients on fixed replay batches;
+5. equal optimizer state and parameters after one update;
+6. equal replay samples and environment-step accounting;
+7. equal latest-policy evaluation on Reacher Easy, Cheetah Run, and Hopper Hop
+   under one shared configuration.
 
-Environment-specific reward shaping, task-specific replay rules, and hidden
-checkpoint selection are outside the algorithm.
+The single-agent DMC adapter only inserts and removes a singleton agent axis.
+It makes no random calls and does not alter observation, action, reward, or
+episode values.
+
+## 8. Current Scope
+
+The model and replay contracts are agent-axis-native. The currently connected
+behavioral gate is visual DMC through the singleton adapter. A native MAMuJoCo
+adapter is the next environment integration after the numerical and behavioral
+single-agent gates pass.
+
+The first multi-agent experiment is intentionally the unchanged, parameter-
+shared M3 model described above. Cross-agent communication, centralized value
+information, or other MARL-specific mechanisms are scientific interventions,
+not implicit consequences of changing agent count. They are considered only
+after this out-of-the-box baseline identifies an actual multi-agent failure.
