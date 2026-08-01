@@ -193,11 +193,13 @@ def normalize_training_artifacts(
     train_steps_budget: int,
     bin_size: int = 10_000,
     implementation: str = "danijar/dreamerv3",
+    artifact_subdir: str = "upstream",
 ) -> dict[str, Any]:
     experiment_dir = Path(experiment_dir)
+    artifact_dir = experiment_dir / artifact_subdir
     normalized_dir = experiment_dir / "normalized"
     normalized_dir.mkdir(parents=True, exist_ok=True)
-    scores_path = experiment_dir / "upstream" / "scores.jsonl"
+    scores_path = artifact_dir / "scores.jsonl"
     scores = extract_episode_scores(read_jsonl(scores_path))
     curve = bin_episode_scores(scores, bin_size=bin_size, max_steps=train_steps_budget)
     reference = load_official_reference(upstream_root, task=task)
@@ -205,7 +207,7 @@ def normalize_training_artifacts(
     checkpoint_path = None
     checkpoint_env_steps = None
     try:
-        checkpoint = latest_checkpoint(experiment_dir / "upstream" / "ckpt")
+        checkpoint = latest_checkpoint(artifact_dir / "ckpt")
         checkpoint_path = str(checkpoint.path)
         checkpoint_env_steps = checkpoint.env_steps
     except FileNotFoundError:

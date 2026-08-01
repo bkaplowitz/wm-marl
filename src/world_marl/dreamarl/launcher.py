@@ -97,7 +97,8 @@ def run_training(
         task=spec.task,
         seed=spec.seed,
         train_steps_budget=spec.train_steps,
-        implementation="DreaMARL single-agent parity gate",
+        implementation="first-party DreaMARL",
+        artifact_subdir="run",
     )
     _write_json(
         spec.experiment_dir / "outcome.json",
