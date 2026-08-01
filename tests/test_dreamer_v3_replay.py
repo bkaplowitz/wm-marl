@@ -1,118 +1,63 @@
 from __future__ import annotations
 
 import copy
+import gc
 import inspect
-import json
-import os
-import subprocess
-import sys
-import threading
-import time
+from argparse import Namespace
+from collections.abc import Callable, Mapping
+from collections import deque
 from pathlib import Path
+from types import MappingProxyType
+from typing import Any, NoReturn, cast
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
-import world_marl.dreamer_v3_baseline as dreamer_package
-import world_marl.dreamer_v3_baseline.replay as replay_module
-import world_marl.jepa.replay as jepa_replay
 from world_marl.dreamer_v3_baseline.config import (
     DreamerProfile,
+    ObservationMode,
     ReplayConfig,
+    SequenceShapeConfig,
 )
+from world_marl.dreamer_v3_baseline.fixture_generator import _parse_args
 from world_marl.dreamer_v3_baseline.networks import TensorSpace
-from world_marl.dreamer_v3_baseline.oracle import (
-    OracleHarness,
-    OracleManifest,
-    official_revision,
-    profile_overrides,
+from world_marl.dreamer_v3_baseline.oracle import OracleManifest
+from world_marl.dreamer_v3_baseline.replay import (
+    ConsecutiveStream,
+    DreamerReplay,
+    OnlineQueue,
+    ReplayBatch,
+    ReplayChunk,
+    ReplayKey,
+    ReplayWriter,
+    UniformSelector,
 )
-from world_marl.dreamer_v3_baseline.replay_oracle import (
-    REPLAY_SOURCE_SPEC,
-    run_replay_case,
-)
+
+
+Array = npt.NDArray[np.generic]
+
+
+class _PCG64String(str):
+    pass
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "dreamer_v3"
-OFFICIAL_CHECKOUT = Path(
-    os.environ.get(
-        "DREAMERV3_ORACLE_CHECKOUT",
-        "/private/tmp/danijar-dreamerv3-20260713",
-    )
-)
-ELEMENTS_PACKAGE_DIR = Path(
-    os.environ.get(
-        "DREAMERV3_ELEMENTS_PACKAGE_DIR",
-        "/private/tmp/dreamerv3-upstream-venv/lib/python3.11/site-packages/elements",
-    )
-)
-ELEMENTS_DIST_INFO = Path(
-    os.environ.get(
-        "DREAMERV3_ELEMENTS_DIST_INFO",
-        "/private/tmp/dreamerv3-upstream-venv/lib/python3.11/site-packages/"
-        "elements-3.22.0.dist-info",
-    )
-)
-SOURCE_HASHES = {
-    "dreamerv3/configs.yaml": (
-        "9dff9c7062e3e33951cb54c6dd4b598aaf7e56e18e2cff39c812eaa797bcfcfc"
-    ),
-    "embodied/core/chunk.py": (
-        "427b537afa75079a9f0dfd933ec49e6f71173371388418176c16c038be005c65"
-    ),
-    "embodied/core/replay.py": (
-        "ea70f6f0494c0520acd357190c5c78bee46b0365dd950231ca522ddb6dbdd027"
-    ),
-    "embodied/core/selectors.py": (
-        "b8cb69021e8f79888df88fb5c195e8ff19e3d54065bb08bd3586fd9cbe6655d3"
-    ),
-    "embodied/core/streams.py": (
-        "8c75583d15be013a22058721f8f055c9c7ccaca95360d6ed100f60dc29ee19e5"
-    ),
+OFFICIAL_CHECKOUT = Path("/private/tmp/danijar-dreamerv3-20260713")
+REVISIONS = {
+    DreamerProfile.PAPER: "bfcdfc183d2c1543a3bf3cdda6edb7fae29b6a01",
+    DreamerProfile.UPSTREAM_CURRENT: "e3f02248693a79dc8b0ebd62c93683888ddaccfe",
 }
-
-
-def _official_arrays(
-    profile: DreamerProfile = DreamerProfile.PAPER,
-) -> dict[str, np.ndarray]:
-    path = FIXTURE_DIR / f"{profile.value}-proprio-replay.npz"
-    with np.load(path, allow_pickle=False) as fixture:
-        return {name: fixture[name] for name in fixture.files}
-
-
-def _selector_rng_bytes(selector: UniformSelector) -> np.ndarray:
-    payload = json.dumps(selector.state_dict()["rng_state"], sort_keys=True).encode()
-    return np.frombuffer(payload, np.uint8).copy()
-
-
-def _replay_execution_coordinates() -> dict[str, Path]:
-    return {
-        "elements_dist_info": ELEMENTS_DIST_INFO,
-        "elements_package_dir": ELEMENTS_PACKAGE_DIR,
-        "official_checkout": OFFICIAL_CHECKOUT,
-        "python_executable": Path(sys.executable),
-    }
-
-
-ReplayKey = replay_module.ReplayKey
-ReplayBatch = replay_module.ReplayBatch
-ReplayChunk = replay_module.ReplayChunk
-ReplayWriter = replay_module.ReplayWriter
-OnlineQueue = replay_module.OnlineQueue
-UniformSelector = replay_module.UniformSelector
-ConsecutiveStream = replay_module.ConsecutiveStream
-DreamerReplay = replay_module.DreamerReplay
 
 
 def _transition_spaces() -> dict[str, TensorSpace]:
     return {
-        "action": TensorSpace((), "float32"),
+        "action": TensorSpace((2,), "float32"),
         "is_first": TensorSpace((), "bool"),
         "is_last": TensorSpace((), "bool"),
         "is_terminal": TensorSpace((), "bool"),
-        "obs": TensorSpace((2,), "uint8"),
+        "obs": TensorSpace((1,), "float32"),
         "reward": TensorSpace((), "float32"),
-        "value": TensorSpace((), "int32"),
     }
 
 
@@ -123,40 +68,22 @@ def _latent_spaces() -> dict[str, TensorSpace]:
     }
 
 
-def _row(
-    index: int,
+def _sequence(
     *,
-    first: bool | None = None,
-    last: bool | None = None,
-    terminal: bool = False,
-) -> dict[str, object]:
-    return {
-        "action": float(index),
-        "dyn/deter": np.asarray([index + 1000, index + 1001], np.float32),
-        "dyn/stoch": np.asarray([[index + 2000, index + 2001]], np.float32),
-        "is_first": index == 0 if first is None else first,
-        "is_last": False if last is None else last,
-        "is_terminal": terminal,
-        "obs": [index, index + 1],
-        "reward": float(index),
-        "value": index,
-    }
-
-
-def _config(
-    *,
-    capacity: int = 20,
-    chunk_size: int = 3,
-    online: bool = True,
+    batch: int = 1,
+    length: int = 2,
     context: int = 1,
-    sequence_length: int = 2,
-) -> ReplayConfig:
-    return ReplayConfig(
-        capacity=capacity,
-        chunk_size=chunk_size,
-        online=online,
+    consecutive: int = 1,
+    report_length: int = 2,
+    report_consecutive: int = 1,
+) -> SequenceShapeConfig:
+    return SequenceShapeConfig(
+        batch_size=batch,
+        sequence_length=length,
         context=context,
-        sequence_length=sequence_length,
+        consecutive=consecutive,
+        report_length=report_length,
+        report_consecutive=report_consecutive,
     )
 
 
@@ -164,3894 +91,3103 @@ def _replay(
     *,
     capacity: int = 20,
     chunk_size: int = 3,
-    online: bool = True,
-    context: int = 1,
-    sequence_length: int = 2,
-    consecutive: int = 1,
-    batch_size: int = 1,
-    seed: int = 7,
+    online_queue_size: int = 20,
+    sequence: SequenceShapeConfig | None = None,
 ) -> DreamerReplay:
     return DreamerReplay(
-        _config(
+        ReplayConfig(
             capacity=capacity,
             chunk_size=chunk_size,
-            online=online,
-            context=context,
-            sequence_length=sequence_length,
+            online_queue_size=online_queue_size,
         ),
+        sequence or _sequence(),
         _transition_spaces(),
         _latent_spaces(),
-        batch_size=batch_size,
-        consecutive=consecutive,
-        seed=seed,
     )
 
 
-def _add_rows(
-    replay: DreamerReplay,
-    count: int,
+def _row(
+    value: int,
     *,
-    worker: int = 0,
-    natural_last: bool = False,
-) -> list[ReplayKey]:
-    keys = []
-    for index in range(count):
-        keys.append(
-            replay.add(
-                _row(
-                    index,
-                    first=index in (0, 4, 8),
-                    last=natural_last and index in (3, 7),
-                ),
-                worker=worker,
-            )
-        )
-    return keys
+    first: bool = False,
+    last: bool = False,
+    terminal: bool = False,
+    action: tuple[float, float] | None = None,
+) -> dict[str, object]:
+    if action is None:
+        action = (0.0, 0.0) if last else (value + 1.25, -value - 1.5)
+    return {
+        "action": np.asarray(action, np.float32),
+        "dyn/deter": np.asarray([100 + value, 200 + value], np.float32),
+        "dyn/stoch": np.asarray([[300 + value, 400 + value]], np.float32),
+        "is_first": first,
+        "is_last": last,
+        "is_terminal": terminal,
+        "obs": np.asarray([value], np.float32),
+        "reward": np.float32(value),
+    }
 
 
-def _decode(ids: np.ndarray) -> list[ReplayKey]:
-    return [ReplayKey.from_step_id(value) for value in ids.reshape(-1, 20)]
+def _add(replay: DreamerReplay, count: int, *, worker: int = 0) -> list[ReplayKey]:
+    return [
+        replay.add(_row(index, first=index == 0), worker=worker)
+        for index in range(count)
+    ]
 
 
-def _valid_step_ids(batch: int, length: int) -> np.ndarray:
-    return np.stack(
-        [
-            np.stack(
-                [
-                    ReplayKey(
-                        (batch_index + 1).to_bytes(16, "big"), offset
-                    ).to_step_id()
-                    for offset in range(length)
-                ]
-            )
-            for batch_index in range(batch)
-        ]
-    )
-
-
-def _resolve_keys(
-    replay: DreamerReplay,
-    start: ReplayKey,
-    length: int,
-) -> list[ReplayKey]:
-    keys = []
-    chunk_id = start.chunk_id
-    offset = start.offset
-    while len(keys) < length:
-        chunk = replay.chunks[chunk_id]
-        while offset < chunk.length and len(keys) < length:
-            keys.append(ReplayKey(chunk_id, offset))
-            offset += 1
-        if len(keys) < length:
-            assert chunk.successor_id is not None
-            chunk_id = chunk.successor_id
-            offset = 0
-    return keys
-
-
-def _recomputed_refs(replay: DreamerReplay) -> dict[bytes, int]:
-    refs = {chunk_id: 0 for chunk_id in replay.chunks}
-    for chunk in replay.chunks.values():
-        if chunk.successor_id is not None:
-            refs[chunk.successor_id] += 1
-    for writer in replay.writers.values():
-        if writer.current_chunk_id is not None:
-            refs[writer.current_chunk_id] += 1
-        for key in writer.pending:
-            refs[key.chunk_id] += 1
-    for key in replay.items.values():
-        refs[key.chunk_id] += 1
-    return refs
-
-
-def _assert_tree_equal(left, right) -> None:
+def _tree_equal(left: object, right: object) -> None:
     if isinstance(left, np.ndarray):
+        assert isinstance(right, np.ndarray)
         np.testing.assert_array_equal(left, right)
     elif isinstance(left, dict):
+        assert isinstance(right, dict)
         assert left.keys() == right.keys()
         for key in left:
-            _assert_tree_equal(left[key], right[key])
-    elif isinstance(left, (list, tuple)):
-        assert type(left) is type(right)
+            _tree_equal(left[key], right[key])
+    elif isinstance(left, list):
+        assert isinstance(right, list)
         assert len(left) == len(right)
-        for x, y in zip(left, right, strict=True):
-            _assert_tree_equal(x, y)
+        for lhs, rhs in zip(left, right, strict=True):
+            _tree_equal(lhs, rhs)
     else:
         assert left == right
 
 
-def _assert_restore_rejected_without_mutation(
-    replay: DreamerReplay,
-    broken: dict[str, object],
-) -> None:
-    before = replay.state_dict()
-    with pytest.raises((TypeError, ValueError)):
-        replay.load_state_dict(broken)
-    _assert_tree_equal(replay.state_dict(), before)
-
-
-@pytest.mark.parametrize("profile", tuple(DreamerProfile))
-def test_replay_fixture_manifest_source_and_exact_official_arrays(profile) -> None:
-    stem = f"{profile.value}-proprio-replay"
-    fixture_path = FIXTURE_DIR / f"{stem}.npz"
-    manifest_path = FIXTURE_DIR / f"{stem}.manifest.json"
-    manifest = OracleManifest.load(manifest_path, fixture_path=fixture_path)
-    request = json.loads(manifest.generator_request)
-    assert manifest.source_spec == REPLAY_SOURCE_SPEC.name == "replay"
-    assert dict(manifest.official_file_hashes) == SOURCE_HASHES
-    assert manifest.official_commit == official_revision(profile)
-    assert dict(manifest.overrides) == dict(profile_overrides(profile))
-    assert request["official_commit"] == official_revision(profile)
-    assert request["cases"]["primary"]["raw_length"] == 5
-    assert request["cases"]["primary"]["collection_latent_bases"] == {
-        "dyn/deter": 1000,
-        "dyn/stoch": 2000,
-    }
-    assert request["cases"]["primary"]["latent_update_bases"] == {
-        "dyn/deter": 100,
-        "dyn/stoch": 200,
-    }
-    assert request["cases"]["capacity"] == {
-        "batch": 1,
-        "capacity": 3,
-        "chunk_size": 3,
-        "collection_latent_bases": {"dyn/deter": 1000, "dyn/stoch": 2000},
-        "first_steps": [0, 4, 8],
-        "last_steps": [3, 7],
-        "online": True,
-        "raw_length": 4,
-        "seed": 7,
-        "selector_checkpoints": [6, 8],
-        "selector_draws": 12,
-        "steps": 10,
-        "terminal_steps": [],
-    }
-    assert list(request["row_schema"]) == sorted(request["row_schema"])
-    assert request["row_schema"]["dyn/stoch"] == {
-        "dtype": "float32",
-        "shape": [1, 2],
-    }
-    assert request["runtime"]["elements_mode"] == "debug"
-    assert request["runtime"]["elements_version"] == "3.22.0"
-    assert request["runtime"]["numpy_version"] == "1.26.4"
-    assert request["runtime"]["worker_mode"] == "isolated-ast-exec"
-    assert request["runtime"]["elements_helper_hashes"] == {
-        "elements/checkpoint.py": (
-            "80f2fe99141d5bd1c96d9c5f32502cfff4fb5e56571595a092c6aace12f42e92"
-        ),
-        "elements/rwlock.py": (
-            "020866b2d6d1216c3d9e8019d641bd5f073ea90d2cf5646361a722b0e156b9be"
-        ),
-        "elements/uuid.py": (
-            "e8829a81c80058e4f130a5821acd9db62de5f72fbb02ad4b10262ccfa3006d6a"
-        ),
-    }
-    assert set(request["runtime"]["shim_hashes"]) == {
-        "Limiters",
-        "RWLock",
-        "Section",
-        "Timer",
-        "UUID",
-        "timestamp",
-    }
-    assert request["compute_dtype"] == manifest.dtype == "float32"
-    assert request["uuid_mode"] == "debug-counter"
-    with np.load(fixture_path, allow_pickle=False) as arrays:
-        np.testing.assert_array_equal(arrays["raw.train_values"], [[1, 2, 3, 4, 5]])
-        np.testing.assert_array_equal(arrays["raw.report_values"], [[6, 7, 8, 9, 10]])
-        np.testing.assert_array_equal(arrays["consecutive0.values"], [[6, 7, 8]])
-        np.testing.assert_array_equal(arrays["consecutive1.values"], [[8, 9, 10]])
-        np.testing.assert_array_equal(arrays["capacity.selector_keys"], [4, 5, 6])
-        np.testing.assert_array_equal(
-            arrays["capacity.selector_draws"], [6, 5, 6, 6, 5, 6, 6, 4, 4, 4, 4, 6]
-        )
-
-
-@pytest.mark.parametrize("profile", tuple(DreamerProfile))
-def test_replay_fixture_regeneration_is_byte_deterministic(
-    profile, tmp_path: Path
-) -> None:
-    if not (OFFICIAL_CHECKOUT / ".git").exists():
-        pytest.skip("explicit DreamerV3 oracle checkout is unavailable")
-    first = OracleHarness(OFFICIAL_CHECKOUT, tmp_path / "first")
-    second = OracleHarness(OFFICIAL_CHECKOUT, tmp_path / "second")
-    first_npz, first_manifest = run_replay_case(
-        first,
-        profile,
-        elements_package_dir=ELEMENTS_PACKAGE_DIR,
-        elements_dist_info=ELEMENTS_DIST_INFO,
-    )
-    second_npz, second_manifest = run_replay_case(
-        second,
-        profile,
-        elements_package_dir=ELEMENTS_PACKAGE_DIR,
-        elements_dist_info=ELEMENTS_DIST_INFO,
-    )
-    committed_stem = f"{profile.value}-proprio-replay"
-    assert first_npz.read_bytes() == second_npz.read_bytes()
-    assert first_manifest.read_bytes() == second_manifest.read_bytes()
-    assert (
-        first_npz.read_bytes() == (FIXTURE_DIR / f"{committed_stem}.npz").read_bytes()
-    )
-    assert (
-        first_manifest.read_bytes()
-        == (FIXTURE_DIR / f"{committed_stem}.manifest.json").read_bytes()
-    )
-
-
-@pytest.mark.parametrize("profile", tuple(DreamerProfile))
-def test_recorded_replay_worker_replays_all_arrays_and_attestations(profile) -> None:
-    stem = f"{profile.value}-proprio-replay"
-    fixture_path = FIXTURE_DIR / f"{stem}.npz"
-    manifest_path = FIXTURE_DIR / f"{stem}.manifest.json"
-    manifest = OracleManifest.load(manifest_path, fixture_path=fixture_path)
-    invocation = manifest.resolve_generator_invocation(
-        **_replay_execution_coordinates()
-    )
-    envelope = json.loads(invocation.generator_request)
-    request = envelope["request"]
-    execution = envelope["execution"]
-    assert tuple(manifest.generator_command)[-1] == "_worker"
-    assert Path(invocation.command[0]).resolve() == Path(sys.executable).resolve()
-    assert execution["python_executable"] == invocation.command[0]
-    assert execution["elements_package_dir"].endswith("site-packages/elements")
-    assert execution["elements_dist_info"].endswith("elements-3.22.0.dist-info")
-    completed = subprocess.run(
-        invocation.command,
-        cwd=invocation.cwd,
-        input=invocation.generator_request,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    payload = json.loads(completed.stdout)
-    repeated = json.loads(
-        subprocess.run(
-            invocation.command,
-            cwd=invocation.cwd,
-            input=invocation.generator_request,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
-    )
-    assert repeated["arrays"] == payload["arrays"]
-    assert repeated["runtime"] == payload["runtime"]
-    assert repeated["source_attestation"] == payload["source_attestation"]
-    assert int(repeated["worker_pid"]) != os.getpid()
-    assert payload["runtime"] == request["runtime"]
-    assert int(payload["worker_pid"]) > 0
-    assert int(payload["worker_pid"]) != os.getpid()
-    assert payload["source_attestation"]["classes"] == [
-        "Chunk",
-        "Consec",
-        "Replay",
-        "Uniform",
-    ]
-    assert payload["source_attestation"]["bindings"] == [
-        "chunk.elements",
-        "chunk.numpy",
-        "consec.numpy",
-        "replay.chunk",
-        "replay.elements",
-        "replay.numpy",
-        "replay.uniform",
-        "uniform.numpy",
-    ]
-    expected_origins = {
-        "Chunk.append": "embodied/core/chunk.py",
-        "Chunk.update": "embodied/core/chunk.py",
-        "Consec.__next__": "embodied/core/streams.py",
-        "Replay._sample": "embodied/core/replay.py",
-        "Replay.add": "embodied/core/replay.py",
-        "Replay.sample": "embodied/core/replay.py",
-        "Replay.update": "embodied/core/replay.py",
-        "Uniform.__call__": "embodied/core/selectors.py",
-        "Uniform.__delitem__": "embodied/core/selectors.py",
-        "Uniform.__setitem__": "embodied/core/selectors.py",
-    }
-    assert payload["source_attestation"]["method_origins"] == {
-        name: f"{official_revision(profile)}:{path}"
-        for name, path in expected_origins.items()
-    }
-    assert payload["source_attestation"]["native_module_violations"] == []
-    with np.load(fixture_path, allow_pickle=False) as expected:
-        expected_names = {
-            "capacity.chunk_ids",
-            "capacity.fifo",
-            "capacity.intermediate6",
-            "capacity.intermediate8",
-            "capacity.item_ids",
-            "capacity.queue_chunks",
-            "capacity.queue_offsets",
-            "capacity.refs",
-            "capacity.rng_after_online",
-            "capacity.rng_before_online",
-            "capacity.selector_draws",
-            "capacity.selector_keys",
-            "capacity.start_chunks",
-            "capacity.start_offsets",
-            "capacity.train_values",
-            "collection.deter",
-            "collection.stoch",
-            "consecutive0.consec",
-            "consecutive0.first",
-            "consecutive0.last",
-            "consecutive0.stepid",
-            "consecutive0.values",
-            "consecutive1.consec",
-            "consecutive1.first",
-            "consecutive1.last",
-            "consecutive1.stepid",
-            "consecutive1.values",
-            "raw.item_ids",
-            "raw.online_chunks",
-            "raw.online_offsets",
-            "raw.report_deter",
-            "raw.report_first",
-            "raw.report_last",
-            "raw.report_stepid",
-            "raw.report_stoch",
-            "raw.report_terminal",
-            "raw.report_values",
-            "raw.start_chunks",
-            "raw.start_offsets",
-            "raw.train_values",
-            "source_config.batch_length",
-            "source_config.chunk_size",
-            "source_config.context",
-            "source_config.online",
-            "source_config.uniform",
-            "writeback.deter",
-            "writeback.logical_values",
-            "writeback.stoch",
-        }
-        assert set(expected.files) == set(payload["arrays"]) == expected_names
-        assert len(expected.files) == len(payload["arrays"]) == 48
-        assert expected.files == sorted(payload["arrays"])
-        for name in expected.files:
-            spec = payload["arrays"][name]
-            actual = np.asarray(spec["values"], dtype=spec["dtype"])
-            np.testing.assert_array_equal(actual, expected[name], err_msg=name)
-
-
-@pytest.mark.parametrize("profile", tuple(DreamerProfile))
-def test_replay_oracle_worker_never_imports_native_replay(profile) -> None:
-    stem = f"{profile.value}-proprio-replay"
-    manifest = OracleManifest.load(
-        FIXTURE_DIR / f"{stem}.manifest.json",
-        fixture_path=FIXTURE_DIR / f"{stem}.npz",
-    )
-    invocation = manifest.resolve_generator_invocation(
-        **_replay_execution_coordinates()
-    )
-    command = (
-        invocation.command[0],
-        "-X",
-        "importtime",
-        *invocation.command[1:],
-    )
-    completed = subprocess.run(
-        command,
-        cwd=OFFICIAL_CHECKOUT,
-        input=invocation.generator_request,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    imported = [
-        line.rsplit("|", 1)[-1].strip()
-        for line in completed.stderr.splitlines()
-        if line.startswith("import time:")
-    ]
-    assert "world_marl.dreamer_v3_baseline.replay" not in imported
-    assert "world_marl.dreamer_v3_baseline.replay_oracle" not in imported
-
-
-@pytest.mark.parametrize(
-    ("module_name", "module_path"),
-    [
-        ("world_marl.dreamer_v3_baseline.replay", None),
-        ("world_marl.dreamer_v3_baseline.replay_oracle", None),
-        (
-            "untrusted_replay_alias",
-            Path(replay_module.__file__).resolve(),
-        ),
-    ],
-)
-def test_replay_oracle_worker_rejects_injected_native_modules(
-    module_name: str,
-    module_path: Path | None,
-) -> None:
-    manifest = OracleManifest.load(
-        FIXTURE_DIR / "paper-proprio-replay.manifest.json",
-        fixture_path=FIXTURE_DIR / "paper-proprio-replay.npz",
-    )
-    invocation = manifest.resolve_generator_invocation(
-        **_replay_execution_coordinates()
-    )
-    oracle_path = Path(invocation.command[1]).resolve()
-    lines = [
-        "import runpy, sys",
-        "from types import ModuleType",
-        f"module = ModuleType({module_name!r})",
-    ]
-    if module_path is not None:
-        lines.append(f"module.__file__ = {str(module_path)!r}")
-    lines.extend(
-        [
-            f"sys.modules[{module_name!r}] = module",
-            f"sys.argv = [{str(oracle_path)!r}, '_worker']",
-            f"runpy.run_path({str(oracle_path)!r}, run_name='__main__')",
-        ]
-    )
-    completed = subprocess.run(
-        [invocation.command[0], "-c", "\n".join(lines)],
-        cwd=OFFICIAL_CHECKOUT,
-        input=invocation.generator_request,
-        capture_output=True,
-        text=True,
-    )
-    assert completed.returncode != 0
-    assert "forbidden native replay modules loaded" in completed.stderr
-
-
-def test_replay_key_exact_encoding_order_and_fresh_copy() -> None:
-    low = ReplayKey(bytes.fromhex("00" * 15 + "01"), 0x01020304)
-    high = ReplayKey(bytes.fromhex("00" * 15 + "02"), 0)
-    encoded = low.to_step_id()
-    assert encoded.dtype == np.uint8
-    assert encoded.shape == (20,)
-    assert encoded[:16].tobytes() == low.chunk_id
-    assert encoded[16:].tolist() == [1, 2, 3, 4]
-    assert ReplayKey.from_step_id(encoded) == low
-    assert len({low, ReplayKey(low.chunk_id, low.offset)}) == 1
-    assert ReplayKey(low.chunk_id, low.offset - 1) < low
-    assert low < high
-    encoded[:] = 0
-    np.testing.assert_array_equal(low.to_step_id()[16:], [1, 2, 3, 4])
-    assert ReplayKey.from_state_dict(low.state_dict()) == low
-    for broken in (
-        {"chunk_id": b"short", "offset": 0},
-        {"chunk_id": bytes(16), "offset": -1},
-        {"chunk_id": bytes(16), "offset": 2**32},
-        {"chunk_id": bytes(16)},
-        {"chunk_id": bytes(16), "offset": 0, "extra": 1},
-        {"chunk_id": bytes(16), "offset": np.int64(0)},
-    ):
-        with pytest.raises((TypeError, ValueError)):
-            ReplayKey.from_state_dict(broken)
-    for broken in (None, [], "not-a-state"):
-        with pytest.raises((TypeError, ValueError)):
-            ReplayKey.from_state_dict(broken)
-
-
-@pytest.mark.parametrize(
-    "operation",
-    [
-        lambda: ReplayKey(b"short", 0),
-        lambda: ReplayKey(bytearray(16), 0),
-        lambda: ReplayKey("0" * 16, 0),
-        lambda: ReplayKey(bytes(16), -1),
-        lambda: ReplayKey(bytes(16), 1.0),
-        lambda: ReplayKey(bytes(16), True),
-        lambda: ReplayKey(bytes(16), 2**32),
-        lambda: ReplayKey.from_step_id(np.zeros((19,), np.uint8)),
-        lambda: ReplayKey.from_step_id(np.zeros((20,), np.int8)),
-        lambda: ReplayKey.from_step_id(np.zeros((1, 20), np.uint8)),
-    ],
-)
-def test_replay_key_rejects_invalid_identity(operation) -> None:
-    with pytest.raises((TypeError, ValueError)):
-        operation()
-
-
-def test_replay_batch_validates_copies_slices_and_as_dict() -> None:
-    data = {
-        "value": np.arange(10, dtype=np.int32).reshape(2, 5),
-        "is_first": np.zeros((2, 5), bool),
-    }
-    step_ids = _valid_step_ids(2, 5)
-    batch = ReplayBatch(data, step_ids)
-    data["value"][:] = -1
-    step_ids[:] = 9
-    np.testing.assert_array_equal(batch.data["value"], np.arange(10).reshape(2, 5))
-    np.testing.assert_array_equal(batch.step_ids, _valid_step_ids(2, 5))
-    sliced = batch[:, 1:4]
-    assert sliced.step_ids.shape == (2, 3, 20)
-    payload = batch.as_dict()
-    assert set(payload) == {"value", "is_first", "stepid"}
-    payload["value"][:] = -2
-    assert batch.data["value"][0, 0] == 0
-    with pytest.raises(ValueError):
-        ReplayBatch({"x": np.zeros((2, 4))}, np.zeros((2, 5, 20), np.uint8))
-
-
-@pytest.mark.parametrize(
-    "keys",
-    (
-        [ReplayKey((1).to_bytes(16, "big"), 0)] * 2,
-        [
-            ReplayKey((1).to_bytes(16, "big"), 1),
-            ReplayKey((1).to_bytes(16, "big"), 0),
-        ],
-        [
-            ReplayKey((1).to_bytes(16, "big"), 0),
-            ReplayKey((2).to_bytes(16, "big"), 1),
-        ],
-        [
-            ReplayKey((2).to_bytes(16, "big"), 0),
-            ReplayKey((1).to_bytes(16, "big"), 0),
-        ],
-        [
-            ReplayKey((1).to_bytes(16, "big"), 0),
-            ReplayKey((2).to_bytes(16, "big"), 0),
-            ReplayKey((1).to_bytes(16, "big"), 1),
-        ],
-    ),
-    ids=(
-        "duplicate",
-        "reversed-offset",
-        "cross-chunk-nonzero-offset",
-        "reversed-chunk",
-        "recurrent-chunk",
-    ),
-)
-def test_replay_batch_rejects_nonchronological_step_ids(
-    keys: list[ReplayKey],
-) -> None:
-    step_ids = np.stack([np.stack([key.to_step_id() for key in keys])])
-    data = {"value": np.zeros((1, len(keys)), np.int32)}
-
-    with pytest.raises(ValueError, match="chronolog"):
-        ReplayBatch(data, step_ids)
-
-
-def test_row_schema_coercion_chronology_and_no_key_drift() -> None:
-    replay = _replay(sequence_length=1, context=0, online=False)
-    first = replay.add(_row(0, first=True, last=True, terminal=True))
-    second = replay.add(_row(1, first=True))
-    third = replay.add(_row(2, first=True))  # abandoned reset is valid.
-    assert first.offset == 0 and second.offset == 1 and third.offset == 2
-    batch = replay.sample_raw("report", timeout=0.1)
-    assert batch.data["obs"].dtype == np.uint8
-    assert batch.data["action"].dtype == np.float32
-    sampled_index = int(batch.data["value"][0, 0])
-    np.testing.assert_array_equal(
-        batch.data["dyn/deter"][0, 0],
-        [sampled_index + 1000, sampled_index + 1001],
-    )
-    np.testing.assert_array_equal(
-        batch.data["dyn/stoch"][0, 0],
-        [[sampled_index + 2000, sampled_index + 2001]],
-    )
-    with pytest.raises(ValueError, match="first"):
-        _replay().add(_row(0, first=False))
-    with pytest.raises(ValueError, match="terminal"):
-        _replay().add(_row(0, first=True, last=False, terminal=True))
-    invalid_next = _replay(sequence_length=1, context=0)
-    invalid_next.add(_row(0, first=True, last=True))
-    before_invalid_next = invalid_next.state_dict()
-    with pytest.raises(ValueError, match="first"):
-        invalid_next.add(_row(1, first=False))
-    _assert_tree_equal(invalid_next.state_dict(), before_invalid_next)
-    nonempty = _replay(sequence_length=1, context=0)
-    nonempty.add(_row(0))
-    before_nonempty = nonempty.state_dict()
-    malformed_nonempty = _row(1, first=False)
-    malformed_nonempty["extra"] = 1
-    with pytest.raises(ValueError):
-        nonempty.add(malformed_nonempty)
-    _assert_tree_equal(nonempty.state_dict(), before_nonempty)
-    for mutate in (
-        lambda row: row.pop("reward"),
-        lambda row: row.pop("dyn/deter"),
-        lambda row: row.update(extra=1),
-        lambda row: row.update(**{"dyn/extra": np.zeros((), np.float32)}),
-        lambda row: row.update(stepid=np.zeros(20, np.uint8)),
-        lambda row: row.update(consec=np.zeros((), np.int32)),
-        lambda row: row.update(obs=[1, 2, 3]),
-        lambda row: row.update(**{"dyn/deter": np.zeros((1,), np.float32)}),
-        lambda row: row.update(**{"dyn/stoch": np.zeros((1, 2), np.float64)}),
-        lambda row: row.update(is_terminal=[False]),
-        lambda row: row.update(reward="not-a-number"),
-    ):
-        target = _replay()
-        row = _row(0)
-        mutate(row)
-        before = target.state_dict()
-        with pytest.raises((TypeError, ValueError)):
-            target.add(row)
-        _assert_tree_equal(target.state_dict(), before)
-
-
-def test_writer_identity_and_exact_worker_ids_are_enforced_without_mutation() -> None:
-    replay = _replay(sequence_length=1, context=0, online=False)
-    detached = ReplayWriter(0, replay)
-    before = replay.state_dict()
-    with pytest.raises(RuntimeError, match="active"):
-        detached.add(_row(0))
-    _assert_tree_equal(replay.state_dict(), before)
-
-    replay.add(_row(0), worker=0)
-    stale = replay.writers[0]
-    replay.load_state_dict(replay.state_dict())
-    before = replay.state_dict()
-    with pytest.raises(RuntimeError, match="active"):
-        stale.add(_row(1, first=False))
-    _assert_tree_equal(replay.state_dict(), before)
-
-    for worker in (True, False, 1.0, np.int64(1)):
-        target = _replay(sequence_length=1, context=0, online=False)
-        target.add(_row(0), worker=int(worker))
-        before = target.state_dict()
-        with pytest.raises(TypeError, match="worker"):
-            target.add(_row(1, first=False), worker=worker)
-        _assert_tree_equal(target.state_dict(), before)
-
-
-def test_chunk_fixed_storage_seal_copy_read_and_latent_only_update() -> None:
-    chunk_id = (1).to_bytes(16, "big")
-    successor = (2).to_bytes(16, "big")
-    chunk = ReplayChunk(chunk_id, 2, _transition_spaces(), _latent_spaces())
-    assert chunk.transition_data == {}
-    assert chunk.latent_data == {}
-    empty_state = chunk.state_dict()
-    assert all(value.shape[0] == 0 for value in empty_state["transition"].values())
-    assert all(value.shape[0] == 0 for value in empty_state["latent"].values())
-    empty_restored = ReplayChunk.from_state_dict(
-        empty_state, _transition_spaces(), _latent_spaces()
-    )
-    assert empty_restored.transition_data == {}
-    assert empty_restored.latent_data == {}
-    first = chunk.append(_row(0))
-    assert all(value.shape[0] == 2 for value in chunk.transition_data.values())
-    assert all(value.shape[0] == 2 for value in chunk.latent_data.values())
-    np.testing.assert_array_equal(chunk.latent_data["dyn/deter"][0], [1000, 1001])
-    np.testing.assert_array_equal(chunk.latent_data["dyn/stoch"][0], [[2000, 2001]])
-    second = chunk.append(_row(1, first=False))
-    assert first == ReplayKey(chunk_id, 0)
-    assert second == ReplayKey(chunk_id, 1)
-    assert chunk.length == chunk.size == 2
-    with pytest.raises((IndexError, RuntimeError, ValueError)):
-        chunk.append(_row(2, first=False))
-    chunk.seal(successor)
-    assert chunk.sealed and chunk.successor_id == successor
-    assert all(not value.flags.writeable for value in chunk.transition_data.values())
-    assert all(value.flags.writeable for value in chunk.latent_data.values())
-    sealed_state = chunk.state_dict()
-    with pytest.raises((RuntimeError, ValueError)):
-        chunk.seal((3).to_bytes(16, "big"))
-    _assert_tree_equal(chunk.state_dict(), sealed_state)
-    read = chunk.read(0, 2)
-    read["value"][:] = 99
-    assert chunk.read(0, 2)["value"].tolist() == [0, 1]
-    chunk.update_context(
-        1,
-        {
-            "dyn/deter": np.asarray([5, 6], np.float32),
-            "dyn/stoch": np.asarray([[7, 8]], np.float32),
-        },
-    )
-    np.testing.assert_array_equal(chunk.read(1, 1)["dyn/deter"], [[5, 6]])
-    with pytest.raises((KeyError, ValueError)):
-        chunk.update_context(0, {"reward": np.asarray(4, np.float32)})
-    for offset, length in ((-1, 1), (0, 3), (2, 1)):
-        with pytest.raises((IndexError, ValueError)):
-            chunk.read(offset, length)
-    before_bad_update = chunk.state_dict()
-    with pytest.raises((IndexError, ValueError)):
-        chunk.update_context(
-            2,
-            {
-                "dyn/deter": np.asarray([1, 2], np.float32),
-                "dyn/stoch": np.asarray([[3, 4]], np.float32),
-            },
-        )
-    _assert_tree_equal(chunk.state_dict(), before_bad_update)
-    with pytest.raises((RuntimeError, ValueError)):
-        chunk.append(_row(2, first=False))
-    _assert_tree_equal(chunk.state_dict(), before_bad_update)
-    partial = ReplayChunk(
-        (9).to_bytes(16, "big"), 2, _transition_spaces(), _latent_spaces()
-    )
-    partial.append(_row(0))
-    with pytest.raises((TypeError, ValueError)):
-        partial.seal(b"short")
-    partial_before = partial.state_dict()
-    with pytest.raises((RuntimeError, ValueError), match="full"):
-        partial.seal((10).to_bytes(16, "big"))
-    _assert_tree_equal(partial.state_dict(), partial_before)
-    partial.append(_row(1, first=False))
-    partial.seal((10).to_bytes(16, "big"))
-    restored = ReplayChunk.from_state_dict(
-        chunk.state_dict(), _transition_spaces(), _latent_spaces()
-    )
-    assert restored.sealed and restored.successor_id == successor
-    assert not restored.transition_data["value"].flags.writeable
-
-
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        lambda row: row.update(**{"dyn/deter": np.zeros((1,), np.float32)}),
-        lambda row: row.update(**{"dyn/stoch": np.zeros((1, 2), np.float64)}),
-    ],
-)
-@pytest.mark.parametrize("populated", [False, True], ids=["fresh", "partial"])
-def test_chunk_latent_append_validation_is_transactional(
-    mutate,
-    populated: bool,
-) -> None:
-    chunk = ReplayChunk(
-        (17).to_bytes(16, "big"),
-        3,
+def _restore(replay: DreamerReplay, state: object) -> DreamerReplay:
+    return DreamerReplay.from_state_dict(
+        state,
+        replay.config,
+        replay.sequence_shape,
         _transition_spaces(),
         _latent_spaces(),
     )
-    if populated:
-        chunk.append(_row(0))
-    before = chunk.state_dict()
-    transition_allocated = bool(chunk.transition_data)
-    latent_allocated = bool(chunk.latent_data)
-    row = _row(1, first=False)
-    mutate(row)
-    with pytest.raises((TypeError, ValueError)):
-        chunk.append(row)
-    assert chunk.length == int(populated)
-    assert bool(chunk.transition_data) is transition_allocated
-    assert bool(chunk.latent_data) is latent_allocated
-    _assert_tree_equal(chunk.state_dict(), before)
 
 
-def test_interleaved_workers_keep_independent_streams_links_and_resets() -> None:
-    replay = _replay(sequence_length=2, context=0, online=False, chunk_size=2)
-    histories = {10: [], 20: []}
-    for index in range(5):
-        histories[10].append(replay.add(_row(index, first=index in (0, 3)), worker=10))
-        histories[20].append(
-            replay.add(_row(100 + index, first=index in (0, 2)), worker=20)
-        )
-    assert set(replay.writers) == {10, 20}
-    assert all(isinstance(writer, ReplayWriter) for writer in replay.writers.values())
-    starts = list(replay.items.values())
-    assert len(starts) == 8
-    worker_chunks = {
-        worker: {key.chunk_id for key in histories[worker]} for worker in histories
+def _replace_chunk_id(value: object, old: bytes, new: bytes) -> object:
+    if type(value) is dict:
+        return {
+            new if key == old else key: _replace_chunk_id(item, old, new)
+            for key, item in value.items()
+        }
+    if type(value) is list:
+        return [_replace_chunk_id(item, old, new) for item in value]
+    return new if type(value) is bytes and value == old else value
+
+
+def _replace_item_id(state: dict[str, object], new: object) -> None:
+    items = cast(list[dict[str, object]], state["items"])
+    old = items[0]["item_id"]
+    items[0]["item_id"] = new
+    state["fifo"] = [
+        new if item == old else item for item in cast(list[object], state["fifo"])
+    ]
+    selector = cast(dict[str, object], state["selector"])
+    selector["keys"] = [
+        new if item == old else item for item in cast(list[object], selector["keys"])
+    ]
+    indices = cast(dict[object, object], selector["indices"])
+    selector["indices"] = {
+        new if item == old else item: index for item, index in indices.items()
     }
-    assert worker_chunks[10].isdisjoint(worker_chunks[20])
-    for worker, writer in replay.writers.items():
-        assert writer.row_count == 5, worker
-        assert len(writer.pending) == 1
-    for worker, chunk_ids in worker_chunks.items():
-        for chunk_id in chunk_ids:
-            chunk = replay.chunks[chunk_id]
-            if chunk.successor_id is not None:
-                assert chunk.successor_id in chunk_ids, worker
-    for start in replay.items.values():
-        owners = [worker for worker, keys in histories.items() if start in keys]
-        assert len(owners) == 1
-        resolved = _resolve_keys(replay, start, 2)
-        assert all(key.chunk_id in worker_chunks[owners[0]] for key in resolved)
-    assert all(replay.refs[chunk_id] > 0 for chunk_id in replay.chunks)
-    replay.validate()
 
 
-def test_exact_valid_starts_cross_chunks_and_episode_boundaries() -> None:
-    official = _official_arrays()
-    replay = _replay(sequence_length=4, context=1, online=False)
-    _add_rows(replay, 11)
-    expected = [
-        ReplayKey(int(chunk).to_bytes(16, "big"), int(offset))
-        for chunk, offset in zip(
-            official["raw.start_chunks"],
-            official["raw.start_offsets"],
-            strict=True,
-        )
-    ]
-    assert list(replay.items.values()) == expected
-    np.testing.assert_array_equal(list(replay.items), official["raw.item_ids"])
-    assert len(replay) == len(official["raw.item_ids"])
-    for start in replay.items.values():
-        resolved = _resolve_keys(replay, start, 5)
-        assert resolved[0] == start and len(resolved) == 5
-    assert ReplayKey((3).to_bytes(16, "big"), 1) not in replay.items.values()
+def _recompute_serialized_refs(state: dict[str, object]) -> None:
+    chunks = cast(list[dict[str, object]], state["chunks"])
+    refs = {cast(bytes, chunk["chunk_id"]): np.int64(0) for chunk in chunks}
+    for chunk in chunks:
+        successor = chunk["successor"]
+        if successor is not None:
+            refs[cast(bytes, successor)] += 1
+    writers = cast(dict[object, dict[str, object]], state["writers"])
+    for writer in writers.values():
+        current = writer["current_chunk_id"]
+        if current is not None:
+            refs[cast(bytes, current)] += 1
+        for item in cast(list[dict[str, object]], writer["suffix"]):
+            refs[cast(bytes, item["chunk_id"])] += 1
+    for item in cast(list[dict[str, object]], state["items"]):
+        key = cast(dict[str, object], item["key"])
+        refs[cast(bytes, key["chunk_id"])] += 1
+    state["refs"] = refs
 
 
-def test_policy_collection_latents_match_exact_official_storage_and_restore() -> None:
-    official = _official_arrays()
-    replay = _replay(sequence_length=4, context=1, online=False)
-    _add_rows(replay, 11)
-    ordered = [replay.chunks[key] for key in sorted(replay.chunks)]
-    stored_deter = np.concatenate(
-        [chunk.read(0, chunk.length)["dyn/deter"] for chunk in ordered]
-    )
-    stored_stoch = np.concatenate(
-        [chunk.read(0, chunk.length)["dyn/stoch"] for chunk in ordered]
-    )
-    np.testing.assert_array_equal(stored_deter, official["collection.deter"])
-    np.testing.assert_array_equal(stored_stoch, official["collection.stoch"])
-    assert np.any(stored_deter) and np.any(stored_stoch)
-
-    sampled = replay.sample_raw("report", timeout=0.1)
-    np.testing.assert_array_equal(
-        sampled.data["dyn/deter"], official["raw.report_deter"]
-    )
-    np.testing.assert_array_equal(
-        sampled.data["dyn/stoch"], official["raw.report_stoch"]
-    )
-
-    restored = _replay(sequence_length=4, context=1, online=False)
-    restored.load_state_dict(replay.state_dict())
-    _assert_tree_equal(restored.state_dict(), replay.state_dict())
-    restored_chunks = [restored.chunks[key] for key in sorted(restored.chunks)]
-    np.testing.assert_array_equal(
-        np.concatenate(
-            [chunk.read(0, chunk.length)["dyn/deter"] for chunk in restored_chunks]
-        ),
-        official["collection.deter"],
-    )
-    np.testing.assert_array_equal(
-        np.concatenate(
-            [chunk.read(0, chunk.length)["dyn/stoch"] for chunk in restored_chunks]
-        ),
-        official["collection.stoch"],
-    )
+def _value_at(replay: DreamerReplay, key: ReplayKey) -> int:
+    return int(replay.chunks[key.chunk_id].read(key.offset, 1)["obs"][0, 0])
 
 
-def test_exact_online_phase_fifo_per_worker_and_nonconsuming_report() -> None:
-    official = _official_arrays()
-    replay = _replay(sequence_length=4, context=1, online=True)
-    _add_rows(replay, 11)
-    expected = [
-        ReplayKey(int(chunk).to_bytes(16, "big"), int(offset))
-        for chunk, offset in zip(
-            official["raw.online_chunks"],
-            official["raw.online_offsets"],
-            strict=True,
-        )
-    ]
-    assert replay.online_queue.keys == expected
-    before = replay.online_queue.state_dict()
-    replay.sample_raw("report", timeout=0.1)
-    replay.sample_raw("eval", timeout=0.1)
-    assert replay.online_queue.state_dict() == before
-    train0 = replay.sample_raw("train", timeout=0.1)
-    train1 = replay.sample_raw("train", timeout=0.1)
-    np.testing.assert_array_equal(train0.data["value"], official["raw.train_values"])
-    np.testing.assert_array_equal(train1.data["value"], official["raw.report_values"])
-    assert len(replay.online_queue) == 0
-
-    multi = _replay(sequence_length=3, context=0, online=True)
-    histories = {1: [], 2: []}
-    for index in range(7):
-        histories[1].append(multi.add(_row(index, first=index == 0), worker=1))
-        histories[2].append(multi.add(_row(100 + index, first=index == 0), worker=2))
-    assert multi.online_queue.keys == [
-        histories[1][1],
-        histories[2][1],
-        histories[1][4],
-        histories[2][4],
-    ]
+def _ordinary_counter_paths(state: dict[str, object]) -> list[tuple[object, ...]]:
+    paths: list[tuple[object, ...]] = []
+    for index, _ in enumerate(cast(list[object], state["chunks"])):
+        paths.append(("chunks", index, "length"))
+    for chunk_id in cast(dict[bytes, object], state["refs"]):
+        paths.append(("refs", chunk_id))
+    for mode in ("train", "report"):
+        paths.append(("streams", mode, "index"))
+    for worker in cast(dict[object, object], state["writers"]):
+        paths.append(("writers", worker, "online_phase"))
+        paths.append(("writers", worker, "retained_rows"))
+    for name in cast(dict[str, object], state["metrics"]):
+        paths.append(("metrics", name))
+    paths.append(("version",))
+    return paths
 
 
-def test_online_first_batch_stale_skip_uniform_fallback_without_rng_draw() -> None:
-    official = _official_arrays()
-    replay = _replay(
-        capacity=3,
-        sequence_length=3,
-        context=1,
-        online=True,
-        batch_size=3,
-    )
-    _add_rows(replay, 10, natural_last=True)
-    assert replay.online_queue.keys[0].chunk_id == (1).to_bytes(16, "big")
-    assert replay.online_queue.keys[1] == ReplayKey((2).to_bytes(16, "big"), 2)
-    np.testing.assert_array_equal(
-        _selector_rng_bytes(replay.selector), official["capacity.rng_before_online"]
-    )
-    first = replay.sample_raw("train", timeout=0.1)
-    np.testing.assert_array_equal(
-        first.data["value"][0:1], official["capacity.train_values"]
-    )
-    item_starts = {
-        int(item_id): ReplayKey(int(chunk).to_bytes(16, "big"), int(offset))
-        for item_id, chunk, offset in zip(
-            official["capacity.item_ids"],
-            official["capacity.start_chunks"],
-            official["capacity.start_offsets"],
-            strict=True,
-        )
-    }
-    fallback_starts = [
-        ReplayKey.from_step_id(first.step_ids[index, 0]) for index in (1, 2)
-    ]
-    assert fallback_starts == [
-        item_starts[int(item_id)] for item_id in official["capacity.selector_draws"][:2]
-    ]
-    official_rng_after_online = official["capacity.rng_after_online"]
-    np.testing.assert_array_equal(
-        official["capacity.rng_before_online"], official_rng_after_online
-    )
-    assert not np.array_equal(
-        _selector_rng_bytes(replay.selector), official_rng_after_online
-    )  # Only the two uniform fallback rows advance PCG64.
+def _path_value(state: object, path: tuple[object, ...]) -> object:
+    current = state
+    for part in path:
+        current = cast(Any, current)[part]
+    return current
 
 
-def test_uniform_selector_source_draw_swap_pop_and_statistics() -> None:
-    official = _official_arrays()
-    selector = UniformSelector(7)
-    for item_id in (0, 1, 2):
-        selector.insert(item_id)
-    selector.delete(0)
-    assert selector.keys == [2, 1]
-    selector.insert(3)
-    np.testing.assert_array_equal(selector.keys, official["capacity.intermediate6"])
-    selector.delete(1)
-    selector.insert(4)
-    selector.delete(2)
-    selector.insert(5)
-    np.testing.assert_array_equal(selector.keys, official["capacity.intermediate8"])
-
-    exact = UniformSelector(7)
-    for item_id in [4, 5, 6]:
-        exact.insert(item_id)
-    np.testing.assert_array_equal(
-        [exact.sample() for _ in range(12)], official["capacity.selector_draws"]
-    )
-    restored = UniformSelector.from_state_dict(exact.state_dict())
-    assert [restored.sample() for _ in range(20)] == [exact.sample() for _ in range(20)]
-
-    statistical = UniformSelector(11)
-    for item_id in range(7):
-        statistical.insert(item_id)
-    counts = np.bincount([statistical.sample() for _ in range(70_000)], minlength=7)
-    np.testing.assert_array_equal(
-        counts, [9963, 10015, 9842, 10058, 10122, 9978, 10022]
-    )
-    expected = 10_000
-    chi_square = np.square(counts - expected).sum() / expected
-    assert chi_square == pytest.approx(4.5774)
-    assert np.max(np.abs(counts - expected) / expected) < 0.03
+def _set_path(state: object, path: tuple[object, ...], value: object) -> None:
+    current = state
+    for part in path[:-1]:
+        current = cast(Any, current)[part]
+    cast(Any, current)[path[-1]] = value
 
 
-def test_uniform_selector_duplicate_insert_is_atomic_across_threads() -> None:
-    selector = UniformSelector(7)
-    barrier = threading.Barrier(16)
-    outcomes: list[str] = []
-    outcome_lock = threading.Lock()
-
-    def insert() -> None:
-        barrier.wait()
-        try:
-            selector.insert(23)
-        except ValueError:
-            outcome = "duplicate"
-        else:
-            outcome = "inserted"
-        with outcome_lock:
-            outcomes.append(outcome)
-
-    threads = [threading.Thread(target=insert) for _ in range(16)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(2)
-    assert all(not thread.is_alive() for thread in threads)
-    assert outcomes.count("inserted") == 1
-    assert outcomes.count("duplicate") == 15
-    assert selector.keys == [23]
-    assert selector.indices == {23: 0}
-
-
-def test_capacity_fifo_refs_deletion_stale_queue_and_capacity_one() -> None:
-    official = _official_arrays()
-    replay = _replay(capacity=3, sequence_length=3, context=1, online=True)
-    _add_rows(replay, 10, natural_last=True)
-    np.testing.assert_array_equal(list(replay.items), official["capacity.item_ids"])
-    np.testing.assert_array_equal(replay.fifo, official["capacity.fifo"])
-    np.testing.assert_array_equal(
-        replay.selector.keys, official["capacity.selector_keys"]
-    )
-    np.testing.assert_array_equal(
-        [int.from_bytes(value, "big") for value in replay.chunks],
-        official["capacity.chunk_ids"],
-    )
-    np.testing.assert_array_equal(
-        [replay.refs[cid] for cid in replay.chunks], official["capacity.refs"]
-    )
-    queue_chunks = np.asarray(
-        [int.from_bytes(key.chunk_id, "big") for key in replay.online_queue.keys]
-    )
-    queue_offsets = np.asarray([key.offset for key in replay.online_queue.keys])
-    np.testing.assert_array_equal(queue_chunks, official["capacity.queue_chunks"])
-    np.testing.assert_array_equal(queue_offsets, official["capacity.queue_offsets"])
-    assert replay.refs == _recomputed_refs(replay)
-    for start in replay.items.values():
-        assert len(_resolve_keys(replay, start, 4)) == 4
-    assert replay.online_queue.keys[0].chunk_id not in replay.chunks
-    assert replay.next_item_id == 7
-
-    one = _replay(capacity=1, sequence_length=1, context=0, online=False)
-    _add_rows(one, 6)
-    assert len(one) == 1
-    assert one.fifo == [5]
-    assert one.selector.keys == [5]
-    assert one.next_item_id == 6
-
-
-def test_online_queue_round_trip_preserves_stale_order() -> None:
-    queue = OnlineQueue()
-    keys = [ReplayKey(index.to_bytes(16, "big"), index) for index in (1, 2, 3)]
-    for key in keys:
-        queue.push(key)
-    assert queue.pop() == keys[0]
-    restored = OnlineQueue.from_state_dict(queue.state_dict())
-    assert restored.keys == keys[1:]
-
-
-def test_restore_rejects_live_unresolvable_online_keys_but_accepts_evicted_stale() -> (
-    None
-):
-    replay = _replay(capacity=3, sequence_length=3, context=1, online=True)
-    _add_rows(replay, 10, natural_last=True)
-    before = replay.state_dict()
-    assert before["online_queue"]["keys"][0]["chunk_id"] not in replay.chunks
-
-    restored = _replay(capacity=3, sequence_length=3, context=1, online=True)
-    restored.load_state_dict(before)
-    _assert_tree_equal(restored.state_dict(), before)
-
-    live_index = next(
-        index
-        for index, value in enumerate(before["online_queue"]["keys"])
-        if value["chunk_id"] in replay.chunks
-    )
-    for corrupt in (
-        lambda key: key.update(offset=999),
-        lambda key: key.update(
-            chunk_id=replay.writers[0].current_chunk_id,
-            offset=replay.writers[0].current_offset - 1,
-        ),
-    ):
-        broken = copy.deepcopy(before)
-        corrupt(broken["online_queue"]["keys"][live_index])
-        with pytest.raises((TypeError, ValueError)):
-            replay.load_state_dict(broken)
-        _assert_tree_equal(replay.state_dict(), before)
-
-
-def test_raw_batch_annotation_copy_terminal_and_stepid_chronology() -> None:
-    official = _official_arrays()
-    replay = _replay(sequence_length=4, context=1, online=True)
-    _add_rows(replay, 11)
-    replay.sample_raw("train", timeout=0.1)
-    stored = {
-        chunk_id: chunk.read(0, chunk.length)
-        for chunk_id, chunk in replay.chunks.items()
-    }
-    report = replay.sample_raw("report", timeout=0.1)
-    np.testing.assert_array_equal(report.data["value"], official["raw.report_values"])
-    np.testing.assert_array_equal(report.data["is_first"], official["raw.report_first"])
-    np.testing.assert_array_equal(report.data["is_last"], official["raw.report_last"])
-    np.testing.assert_array_equal(
-        report.data["is_terminal"], official["raw.report_terminal"]
-    )
-    np.testing.assert_array_equal(report.step_ids, official["raw.report_stepid"])
-    assert "is_online" not in report.data
-    keys = _decode(report.step_ids)
-    assert keys == [
-        ReplayKey((3).to_bytes(16, "big"), 0),
-        ReplayKey((3).to_bytes(16, "big"), 1),
-        ReplayKey((3).to_bytes(16, "big"), 2),
-        ReplayKey((4).to_bytes(16, "big"), 0),
-        ReplayKey((4).to_bytes(16, "big"), 1),
-    ]
-    for value in report.data.values():
-        value[...] = False if value.dtype == np.bool_ else 0
-    report.step_ids[:] = 0
-    payload = report.as_dict()
-    for value in payload.values():
-        value[...] = 1
-    for chunk_id, expected in stored.items():
-        actual = replay.chunks[chunk_id].read(0, replay.chunks[chunk_id].length)
-        for name in expected:
-            np.testing.assert_array_equal(actual[name], expected[name], err_msg=name)
-
-
-def _raw_batch() -> ReplayBatch:
-    official = _official_arrays()
-    data = {
-        "is_first": official["raw.report_first"],
-        "is_last": official["raw.report_last"],
-        "is_terminal": official["raw.report_terminal"],
-        "value": official["raw.report_values"],
-    }
-    return ReplayBatch(data, official["raw.report_stepid"])
-
-
-def test_consecutive_exact_slices_overlap_fetch_and_complete_state_round_trip() -> None:
-    official = _official_arrays()
-    calls = []
-
-    def source() -> ReplayBatch:
-        calls.append(1)
-        return _raw_batch()
-
-    stream = ConsecutiveStream(
-        source,
-        sequence_length=2,
-        consecutive=2,
-        context=1,
-    )
-    first = next(stream)
-    saved_mid = stream.state_dict()
-    second = next(stream)
-    for prefix, batch in (("consecutive0", first), ("consecutive1", second)):
-        np.testing.assert_array_equal(batch.data["value"], official[f"{prefix}.values"])
-        np.testing.assert_array_equal(
-            batch.data["consec"], official[f"{prefix}.consec"]
-        )
-        np.testing.assert_array_equal(
-            batch.data["is_first"], official[f"{prefix}.first"]
-        )
-        np.testing.assert_array_equal(batch.data["is_last"], official[f"{prefix}.last"])
-        np.testing.assert_array_equal(batch.step_ids, official[f"{prefix}.stepid"])
-    assert first.data["consec"].dtype == np.int32
-    np.testing.assert_array_equal(first.step_ids[:, -1], second.step_ids[:, 0])
-    assert len(calls) == 1
-    assert stream.index == 2
-
-    restored_mid = ConsecutiveStream.from_state_dict(
-        saved_mid,
-        source,
-        sequence_length=2,
-        consecutive=2,
-        context=1,
-    )
-    resumed = next(restored_mid)
-    np.testing.assert_array_equal(resumed.as_dict()["value"], second.as_dict()["value"])
-    assert len(calls) == 1
-    complete = ConsecutiveStream.from_state_dict(
-        stream.state_dict(),
-        source,
-        sequence_length=2,
-        consecutive=2,
-        context=1,
-    )
-    next(complete)
-    assert len(calls) == 2
-    for kwargs in (
-        {"sequence_length": 0, "consecutive": 2, "context": 1},
-        {"sequence_length": 2, "consecutive": 0, "context": 1},
-        {"sequence_length": 2, "consecutive": 2, "context": -1},
-    ):
-        with pytest.raises(ValueError):
-            ConsecutiveStream(source, **kwargs)
-    for kwargs in (
-        {"sequence_length": True, "consecutive": 2, "context": 1},
-        {"sequence_length": 2.0, "consecutive": 2, "context": 1},
-        {"sequence_length": np.int64(2), "consecutive": 2, "context": 1},
-        {"sequence_length": 2.5, "consecutive": 2, "context": 1},
-        {"sequence_length": 2, "consecutive": False, "context": 1},
-        {"sequence_length": 2, "consecutive": 2.0, "context": 1},
-        {"sequence_length": 2, "consecutive": np.int64(2), "context": 1},
-        {"sequence_length": 2, "consecutive": 2.5, "context": 1},
-        {"sequence_length": 2, "consecutive": 2, "context": True},
-        {"sequence_length": 2, "consecutive": 2, "context": 1.0},
-        {"sequence_length": 2, "consecutive": 2, "context": np.int64(1)},
-        {"sequence_length": 2, "consecutive": 2, "context": 1.5},
-    ):
-        with pytest.raises(TypeError):
-            ConsecutiveStream(source, **kwargs)
-
-    aggregate = _replay(
-        sequence_length=2,
-        context=1,
-        consecutive=2,
-        online=False,
-    )
-    _add_rows(aggregate, 11)
-    next(aggregate.consecutive_stream)
-    rng_after_fetch = _selector_rng_bytes(aggregate.selector)
-    next(aggregate.consecutive_stream)
-    np.testing.assert_array_equal(
-        _selector_rng_bytes(aggregate.selector), rng_after_fetch
-    )
-
-
-def _stored_leaf(replay: DreamerReplay, key: ReplayKey, name: str) -> np.ndarray:
-    return replay.chunks[key.chunk_id].read(key.offset, 1)[name][0]
-
-
-def test_latent_writeback_same_cross_chunk_post_context_and_atomic_validation() -> None:
-    official = _official_arrays()
-    replay = _replay(sequence_length=4, context=1, online=True)
-    _add_rows(replay, 11)
-    replay.sample_raw("train", timeout=0.1)
-    report = replay.sample_raw("report", timeout=0.1)
-    ids = report.step_ids[:, 1:].copy()
-    deter = np.arange(8, dtype=np.float32).reshape(1, 4, 2) + 100
-    stoch = np.arange(8, dtype=np.float32).reshape(1, 4, 1, 2) + 200
-    ids_before = ids.copy()
-    deter_before = deter.copy()
-    stoch_before = stoch.copy()
-    context_deter = report.data["dyn/deter"][0, 0].copy()
-    context_stoch = report.data["dyn/stoch"][0, 0].copy()
-    assert (
-        replay.update_context(
-            ids,
-            {"dyn/deter": deter, "dyn/stoch": stoch},
-        )
-        == 4
-    )
-    np.testing.assert_array_equal(ids, ids_before)
-    np.testing.assert_array_equal(deter, deter_before)
-    np.testing.assert_array_equal(stoch, stoch_before)
-    keys = _decode(report.step_ids)
-    np.testing.assert_array_equal(
-        _stored_leaf(replay, keys[0], "dyn/deter"), context_deter
-    )
-    np.testing.assert_array_equal(
-        _stored_leaf(replay, keys[0], "dyn/stoch"), context_stoch
-    )
-    for index, key in enumerate(keys[1:]):
-        np.testing.assert_array_equal(
-            _stored_leaf(replay, key, "dyn/deter"), deter[0, index]
-        )
-        np.testing.assert_array_equal(
-            _stored_leaf(replay, key, "dyn/stoch"), stoch[0, index]
-        )
-    ordered_chunks = [replay.chunks[key] for key in sorted(replay.chunks)]
-    np.testing.assert_array_equal(
-        np.concatenate(
-            [chunk.read(0, chunk.length)["dyn/deter"] for chunk in ordered_chunks]
-        ),
-        official["writeback.deter"],
-    )
-    np.testing.assert_array_equal(
-        np.concatenate(
-            [chunk.read(0, chunk.length)["dyn/stoch"] for chunk in ordered_chunks]
-        ),
-        official["writeback.stoch"],
-    )
-    np.testing.assert_array_equal(
-        np.concatenate(
-            [chunk.read(0, chunk.length)["value"] for chunk in ordered_chunks]
-        ),
-        official["writeback.logical_values"],
-    )
-
-    before = replay.state_dict()
-    malformed = ids.copy()
-    malformed[0, -1] = ReplayKey((99).to_bytes(16, "big"), 0).to_step_id()
-    with pytest.raises(ValueError, match="step"):
-        replay.update_context(
-            malformed,
-            {"dyn/deter": deter, "dyn/stoch": stoch},
-        )
-    _assert_tree_equal(replay.state_dict(), before)
-    for values in (
-        {"dyn/deter": deter},
-        {"dyn/deter": deter.astype(np.float64), "dyn/stoch": stoch},
-        {"dyn/deter": deter[..., :1], "dyn/stoch": stoch},
-        {"dyn/deter": deter, "dyn/stoch": stoch, "reward": np.zeros((1, 4))},
-    ):
-        with pytest.raises((TypeError, ValueError)):
-            replay.update_context(ids, values)
-    for bad_ids in (
-        ids.astype(np.int8),
-        ids[..., :19],
-        ids[0],
-    ):
-        with pytest.raises((TypeError, ValueError)):
-            replay.update_context(
-                bad_ids,
-                {"dyn/deter": deter, "dyn/stoch": stoch},
-            )
-
-    same = _replay(
-        chunk_size=4,
-        sequence_length=2,
-        context=0,
-        online=False,
-    )
-    _add_rows(same, 3)
-    same_batch = same.sample_raw("report", timeout=0.1)
-    same_keys = _decode(same_batch.step_ids)
-    assert len({key.chunk_id for key in same_keys}) == 1
-    same.update_context(
-        same_batch.step_ids,
-        {
-            "dyn/deter": np.asarray([[[1, 2], [3, 4]]], np.float32),
-            "dyn/stoch": np.asarray([[[[5, 6]], [[7, 8]]]], np.float32),
-        },
-    )
-    np.testing.assert_array_equal(_stored_leaf(same, same_keys[1], "dyn/deter"), [3, 4])
-
-
-def test_stale_first_writeback_skips_whole_row_without_partial_mutation() -> None:
-    replay = _replay(capacity=1, sequence_length=2, context=0, online=False)
-    initial = _add_rows(replay, 3)
-    stale_ids = np.stack([key.to_step_id() for key in initial[:2]])[None]
-    _add_rows(replay, 10)
-    before = replay.state_dict()
-    result = replay.update_context(
-        stale_ids,
-        {
-            "dyn/deter": np.ones((1, 2, 2), np.float32),
-            "dyn/stoch": np.ones((1, 2, 1, 2), np.float32),
-        },
-    )
-    assert result == 0
-    after = replay.state_dict()
-    assert after["metrics"]["stale_updates"] == before["metrics"]["stale_updates"] + 1
-    before["metrics"]["stale_updates"] += 1
-    before["metrics"]["update_calls"] += 1
-    _assert_tree_equal(after, before)
-    restored = _replay(capacity=1, sequence_length=2, context=0, online=False)
-    restored.load_state_dict(after)
-    assert restored.stats()["stale_updates"] == 1
-    assert restored.stats(reset=True)["stale_updates"] == 1
-    assert restored.stats()["stale_updates"] == 0
-
-
-def _complete_resume_scenario() -> DreamerReplay:
-    replay = _replay(
-        capacity=3,
-        chunk_size=3,
-        sequence_length=2,
-        context=1,
-        consecutive=2,
-        online=True,
-        seed=7,
-    )
-    _add_rows(replay, 11, natural_last=True)
-    raw = replay.sample_raw("report", timeout=0.1)
-    replay.update_context(
-        raw.step_ids[:, 1:3],
-        {
-            "dyn/deter": np.asarray([[[9, 10], [11, 12]]], np.float32),
-            "dyn/stoch": np.asarray([[[[13, 14]], [[15, 16]]]], np.float32),
-        },
-    )
-    replay.sample_raw("report", timeout=0.1)
-    replay.sample("report", timeout=0.1)
-    assert replay.writers[0].current_chunk_id is not None
-    assert replay.chunks[replay.writers[0].current_chunk_id].length == 2
-    assert len(replay.online_queue) == 2
-    assert replay.online_queue.keys[0].chunk_id not in replay.chunks
-    assert replay.online_queue.keys[1].chunk_id in replay.chunks
-    stream = replay.consecutive_streams["report"]
-    assert stream.index == 1
-    assert stream.current is not None
-    assert any(
-        np.any(chunk.read(0, chunk.length)["dyn/deter"])
-        for chunk in replay.chunks.values()
-    )
-    return replay
-
-
-def _evicted_consecutive_current_scenario() -> DreamerReplay:
-    replay = _replay(
-        capacity=1,
-        chunk_size=2,
-        sequence_length=2,
+def _active_stream_replay(mode: str, *, partial_live: bool) -> DreamerReplay:
+    sequence = _sequence(
+        length=1,
         context=0,
         consecutive=2,
-        online=False,
+        report_length=1,
+        report_consecutive=2,
     )
-    _add_rows(replay, 5)
-    replay.sample("report", timeout=0.1)
-    current = replay.consecutive_streams["report"].current
+    replay = _replay(capacity=1, chunk_size=2, sequence=sequence)
+    _add(replay, 3)
+    replay.sample(mode)
+    if partial_live:
+        replay.add(_row(3))
+    current = replay.streams[mode].current
     assert current is not None
-    retained_ids = {key.chunk_id for key in _decode(current.step_ids)}
-    for index in range(5, 25):
-        replay.add(_row(index, first=False))
-    assert retained_ids.isdisjoint(replay.chunks)
+    keys = [ReplayKey.from_step_id(value) for value in current.step_ids[0]]
+    assert (keys[0].chunk_id in replay.chunks) is not partial_live
+    assert keys[1].chunk_id in replay.chunks
     return replay
 
 
-def test_writer_chunk_history_persists_interleaved_allocations_and_round_trips() -> (
-    None
-):
-    replay = _replay(
-        chunk_size=2,
-        sequence_length=1,
-        context=0,
-        online=False,
-    )
-    replay.add(_row(0), worker=7)
-    replay.add(_row(100, first=True), worker=8)
-    replay.add(_row(1, first=False), worker=7)
-    replay.add(_row(101, first=False), worker=8)
-    state = replay.state_dict()
-    assert state["schema_version"] == 2
-    assert [
-        int.from_bytes(value, "big") for value in state["writers"][7]["chunk_history"]
-    ] == [1, 3]
-    assert [
-        int.from_bytes(value, "big") for value in state["writers"][8]["chunk_history"]
-    ] == [2, 4]
-    restored = _replay(
-        chunk_size=2,
-        sequence_length=1,
-        context=0,
-        online=False,
-    )
-    restored.load_state_dict(state)
-    _assert_tree_equal(restored.state_dict(), state)
+def _serialized_stream_current(
+    state: dict[str, object], mode: str
+) -> dict[str, object]:
+    streams = cast(dict[str, dict[str, object]], state["streams"])
+    current = streams[mode]["current"]
+    assert type(current) is dict
+    return cast(dict[str, object], current)
 
 
-def test_chunk_allocation_requires_active_writer_without_partial_mutation() -> None:
-    replay = _replay(
-        chunk_size=2,
-        sequence_length=1,
-        context=0,
-        online=False,
-    )
-    before = replay.state_dict()
-    with pytest.raises(RuntimeError, match="active writer"):
-        replay._new_chunk(1, 7)
-    _assert_tree_equal(replay.state_dict(), before)
+def _replace_stream_step_key(
+    current: dict[str, object], position: int, key: ReplayKey
+) -> None:
+    step_ids = cast(Array, current["step_ids"])
+    step_ids[0, position] = key.to_step_id()
 
 
-def test_chunk_size_one_history_includes_empty_successor_and_binds_row_count() -> None:
-    replay = _replay(
-        chunk_size=1,
-        sequence_length=1,
-        context=0,
-        online=False,
+def _restore_with_spaces(
+    replay: DreamerReplay,
+    state: object,
+    transition_spaces: Mapping[str, TensorSpace],
+    latent_spaces: Mapping[str, TensorSpace],
+) -> DreamerReplay:
+    return DreamerReplay.from_state_dict(
+        state,
+        replay.config,
+        replay.sequence_shape,
+        transition_spaces,
+        latent_spaces,
     )
-    replay.add(_row(0))
-    state = replay.state_dict()
-    history = state["writers"][0]["chunk_history"]
-    assert [int.from_bytes(value, "big") for value in history] == [1, 2]
-    assert state["writers"][0]["current_chunk_id"] == history[-1]
-    current = next(
-        chunk for chunk in state["chunks"] if chunk["chunk_id"] == history[-1]
+
+
+_SPACE_IDENTITY_CASES = (
+    ("continuous", TensorSpace((2,), "float32"), None),
+    ("scalar_discrete", TensorSpace((), "int32", classes=3), 3),
+    ("uniform_vector", TensorSpace((2,), "int32", classes=3), [3, 3]),
+    (
+        "uniform_multidimensional",
+        TensorSpace((2, 2), "int32", classes=4),
+        [4, 4, 4, 4],
+    ),
+    (
+        "nonuniform_vector",
+        TensorSpace((2,), "int32", classes=(2, 3)),
+        [2, 3],
+    ),
+    (
+        "nonuniform_multidimensional",
+        TensorSpace((2, 2), "int32", classes=cast(Any, ((2, 3), (4, 5)))),
+        [2, 3, 4, 5],
+    ),
+)
+
+
+def _space_identity_replay(
+    owner: str, space: TensorSpace
+) -> tuple[
+    DreamerReplay,
+    dict[str, TensorSpace],
+    dict[str, TensorSpace],
+    dict[str, object],
+]:
+    transition_spaces = _transition_spaces()
+    latent_spaces = _latent_spaces()
+    name = f"{owner}/probe"
+    if owner == "transition":
+        transition_spaces[name] = space
+    else:
+        latent_spaces[name] = space
+    replay = DreamerReplay(
+        ReplayConfig(capacity=4, chunk_size=2, online_queue_size=4),
+        _sequence(length=1, context=0),
+        transition_spaces,
+        latent_spaces,
     )
-    assert current["length"] == 0
-    replay.add(_row(1, first=False))
-    state = replay.state_dict()
-    history = state["writers"][0]["chunk_history"]
-    assert [int.from_bytes(value, "big") for value in history] == [1, 2, 3]
-    assert len(history) == state["writers"][0]["row_count"] + 1
-    restored = _replay(
-        chunk_size=1,
-        sequence_length=1,
-        context=0,
-        online=False,
-    )
-    restored.load_state_dict(state)
-    _assert_tree_equal(restored.state_dict(), state)
-    replay.add(_row(2, first=False))
-    restored.add(_row(2, first=False))
-    _assert_tree_equal(restored.state_dict(), replay.state_dict())
-    state = restored.state_dict()
-    broken = copy.deepcopy(state)
-    broken["writers"][0]["chunk_history"].pop(0)
-    _assert_restore_rejected_without_mutation(restored, broken)
+    row = _row(0, first=True)
+    row[name] = np.zeros(space.shape, np.dtype(space.dtype))
+    replay.add(row)
+    return replay, transition_spaces, latent_spaces, row
+
+
+def _assert_no_tuple(value: object) -> None:
+    assert type(value) is not tuple
+    if type(value) is dict:
+        for item in value.values():
+            _assert_no_tuple(item)
+    elif type(value) is list:
+        for item in value:
+            _assert_no_tuple(item)
+
+
+def test_public_constructor_and_inverse_signatures_are_closed() -> None:
+    assert list(inspect.signature(DreamerReplay).parameters) == [
+        "config",
+        "sequence_shape",
+        "transition_spaces",
+        "latent_spaces",
+    ]
+    assert list(inspect.signature(DreamerReplay.from_state_dict).parameters) == [
+        "state",
+        "replay_config",
+        "sequence_shape",
+        "transition_spaces",
+        "latent_spaces",
+    ]
+    assert list(inspect.signature(ReplayBatch.from_state).parameters) == [
+        "state",
+        "transition_spaces",
+        "latent_spaces",
+        "expected_batch_size",
+        "expected_time_length",
+    ]
 
 
 @pytest.mark.parametrize(
-    "corruption",
-    ["missing", "duplicate", "reversed", "nonbytes", "zero", "shared"],
+    ("owner", "name"),
+    [(ReplayBatch, "__getitem__"), (DreamerReplay, "sample_raw")],
 )
-def test_restore_rejects_corrupt_lifetime_chunk_history_without_mutation(
-    corruption: str,
+def test_replay_omits_undeclared_dead_convenience_apis(
+    owner: type[object], name: str
 ) -> None:
-    replay = _replay(
-        chunk_size=2,
-        sequence_length=1,
-        context=0,
-        online=False,
+    assert name not in owner.__dict__
+
+
+def test_raw_lengths_come_only_from_sequence_shape_and_round_trip() -> None:
+    sequence = _sequence(
+        length=3,
+        context=2,
+        consecutive=2,
+        report_length=2,
+        report_consecutive=2,
     )
-    for index in range(4):
-        replay.add(_row(index, first=index == 0), worker=7)
-        replay.add(_row(100 + index, first=index == 0), worker=8)
-    broken = copy.deepcopy(replay.state_dict())
-    left = broken["writers"][7]["chunk_history"]
-    right = broken["writers"][8]["chunk_history"]
-    if corruption == "missing":
-        left.pop(0)
-    elif corruption == "duplicate":
-        left[1] = left[0]
-    elif corruption == "reversed":
-        left.reverse()
-    elif corruption == "nonbytes":
-        left[0] = np.bytes_(left[0])
-    elif corruption == "zero":
-        left[0] = bytes(16)
-    else:
-        right[0] = left[0]
-    _assert_restore_rejected_without_mutation(replay, broken)
-
-
-def test_capacity_one_idle_writer_with_evicted_predecessor_resumes_exactly() -> None:
-    replay = _replay(
-        capacity=1,
-        chunk_size=2,
-        sequence_length=1,
-        context=0,
-        online=False,
-    )
-    replay.add(_row(0), worker=1)
-    replay.add(_row(1, first=False), worker=1)
-    replay.add(_row(100, first=True), worker=2)
-    idle = replay.writers[1]
-    assert idle.current_chunk_id is not None
-    assert replay.chunks[idle.current_chunk_id].length == 0
-    assert not any(
-        chunk.successor_id == idle.current_chunk_id for chunk in replay.chunks.values()
-    )
-    state = replay.state_dict()
-    restored = _replay(
-        capacity=1,
-        chunk_size=2,
-        sequence_length=1,
-        context=0,
-        online=False,
-    )
-    restored.load_state_dict(state)
-    _assert_tree_equal(restored.state_dict(), state)
-    replay.add(_row(2, first=False), worker=1)
-    restored.add(_row(2, first=False), worker=1)
-    _assert_tree_equal(restored.state_dict(), replay.state_dict())
-
-
-def test_idle_writer_with_evicted_terminal_predecessor_requires_first() -> None:
-    replay = _replay(
-        capacity=1,
-        chunk_size=2,
-        sequence_length=1,
-        context=0,
-        online=False,
-    )
-    replay.add(_row(0), worker=1)
-    replay.add(_row(1, first=False, last=True), worker=1)
-    replay.add(_row(100, first=True), worker=2)
-    state = replay.state_dict()
-    assert state["writers"][1]["last_is_last"] is True
-    restored = _replay(
-        capacity=1,
-        chunk_size=2,
-        sequence_length=1,
-        context=0,
-        online=False,
-    )
-    restored.load_state_dict(state)
-    before = restored.state_dict()
-    with pytest.raises(ValueError, match="after is_last"):
-        restored.add(_row(2, first=False), worker=1)
-    _assert_tree_equal(restored.state_dict(), before)
-    replay.add(_row(2, first=True), worker=1)
-    restored.add(_row(2, first=True), worker=1)
-    _assert_tree_equal(restored.state_dict(), replay.state_dict())
-
-
-def test_restore_rejects_opposing_per_writer_counter_drift_without_mutation() -> None:
-    replay = _replay(
-        capacity=30,
-        chunk_size=3,
-        sequence_length=2,
-        context=0,
-        online=True,
-    )
-    for index in range(7):
-        replay.add(_row(index, first=index == 0), worker=1)
-        replay.add(_row(100 + index, first=index == 0), worker=2)
-    pristine = replay.state_dict()
-    clone = _replay(
-        capacity=30,
-        chunk_size=3,
-        sequence_length=2,
-        context=0,
-        online=True,
-    )
-    clone.load_state_dict(pristine)
-    broken = copy.deepcopy(pristine)
-    writers = broken["writers"]
-    writers[1]["row_count"] += replay.config.chunk_size
-    writers[1]["emitted_count"] += replay.config.chunk_size
-    writers[2]["row_count"] -= replay.config.chunk_size
-    writers[2]["emitted_count"] -= replay.config.chunk_size
-    _assert_restore_rejected_without_mutation(replay, broken)
-    for index in range(7, 11):
-        left = replay.add(_row(index, first=False), worker=1)
-        right = clone.add(_row(index, first=False), worker=1)
-        assert left == right
-        left = replay.add(_row(100 + index, first=False), worker=2)
-        right = clone.add(_row(100 + index, first=False), worker=2)
-        assert left == right
-    actual = replay.sample_raw("train", timeout=0.1)
-    expected = clone.sample_raw("train", timeout=0.1)
-    _assert_tree_equal(actual.as_dict(), expected.as_dict())
-    _assert_tree_equal(replay.state_dict(), clone.state_dict())
-
-
-@pytest.mark.parametrize("corruption", ["size_mismatch", "zero_live"])
-def test_restore_rejects_invalid_live_chunk_geometry_without_mutation(
-    corruption: str,
-) -> None:
-    replay = _replay(
-        capacity=20,
-        chunk_size=3,
-        sequence_length=1,
-        context=0,
-        online=False,
-    )
-    _add_rows(replay, 5)
-    broken = copy.deepcopy(replay.state_dict())
-    if corruption == "size_mismatch":
-        sealed = next(chunk for chunk in broken["chunks"] if chunk["sealed"])
-        sealed["size"] += 1
-    else:
-        zero = bytes(16)
-        old = broken["chunks"][0]["chunk_id"]
-        assert len(broken["chunks"]) == 2
-        first = broken["chunks"][0]
-        successor = first["successor"]
-        first["chunk_id"] = zero
-        broken["refs"][zero] = broken["refs"].pop(old)
-        for item in broken["items"]:
-            if item["key"]["chunk_id"] == old:
-                item["key"]["chunk_id"] = zero
-        first["successor"] = successor
-        for writer in broken["writers"].values():
-            writer["chunk_history"] = [
-                zero if chunk_id == old else chunk_id
-                for chunk_id in writer["chunk_history"]
-            ]
-            for pending in writer["pending"]:
-                if pending["chunk_id"] == old:
-                    pending["chunk_id"] = zero
-        broken["chunks"].sort(key=lambda chunk: chunk["chunk_id"])
-    _assert_restore_rejected_without_mutation(replay, broken)
-
-
-@pytest.mark.parametrize(
-    ("field", "value", "message"),
-    [
-        ("size", int(np.iinfo(np.intp).max), "configured replay chunk size"),
-        ("length", 4, "configured replay chunk length"),
-    ],
-)
-def test_restore_prevalidates_chunk_geometry_before_construction(
-    monkeypatch,
-    field: str,
-    value: int,
-    message: str,
-) -> None:
-    replay = _replay(
-        capacity=20,
-        chunk_size=3,
-        sequence_length=1,
-        context=0,
-        online=False,
-    )
-    _add_rows(replay, 5)
-    before = replay.state_dict()
-    broken = copy.deepcopy(before)
-    broken["chunks"][0][field] = value
-
-    def forbidden_construction(*args, **kwargs):
-        raise AssertionError("ReplayChunk.from_state_dict was called")
-
-    monkeypatch.setattr(ReplayChunk, "from_state_dict", forbidden_construction)
-    with pytest.raises(ValueError, match=message):
-        replay.load_state_dict(broken)
-    _assert_tree_equal(replay.state_dict(), before)
-
-
-@pytest.mark.parametrize("corruption", ["sealed_nonfull", "open_full"])
-def test_chunk_restore_rejects_noncanonical_seal_geometry(corruption: str) -> None:
-    chunk = ReplayChunk(
-        (1).to_bytes(16, "big"),
-        3,
+    replay = _replay(sequence=sequence)
+    assert replay.raw_length == 8
+    assert replay.report_raw_length == 6
+    restored = DreamerReplay.from_state_dict(
+        replay.state_dict(),
+        replay.config,
+        sequence,
         _transition_spaces(),
         _latent_spaces(),
-        owner_id=0,
     )
-    chunk.append({name: value for name, value in _row(0).items()})
-    chunk.append({name: value for name, value in _row(1, first=False).items()})
-    state = chunk.state_dict()
-    if corruption == "sealed_nonfull":
-        state["sealed"] = True
-        state["successor"] = (2).to_bytes(16, "big")
-    else:
-        chunk.append({name: value for name, value in _row(2, first=False).items()})
-        state = chunk.state_dict()
-    with pytest.raises(ValueError, match="chunk"):
-        ReplayChunk.from_state_dict(state, _transition_spaces(), _latent_spaces())
+    assert restored.raw_length == 8
+    assert restored.report_raw_length == 6
 
 
-def test_per_writer_root_chronology_is_independent_of_unrelated_eviction() -> None:
-    replay = _replay(
-        capacity=3,
-        chunk_size=2,
-        sequence_length=1,
-        context=0,
-        online=False,
-    )
-    for index in range(5):
-        replay.add(_row(index, first=index == 0), worker=2)
-    replay.add(_row(100, first=True), worker=1)
-    state = replay.state_dict()
-    restored = _replay(
-        capacity=3,
-        chunk_size=2,
-        sequence_length=1,
-        context=0,
-        online=False,
-    )
-    restored.load_state_dict(state)
-    _assert_tree_equal(restored.state_dict(), state)
-    broken = copy.deepcopy(state)
-    owner_root = next(chunk for chunk in broken["chunks"] if chunk["owner_id"] == 1)
-    owner_root["transition"]["is_first"][0] = False
-    _assert_restore_rejected_without_mutation(replay, broken)
-
-
-def test_restore_rejects_duplicate_item_replay_keys_without_mutation() -> None:
-    replay = _replay(
-        capacity=20,
-        chunk_size=3,
-        sequence_length=1,
-        context=0,
-        online=False,
-    )
-    _add_rows(replay, 4)
-    broken = copy.deepcopy(replay.state_dict())
-    assert (
-        broken["items"][0]["key"]["chunk_id"] == broken["items"][1]["key"]["chunk_id"]
-    )
-    broken["items"][1]["key"] = copy.deepcopy(broken["items"][0]["key"])
-    _assert_restore_rejected_without_mutation(replay, broken)
-
-
-@pytest.mark.parametrize(
-    "corruption",
-    [
-        "zero",
-        "future",
-        "bad_offset",
-        "wrong_phase",
-        "duplicate",
-        "duplicate_live",
-        "reverse",
-    ],
-)
-def test_restore_rejects_invalid_or_reordered_stale_online_queue_keys(
-    corruption: str,
-) -> None:
-    replay = _complete_resume_scenario()
-    broken = copy.deepcopy(replay.state_dict())
-    queue = broken["online_queue"]["keys"]
-    assert queue[0]["chunk_id"] not in replay.chunks
-    if corruption == "zero":
-        queue[0] = {"chunk_id": bytes(16), "offset": 0}
-    elif corruption == "future":
-        queue[0] = {
-            "chunk_id": replay.next_chunk_id.to_bytes(16, "big"),
-            "offset": 0,
-        }
-    elif corruption == "bad_offset":
-        queue[0]["offset"] = replay.config.chunk_size
-    elif corruption == "wrong_phase":
-        queue[0]["offset"] = 2
-    elif corruption == "duplicate":
-        queue.append(copy.deepcopy(queue[0]))
-    elif corruption == "duplicate_live":
-        queue.append(copy.deepcopy(queue[-1]))
-    else:
-        queue.reverse()
-    _assert_restore_rejected_without_mutation(replay, broken)
-
-
-def test_restore_rejects_live_online_queue_key_at_wrong_writer_phase() -> None:
-    replay = _replay(
-        capacity=20,
-        chunk_size=4,
-        sequence_length=2,
-        context=0,
-        online=True,
-    )
-    _add_rows(replay, 8)
-    broken = copy.deepcopy(replay.state_dict())
-    key = broken["online_queue"]["keys"][0]
-    assert key["offset"] == 1
-    key["offset"] = 2
-    _assert_restore_rejected_without_mutation(replay, broken)
-
-
-def test_online_queue_restore_allows_cross_writer_absolute_order_interleaving() -> None:
-    replay = _replay(
-        capacity=20,
-        chunk_size=4,
-        sequence_length=2,
-        context=0,
-        online=True,
-    )
-    for index in range(5):
-        replay.add(_row(index, first=index == 0), worker=1)
-    for index in range(3):
-        replay.add(_row(100 + index, first=index == 0), worker=2)
-    state = replay.state_dict()
-    histories = {
-        chunk_id: (worker, ordinal)
-        for worker, writer in state["writers"].items()
-        for ordinal, chunk_id in enumerate(writer["chunk_history"])
-    }
-    positions = [
-        (
-            histories[value["chunk_id"]][0],
-            histories[value["chunk_id"]][1] * replay.config.chunk_size
-            + value["offset"],
-        )
-        for value in state["online_queue"]["keys"]
-    ]
-    assert positions == [(1, 1), (1, 3), (2, 1)]
-    restored = _replay(
-        capacity=20,
-        chunk_size=4,
-        sequence_length=2,
-        context=0,
-        online=True,
-    )
-    restored.load_state_dict(state)
-    _assert_tree_equal(restored.state_dict(), state)
-
-
-def test_online_queue_raw_length_one_phase_round_trips() -> None:
-    replay = _replay(
-        capacity=20,
-        chunk_size=2,
-        sequence_length=1,
-        context=0,
-        online=True,
-    )
-    _add_rows(replay, 3)
-    state = replay.state_dict()
-    assert len(state["online_queue"]["keys"]) == 3
-    restored = _replay(
-        capacity=20,
-        chunk_size=2,
-        sequence_length=1,
-        context=0,
-        online=True,
-    )
-    restored.load_state_dict(state)
-    _assert_tree_equal(restored.state_dict(), state)
-
-
-@pytest.mark.parametrize(
-    "corruption",
-    [
-        "leading",
-        "terminal",
-        "boundary",
-        "boundary_reverse",
-        "future_stepid",
-        "bad_offset_stepid",
-        "duplicate_stepid",
-    ],
-)
-def test_restore_rejects_semantically_invalid_consecutive_current(
-    corruption: str,
-) -> None:
-    replay = _complete_resume_scenario()
-    broken = copy.deepcopy(replay.state_dict())
-    current = broken["consecutive"]["report"]["current"]
-    if corruption == "leading":
-        current["is_first"][0, 0] = False
-    elif corruption == "terminal":
-        current["is_terminal"][0, 0] = True
-        current["is_last"][0, 0] = False
-    elif corruption == "boundary":
-        current["is_last"][0, 0] = True
-        current["is_first"][0, 1] = False
-    elif corruption == "boundary_reverse":
-        current["is_last"][0, 0] = False
-        current["is_first"][0, 1] = True
-    elif corruption == "future_stepid":
-        current["stepid"][0, 0] = ReplayKey(
-            replay.next_chunk_id.to_bytes(16, "big"), 0
-        ).to_step_id()
-    elif corruption == "bad_offset_stepid":
-        key = ReplayKey.from_step_id(current["stepid"][0, 0])
-        current["stepid"][0, 0] = ReplayKey(
-            key.chunk_id, replay.config.chunk_size
-        ).to_step_id()
-    else:
-        current["stepid"][0, 1] = current["stepid"][0, 2]
-    _assert_restore_rejected_without_mutation(replay, broken)
-
-
-def test_consecutive_current_with_fully_evicted_backing_round_trips() -> None:
-    replay = _evicted_consecutive_current_scenario()
-    state = replay.state_dict()
-    restored = _replay(
-        capacity=1,
-        chunk_size=2,
-        sequence_length=2,
-        context=0,
+def test_mode_raw_lengths_differ_from_returned_trimmed_lengths() -> None:
+    sequence = _sequence(
+        length=3,
+        context=2,
         consecutive=2,
-        online=False,
+        report_length=2,
+        report_consecutive=3,
     )
-    restored.load_state_dict(state)
-    _assert_tree_equal(restored.state_dict(), state)
-
-
-def test_restore_rejects_nonconsecutive_stepids_with_evicted_backing() -> None:
-    replay = _evicted_consecutive_current_scenario()
-    broken = copy.deepcopy(replay.state_dict())
-    stepids = broken["consecutive"]["report"]["current"]["stepid"]
-    stepids[:, [0, 1]] = stepids[:, [1, 0]]
-    _assert_restore_rejected_without_mutation(replay, broken)
-
-
-@pytest.mark.parametrize("corruption", ["calls", "source_sum"])
-def test_restore_rejects_impossible_sample_metric_identities(
-    corruption: str,
-) -> None:
-    replay = _replay(
-        sequence_length=1,
-        context=0,
-        online=False,
-        batch_size=2,
-    )
-    _add_rows(replay, 4)
-    replay.sample_raw("train", timeout=0.1)
-    broken = copy.deepcopy(replay.state_dict())
-    if corruption == "calls":
-        broken["metrics"]["sample_calls"] += 1
-    else:
-        broken["metrics"]["uniform_samples"] -= 1
-    _assert_restore_rejected_without_mutation(replay, broken)
-
-
-def test_zeroed_sample_metrics_after_stats_reset_round_trip() -> None:
-    replay = _replay(
-        sequence_length=1,
-        context=0,
-        online=False,
-        batch_size=2,
-    )
-    _add_rows(replay, 4)
-    replay.sample_raw("train", timeout=0.1)
-    replay.stats(reset=True)
-    state = replay.state_dict()
-    assert all(value == 0 for value in state["metrics"].values())
-    restored = _replay(
-        sequence_length=1,
-        context=0,
-        online=False,
-        batch_size=2,
-    )
-    restored.load_state_dict(state)
-    _assert_tree_equal(restored.state_dict(), state)
-
-
-@pytest.mark.parametrize("worker_key", [False, np.int64(0)])
-def test_restore_rejects_non_exact_outer_writer_key_types(worker_key) -> None:
-    replay = _complete_resume_scenario()
-    broken = copy.deepcopy(replay.state_dict())
-    writer = broken["writers"].pop(0)
-    broken["writers"][worker_key] = writer
-    _assert_restore_rejected_without_mutation(replay, broken)
-
-
-@pytest.mark.parametrize("item_id", [False, np.int64(0)])
-def test_uniform_selector_delete_rejects_non_exact_integer_aliases(item_id) -> None:
-    selector = UniformSelector(7)
-    selector.insert(0)
-    before = selector.state_dict()
-    with pytest.raises((TypeError, ValueError)):
-        selector.delete(item_id)
-    _assert_tree_equal(selector.state_dict(), before)
+    replay = _replay(sequence=sequence)
+    _add(replay, 10)
+    assert replay.raw_length == 8
+    assert replay.report_raw_length == 8
+    assert replay.sample("train").step_ids.shape[1] == 5
+    assert replay.sample("report").step_ids.shape[1] == 4
 
 
 @pytest.mark.parametrize(
-    "indices",
-    [{False: 0}, {0: False}, {np.int64(0): 0}, {0: np.int64(0)}],
+    ("last", "terminal", "action", "accepted"),
+    [
+        (False, False, (4.5, -3.0), True),
+        (True, True, (0.0, 0.0), True),
+        (True, False, (0.0, 0.0), True),
+        (True, True, (0.0, 1.0), False),
+        (True, False, (-1.0, 0.0), False),
+    ],
 )
-def test_uniform_selector_restore_rejects_non_exact_index_types(indices) -> None:
-    selector = UniformSelector(7)
-    selector.insert(0)
-    state = selector.state_dict()
-    state["indices"] = indices
-    with pytest.raises((TypeError, ValueError)):
-        UniformSelector.from_state_dict(state)
+def test_action_is_next_call_unbounded_and_final_zero_is_transactional(
+    last: bool,
+    terminal: bool,
+    action: tuple[float, float],
+    accepted: bool,
+) -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    row = _row(0, first=True, last=last, terminal=terminal, action=action)
+    row_before = copy.deepcopy(row)
+    before = replay.state_dict()
+    if accepted:
+        key = replay.add(row)
+        np.testing.assert_array_equal(
+            replay.chunks[key.chunk_id].read(key.offset, 1)["action"][0], action
+        )
+    else:
+        with pytest.raises(ValueError, match="final replay row action must be zero"):
+            replay.add(row)
+        _tree_equal(replay.state_dict(), before)
+    _tree_equal(row, row_before)
 
 
-def test_complete_persistence_exact_resume_future_ids_rng_and_stream_current() -> None:
-    original = _complete_resume_scenario()
-    state = original.state_dict()
-    pristine = copy.deepcopy(state)
+def test_row_boundary_chronology_is_transactional() -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    before = replay.state_dict()
+    with pytest.raises(ValueError, match="first row"):
+        replay.add(_row(0, first=False))
+    _tree_equal(replay.state_dict(), before)
 
-    def fresh() -> DreamerReplay:
-        return _replay(
-            capacity=3,
-            chunk_size=3,
-            sequence_length=2,
+
+def test_transition_row_table_preserves_action_and_auto_reset_order() -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    rows = [
+        _row(0, first=True, action=(1.0, 2.0)),
+        _row(1, last=True, terminal=True, action=(0.0, 0.0)),
+        _row(2, first=True, action=(3.0, 4.0)),
+        _row(3, last=True, terminal=False, action=(0.0, 0.0)),
+        _row(4, first=True, action=(5.0, 6.0)),
+    ]
+    keys = [replay.add(row) for row in rows]
+    for key, expected in zip(keys, rows, strict=True):
+        stored = replay.chunks[key.chunk_id].read(key.offset, 1)
+        for name in _transition_spaces():
+            np.testing.assert_array_equal(stored[name][0], np.asarray(expected[name]))
+    assert [
+        bool(replay.chunks[key.chunk_id].read(key.offset, 1)["is_first"][0])
+        for key in keys
+    ] == [
+        True,
+        False,
+        True,
+        False,
+        True,
+    ]
+    replay.add(_row(0, first=True, last=True))
+    before = replay.state_dict()
+    with pytest.raises(ValueError, match="after is_last"):
+        replay.add(_row(1, first=False))
+    _tree_equal(replay.state_dict(), before)
+
+
+def test_online_old_length_phase_and_global_fifo_across_writers() -> None:
+    replay = _replay(sequence=_sequence(length=2, context=1))
+    for index in range(8):
+        replay.add(_row(index, first=index == 0), worker=1)
+        replay.add(_row(100 + index, first=index == 0), worker=2)
+    assert [_value_at(replay, key) for key in replay.online_queue.keys] == [
+        1,
+        101,
+        4,
+        104,
+    ]
+    assert replay.writers[1].online_phase == 2
+    assert replay.writers[2].online_phase == 2
+
+    every = _replay(sequence=_sequence(length=1, context=0))
+    _add(every, 4)
+    assert [_value_at(every, key) for key in every.online_queue.keys] == [0, 1, 2, 3]
+
+
+def test_train_online_first_report_uniform_and_streams_are_independent() -> None:
+    replay = _replay(
+        sequence=_sequence(
+            length=2,
             context=1,
             consecutive=2,
-            online=True,
-            seed=7,
+            report_length=2,
+            report_consecutive=2,
         )
-
-    restored = [fresh(), fresh()]
-    for replay in restored:
-        replay.load_state_dict(state)
-        _assert_tree_equal(replay.state_dict(), pristine)
-    state["chunks"][0]["transition"]["value"][:] = -999
-    state["selector"]["keys"].clear()
-    _assert_tree_equal(original.state_dict(), pristine)
-    for replay in restored:
-        _assert_tree_equal(replay.state_dict(), pristine)
-
-    replicas = [original, *restored]
-
-    def assert_replicas() -> None:
-        for replay in replicas[1:]:
-            _assert_tree_equal(replicas[0].state_dict(), replay.state_dict())
-
-    resumed = [replay.sample("report", timeout=0.1) for replay in replicas]
-    for batch in resumed[1:]:
-        _assert_tree_equal(resumed[0].as_dict(), batch.as_dict())
-    assert_replicas()
-
-    online = [replay.sample_raw("train", timeout=0.1) for replay in replicas]
-    for batch in online[1:]:
-        _assert_tree_equal(online[0].as_dict(), batch.as_dict())
-    assert_replicas()
-    for replay, batch in zip(replicas, online, strict=True):
-        replay.update_context(
-            batch.step_ids[:, 1:3],
-            {
-                "dyn/deter": np.asarray([[[21, 22], [23, 24]]], np.float32),
-                "dyn/stoch": np.asarray([[[[25, 26]], [[27, 28]]]], np.float32),
-            },
-        )
-    assert_replicas()
-    for _ in range(2):
-        group = [replay.sample("report", timeout=0.1) for replay in replicas]
-        for batch in group[1:]:
-            _assert_tree_equal(group[0].as_dict(), batch.as_dict())
-        assert_replicas()
-    for index in range(11, 19):
-        kwargs = {"first": index in (12, 16), "last": index in (11, 15)}
-        keys = [replay.add(_row(index, **kwargs)) for replay in replicas]
-        assert keys[1:] == [keys[0], keys[0]]
-        assert_replicas()
-        if index % 2:
-            batches = [replay.sample_raw("report", timeout=0.1) for replay in replicas]
-            for batch in batches[1:]:
-                _assert_tree_equal(batches[0].as_dict(), batch.as_dict())
-            assert_replicas()
-    for replay in restored:
-        _assert_tree_equal(original.state_dict(), replay.state_dict())
-
-
-def test_restored_writer_discards_load_only_offset_and_accepts_future_add() -> None:
-    original = _complete_resume_scenario()
-    restored = _replay(
-        capacity=3,
-        chunk_size=3,
-        sequence_length=2,
-        context=1,
-        consecutive=2,
-        online=True,
-        seed=7,
     )
-    restored.load_state_dict(original.state_dict())
-    assert not hasattr(restored.writers[0], "_restored_offset")
-    restored.add(_row(11, first=False))
-    restored.validate()
+    _add(replay, 12)
+    queued = list(replay.online_queue.keys)
+    train0 = replay.sample("train")
+    assert train0.data["consec"].tolist() == [[0, 0, 0]]
+    assert len(replay.online_queue.keys) < len(queued)
+    queue_after_train = list(replay.online_queue.keys)
+    report0 = replay.sample("report")
+    assert report0.data["consec"].tolist() == [[0, 0, 0]]
+    assert replay.online_queue.keys == queue_after_train
+    train1 = replay.sample("train")
+    report1 = replay.sample("report")
+    assert train1.data["consec"].tolist() == [[1, 1, 1]]
+    assert report1.data["consec"].tolist() == [[1, 1, 1]]
 
 
-def test_chunk_id_exhaustion_is_preflighted_without_partial_append() -> None:
-    empty = _replay(chunk_size=3, sequence_length=2, context=0, online=False)
-    empty_state = empty.state_dict()
-    empty_restored = _replay(chunk_size=3, sequence_length=2, context=0, online=False)
-    empty_restored.load_state_dict(empty_state)
-    _assert_tree_equal(empty_restored.state_dict(), empty_state)
-
-    replay = _replay(chunk_size=3, sequence_length=2, context=0, online=False)
-    replay.add(_row(0))
-    replay.add(_row(1, first=False))
-    replay.next_chunk_id = 2**128
+def test_readiness_is_pure_for_both_modes_and_requires_a_complete_raw_batch() -> None:
+    replay = _replay(sequence=_sequence(batch=3, length=2, context=1))
+    assert replay.can_sample_batch("train") is False
+    assert replay.can_sample_batch("report") is False
+    _add(replay, 2)
     before = replay.state_dict()
-    with pytest.raises(OverflowError):
-        replay.add(_row(2, first=False))
-    _assert_tree_equal(replay.state_dict(), before)
-
-    fresh = _replay(chunk_size=1, sequence_length=1, context=0, online=False)
-    fresh.next_chunk_id = 2**128 - 1
-    fresh_before = fresh.state_dict()
-    with pytest.raises(OverflowError):
-        fresh.add(_row(0))
-    _assert_tree_equal(fresh.state_dict(), fresh_before)
-
-    sentinel = _replay(chunk_size=3, sequence_length=2, context=0, online=False)
-    sentinel.next_chunk_id = 2**128 - 1
-    key = sentinel.add(_row(0))
-    assert key.chunk_id == (2**128 - 1).to_bytes(16, "big")
-    assert sentinel.next_chunk_id == 2**128
-    exhausted_state = sentinel.state_dict()
-    restored = _replay(chunk_size=3, sequence_length=2, context=0, online=False)
-    restored_before = restored.state_dict()
-    with pytest.raises(ValueError, match="histor"):
-        restored.load_state_dict(exhausted_state)
-    _assert_tree_equal(restored.state_dict(), restored_before)
-    sentinel.add(_row(1, first=False))
-    before_fill = sentinel.state_dict()
-    with pytest.raises(OverflowError):
-        sentinel.add(_row(2, first=False))
-    _assert_tree_equal(sentinel.state_dict(), before_fill)
-
-
-def test_restore_rejects_malformed_consecutive_current_without_mutation() -> None:
-    replay = _complete_resume_scenario()
+    assert replay.can_sample_batch("train") is False
+    assert replay.can_sample_batch("report") is False
+    _tree_equal(replay.state_dict(), before)
+    replay.add(_row(2))
     before = replay.state_dict()
-
-    def remove_reward(current) -> None:
-        current.pop("reward")
-
-    def wrong_value_dtype(current) -> None:
-        current["value"] = current["value"].astype(np.float64)
-
-    def wrong_reward_trailing_shape(current) -> None:
-        current["reward"] = current["reward"][..., None]
-
-    def wrong_batch_size(current) -> None:
-        for name, value in tuple(current.items()):
-            current[name] = np.concatenate([value, value], axis=0)
-
-    for corrupt in (
-        remove_reward,
-        wrong_value_dtype,
-        wrong_reward_trailing_shape,
-        wrong_batch_size,
-    ):
-        broken = copy.deepcopy(before)
-        corrupt(broken["consecutive"]["report"]["current"])
-        with pytest.raises((TypeError, ValueError)):
-            replay.load_state_dict(broken)
-        _assert_tree_equal(replay.state_dict(), before)
-
-    broken = copy.deepcopy(before)
-    broken["consecutive"]["report"]["index"] = 0
-    with pytest.raises((TypeError, ValueError)):
-        replay.load_state_dict(broken)
-    _assert_tree_equal(replay.state_dict(), before)
+    assert replay.can_sample_batch("train") is True
+    assert replay.can_sample_batch("report") is True
+    _tree_equal(replay.state_dict(), before)
+    with pytest.raises(ValueError, match="train or report"):
+        replay.can_sample_batch("eval")
 
 
-def test_successful_nonempty_restore_notifies_existing_sample_waiter() -> None:
-    source = _replay(sequence_length=2, context=0, online=False)
-    _add_rows(source, 4)
-    target = _replay(sequence_length=2, context=0, online=False)
-    started = threading.Event()
-    outcome: list[ReplayBatch] = []
-    errors: list[BaseException] = []
-
-    def sample() -> None:
-        started.set()
-        try:
-            outcome.append(target.sample_raw("report", timeout=2.0))
-        except BaseException as error:  # pragma: no cover - asserted below.
-            errors.append(error)
-
-    thread = threading.Thread(target=sample)
-    thread.start()
-    assert started.wait(1)
-    deadline = time.monotonic() + 1.0
-    while time.monotonic() < deadline:
-        with target._condition:
-            if target._condition._waiters:
-                break
-        threading.Event().wait(0.005)
-    with target._condition:
-        assert len(target._condition._waiters) == 1
-    target.load_state_dict(source.state_dict())
-    thread.join(0.5)
-    assert not thread.is_alive()
-    assert not errors
-    assert outcome and outcome[0].step_ids.shape == (1, 2, 20)
-
-
-def test_restore_rebinds_blocked_sample_to_live_consecutive_stream() -> None:
-    source = _replay(
-        sequence_length=1,
-        context=0,
-        consecutive=2,
-        online=False,
-    )
-    _add_rows(source, 3)
-    first_source = source.sample("report", timeout=0.1)
-    np.testing.assert_array_equal(first_source.data["consec"], [[0]])
-    assert source.consecutive_streams["report"].index == 1
-    saved = source.state_dict()
-    serial = _replay(
-        sequence_length=1,
-        context=0,
-        consecutive=2,
-        online=False,
-    )
-    serial.load_state_dict(saved)
-    expected = serial.sample("report", timeout=0.1)
-    np.testing.assert_array_equal(expected.data["consec"], [[1]])
-    target = _replay(
-        sequence_length=1,
-        context=0,
-        consecutive=2,
-        online=False,
-    )
-    outcome: list[ReplayBatch] = []
-    errors: list[BaseException] = []
-
-    def sample() -> None:
-        try:
-            outcome.append(target.sample("report", timeout=2.0))
-        except BaseException as error:  # pragma: no cover - asserted below.
-            errors.append(error)
-
-    thread = threading.Thread(target=sample)
-    thread.start()
-    deadline = time.monotonic() + 1.0
-    while time.monotonic() < deadline:
-        with target._condition:
-            if target._condition._waiters:
-                break
-        threading.Event().wait(0.005)
-    with target._condition:
-        assert len(target._condition._waiters) == 1
-    target.load_state_dict(saved)
-    thread.join(0.5)
-    assert not thread.is_alive()
-    assert not errors
-    assert outcome and outcome[0].step_ids.shape == (1, 1, 20)
-    _assert_tree_equal(outcome[0].as_dict(), expected.as_dict())
-    assert target.consecutive_streams["report"].index == 2
-    _assert_tree_equal(target.state_dict(), serial.state_dict())
-    second = target.sample("report", timeout=0.1)
-    serial_second = serial.sample("report", timeout=0.1)
-    np.testing.assert_array_equal(second.data["consec"], [[0]])
-    _assert_tree_equal(second.as_dict(), serial_second.as_dict())
-    _assert_tree_equal(target.state_dict(), serial.state_dict())
-
-
-@pytest.mark.parametrize("corruption", ["splice", "merge"])
-def test_restore_rejects_cross_worker_chain_splice_and_merge_without_mutation(
-    corruption: str,
-) -> None:
+def test_readiness_covers_zero_all_batch_and_independent_partial_streams() -> None:
     replay = _replay(
-        capacity=20,
-        chunk_size=2,
-        sequence_length=2,
-        context=0,
-        online=False,
+        sequence=_sequence(
+            batch=3,
+            length=2,
+            context=1,
+            consecutive=2,
+            report_length=2,
+            report_consecutive=2,
+        )
     )
-    for index in range(5):
-        replay.add(_row(index, first=index == 0), worker=1)
-        replay.add(_row(100 + index, first=index == 0), worker=2)
+    assert not replay.can_sample_batch("train")
+    _add(replay, 5)
+    assert replay.can_sample_batch("train")
+    assert replay.can_sample_batch("report")
+    replay.sample("train")
     before = replay.state_dict()
-    broken = copy.deepcopy(before)
-    sealed = [chunk for chunk in broken["chunks"] if chunk["sealed"]]
-    left = min(sealed, key=lambda chunk: int(chunk["transition"]["value"][0]))
-    right = max(sealed, key=lambda chunk: int(chunk["transition"]["value"][0]))
-    left_successor = left["successor"]
-    right_successor = right["successor"]
-    assert left_successor != right_successor
-    if corruption == "splice":
-        left["successor"], right["successor"] = right_successor, left_successor
-    else:
-        left["successor"] = right_successor
-        broken["refs"][left_successor] -= 1
-        broken["refs"][right_successor] += 1
-    with pytest.raises((TypeError, ValueError)):
-        replay.load_state_dict(broken)
-    _assert_tree_equal(replay.state_dict(), before)
+    assert replay.can_sample_batch("train")
+    assert replay.can_sample_batch("report")
+    _tree_equal(replay.state_dict(), before)
+    replay.sample("report")
+    assert replay.streams["train"].index == 1
+    assert replay.streams["report"].index == 1
+
+
+def test_readiness_never_constructs_rng_or_reads_a_batch(monkeypatch) -> None:
+    replay = _replay(sequence=_sequence(batch=4, length=2, context=1))
+    _add(replay, 3)
+    monkeypatch.setattr(
+        replay,
+        "_raw_plan",
+        lambda mode: (_ for _ in ()).throw(AssertionError(f"sampled {mode}")),
+    )
+    monkeypatch.setattr(
+        replay,
+        "_read",
+        lambda keys: (_ for _ in ()).throw(AssertionError(f"read {keys}")),
+    )
+    assert replay.can_sample_batch("train")
+    assert replay.can_sample_batch("report")
 
 
 @pytest.mark.parametrize(
-    "corrupt_writer",
+    ("case", "expected"),
     [
-        lambda writer: writer["pending"].reverse(),
-        lambda writer: writer.update(row_count=writer["row_count"] + 1),
-        lambda writer: writer.update(emitted_count=writer["emitted_count"] + 1),
-        lambda writer: writer.update(has_rows=not writer["has_rows"]),
-        lambda writer: writer.update(last_is_last=not writer["last_is_last"]),
+        ("insufficient_live", False),
+        ("enough_live", True),
+        ("stale_does_not_count", False),
+        ("selector_replacement", True),
     ],
 )
-def test_restore_rejects_corrupt_writer_cadence_and_chronology_without_mutation(
-    corrupt_writer,
+def test_train_readiness_proves_every_batch_row_without_mutation(
+    case: str, expected: bool
 ) -> None:
-    replay = _complete_resume_scenario()
+    sequence = _sequence(batch=2, length=1, context=0)
+    replay = _replay(sequence=sequence)
+    if case == "selector_replacement":
+        replay.add(_row(0, first=True))
+        replay.online_queue.keys.clear()
+    else:
+        replay.add(_row(0, first=True))
+        replay.add(_row(1))
+        live = list(replay.online_queue.keys)
+        replay.items.clear()
+        replay.fifo.clear()
+        replay.selector.keys.clear()
+        replay.selector.indices.clear()
+        replay._item_ids_by_key.clear()
+        replay._report_pending.clear()
+        if case == "insufficient_live":
+            replay.online_queue.keys = live[:1]
+        elif case == "enough_live":
+            replay.online_queue.keys = live[:2]
+        else:
+            replay.online_queue.keys = [
+                ReplayKey((99).to_bytes(16, "big"), 0),
+                live[0],
+            ]
     before = replay.state_dict()
-    broken = copy.deepcopy(before)
-    corrupt_writer(next(iter(broken["writers"].values())))
-    with pytest.raises((TypeError, ValueError)):
-        replay.load_state_dict(broken)
-    _assert_tree_equal(replay.state_dict(), before)
+
+    assert replay.can_sample_batch("train") is expected
+    _tree_equal(replay.state_dict(), before)
+    if expected:
+        plan = replay.prepare_sample("train")
+        assert plan.batch.step_ids.shape == (2, 1, 20)
+    else:
+        with pytest.raises(LookupError, match="complete batch"):
+            replay.prepare_sample("train")
+    _tree_equal(replay.state_dict(), before)
 
 
-@pytest.mark.parametrize("populated", [False, True], ids=["empty", "nonempty"])
-def test_restore_rejects_exact_next_item_id_gap_without_mutation(
-    populated: bool,
+def test_report_longer_than_train_uses_bounded_pending_starts() -> None:
+    replay = _replay(
+        capacity=200,
+        sequence=_sequence(
+            batch=2,
+            length=2,
+            context=0,
+            consecutive=1,
+            report_length=5,
+            report_consecutive=1,
+        ),
+    )
+    _add(replay, 30)
+
+    class NoCapacityIteration(dict[int, ReplayKey]):
+        def items(self) -> NoReturn:
+            raise AssertionError("sample preparation scanned replay capacity")
+
+        def __iter__(self) -> NoReturn:
+            raise AssertionError("sample preparation scanned replay capacity")
+
+    replay.items = NoCapacityIteration(replay.items)
+    batch = replay.prepare_sample("report").batch
+    assert batch.step_ids.shape == (2, 5, 20)
+
+
+def test_prepare_commit_plans_are_bounded_and_reject_stale_commit() -> None:
+    replay = _replay(capacity=2, sequence=_sequence(length=1, context=0))
+    first = replay.prepare_add(_row(0, first=True), worker=0)
+    replay.commit_add(first)
+    stale = replay.prepare_add(_row(1), worker=0)
+    replay.add(_row(1), worker=0)
+    before = replay.state_dict()
+    with pytest.raises(RuntimeError, match="stale"):
+        replay.commit_add(stale)
+    _tree_equal(replay.state_dict(), before)
+    assert not hasattr(replay.writers[0], "chunk_history")
+    replay.validate = lambda: (_ for _ in ()).throw(AssertionError("validate called"))
+    for index in range(2, 100):
+        replay.add(_row(index), worker=0)
+    assert len(replay.items) == 2
+    assert len(replay.chunks) <= 4
+
+
+def test_add_plan_row_is_irreversibly_immutable_before_commit() -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    before = replay.state_dict()
+    plan = replay.prepare_add(_row(0, first=True, last=True, terminal=True))
+
+    with pytest.raises(ValueError, match="WRITEABLE"):
+        plan.row["action"].flags.writeable = True
+
+    _tree_equal(replay.state_dict(), before)
+    np.testing.assert_array_equal(plan.row["action"], np.zeros(2, np.float32))
+
+
+def test_add_plan_hides_mutable_staging_and_rejects_scalar_tampering() -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    before = replay.state_dict()
+    plan = replay.prepare_add(_row(0, first=True))
+
+    assert not hasattr(plan, "_new_writer")
+    assert not hasattr(plan, "_new_chunks")
+    assert not hasattr(plan, "_token")
+    object.__setattr__(plan, "worker", 7)
+    with pytest.raises(RuntimeError, match="tampered"):
+        replay.commit_add(plan)
+
+    _tree_equal(replay.state_dict(), before)
+
+
+def test_add_plan_is_owner_bound_and_single_use() -> None:
+    left = _replay(sequence=_sequence(length=1, context=0))
+    right = _replay(sequence=_sequence(length=1, context=0))
+    left_before = left.state_dict()
+    right_before = right.state_dict()
+    plan = left.prepare_add(_row(0, first=True))
+
+    with pytest.raises(RuntimeError, match="owner"):
+        right.commit_add(plan)
+    _tree_equal(left.state_dict(), left_before)
+    _tree_equal(right.state_dict(), right_before)
+
+    left.commit_add(plan)
+    committed = left.state_dict()
+    with pytest.raises(RuntimeError, match="consumed"):
+        left.commit_add(plan)
+    _tree_equal(left.state_dict(), committed)
+
+
+@pytest.mark.parametrize("kind", ["add", "sample"])
+def test_local_plan_reclassification_rejects_and_consumes(kind: str) -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    plan: Any
+    commit: Callable[[Any], object]
+    if kind == "add":
+        plan = replay.prepare_add(_row(0, first=True))
+        commit = replay.commit_add
+        pending = getattr(replay, "_DreamerReplay__prepared_add")
+    else:
+        replay.add(_row(0, first=True))
+        plan = replay.prepare_sample("train")
+        commit = replay.commit_sample
+        pending = getattr(replay, "_DreamerReplay__prepared_sample")
+    base = type(plan)
+    reclassified = type("ReclassifiedPlan", (base,), {"__slots__": ()})
+    before = replay.state_dict()
+
+    object.__setattr__(plan, "__class__", reclassified)
+    with pytest.raises(RuntimeError, match="invalid"):
+        commit(plan)
+    _tree_equal(replay.state_dict(), before)
+    assert len(pending) == 0
+
+    object.__setattr__(plan, "__class__", base)
+    with pytest.raises(RuntimeError, match="consumed"):
+        commit(plan)
+    _tree_equal(replay.state_dict(), before)
+
+
+@pytest.mark.parametrize("kind", ["add", "sample"])
+def test_consumed_plan_reclassification_stays_consumed(kind: str) -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    plan: Any
+    commit: Callable[[Any], object]
+    if kind == "add":
+        plan = replay.prepare_add(_row(0, first=True))
+        commit = replay.commit_add
+    else:
+        replay.add(_row(0, first=True))
+        plan = replay.prepare_sample("train")
+        commit = replay.commit_sample
+    commit(plan)
+    committed = replay.state_dict()
+    base = type(plan)
+    reclassified = type("ConsumedReclassifiedPlan", (base,), {"__slots__": ()})
+
+    object.__setattr__(plan, "__class__", reclassified)
+    with pytest.raises(RuntimeError, match="consumed"):
+        commit(plan)
+    _tree_equal(replay.state_dict(), committed)
+
+
+@pytest.mark.parametrize("kind", ["add", "sample"])
+def test_cross_replay_reclassified_plan_preserves_source_plan(kind: str) -> None:
+    source = _replay(sequence=_sequence(length=1, context=0))
+    target = _replay(sequence=_sequence(length=1, context=0))
+    plan: Any
+    source_commit: Callable[[Any], object]
+    target_commit: Callable[[Any], object]
+    if kind == "add":
+        plan = source.prepare_add(_row(0, first=True))
+        source_commit = source.commit_add
+        target_commit = target.commit_add
+        pending = getattr(source, "_DreamerReplay__prepared_add")
+    else:
+        source.add(_row(0, first=True))
+        target.add(_row(0, first=True))
+        plan = source.prepare_sample("train")
+        source_commit = source.commit_sample
+        target_commit = target.commit_sample
+        pending = getattr(source, "_DreamerReplay__prepared_sample")
+    source_before = source.state_dict()
+    target_before = target.state_dict()
+    base = type(plan)
+    reclassified = type("ForeignReclassifiedPlan", (base,), {"__slots__": ()})
+
+    object.__setattr__(plan, "__class__", reclassified)
+    with pytest.raises(RuntimeError, match="invalid"):
+        target_commit(plan)
+    _tree_equal(source.state_dict(), source_before)
+    _tree_equal(target.state_dict(), target_before)
+    assert len(pending) == 1
+
+    object.__setattr__(plan, "__class__", base)
+    source_commit(plan)
+    assert len(pending) == 0
+
+
+@pytest.mark.parametrize("mutation", ["replace", "delete"])
+def test_add_plan_owner_rejection_consumes_local_plan(mutation: str) -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    plan = replay.prepare_add(_row(0, first=True))
+    owner = plan._owner
+    before = replay.state_dict()
+
+    if mutation == "replace":
+        object.__setattr__(plan, "_owner", object())
+    else:
+        object.__delattr__(plan, "_owner")
+    with pytest.raises(RuntimeError):
+        replay.commit_add(plan)
+    _tree_equal(replay.state_dict(), before)
+
+    object.__setattr__(plan, "_owner", owner)
+    with pytest.raises(RuntimeError, match="consumed"):
+        replay.commit_add(plan)
+    _tree_equal(replay.state_dict(), before)
+
+
+def test_add_plan_comparison_exception_is_normalized_and_consumes_plan() -> None:
+    replay = _replay(
+        sequence=_sequence(
+            length=1,
+            context=0,
+            report_length=2,
+            report_consecutive=1,
+        )
+    )
+    replay.add(_row(0, first=True))
+    plan = replay.prepare_add(_row(1))
+    assert plan.report_ready is not None
+    offset = plan.report_ready.offset
+    before = replay.state_dict()
+
+    object.__delattr__(plan.report_ready, "offset")
+    with pytest.raises(RuntimeError, match="rejected"):
+        replay.commit_add(plan)
+    _tree_equal(replay.state_dict(), before)
+
+    object.__setattr__(plan.report_ready, "offset", offset)
+    with pytest.raises(RuntimeError, match="consumed"):
+        replay.commit_add(plan)
+    _tree_equal(replay.state_dict(), before)
+
+
+def test_add_preparations_replace_abandoned_staging_with_one_pending_plan() -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    oldest = replay.prepare_add(_row(0, first=True))
+    newest = oldest
+    for _ in range(128):
+        newest = replay.prepare_add(_row(0, first=True))
+    gc.collect()
+
+    pending = getattr(replay, "_DreamerReplay__prepared_add")
+    assert len(pending) == 1
+    with pytest.raises(RuntimeError, match="consumed"):
+        replay.commit_add(oldest)
+    assert len(pending) == 1
+    key = replay.commit_add(newest)
+    assert _value_at(replay, key) == 0
+    assert len(pending) == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("_owner", lambda plan: object()),
+        ("version", lambda plan: plan.version + 1),
+        ("worker", lambda plan: plan.worker + 1),
+        ("row", lambda plan: {}),
+        ("emits_item", lambda plan: not plan.emits_item),
+        ("report_ready", lambda plan: ReplayKey((99).to_bytes(16, "big"), 0)),
+    ],
+)
+def test_add_plan_rejects_every_public_field_replacement_atomically(
+    field: str, replacement: Callable[[Any], object]
 ) -> None:
-    replay = _replay(sequence_length=1, context=0, online=False)
-    if populated:
-        _add_rows(replay, 4)
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    plan = replay.prepare_add(_row(0, first=True))
     before = replay.state_dict()
-    broken = copy.deepcopy(before)
-    broken["next_item_id"] += 1
-    with pytest.raises(ValueError, match="next replay item"):
-        replay.load_state_dict(broken)
-    _assert_tree_equal(replay.state_dict(), before)
+
+    object.__setattr__(plan, field, replacement(plan))
+    with pytest.raises(RuntimeError):
+        replay.commit_add(plan)
+
+    _tree_equal(replay.state_dict(), before)
 
 
-def test_restore_preserves_exact_item_counter_after_capacity_eviction() -> None:
+@pytest.mark.parametrize("mutation", ["shape", "dtype"])
+def test_add_plan_rejects_nested_row_metadata_and_consumes_plan(
+    mutation: str,
+) -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    plan = replay.prepare_add(_row(0, first=True))
+    before = replay.state_dict()
+
+    if mutation == "shape":
+        plan.row["action"].shape = (2, 1)
+    else:
+        object.__setattr__(plan.row["action"], "dtype", np.dtype(np.uint32))
+    with pytest.raises(RuntimeError, match="tampered"):
+        replay.commit_add(plan)
+    _tree_equal(replay.state_dict(), before)
+    with pytest.raises(RuntimeError, match="consumed"):
+        replay.commit_add(plan)
+
+    valid = replay.prepare_add(_row(0, first=True))
+    key = replay.commit_add(valid)
+    np.testing.assert_array_equal(
+        replay.chunks[key.chunk_id].read(key.offset, 1)["obs"], [[0.0]]
+    )
+
+
+def test_add_plan_rejects_nested_report_ready_mutation_atomically() -> None:
     replay = _replay(
-        capacity=1,
-        sequence_length=1,
-        context=0,
-        online=False,
+        sequence=_sequence(
+            length=1,
+            context=0,
+            report_length=2,
+            report_consecutive=1,
+        )
     )
-    _add_rows(replay, 6)
-    state = replay.state_dict()
-    assert state["fifo"] == [5]
-    assert state["next_item_id"] == 6
-    assert sum(value["emitted_count"] for value in state["writers"].values()) == 6
-    restored = _replay(
-        capacity=1,
-        sequence_length=1,
-        context=0,
-        online=False,
+    replay.add(_row(0, first=True))
+    plan = replay.prepare_add(_row(1))
+    assert plan.report_ready is not None
+    before = replay.state_dict()
+
+    object.__setattr__(plan.report_ready, "offset", plan.report_ready.offset + 1)
+    with pytest.raises(RuntimeError, match="tampered"):
+        replay.commit_add(plan)
+    _tree_equal(replay.state_dict(), before)
+    with pytest.raises(RuntimeError, match="consumed"):
+        replay.commit_add(plan)
+
+    valid = replay.prepare_add(_row(1))
+    key = replay.commit_add(valid)
+    assert _value_at(replay, key) == 1
+
+
+def test_sample_plan_hides_queue_rng_and_rejects_tampering() -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    replay.add(_row(0, first=True))
+    plan = replay.prepare_sample("train")
+    before = replay.state_dict()
+
+    assert not hasattr(plan, "current")
+    assert not hasattr(plan, "_token")
+    for name, replacement in (("_queue_state", []), ("_rng", np.random.default_rng(9))):
+        with pytest.raises(AttributeError):
+            object.__setattr__(plan, name, replacement)
+    with pytest.raises(ValueError, match="WRITEABLE"):
+        plan.batch.step_ids.flags.writeable = True
+    object.__setattr__(plan, "index", plan.index + 1)
+    with pytest.raises(RuntimeError, match="tampered"):
+        replay.commit_sample(plan)
+
+    _tree_equal(replay.state_dict(), before)
+
+
+def test_sample_plan_is_owner_bound_stale_safe_and_single_use() -> None:
+    left = _replay(sequence=_sequence(length=1, context=0))
+    right = _replay(sequence=_sequence(length=1, context=0))
+    left.add(_row(0, first=True))
+    right.add(_row(0, first=True))
+    plan = left.prepare_sample("train")
+    left_before = left.state_dict()
+    right_before = right.state_dict()
+
+    with pytest.raises(RuntimeError, match="owner"):
+        right.commit_sample(plan)
+    _tree_equal(left.state_dict(), left_before)
+    _tree_equal(right.state_dict(), right_before)
+
+    left.commit_sample(plan)
+    committed = left.state_dict()
+    with pytest.raises(RuntimeError, match="consumed"):
+        left.commit_sample(plan)
+    _tree_equal(left.state_dict(), committed)
+
+    stale = right.prepare_sample("train")
+    right.add(_row(1))
+    advanced = right.state_dict()
+    with pytest.raises(RuntimeError, match="stale"):
+        right.commit_sample(stale)
+    _tree_equal(right.state_dict(), advanced)
+
+
+@pytest.mark.parametrize("mutation", ["replace", "delete"])
+def test_sample_plan_owner_rejection_consumes_local_plan(mutation: str) -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    replay.add(_row(0, first=True))
+    plan = replay.prepare_sample("train")
+    owner = plan._owner
+    before = replay.state_dict()
+
+    if mutation == "replace":
+        object.__setattr__(plan, "_owner", object())
+    else:
+        object.__delattr__(plan, "_owner")
+    with pytest.raises(RuntimeError):
+        replay.commit_sample(plan)
+    _tree_equal(replay.state_dict(), before)
+
+    object.__setattr__(plan, "_owner", owner)
+    with pytest.raises(RuntimeError, match="consumed"):
+        replay.commit_sample(plan)
+    _tree_equal(replay.state_dict(), before)
+
+
+def test_sample_plan_comparison_exception_is_normalized_and_consumes_plan() -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    replay.add(_row(0, first=True))
+    plan = replay.prepare_sample("train")
+    data = plan.batch.data
+    before = replay.state_dict()
+
+    object.__delattr__(plan.batch, "data")
+    with pytest.raises(RuntimeError, match="rejected"):
+        replay.commit_sample(plan)
+    _tree_equal(replay.state_dict(), before)
+
+    object.__setattr__(plan.batch, "data", data)
+    with pytest.raises(RuntimeError, match="consumed"):
+        replay.commit_sample(plan)
+    _tree_equal(replay.state_dict(), before)
+
+
+def test_sample_preparations_replace_abandoned_staging_with_one_pending_plan() -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    replay.add(_row(0, first=True))
+    oldest = replay.prepare_sample("train")
+    newest = oldest
+    for _ in range(128):
+        newest = replay.prepare_sample("train")
+    gc.collect()
+
+    pending = getattr(replay, "_DreamerReplay__prepared_sample")
+    assert len(pending) == 1
+    with pytest.raises(RuntimeError, match="consumed"):
+        replay.commit_sample(oldest)
+    assert len(pending) == 1
+    batch = replay.commit_sample(newest)
+    assert batch.step_ids.shape == (1, 1, 20)
+    assert len(pending) == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("_owner", lambda plan: object()),
+        ("version", lambda plan: plan.version + 1),
+        ("mode", lambda plan: "report"),
+        ("batch", lambda plan: ReplayBatch(plan.batch.data, plan.batch.step_ids)),
+        ("index", lambda plan: plan.index + 1),
+        ("queue", lambda plan: (ReplayKey((99).to_bytes(16, "big"), 0),)),
+        ("online", lambda plan: plan.online + 1),
+        ("uniform", lambda plan: plan.uniform + 1),
+        ("stale", lambda plan: plan.stale + 1),
+    ],
+)
+def test_sample_plan_rejects_every_public_field_replacement_atomically(
+    field: str, replacement: Callable[[Any], object]
+) -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    replay.add(_row(0, first=True))
+    plan = replay.prepare_sample("train")
+    before = replay.state_dict()
+
+    object.__setattr__(plan, field, replacement(plan))
+    with pytest.raises(RuntimeError):
+        replay.commit_sample(plan)
+
+    _tree_equal(replay.state_dict(), before)
+
+
+@pytest.mark.parametrize("field", ["step_ids", "data"])
+def test_replay_batch_attributes_are_non_reassignable(field: str) -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    replay.add(_row(0, first=True))
+    plan = replay.prepare_sample("train")
+    before = replay.state_dict()
+    replacement: object
+    if field == "step_ids":
+        replacement = np.full(plan.batch.step_ids.shape, 255, np.uint8)
+    else:
+        replacement = MappingProxyType({})
+
+    with pytest.raises(AttributeError):
+        setattr(plan.batch, field, replacement)
+    _tree_equal(replay.state_dict(), before)
+
+
+@pytest.mark.parametrize("field", ["step_ids", "data"])
+def test_sample_plan_rejects_object_level_batch_replacement_atomically(
+    field: str,
+) -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    replay.add(_row(0, first=True))
+    plan = replay.prepare_sample("train")
+    before = replay.state_dict()
+    replacement: object
+    if field == "step_ids":
+        replacement = np.full(plan.batch.step_ids.shape, 255, np.uint8)
+    else:
+        replacement = MappingProxyType({})
+
+    object.__setattr__(plan.batch, field, replacement)
+    with pytest.raises(RuntimeError, match="tampered"):
+        replay.commit_sample(plan)
+    _tree_equal(replay.state_dict(), before)
+    with pytest.raises(RuntimeError, match="consumed"):
+        replay.commit_sample(plan)
+
+
+@pytest.mark.parametrize("mutation", ["shape", "dtype"])
+def test_sample_plan_rejects_nested_batch_leaf_metadata_atomically(
+    mutation: str,
+) -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    replay.add(_row(0, first=True))
+    plan = replay.prepare_sample("train")
+    before = replay.state_dict()
+
+    if mutation == "shape":
+        plan.batch.data["obs"].shape = (1, 1)
+    else:
+        object.__setattr__(plan.batch.data["obs"], "dtype", np.dtype(np.uint32))
+    with pytest.raises(RuntimeError, match="tampered"):
+        replay.commit_sample(plan)
+    _tree_equal(replay.state_dict(), before)
+    with pytest.raises(RuntimeError, match="consumed"):
+        replay.commit_sample(plan)
+
+
+def test_sample_plan_rejects_nested_queue_key_mutation_atomically() -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    replay.add(_row(0, first=True))
+    replay.add(_row(1))
+    plan = replay.prepare_sample("train")
+    assert plan.queue
+    before = replay.state_dict()
+
+    object.__setattr__(plan.queue[0], "offset", plan.queue[0].offset + 99)
+    with pytest.raises(RuntimeError, match="tampered"):
+        replay.commit_sample(plan)
+    _tree_equal(replay.state_dict(), before)
+    with pytest.raises(RuntimeError, match="consumed"):
+        replay.commit_sample(plan)
+
+
+def test_sample_commit_returns_detached_trusted_batch_and_advances_once() -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    replay.add(_row(0, first=True))
+    plan = replay.prepare_sample("train")
+    expected = plan.batch.state_dict()
+    before = replay.state_dict()
+
+    batch = replay.commit_sample(plan)
+
+    assert batch is not plan.batch
+    _tree_equal(batch.state_dict(), expected)
+    before_metrics = cast(dict[str, np.int64], before["metrics"])
+    assert replay.stats()["sample_calls"] == int(before_metrics["sample_calls"]) + 1
+    assert replay.state_dict()["version"] == int(cast(np.int64, before["version"])) + 1
+
+
+def test_prepare_is_bounded_and_commit_does_not_construct_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    replay = _replay(capacity=2, chunk_size=2, sequence=_sequence(length=1, context=0))
+    replay.add(_row(0, first=True))
+
+    class NoChunkIteration(dict[bytes, ReplayChunk]):
+        def __iter__(self) -> NoReturn:
+            raise AssertionError("add preflight scanned replay capacity")
+
+    replay.chunks = NoChunkIteration(replay.chunks)
+    add_plan = replay.prepare_add(_row(1))
+    with pytest.raises(ValueError):
+        add_plan.row["obs"][0] = -1
+    monkeypatch.setattr(
+        "world_marl.dreamer_v3_baseline.replay.ReplayChunk",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("commit allocated chunk")
+        ),
     )
-    restored.load_state_dict(state)
-    restored.add(_row(6, first=False))
-    assert restored.fifo == [6]
-    assert restored.next_item_id == 7
+    replay.commit_add(add_plan)
 
-
-def test_restore_rejects_coordinated_writer_counter_drift_without_mutation() -> None:
-    replay = _complete_resume_scenario()
-    before = replay.state_dict()
-    broken = copy.deepcopy(before)
-    writer = next(iter(broken["writers"].values()))
-    writer["row_count"] += replay.config.chunk_size
-    writer["emitted_count"] += replay.config.chunk_size
-    with pytest.raises(ValueError, match="emitted"):
-        replay.load_state_dict(broken)
-    _assert_tree_equal(replay.state_dict(), before)
-
-
-def test_restore_rejects_coherent_negative_item_id_without_mutation() -> None:
-    replay = _complete_resume_scenario()
-    before = replay.state_dict()
-    broken = copy.deepcopy(before)
-    old = broken["items"][0]["item_id"]
-    broken["items"][0]["item_id"] = -1
-    broken["fifo"][broken["fifo"].index(old)] = -1
-    key_index = broken["selector"]["keys"].index(old)
-    broken["selector"]["keys"][key_index] = -1
-    broken["selector"]["indices"] = {
-        key: index for index, key in enumerate(broken["selector"]["keys"])
-    }
-    with pytest.raises(ValueError, match="item id"):
-        replay.load_state_dict(broken)
-    _assert_tree_equal(replay.state_dict(), before)
-
-
-def test_restore_rejects_noncontiguous_retained_item_suffix_without_mutation() -> None:
-    replay = _replay(
-        capacity=2,
-        sequence_length=1,
-        context=0,
-        online=False,
+    sample_plan = replay.prepare_sample("train")
+    assert not hasattr(sample_plan, "rng")
+    assert not hasattr(sample_plan, "rng_state")
+    assert isinstance(sample_plan.queue, tuple)
+    assert not hasattr(sample_plan.queue, "__setitem__")
+    with pytest.raises(ValueError):
+        sample_plan.batch.step_ids[0, 0, 0] = 1
+    monkeypatch.setattr(
+        "world_marl.dreamer_v3_baseline.replay.ReplayBatch",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("commit allocated batch")
+        ),
     )
-    _add_rows(replay, 6)
-    before = replay.state_dict()
-    assert [item["item_id"] for item in before["items"]] == [4, 5]
-    broken = copy.deepcopy(before)
-    broken["items"][0]["item_id"] = 3
-    broken["fifo"][0] = 3
-    broken["selector"]["keys"][broken["selector"]["keys"].index(4)] = 3
-    broken["selector"]["indices"] = {
-        key: index for index, key in enumerate(broken["selector"]["keys"])
-    }
-    with pytest.raises(ValueError, match="item"):
-        replay.load_state_dict(broken)
-    _assert_tree_equal(replay.state_dict(), before)
+    expected = sample_plan.batch.state_dict()
+    committed = replay.commit_sample(sample_plan)
+    assert committed is not sample_plan.batch
+    _tree_equal(committed.state_dict(), expected)
+    assert isinstance(replay.fifo, deque)
+
+
+def test_writer_phase_initial_partial_and_restore() -> None:
+    sequence = _sequence(length=2, context=1)
+    replay = _replay(sequence=sequence)
+    assert replay.writers == {}
+    replay.add(_row(0, first=True), worker=4)
+    replay.add(_row(1), worker=4)
+    assert replay.writers[4].online_phase == 2
+    restored = DreamerReplay.from_state_dict(
+        replay.state_dict(),
+        replay.config,
+        sequence,
+        _transition_spaces(),
+        _latent_spaces(),
+    )
+    assert restored.writers[4].online_phase == 2
+    assert restored.writers[4].state_dict() == replay.writers[4].state_dict()
 
 
 @pytest.mark.parametrize(
     "corruption",
     [
-        "root_missing_first",
-        "terminal_without_last",
-        "tail_terminal_without_last",
-        "current_tail_after_last",
-        "within",
-        "cross",
+        "next_chunk_gap",
+        "unearned_chunk_sentinel",
+        "next_item_gap",
+        "unearned_item_sentinel",
+        "noncontiguous_fifo_items",
     ],
 )
-def test_restore_rejects_corrupt_retained_transition_chronology_without_mutation(
+def test_restore_rejects_deterministic_identity_cursor_gaps(
     corruption: str,
 ) -> None:
     replay = _replay(
-        capacity=20,
-        chunk_size=3,
-        sequence_length=2,
-        context=0,
-        online=False,
+        capacity=2,
+        chunk_size=2,
+        sequence=_sequence(length=1, context=0),
     )
-    _add_rows(replay, 5)
+    _add(replay, 3)
+    state = replay.state_dict()
     before = replay.state_dict()
-    broken = copy.deepcopy(before)
-    nonempty = [chunk for chunk in broken["chunks"] if chunk["length"]]
-    if corruption == "root_missing_first":
-        nonempty[0]["transition"]["is_first"][0] = False
-    elif corruption == "terminal_without_last":
-        nonempty[0]["transition"]["is_terminal"][0] = True
-        nonempty[0]["transition"]["is_last"][0] = False
-    elif corruption == "tail_terminal_without_last":
-        nonempty[-1]["transition"]["is_terminal"][-1] = True
-        nonempty[-1]["transition"]["is_last"][-1] = False
-    elif corruption == "current_tail_after_last":
-        nonempty[-1]["transition"]["is_last"][-2] = True
-        nonempty[-1]["transition"]["is_first"][-1] = False
-    elif corruption == "within":
-        nonempty[0]["transition"]["is_last"][0] = True
-        nonempty[0]["transition"]["is_first"][1] = False
+
+    if corruption == "next_chunk_gap":
+        state["next_chunk_id"] = cast(int, state["next_chunk_id"]) + 1
+    elif corruption == "unearned_chunk_sentinel":
+        state["next_chunk_id"] = 2**128
+    elif corruption == "next_item_gap":
+        state["next_item_id"] = cast(int, state["next_item_id"]) + 1
+    elif corruption == "unearned_item_sentinel":
+        state["next_item_id"] = 2**63
     else:
-        predecessor = next(
-            chunk for chunk in nonempty if chunk["successor"] is not None
-        )
-        successor = next(
-            chunk for chunk in nonempty if chunk["chunk_id"] == predecessor["successor"]
-        )
-        predecessor["transition"]["is_last"][-1] = True
-        successor["transition"]["is_first"][0] = False
-    with pytest.raises(ValueError, match="chronology"):
-        replay.load_state_dict(broken)
-    _assert_tree_equal(replay.state_dict(), before)
+        items = cast(list[dict[str, object]], state["items"])
+        old = items[0]["item_id"]
+        assert old == 1
+        items[0]["item_id"] = 0
+        state["fifo"] = [
+            0 if item == old else item for item in cast(list[object], state["fifo"])
+        ]
+        selector = cast(dict[str, object], state["selector"])
+        selector["keys"] = [
+            0 if item == old else item for item in cast(list[object], selector["keys"])
+        ]
+        indices = cast(dict[object, object], selector["indices"])
+        selector["indices"] = {
+            0 if item == old else item: index for item, index in indices.items()
+        }
+
+    with pytest.raises(ValueError):
+        _restore(replay, state)
+    _tree_equal(replay.state_dict(), before)
 
 
-def test_restore_accepts_evicted_prefix_whose_retained_root_is_not_first() -> None:
-    replay = _complete_resume_scenario()
+def test_restore_rejects_unearned_early_writer_phase() -> None:
+    replay = _replay(sequence=_sequence(length=2, context=1))
+    replay.add(_row(0, first=True))
     state = replay.state_dict()
-    successor_ids = {
-        chunk["successor"]
-        for chunk in state["chunks"]
-        if chunk["successor"] is not None
-    }
-    root = next(
-        chunk
-        for chunk in state["chunks"]
-        if chunk["chunk_id"] not in successor_ids and chunk["length"]
-    )
-    assert bool(root["transition"]["is_first"][0]) is False
-    restored = _replay(
-        capacity=3,
-        chunk_size=3,
-        sequence_length=2,
-        context=1,
-        consecutive=2,
-        online=True,
-        seed=7,
-    )
-    restored.load_state_dict(state)
-    _assert_tree_equal(restored.state_dict(), state)
-
-
-@pytest.mark.parametrize(
-    "corrupt",
-    [
-        lambda state: state.update(schema_version=999),
-        lambda state: state["config"].update(capacity=999),
-        lambda state: state["config"].update(sequence_length=999),
-        lambda state: state["dimensions"].update(batch_size=999),
-        lambda state: state["dimensions"].update(sequence_length=999),
-        lambda state: state["dimensions"].update(consecutive=999),
-        lambda state: state["dimensions"].update(context=999),
-        lambda state: state["dimensions"].update(raw_length=999),
-        lambda state: state["spaces"]["transition"]["value"].update(dtype="float64"),
-        lambda state: state["spaces"]["transition"]["value"].update(shape=[1]),
-        lambda state: state["selector"]["keys"].append(999),
-        lambda state: state["fifo"].reverse(),
-        lambda state: state["refs"].update({next(iter(state["refs"])): 999}),
-        lambda state: state["chunks"][0].update(
-            successor=state["chunks"][0]["chunk_id"]
-        ),
-        lambda state: state["consecutive"]["report"].update(current=None, index=1),
-        lambda state: state["chunks"].append(copy.deepcopy(state["chunks"][0])),
-        lambda state: state["chunks"].pop(),
-        lambda state: state.update(next_chunk_id=1),
-        lambda state: state.update(next_chunk_id=state["next_chunk_id"] + 7),
-        lambda state: state.update(next_chunk_id=2**128),
-        lambda state: state.update(next_chunk_id=2**128 + 1),
-        lambda state: next(iter(state["writers"].values())).update(
-            current_offset=2**32
-        ),
-        lambda state: state["selector"].update(bit_generator="MT19937"),
-        lambda state: state["selector"]["rng_state"].update(bit_generator="MT19937"),
-        lambda state: state["items"][0]["key"].update(offset=2**32),
-        lambda state: state["items"].append(copy.deepcopy(state["items"][0])),
-        lambda state: state["items"].pop(),
-        lambda state: state["chunks"][0]["transition"].update(
-            value=state["chunks"][0]["transition"]["value"].astype(np.float64)
-        ),
-        lambda state: state["chunks"][0]["transition"].update(
-            value=state["chunks"][0]["transition"]["value"][:0]
-        ),
-        lambda state: state["chunks"][0].update(sealed=False),
-        lambda state: next(iter(state["writers"].values()))["pending"].append(
-            {"chunk_id": bytes(16), "offset": 0}
-        ),
-    ],
-)
-def test_corrupt_restore_rejected_without_partial_live_mutation(corrupt) -> None:
-    replay = _complete_resume_scenario()
     before = replay.state_dict()
-    broken = copy.deepcopy(before)
-    corrupt(broken)
-    with pytest.raises((TypeError, ValueError)):
-        replay.load_state_dict(broken)
-    _assert_tree_equal(replay.state_dict(), before)
+    writer = cast(dict[object, dict[str, object]], state["writers"])[0]
+    assert len(cast(list[object], writer["suffix"])) == 1
+    writer["online_phase"] = np.int64(0)
+
+    with pytest.raises(ValueError):
+        _restore(replay, state)
+    _tree_equal(replay.state_dict(), before)
 
 
-def test_restore_rejects_array_only_and_chunk_only_legacy_state() -> None:
-    replay = _complete_resume_scenario()
-    before = replay.state_dict()
-    for broken in (
-        {"arrays": {"value": np.arange(3)}},
-        {"chunks": copy.deepcopy(before["chunks"])},
-    ):
-        with pytest.raises((TypeError, ValueError)):
-            replay.load_state_dict(broken)
-        _assert_tree_equal(replay.state_dict(), before)
-
-
-def test_empty_sample_timeout_blocks_then_notifies_without_partial_batch() -> None:
-    replay = _replay(sequence_length=2, context=0, batch_size=2, online=False)
-    with pytest.raises(TimeoutError):
-        replay.sample_raw("train", timeout=0.01)
-    outcome: list[ReplayBatch] = []
-    errors: list[BaseException] = []
-
-    def sample() -> None:
-        try:
-            outcome.append(replay.sample_raw("train", timeout=1.0))
-        except BaseException as error:  # pragma: no cover - asserted below.
-            errors.append(error)
-
-    thread = threading.Thread(target=sample)
-    thread.start()
-    replay.add(_row(0))
-    assert thread.is_alive()
-    replay.add(_row(1, first=False))
-    thread.join(2)
-    assert not thread.is_alive() and not errors
-    assert outcome[0].step_ids.shape == (2, 2, 20)
-
-
-def test_blocking_sample_calls_are_serialized_without_blocking_add() -> None:
-    replay = _replay(
-        sequence_length=1,
-        context=0,
-        consecutive=2,
-        batch_size=1,
-        online=False,
-    )
-    results: dict[str, ReplayBatch] = {}
-    errors: list[BaseException] = []
-    report_started = threading.Event()
-
-    def consume(mode: str) -> None:
-        if mode == "report":
-            report_started.set()
-        try:
-            results[mode] = replay.sample(mode, timeout=2.0)
-        except BaseException as error:  # pragma: no cover - asserted below.
-            errors.append(error)
-
-    train = threading.Thread(target=consume, args=("train",))
-    train.start()
-    deadline = time.monotonic() + 1.0
-    while time.monotonic() < deadline:
-        with replay._condition:
-            if replay._condition._waiters:
-                break
-        threading.Event().wait(0.005)
-    report = threading.Thread(target=consume, args=("report",))
-    report.start()
-    assert report_started.wait(1)
-    threading.Event().wait(0.05)
-    with replay._condition:
-        waiter_count = len(replay._condition._waiters)
-    replay.add(_row(0))
-    replay.add(_row(1, first=False))
-    train.join(2)
-    report.join(2)
-    assert waiter_count == 2
-    assert not train.is_alive() and not report.is_alive()
-    assert not errors
-    assert set(results) == {"train", "report"}
-    assert results["train"].step_ids.shape == (1, 1, 20)
-    assert results["report"].step_ids.shape == (1, 1, 20)
-    np.testing.assert_array_equal(results["train"].data["consec"], [[0]])
-    np.testing.assert_array_equal(results["report"].data["consec"], [[0]])
-    assert replay.stats()["sample_calls"] == 1
-
-
-def test_sample_timeout_budget_includes_stream_lock_wait() -> None:
-    replay = _replay(
-        sequence_length=1,
-        context=0,
-        consecutive=1,
-        batch_size=1,
-        online=False,
-    )
-    first_results: list[ReplayBatch] = []
-    second_errors: list[BaseException] = []
-
-    first = threading.Thread(
-        target=lambda: first_results.append(replay.sample("report"))
-    )
-    first.start()
-    deadline = time.monotonic() + 1.0
-    while time.monotonic() < deadline:
-        with replay._condition:
-            if replay._condition._waiters:
-                break
-        threading.Event().wait(0.005)
-    with replay._condition:
-        assert len(replay._condition._waiters) == 1
-
-    def finite_sample() -> None:
-        try:
-            replay.sample("report", timeout=0.05)
-        except BaseException as error:  # pragma: no cover - asserted below.
-            second_errors.append(error)
-
-    second = threading.Thread(target=finite_sample)
-    started = time.monotonic()
-    second.start()
-    second.join(0.2)
-    completed_within_budget = not second.is_alive()
-    elapsed = time.monotonic() - started
-    replay.add(_row(0))
-    first.join(1)
-    second.join(1)
-    assert completed_within_budget
-    assert elapsed < 0.2
-    assert len(second_errors) == 1
-    assert isinstance(second_errors[0], TimeoutError)
-    assert first_results and first_results[0].step_ids.shape == (1, 1, 20)
-
-
-@pytest.mark.parametrize("nontrain_mode", ["report", "eval"])
-def test_nontrain_stream_cannot_supply_train_slice_or_bypass_online_accounting(
-    nontrain_mode: str,
-) -> None:
-    replay = _replay(
-        sequence_length=1,
-        context=0,
-        consecutive=2,
-        online=True,
-    )
-    _add_rows(replay, 5)
-    queue_before = replay.online_queue.state_dict()
-    stats_before = replay.stats()
-
-    nontrain0 = replay.sample(nontrain_mode, timeout=0.1)
-    np.testing.assert_array_equal(nontrain0.data["consec"], [[0]])
-    np.testing.assert_array_equal(nontrain0.data["value"], [[3]])
-    assert replay.online_queue.state_dict() == queue_before
-    assert replay.stats() == stats_before
-
-    train0 = replay.sample("train", timeout=0.1)
-    np.testing.assert_array_equal(train0.data["consec"], [[0]])
-    np.testing.assert_array_equal(train0.data["value"], [[1]])
-    assert len(replay.online_queue) == len(queue_before["keys"]) - 1
-    stats = replay.stats()
-    assert stats["sample_calls"] == 1
-    assert stats["sampled_sequences"] == 1
-    assert stats["online_samples"] == 1
-    assert stats["uniform_samples"] == 0
-
-    queue_after = replay.online_queue.state_dict()
-    nontrain1 = replay.sample(nontrain_mode, timeout=0.1)
-    train1 = replay.sample("train", timeout=0.1)
-    np.testing.assert_array_equal(nontrain1.data["consec"], [[1]])
-    np.testing.assert_array_equal(train1.data["consec"], [[1]])
-    np.testing.assert_array_equal(nontrain1.data["value"], [[4]])
-    np.testing.assert_array_equal(train1.data["value"], [[2]])
-    assert replay.online_queue.state_dict() == queue_after
-    assert replay.stats() == stats
-
-
-@pytest.mark.parametrize("nontrain_mode", ["report", "eval"])
-def test_train_stream_retained_slice_survives_interleaved_nontrain_mode(
-    nontrain_mode: str,
-) -> None:
-    replay = _replay(
-        sequence_length=1,
-        context=0,
-        consecutive=2,
-        online=True,
-    )
-    _add_rows(replay, 5)
-    train0 = replay.sample("train", timeout=0.1)
-    np.testing.assert_array_equal(train0.data["consec"], [[0]])
-    np.testing.assert_array_equal(train0.data["value"], [[1]])
-    queue_after_train = replay.online_queue.state_dict()
-    stats_after_train = replay.stats()
-
-    nontrain0 = replay.sample(nontrain_mode, timeout=0.1)
-    np.testing.assert_array_equal(nontrain0.data["consec"], [[0]])
-    np.testing.assert_array_equal(nontrain0.data["value"], [[3]])
-    assert replay.online_queue.state_dict() == queue_after_train
-    assert replay.stats() == stats_after_train
-
-    train1 = replay.sample("train", timeout=0.1)
-    np.testing.assert_array_equal(train1.data["consec"], [[1]])
-    np.testing.assert_array_equal(train1.data["value"], [[2]])
-    assert replay.online_queue.state_dict() == queue_after_train
-    assert replay.stats() == stats_after_train
-
-
-def test_all_mode_consecutive_streams_resume_exactly_and_independently() -> None:
-    replay = _replay(
-        sequence_length=1,
-        context=0,
-        consecutive=2,
-        online=True,
-    )
-    _add_rows(replay, 6)
-    for mode in ("train", "report", "eval"):
-        batch = replay.sample(mode, timeout=0.1)
-        np.testing.assert_array_equal(batch.data["consec"], [[0]])
-        assert replay.consecutive_streams[mode].index == 1
+def test_restore_accepts_saturated_writer_suffix_with_hidden_phase_history() -> None:
+    replay = _replay(sequence=_sequence(length=2, context=1))
+    _add(replay, 5)
     state = replay.state_dict()
+    writer = cast(dict[object, dict[str, object]], state["writers"])[0]
+    assert len(cast(list[object], writer["suffix"])) == 2
+    writer["online_phase"] = np.int64(0)
 
-    restored = _replay(
-        sequence_length=1,
-        context=0,
-        consecutive=2,
-        online=True,
-    )
-    restored.load_state_dict(state)
-    for mode in ("eval", "train", "report"):
-        expected = replay.sample(mode, timeout=0.1)
-        actual = restored.sample(mode, timeout=0.1)
-        np.testing.assert_array_equal(actual.data["consec"], [[1]])
-        _assert_tree_equal(actual.as_dict(), expected.as_dict())
-    _assert_tree_equal(restored.state_dict(), replay.state_dict())
+    restored = _restore(replay, state)
+
+    _tree_equal(restored.state_dict(), state)
 
 
-def test_concurrent_add_sample_update_snapshot_preserves_invariants() -> None:
-    replay = _replay(
-        capacity=20,
-        chunk_size=3,
-        sequence_length=2,
-        context=1,
-        batch_size=2,
-        online=True,
-    )
-    _add_rows(replay, 8, natural_last=True)
-    errors: list[BaseException] = []
+def test_writer_retained_rows_restore_boundary_and_exact_continuations() -> None:
+    accepted_shortening: list[str] = []
+    sequence = _sequence(length=3, context=0, report_length=3)
+    replay = _replay(chunk_size=10, sequence=sequence)
+    _add(replay, 4)
+    state = replay.state_dict()
+    writer = cast(dict[object, dict[str, object]], state["writers"])[0]
+    assert len(cast(list[object], writer["suffix"])) == 2
+    assert list(replay.items) == [0, 1]
+    assert replay.next_item_id == 2
 
-    def guarded(function) -> None:
-        try:
-            function()
-        except BaseException as error:  # pragma: no cover - asserted below.
-            errors.append(error)
-
-    def producer() -> None:
-        for index in range(8, 48):
-            replay.add(
-                _row(
-                    index,
-                    first=index % 4 == 0,
-                    last=index % 4 == 3,
-                )
-            )
-
-    def consumer() -> None:
-        for _ in range(30):
-            batch = replay.sample_raw("train", timeout=1.0)
-            replay.update_context(
-                batch.step_ids[:, 1:],
-                {
-                    "dyn/deter": np.zeros((2, 2, 2), np.float32),
-                    "dyn/stoch": np.zeros((2, 2, 1, 2), np.float32),
-                },
-            )
-
-    def snapshotter() -> None:
-        for _ in range(30):
-            state = replay.state_dict()
-            clone = _replay(
-                capacity=20,
-                chunk_size=3,
-                sequence_length=2,
-                context=1,
-                batch_size=2,
-                online=True,
-            )
-            clone.load_state_dict(state)
-
-    threads = [
-        threading.Thread(target=lambda: guarded(producer)),
-        threading.Thread(target=lambda: guarded(consumer)),
-        threading.Thread(target=lambda: guarded(snapshotter)),
+    malformed = copy.deepcopy(state)
+    malformed_writer = cast(dict[object, dict[str, object]], malformed["writers"])[0]
+    malformed_writer["suffix"] = [
+        copy.deepcopy(cast(list[object], malformed_writer["suffix"])[-1])
     ]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(10)
-    assert all(not thread.is_alive() for thread in threads)
-    assert not errors
-    replay.validate()
+    if "retained_rows" in malformed_writer:
+        malformed_writer["retained_rows"] = np.int64(1)
+    _recompute_serialized_refs(malformed)
+    checkpoint_before = copy.deepcopy(malformed)
+    replay_before = replay.state_dict()
 
+    try:
+        shortened = _restore(replay, malformed)
+    except ValueError:
+        pass
+    else:
+        _tree_equal(malformed, checkpoint_before)
+        _tree_equal(replay.state_dict(), replay_before)
+        uninterrupted = _restore(replay, state)
+        uninterrupted.add(_row(4))
+        shortened.add(_row(4))
+        assert list(uninterrupted.items) == [0, 1, 2]
+        assert list(shortened.items) == [0, 1]
+        assert uninterrupted.next_item_id == 3
+        assert shortened.next_item_id == 2
+        assert not np.array_equal(
+            uninterrupted.sample("report").data["obs"],
+            shortened.sample("report").data["obs"],
+        )
+        accepted_shortening.append("equal")
 
-def test_stats_counters_ratio_persistence_and_reset() -> None:
-    replay = _replay(sequence_length=2, context=0, online=True, batch_size=2)
-    _add_rows(replay, 6)
-    batch = replay.sample_raw("train", timeout=0.1)
-    replay.update_context(
-        batch.step_ids[:, :1],
-        {
-            "dyn/deter": np.zeros((2, 1, 2), np.float32),
-            "dyn/stoch": np.zeros((2, 1, 1, 2), np.float32),
-        },
+    _tree_equal(malformed, checkpoint_before)
+    _tree_equal(replay.state_dict(), replay_before)
+
+    fresh_writer = ReplayWriter(7, replay.raw_length)
+    assert type(fresh_writer.retained_rows) is np.int64
+    assert fresh_writer.retained_rows == 0
+    assert DreamerReplay.SCHEMA_VERSION == 4
+    assert set(writer) == {
+        "current_chunk_id",
+        "has_rows",
+        "last_is_last",
+        "online_phase",
+        "retained_rows",
+        "suffix",
+        "worker_id",
+    }
+
+    restored = _restore(replay, state)
+    assert replay.add(_row(4)) == restored.add(_row(4))
+    assert list(replay.items) == list(restored.items) == [0, 1, 2]
+    assert replay.next_item_id == restored.next_item_id == 3
+    assert replay.online_queue.keys == restored.online_queue.keys
+    _tree_equal(replay.selector.state_dict(), restored.selector.state_dict())
+    _tree_equal(replay.state_dict(), restored.state_dict())
+
+    unequal = _replay(
+        chunk_size=3,
+        sequence=_sequence(length=2, context=0, report_length=5),
     )
-    stats = replay.stats()
-    assert stats["inserted_rows"] == 6
-    assert stats["inserted_items"] == 5
-    assert stats["sampled_sequences"] == 2
-    assert stats["updated_rows"] == 2
-    assert stats["online_samples"] == 2
-    assert stats["uniform_samples"] == 0
-    assert stats["online_fraction"] == 1.0
-    assert stats["replay_ratio"] == pytest.approx(4 / 6)
-    restored = _replay(sequence_length=2, context=0, online=True, batch_size=2)
-    restored.load_state_dict(replay.state_dict())
-    assert restored.stats() == stats
-    assert restored.stats(reset=True) == stats
-    reset = restored.stats()
-    assert reset["inserted_rows"] == 0
-    assert reset["sampled_sequences"] == 0
+    _add(unequal, 6)
+    unequal_state = unequal.state_dict()
+    unequal_writer = cast(dict[object, dict[str, object]], unequal_state["writers"])[0]
+    assert len(cast(list[object], unequal_writer["suffix"])) == 4
+    assert unequal_writer["retained_rows"] == np.int64(4)
+    unequal_malformed = copy.deepcopy(unequal_state)
+    unequal_malformed_writer = cast(
+        dict[object, dict[str, object]], unequal_malformed["writers"]
+    )[0]
+    unequal_malformed_writer["suffix"] = copy.deepcopy(
+        cast(list[object], unequal_malformed_writer["suffix"])[-2:]
+    )
+    unequal_malformed_writer["retained_rows"] = np.int64(2)
+    _recompute_serialized_refs(unequal_malformed)
+    unequal_checkpoint_before = copy.deepcopy(unequal_malformed)
+    unequal_before = unequal.state_dict()
+    try:
+        unequal_shortened = _restore(unequal, unequal_malformed)
+    except ValueError:
+        pass
+    else:
+        unequal_uninterrupted = _restore(unequal, unequal_state)
+        unequal_uninterrupted.add(_row(6))
+        unequal_shortened.add(_row(6))
+        assert unequal_uninterrupted._report_pending == {3, 4, 5}
+        assert unequal_shortened._report_pending == {2, 3, 4, 5}
+        assert not np.array_equal(
+            unequal_uninterrupted.sample("report").data["obs"],
+            unequal_shortened.sample("report").data["obs"],
+        )
+        accepted_shortening.append("unequal")
+    _tree_equal(unequal_malformed, unequal_checkpoint_before)
+    _tree_equal(unequal.state_dict(), unequal_before)
 
-    stale = _replay(capacity=3, sequence_length=3, context=1, online=True)
-    _add_rows(stale, 10, natural_last=True)
-    stale.sample_raw("train", timeout=0.1)
-    assert stale.stats()["stale_online"] == 1
-    stale_clone = _replay(capacity=3, sequence_length=3, context=1, online=True)
-    stale_clone.load_state_dict(stale.state_dict())
-    assert stale_clone.stats()["stale_online"] == 1
-    assert stale_clone.stats(reset=True)["stale_online"] == 1
-    assert stale_clone.stats()["stale_online"] == 0
+    unequal_restored = _restore(unequal, unequal_state)
+    assert unequal.add(_row(6)) == unequal_restored.add(_row(6))
+    _tree_equal(unequal.state_dict(), unequal_restored.state_dict())
+
+    unsaturated = _replay(
+        chunk_size=2,
+        sequence=_sequence(batch=2, length=3, context=0, report_length=5),
+    )
+    unsaturated.add(_row(0, first=True))
+    unsaturated.add(_row(1))
+    unsaturated_state = unsaturated.state_dict()
+    unsaturated_writer = cast(
+        dict[object, dict[str, object]], unsaturated_state["writers"]
+    )[0]
+    assert unsaturated.items == {}
+    assert unsaturated_writer["retained_rows"] == np.int64(2)
+    unsaturated_restored = _restore(unsaturated, unsaturated_state)
+    assert unsaturated.add(_row(2)) == unsaturated_restored.add(_row(2))
+    _tree_equal(unsaturated.state_dict(), unsaturated_restored.state_dict())
+
+    multi = _replay(chunk_size=10, sequence=sequence)
+    for index in range(4):
+        multi.add(_row(index, first=index == 0), worker=0)
+        multi.add(_row(100 + index, first=index == 0), worker=1)
+    multi_state = multi.state_dict()
+    multi_malformed = copy.deepcopy(multi_state)
+    multi_writers = cast(dict[object, dict[str, object]], multi_malformed["writers"])
+    writer_one_before = copy.deepcopy(multi_writers[1])
+    multi_writers[0]["suffix"] = [
+        copy.deepcopy(cast(list[object], multi_writers[0]["suffix"])[-1])
+    ]
+    multi_writers[0]["retained_rows"] = np.int64(1)
+    _recompute_serialized_refs(multi_malformed)
+    multi_checkpoint_before = copy.deepcopy(multi_malformed)
+    multi_before = multi.state_dict()
+    try:
+        multi_shortened = _restore(multi, multi_malformed)
+    except ValueError:
+        pass
+    else:
+        multi_uninterrupted = _restore(multi, multi_state)
+        _tree_equal(multi_shortened.writers[1].state_dict(), writer_one_before)
+        multi_uninterrupted.add(_row(4), worker=0)
+        multi_shortened.add(_row(4), worker=0)
+        assert list(multi_uninterrupted.items) == [0, 1, 2, 3, 4]
+        assert list(multi_shortened.items) == [0, 1, 2, 3]
+        assert multi_uninterrupted.next_item_id == 5
+        assert multi_shortened.next_item_id == 4
+        _tree_equal(multi_shortened.writers[1].state_dict(), writer_one_before)
+        accepted_shortening.append("multi_writer")
+    _tree_equal(multi_malformed, multi_checkpoint_before)
+    _tree_equal(multi.state_dict(), multi_before)
+
+    multi_restored = _restore(multi, multi_state)
+    for worker, value in ((0, 4), (1, 104)):
+        assert multi.add(_row(value), worker=worker) == multi_restored.add(
+            _row(value), worker=worker
+        )
+    _tree_equal(multi.state_dict(), multi_restored.state_dict())
+
+    evicted = _replay(
+        capacity=1,
+        chunk_size=2,
+        sequence=_sequence(length=3, context=0, report_length=5),
+    )
+    _add(evicted, 8)
+    assert len(evicted.items) == 1
+    assert evicted.writers[0].retained_rows == np.int64(4)
+    evicted_restored = _restore(evicted, evicted.state_dict())
+    assert evicted.add(_row(8)) == evicted_restored.add(_row(8))
+    _tree_equal(evicted.state_dict(), evicted_restored.state_dict())
+
+    for invalid in (
+        2,
+        True,
+        np.int32(2),
+        np.int64(-1),
+        np.int64(3),
+        np.int64(1),
+    ):
+        corrupted = copy.deepcopy(state)
+        corrupted_writer = cast(dict[object, dict[str, object]], corrupted["writers"])[
+            0
+        ]
+        corrupted_writer["retained_rows"] = invalid
+        corrupted_before = copy.deepcopy(corrupted)
+        source = _restore(replay, replay_before)
+        source_before = source.state_dict()
+        with pytest.raises((TypeError, ValueError)):
+            _restore(source, corrupted)
+        _tree_equal(corrupted, corrupted_before)
+        _tree_equal(source.state_dict(), source_before)
+
+    if accepted_shortening:
+        pytest.fail(
+            "coherently shortened retained rows restored: "
+            + ", ".join(accepted_shortening)
+        )
+
+    for corruption in ("old_schema", "missing_field", "extra_field"):
+        corrupted = copy.deepcopy(state)
+        corrupted_writer = cast(dict[object, dict[str, object]], corrupted["writers"])[
+            0
+        ]
+        if corruption == "old_schema":
+            corrupted["schema_version"] = 3
+        elif corruption == "missing_field":
+            del corrupted_writer["retained_rows"]
+        else:
+            corrupted_writer["extra"] = None
+        corrupted_before = copy.deepcopy(corrupted)
+        source = _restore(replay, replay_before)
+        source_before = source.state_dict()
+        with pytest.raises((TypeError, ValueError)):
+            _restore(source, corrupted)
+        _tree_equal(corrupted, corrupted_before)
+        _tree_equal(source.state_dict(), source_before)
 
 
-def test_report_and_eval_sampling_leave_training_counters_unchanged() -> None:
-    replay = _replay(sequence_length=2, context=0, online=False, batch_size=2)
-    _add_rows(replay, 5)
-    before = replay.stats()
-    replay.sample_raw("report", timeout=0.1)
-    replay.sample_raw("eval", timeout=0.1)
-    after = replay.stats()
-    for name in (
+@pytest.mark.parametrize("next_item_id", [1, 0], ids=["emitted_cursor", "reset_cursor"])
+def test_restore_rejects_queue_only_state_transactionally(next_item_id: int) -> None:
+    replay = _replay(sequence=_sequence(batch=2, length=1, context=0))
+    replay.add(_row(0, first=True))
+    state = replay.state_dict()
+    cast(list[object], state["items"]).clear()
+    cast(list[object], state["fifo"]).clear()
+    selector = cast(dict[str, object], state["selector"])
+    cast(list[object], selector["keys"]).clear()
+    cast(dict[object, object], selector["indices"]).clear()
+    state["next_item_id"] = next_item_id
+    _recompute_serialized_refs(state)
+    checkpoint_before = copy.deepcopy(state)
+    replay_before = replay.state_dict()
+
+    try:
+        restored = _restore(replay, state)
+    except ValueError as error:
+        assert "empty item owner" in str(error)
+    else:
+        assert restored.items == {}
+        assert len(restored.online_queue.keys) == 1
+        assert restored.can_sample_batch("train") is True
+        with pytest.raises(LookupError, match="complete batch"):
+            restored.prepare_sample("train")
+        _tree_equal(state, checkpoint_before)
+        _tree_equal(replay.state_dict(), replay_before)
+        pytest.fail("queue-only replay state restored with lying batch readiness")
+
+    _tree_equal(state, checkpoint_before)
+    _tree_equal(replay.state_dict(), replay_before)
+
+
+def test_restore_accepts_pre_first_item_writer_state_and_next_add_is_exact() -> None:
+    sequence = _sequence(batch=2, length=3, context=0)
+    replay = _replay(chunk_size=2, sequence=sequence)
+    replay.add(_row(0, first=True))
+    replay.add(_row(1))
+    state = replay.state_dict()
+    checkpoint_before = copy.deepcopy(state)
+    assert replay.items == {}
+    assert replay.online_queue.keys == []
+    assert replay.next_item_id == 0
+    assert replay.writers[0].suffix
+    assert replay.chunks
+
+    restored = _restore(replay, state)
+
+    _tree_equal(restored.state_dict(), checkpoint_before)
+    _tree_equal(state, checkpoint_before)
+    assert replay.add(_row(2)) == restored.add(_row(2))
+    _tree_equal(restored.state_dict(), replay.state_dict())
+
+
+def test_empty_owner_selector_rng_restore_boundary_and_valid_continuations() -> None:
+    sequence = _sequence(length=1, context=0, report_length=1)
+    replay = _replay(sequence=sequence)
+    fresh_state = replay.state_dict()
+    advanced = UniformSelector(0)
+    for item_id in range(4):
+        advanced.insert(item_id)
+    for _ in range(7):
+        advanced.sample()
+    for item_id in range(4):
+        advanced.delete(item_id)
+    advanced_state = copy.deepcopy(fresh_state)
+    advanced_state["selector"] = advanced.state_dict()
+    checkpoint_before = copy.deepcopy(advanced_state)
+    replay_before = replay.state_dict()
+
+    try:
+        malformed = _restore(replay, advanced_state)
+    except ValueError as error:
+        assert "empty item owner" in str(error)
+    else:
+        _tree_equal(advanced_state, checkpoint_before)
+        _tree_equal(replay.state_dict(), replay_before)
+        replay.add(_row(0, first=True))
+        malformed.add(_row(0, first=True))
+        assert int(replay.sample("report").data["obs"][0, 0, 0]) == 0
+        assert int(malformed.sample("report").data["obs"][0, 0, 0]) == 0
+        for index in range(1, 5):
+            replay.add(_row(index))
+            malformed.add(_row(index))
+        fresh_draws = [
+            int(replay.sample("report").data["obs"][0, 0, 0]) for _ in range(16)
+        ]
+        advanced_draws = [
+            int(malformed.sample("report").data["obs"][0, 0, 0]) for _ in range(16)
+        ]
+        assert advanced_draws != fresh_draws
+        pytest.fail("advanced empty selector RNG state restored")
+
+    _tree_equal(advanced_state, checkpoint_before)
+    _tree_equal(replay.state_dict(), replay_before)
+    restored = _restore(replay, fresh_state)
+    _tree_equal(restored.state_dict(), fresh_state)
+    assert replay.add(_row(0, first=True)) == restored.add(_row(0, first=True))
+    _tree_equal(
+        replay.sample("report").state_dict(), restored.sample("report").state_dict()
+    )
+    for index in range(1, 5):
+        assert replay.add(_row(index)) == restored.add(_row(index))
+    for _ in range(16):
+        _tree_equal(
+            replay.sample("report").state_dict(),
+            restored.sample("report").state_dict(),
+        )
+    _tree_equal(restored.state_dict(), replay.state_dict())
+
+    nonempty = _replay(sequence=sequence)
+    _add(nonempty, 5)
+    for _ in range(7):
+        nonempty.sample("report")
+    resumed = _restore(nonempty, nonempty.state_dict())
+    _tree_equal(
+        nonempty.sample("report").state_dict(), resumed.sample("report").state_dict()
+    )
+    _tree_equal(resumed.state_dict(), nonempty.state_dict())
+
+    pre_item = _replay(
+        chunk_size=2,
+        sequence=_sequence(batch=2, length=3, context=0),
+    )
+    pre_item.add(_row(0, first=True))
+    pre_item.add(_row(1))
+    pre_item_resumed = _restore(pre_item, pre_item.state_dict())
+    assert pre_item.add(_row(2)) == pre_item_resumed.add(_row(2))
+    _tree_equal(pre_item_resumed.state_dict(), pre_item.state_dict())
+
+
+def test_selector_complete_pcg64_state_resumes_at_exact_next_draw() -> None:
+    selector = UniformSelector(0)
+    for item_id in range(5):
+        selector.insert(item_id)
+    for _ in range(7):
+        selector.sample()
+    state = selector.state_dict()
+    restored = UniformSelector.from_state_dict(state)
+    assert [selector.sample() for _ in range(20)] == [
+        restored.sample() for _ in range(20)
+    ]
+    assert state["bit_generator"] == "PCG64"
+    rng_state = cast(dict[str, object], state["rng_state"])
+    assert rng_state["bit_generator"] == "PCG64"
+
+
+@pytest.mark.parametrize("leaf", ["selector", "rng_state"])
+@pytest.mark.parametrize("alias", [np.str_("PCG64"), _PCG64String("PCG64")])
+def test_selector_rejects_nonexact_pcg64_identity_strings_transactionally(
+    leaf: str, alias: str
+) -> None:
+    selector = UniformSelector(7)
+    for item_id in range(3):
+        selector.insert(item_id)
+    selector.sample()
+    state = selector.state_dict()
+    selector_before = selector.state_dict()
+    if leaf == "selector":
+        state["bit_generator"] = alias
+    else:
+        cast(dict[str, object], state["rng_state"])["bit_generator"] = alias
+    checkpoint_before = copy.deepcopy(state)
+
+    try:
+        restored = UniformSelector.from_state_dict(state)
+    except (TypeError, ValueError):
+        pass
+    else:
+        restored_state = restored.state_dict()
+        restored_identity = (
+            restored_state["bit_generator"]
+            if leaf == "selector"
+            else cast(dict[str, object], restored_state["rng_state"])["bit_generator"]
+        )
+        assert type(restored_identity) is str
+        assert restored_identity == "PCG64"
+        _tree_equal(state, checkpoint_before)
+        _tree_equal(selector.state_dict(), selector_before)
+        pytest.fail(f"{leaf} accepted and normalized a nonexact PCG64 string")
+
+    _tree_equal(state, checkpoint_before)
+    _tree_equal(selector.state_dict(), selector_before)
+
+
+def test_selector_exact_builtin_pcg64_identity_continues_next_draw() -> None:
+    selector = UniformSelector(11)
+    for item_id in range(4):
+        selector.insert(item_id)
+    for _ in range(5):
+        selector.sample()
+    state = selector.state_dict()
+    before = copy.deepcopy(state)
+    assert type(state["bit_generator"]) is str
+    rng_state = cast(dict[str, object], state["rng_state"])
+    assert type(rng_state["bit_generator"]) is str
+
+    restored = UniformSelector.from_state_dict(state)
+
+    assert [selector.sample() for _ in range(12)] == [
+        restored.sample() for _ in range(12)
+    ]
+    _tree_equal(state, before)
+
+
+def test_checkpoint_ordinary_counter_inventory_is_exact_np_int64() -> None:
+    replay = _replay(
+        sequence=_sequence(
+            length=1,
+            context=0,
+            consecutive=2,
+            report_length=1,
+            report_consecutive=2,
+        )
+    )
+    _add(replay, 4)
+    replay.sample("train")
+    state = replay.state_dict()
+    paths = _ordinary_counter_paths(state)
+    assert {path[-1] for path in paths if path[0] == "metrics"} == {
+        "inserted_rows",
+        "inserted_items",
         "sample_calls",
         "sampled_sequences",
         "online_samples",
         "uniform_samples",
         "stale_online",
-    ):
-        assert after[name] == before[name] == 0
-    assert after["replay_ratio"] == before["replay_ratio"] == 0.0
-    replay.sample_raw("train", timeout=0.1)
-    trained = replay.stats()
-    assert trained["sample_calls"] == 1
-    assert trained["sampled_sequences"] == 2
-    assert trained["uniform_samples"] == 2
-    assert trained["replay_ratio"] == pytest.approx(4 / 5)
-
-
-def test_public_exports_and_jepa_replay_are_independent() -> None:
-    required = {
-        "ReplayKey",
-        "ReplayBatch",
-        "ReplayChunk",
-        "ReplayWriter",
-        "OnlineQueue",
-        "UniformSelector",
-        "ConsecutiveStream",
-        "DreamerReplay",
-        "REPLAY_SOURCE_SPEC",
+        "update_calls",
+        "updated_rows",
+        "stale_updates",
     }
-    assert required <= set(dreamer_package.__all__)
-    for name in required:
-        assert getattr(dreamer_package, name) is (
-            REPLAY_SOURCE_SPEC
-            if name == "REPLAY_SOURCE_SPEC"
-            else getattr(replay_module, name)
-        )
-    assert jepa_replay.ReplayBatch.__module__ == "world_marl.jepa.replay"
-    assert jepa_replay.ReplayBatch is not ReplayBatch
-    assert jepa_replay.SequenceReplayBuffer.__module__ == "world_marl.jepa.replay"
-    assert jepa_replay.SequenceReplayBuffer is not DreamerReplay
-    legacy = jepa_replay.SequenceReplayBuffer(
-        capacity=8,
-        num_envs=1,
-        observation_shape=(2,),
-    )
-    for index in range(4):
-        legacy.add_step(
-            observations=np.asarray([[index, index + 1]], np.float32),
-            actions=np.asarray([index], np.int32),
-            rewards=np.asarray([index], np.float32),
-            dones=np.asarray([False]),
-        )
-    legacy_batch = legacy.sample(
-        np.random.default_rng(3),
-        batch_size=1,
-        chunk_length=2,
-        max_horizon=1,
-    )
-    assert legacy_batch.observations.shape == (1, 3, 2)
-    assert legacy_batch.actions.shape == (1, 2)
+    assert any(path[0] == "chunks" for path in paths)
+    assert any(path[0] == "refs" for path in paths)
+    assert {path[1] for path in paths if path[0] == "streams"} == {
+        "train",
+        "report",
+    }
+    assert any(path[0] == "writers" for path in paths)
+    assert ("version",) in paths
+    for path in paths:
+        assert type(_path_value(state, path)) is np.int64, path
 
 
-def _third_repair_live_current() -> DreamerReplay:
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        0,
+        False,
+        np.int32(0),
+        np.asarray(0, np.int64),
+        np.asarray([0], np.int64),
+        np.int64(-1),
+        2**63,
+    ],
+)
+def test_restore_rejects_every_noncanonical_ordinary_counter(
+    invalid: object,
+) -> None:
     replay = _replay(
-        capacity=20,
-        chunk_size=4,
-        sequence_length=2,
+        sequence=_sequence(
+            length=1,
+            context=0,
+            consecutive=2,
+            report_length=1,
+            report_consecutive=2,
+        )
+    )
+    _add(replay, 4)
+    replay.sample("train")
+    state = replay.state_dict()
+    before = replay.state_dict()
+
+    for path in _ordinary_counter_paths(state):
+        corrupted = copy.deepcopy(state)
+        _set_path(corrupted, path, invalid)
+        with pytest.raises((TypeError, ValueError)):
+            _restore(replay, corrupted)
+        _tree_equal(replay.state_dict(), before)
+
+
+@pytest.mark.parametrize(
+    ("family", "counter"),
+    [
+        ("add", "inserted_rows"),
+        ("add", "inserted_items"),
+        ("add", "version"),
+        ("sample_online", "sample_calls"),
+        ("sample_online", "sampled_sequences"),
+        ("sample_online", "online_samples"),
+        ("sample_uniform", "uniform_samples"),
+        ("sample_stale", "stale_online"),
+        ("sample_online", "version"),
+        ("context_update", "update_calls"),
+        ("context_update", "updated_rows"),
+        ("context_stale", "stale_updates"),
+        ("context_update", "version"),
+        ("reset_stats", "version"),
+    ],
+)
+def test_replay_counter_overflow_preflight_is_owner_local_and_atomic(
+    family: str,
+    counter: str,
+) -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    if family == "add":
+
+        def operation() -> object:
+            return replay.add(_row(0, first=True))
+
+    elif family.startswith("sample"):
+        replay.add(_row(0, first=True))
+        replay.add(_row(1))
+        if family == "sample_uniform":
+            replay.online_queue.keys.clear()
+        elif family == "sample_stale":
+            replay.online_queue.keys.insert(0, ReplayKey((99).to_bytes(16, "big"), 0))
+
+        def operation() -> object:
+            return replay.sample("train")
+
+    elif family.startswith("context"):
+        replay.add(_row(0, first=True))
+        batch = replay.sample("train")
+        step_ids = batch.step_ids.copy()
+        if family == "context_stale":
+            step_ids[0, 0, :16] = np.frombuffer((99).to_bytes(16, "big"), np.uint8)
+        values = {
+            "dyn/deter": np.full((*step_ids.shape[:2], 2), 9, np.float32),
+            "dyn/stoch": np.full((*step_ids.shape[:2], 1, 2), 8, np.float32),
+        }
+
+        def operation() -> object:
+            return replay.update_context(step_ids, values)
+
+    else:
+        replay._metrics["inserted_rows"] = np.int64(7)
+
+        def operation() -> object:
+            return replay.stats(reset=True)
+
+    if counter == "version":
+        replay._version = np.int64(np.iinfo(np.int64).max)
+    else:
+        replay._metrics[counter] = np.int64(np.iinfo(np.int64).max)
+    before = replay.state_dict()
+
+    with pytest.raises(OverflowError, match="counter"):
+        operation()
+
+    _tree_equal(replay.state_dict(), before)
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("has_uint32",), True),
+        (("has_uint32",), -1),
+        (("has_uint32",), 2),
+        (("uinteger",), True),
+        (("uinteger",), 0.0),
+        (("uinteger",), -1),
+        (("uinteger",), 2**32),
+        (("state", "state"), True),
+        (("state", "state"), -1),
+        (("state", "state"), 2**128),
+        (("state", "inc"), True),
+        (("state", "inc"), -1),
+        (("state", "inc"), 2**128),
+    ],
+)
+def test_selector_rejects_out_of_schema_pcg64_numbers(
+    path: tuple[str, ...], value: object
+) -> None:
+    state = UniformSelector(0).state_dict()
+    target = cast(dict[str, object], state["rng_state"])
+    for name in path[:-1]:
+        target = cast(dict[str, object], target[name])
+    target[path[-1]] = value
+
+    with pytest.raises(ValueError, match="RNG state"):
+        UniformSelector.from_state_dict(state)
+
+
+def test_selector_rejects_missing_and_extra_pcg64_fields() -> None:
+    base = UniformSelector(0).state_dict()
+    rng = cast(dict[str, object], base["rng_state"])
+    inner = cast(dict[str, object], rng["state"])
+
+    for key in tuple(rng):
+        state = copy.deepcopy(base)
+        del cast(dict[str, object], state["rng_state"])[key]
+        with pytest.raises(ValueError, match="RNG state"):
+            UniformSelector.from_state_dict(state)
+    for key in tuple(inner):
+        state = copy.deepcopy(base)
+        nested = cast(
+            dict[str, object], cast(dict[str, object], state["rng_state"])["state"]
+        )
+        del nested[key]
+        with pytest.raises(ValueError, match="RNG state"):
+            UniformSelector.from_state_dict(state)
+    for target_path in ((), ("state",)):
+        state = copy.deepcopy(base)
+        target = cast(dict[str, object], state["rng_state"])
+        for name in target_path:
+            target = cast(dict[str, object], target[name])
+        target["extra"] = 0
+        with pytest.raises(ValueError, match="RNG state"):
+            UniformSelector.from_state_dict(state)
+
+    state = copy.deepcopy(base)
+    cast(dict[str, object], state["rng_state"])["state"] = []
+    with pytest.raises(TypeError, match="RNG state"):
+        UniformSelector.from_state_dict(state)
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "duplicate",
+        "next_chunk",
+        "future_chunk",
+        "chunk_size_offset",
+        "live_unresolvable",
+    ],
+)
+def test_restore_rejects_unreachable_online_queue_keys(corruption: str) -> None:
+    replay = _replay(
+        chunk_size=3,
+        sequence=_sequence(length=2, context=0),
+    )
+    _add(replay, 3)
+    state = replay.state_dict()
+    before = replay.state_dict()
+    queue = cast(dict[str, object], state["online_queue"])
+    keys = cast(list[dict[str, object]], queue["keys"])
+    assert len(keys) == 1
+    if corruption == "duplicate":
+        keys.append(copy.deepcopy(keys[0]))
+    elif corruption in ("next_chunk", "future_chunk"):
+        chunk_value = cast(int, state["next_chunk_id"])
+        if corruption == "future_chunk":
+            chunk_value += 1
+        keys[0] = ReplayKey(chunk_value.to_bytes(16, "big"), 0).state_dict()
+    elif corruption == "chunk_size_offset":
+        keys[0]["offset"] = replay.config.chunk_size
+    else:
+        writer = cast(dict[object, dict[str, object]], state["writers"])[0]
+        keys[0] = ReplayKey(cast(bytes, writer["current_chunk_id"]), 0).state_dict()
+
+    with pytest.raises(ValueError):
+        _restore(replay, state)
+
+    _tree_equal(replay.state_dict(), before)
+
+
+@pytest.mark.parametrize("mode", ["train", "report"])
+@pytest.mark.parametrize("corruption", ["future_chunk", "chunk_size_offset"])
+def test_restore_rejects_unreachable_retained_stream_step_ids(
+    mode: str, corruption: str
+) -> None:
+    sequence = _sequence(
+        length=1,
         context=0,
         consecutive=2,
-        online=False,
+        report_length=1,
+        report_consecutive=2,
     )
-    _add_rows(replay, 6)
-    replay.sample("report", timeout=0.1)
-    current = replay.consecutive_streams["report"].current
-    assert current is not None
-    assert all(key.chunk_id in replay.chunks for key in _decode(current.step_ids))
-    return replay
-
-
-@pytest.mark.parametrize("corruption", ["swap", "gap", "wrong_tail"])
-def test_third_repair_restore_rejects_non_suffix_item_provenance(
-    corruption: str,
-) -> None:
-    replay = _replay(
-        capacity=3,
-        chunk_size=8,
-        sequence_length=1,
-        context=0,
-        online=False,
-    )
-    _add_rows(replay, 5)
-    broken = copy.deepcopy(replay.state_dict())
-    keys = [item["key"] for item in broken["items"]]
-    assert [key["offset"] for key in keys] == [2, 3, 4]
-    if corruption == "swap":
-        broken["items"][0]["key"], broken["items"][1]["key"] = keys[1], keys[0]
-    elif corruption == "gap":
-        broken["items"][0]["key"] = {
-            "chunk_id": keys[0]["chunk_id"],
-            "offset": 1,
-        }
-    else:
-        broken["items"][-1]["key"] = {
-            "chunk_id": keys[-1]["chunk_id"],
-            "offset": 0,
-        }
-    _assert_restore_rejected_without_mutation(replay, broken)
-
-
-def test_third_repair_item_suffix_controls_resume_exactly() -> None:
-    replay = _replay(
-        capacity=3,
-        chunk_size=4,
-        sequence_length=1,
-        context=0,
-        online=False,
-        seed=11,
-    )
-    for index in range(4):
-        replay.add(_row(index, first=index == 0), worker=1)
-        replay.add(_row(100 + index, first=index == 0), worker=2)
+    replay = _replay(chunk_size=3, sequence=sequence)
+    _add(replay, 4)
+    replay.sample(mode)
     state = replay.state_dict()
-    locations = {
-        chunk_id: (worker, ordinal)
-        for worker, writer in state["writers"].items()
-        for ordinal, chunk_id in enumerate(writer["chunk_history"])
-    }
-    projections: dict[int, list[int]] = {1: [], 2: []}
-    for item in state["items"]:
-        key = item["key"]
-        worker, ordinal = locations[key["chunk_id"]]
-        projections[worker].append(ordinal * replay.config.chunk_size + key["offset"])
-    assert projections[1] == [3]
-    assert projections[2] == [2, 3]
-    restored = _replay(
-        capacity=3,
-        chunk_size=4,
-        sequence_length=1,
-        context=0,
-        online=False,
-        seed=11,
-    )
-    restored.load_state_dict(state)
-    for mode in ("report", "report", "train"):
-        left = replay.sample_raw(mode, timeout=0.1)
-        right = restored.sample_raw(mode, timeout=0.1)
-        _assert_tree_equal(left.as_dict(), right.as_dict())
-        _assert_tree_equal(replay.state_dict(), restored.state_dict())
-
-    evicted = _replay(
-        capacity=1,
-        chunk_size=4,
-        sequence_length=1,
-        context=0,
-        online=False,
-    )
-    evicted.add(_row(0), worker=1)
-    evicted.add(_row(100, first=True), worker=2)
-    evicted_state = evicted.state_dict()
-    only_key = evicted_state["items"][0]["key"]
-    assert only_key["chunk_id"] in evicted_state["writers"][2]["chunk_history"]
-    clone = _replay(
-        capacity=1,
-        chunk_size=4,
-        sequence_length=1,
-        context=0,
-        online=False,
-    )
-    clone.load_state_dict(evicted_state)
-    _assert_tree_equal(clone.state_dict(), evicted_state)
-
-
-@pytest.mark.parametrize("corruption", ["swap", "gap", "wrong_tail"])
-def test_item_suffix_raw_length_three_rejects_cross_chunk_corruption(
-    corruption: str,
-) -> None:
-    replay = _replay(
-        capacity=3,
-        chunk_size=3,
-        sequence_length=3,
-        context=0,
-        online=False,
-    )
-    _add_rows(replay, 7)
-    broken = copy.deepcopy(replay.state_dict())
-    keys = [item["key"] for item in broken["items"]]
-    assert [
-        (int.from_bytes(key["chunk_id"], "big"), key["offset"]) for key in keys
-    ] == [(1, 2), (2, 0), (2, 1)]
-    if corruption == "swap":
-        broken["items"][0]["key"], broken["items"][1]["key"] = keys[1], keys[0]
-    elif corruption == "gap":
-        broken["items"][0]["key"] = {
-            "chunk_id": (1).to_bytes(16, "big"),
-            "offset": 1,
-        }
-    else:
-        broken["items"][-1]["key"] = {
-            "chunk_id": (1).to_bytes(16, "big"),
-            "offset": 0,
-        }
-    _assert_restore_rejected_without_mutation(replay, broken)
-
-
-def test_item_suffix_raw_length_three_allows_cross_writer_absolute_decrease() -> None:
-    replay = _replay(
-        capacity=4,
-        chunk_size=3,
-        sequence_length=3,
-        context=0,
-        online=False,
-        seed=23,
-    )
-    for index in range(7):
-        replay.add(_row(index, first=index == 0), worker=1)
-    for index in range(4):
-        replay.add(_row(100 + index, first=index == 0), worker=2)
-    state = replay.state_dict()
-    locations = {
-        chunk_id: (worker, ordinal)
-        for worker, writer in state["writers"].items()
-        for ordinal, chunk_id in enumerate(writer["chunk_history"])
-    }
-    positions = []
-    for item in state["items"]:
-        key = item["key"]
-        worker, ordinal = locations[key["chunk_id"]]
-        positions.append((worker, ordinal * replay.config.chunk_size + key["offset"]))
-    assert positions == [(1, 3), (1, 4), (2, 0), (2, 1)]
-    restored = _replay(
-        capacity=4,
-        chunk_size=3,
-        sequence_length=3,
-        context=0,
-        online=False,
-        seed=23,
-    )
-    restored.load_state_dict(state)
-    _assert_tree_equal(restored.state_dict(), state)
-    for mode in ("report", "train"):
-        left = replay.sample_raw(mode, timeout=0.1)
-        right = restored.sample_raw(mode, timeout=0.1)
-        _assert_tree_equal(left.as_dict(), right.as_dict())
-        _assert_tree_equal(replay.state_dict(), restored.state_dict())
-
-
-@pytest.mark.parametrize(
-    "corrupt_fifo",
-    [
-        lambda fifo: fifo.__setitem__(0, False),
-        lambda fifo: fifo.__setitem__(0, np.int64(fifo[0])),
-        lambda fifo: tuple(fifo),
-    ],
-    ids=["bool", "numpy-int", "tuple"],
-)
-def test_third_repair_restore_requires_canonical_fifo_types(corrupt_fifo) -> None:
-    replay = _replay(sequence_length=1, context=0, online=False)
-    _add_rows(replay, 3)
-    broken = copy.deepcopy(replay.state_dict())
-    replacement = corrupt_fifo(broken["fifo"])
-    if replacement is not None:
-        broken["fifo"] = replacement
-    _assert_restore_rejected_without_mutation(replay, broken)
-
-
-@pytest.mark.parametrize("corruption", ["bool", "missing_item", "selector"])
-def test_third_repair_evict_preflight_is_transactional(corruption: str) -> None:
-    replay = _replay(
-        capacity=2,
-        chunk_size=4,
-        sequence_length=1,
-        context=0,
-        online=False,
-    )
-    _add_rows(replay, 2)
-    item_id = replay.fifo[0]
-    if corruption == "bool":
-        replay.fifo[0] = False
-    elif corruption == "missing_item":
-        del replay.items[item_id]
-    else:
-        replay.selector.indices.pop(item_id)
     before = replay.state_dict()
-    with pytest.raises((KeyError, TypeError, ValueError, RuntimeError)):
-        replay._evict_item()
-    _assert_tree_equal(replay.state_dict(), before)
-
-
-class _RaisingPopList(list):
-    def pop(self, index: int = -1):
-        raise AssertionError(f"mutating pop reached at index {index}")
-
-
-def test_live_fifo_requires_an_exact_builtin_list_before_eviction_mutation() -> None:
-    replay = _replay(
-        capacity=2,
-        chunk_size=4,
-        sequence_length=1,
-        context=0,
-        online=False,
-    )
-    _add_rows(replay, 2)
-    replay.fifo = _RaisingPopList(replay.fifo)
-    fifo = replay.fifo
-    selector_before = replay.selector.state_dict()
-    items_before = dict(replay.items)
-    refs_before = dict(replay.refs)
-
-    with pytest.raises((TypeError, ValueError, RuntimeError), match="FIFO"):
-        replay.validate()
-    with pytest.raises((TypeError, ValueError, RuntimeError), match="FIFO"):
-        replay._evict_item()
-
-    assert replay.fifo is fifo
-    assert replay.selector.state_dict() == selector_before
-    assert replay.items == items_before
-    assert replay.refs == refs_before
-
-
-@pytest.mark.parametrize(
-    "corruption",
-    ("bool_fifo", "numpy_fifo", "items_alias", "selector_indices"),
-)
-def test_add_preflights_live_capacity_state_before_writer_mutation(
-    corruption: str,
-) -> None:
-    replay = _replay(
-        capacity=1,
-        chunk_size=4,
-        sequence_length=1,
-        context=0,
-        online=False,
-    )
-    replay.add(_row(0))
-    if corruption == "bool_fifo":
-        replay.fifo[0] = True
-    elif corruption == "numpy_fifo":
-        replay.fifo[0] = np.int64(replay.fifo[0])
-    elif corruption == "items_alias":
-        replay.items = {np.int64(0): replay.items[0]}
+    streams = cast(dict[str, dict[str, object]], state["streams"])
+    current = cast(dict[str, object], streams[mode]["current"])
+    step_ids = cast(Array, current["step_ids"])
+    if corruption == "future_chunk":
+        chunk_id = cast(int, state["next_chunk_id"]).to_bytes(16, "big")
+        offsets = range(step_ids.shape[1])
     else:
-        replay.selector.indices = {0: np.int64(0)}
-    before = replay.state_dict()
-    writer_before = replay.writers[0].state_dict()
-
-    with pytest.raises((TypeError, ValueError, RuntimeError)):
-        replay.add(_row(1, first=False))
-
-    _assert_tree_equal(replay.state_dict(), before)
-    _assert_tree_equal(replay.writers[0].state_dict(), writer_before)
-
-
-def test_add_never_calls_exhaustive_replay_validators(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    replay = _replay(
-        capacity=1,
-        chunk_size=4,
-        sequence_length=1,
-        context=0,
-        online=False,
+        chunks = cast(list[dict[str, object]], state["chunks"])
+        chunk_id = cast(bytes, chunks[0]["chunk_id"])
+        offsets = range(replay.config.chunk_size, replay.config.chunk_size + 2)
+    step_ids[0] = np.stack(
+        [ReplayKey(chunk_id, offset).to_step_id() for offset in offsets]
     )
-    replay.add(_row(0))
 
-    def forbidden(*args, **kwargs):
-        del args, kwargs
-        raise AssertionError("exhaustive replay validation reached from add")
+    with pytest.raises(ValueError):
+        _restore(replay, state)
 
-    monkeypatch.setattr(replay, "validate", forbidden)
-    monkeypatch.setattr(replay, "_validate_mutation_containers", forbidden)
-    monkeypatch.setattr(replay, "_validate_item_map", forbidden)
-    monkeypatch.setattr(replay, "_validate_selector_map", forbidden)
-
-    key = replay.add(_row(1, first=False))
-
-    assert key.offset == 1
-    assert replay.writers[0].row_count == 2
-    assert list(replay.items) == [1]
+    _tree_equal(replay.state_dict(), before)
 
 
-def test_add_preflight_never_scans_lifetime_chunk_history() -> None:
-    source = inspect.getsource(DreamerReplay._preflight_active_writer)
-
-    assert "for chunk_id in writer.chunk_history" not in source
-    assert "writer.chunk_history[-1]" in source
-
-
+@pytest.mark.parametrize("mode", ["train", "report"])
 @pytest.mark.parametrize(
-    "corruption",
-    ("duplicate", "reversed", "cursor", "cadence"),
+    "corruption", ["unrelated_live", "live_empty", "live_out_of_prefix"]
 )
-def test_add_preflights_bounded_pending_cadence_transactionally(
-    corruption: str,
+def test_restore_rejects_partial_live_stream_identity_redirection(
+    mode: str, corruption: str
 ) -> None:
-    replay = _replay(
-        capacity=20,
-        chunk_size=8,
-        sequence_length=3,
-        context=0,
-        online=False,
-    )
-    initial_rows = 4
-    _add_rows(replay, initial_rows)
-    writer = replay.writers[0]
-    if corruption == "duplicate":
-        writer.pending[1] = writer.pending[0]
-    elif corruption == "reversed":
-        writer.pending = type(writer.pending)(reversed(writer.pending))
-    elif corruption == "cursor":
-        chunk_id = writer.chunk_history[0]
-        writer.pending = type(writer.pending)(
-            (ReplayKey(chunk_id, 0), ReplayKey(chunk_id, 1))
+    if corruption == "live_out_of_prefix":
+        sequence = _sequence(
+            length=1,
+            context=0,
+            consecutive=3,
+            report_length=1,
+            report_consecutive=3,
         )
+        replay = _replay(capacity=1, chunk_size=2, sequence=sequence)
+        _add(replay, 4)
+        replay.sample(mode)
+        replay.add(_row(4))
+        replay.add(_row(100, first=True), worker=1)
     else:
-        writer.emitted_count += 1
+        replay = _active_stream_replay(mode, partial_live=True)
+    state = replay.state_dict()
     before = replay.state_dict()
+    current = _serialized_stream_current(state, mode)
 
-    with pytest.raises((TypeError, ValueError, RuntimeError), match="pending|cadence"):
-        replay.validate()
-    _assert_tree_equal(replay.state_dict(), before)
+    if corruption == "unrelated_live":
+        replay.add(_row(100, first=True), worker=1)
+        replay.add(_row(101), worker=1)
+        state = replay.state_dict()
+        before = replay.state_dict()
+        current = _serialized_stream_current(state, mode)
+        unrelated = next(
+            chunk
+            for chunk in replay.chunks.values()
+            if chunk.owner_id == 1 and chunk.length == chunk.capacity
+        )
+        forged = ReplayKey(unrelated.chunk_id, 0)
+    elif corruption == "live_empty":
+        empty = next(chunk for chunk in replay.chunks.values() if chunk.length == 0)
+        forged = ReplayKey(empty.chunk_id, 0)
+    else:
+        partial = next(
+            chunk
+            for chunk in replay.chunks.values()
+            if chunk.owner_id == 1 and chunk.length == 1
+        )
+        _replace_stream_step_key(current, 1, ReplayKey(partial.chunk_id, 0))
+        forged = ReplayKey(partial.chunk_id, 1)
 
-    with pytest.raises((TypeError, ValueError, RuntimeError), match="pending|cadence"):
-        replay.add(_row(initial_rows, first=False))
-    _assert_tree_equal(replay.state_dict(), before)
+    position = 2 if corruption == "live_out_of_prefix" else 1
+    _replace_stream_step_key(current, position, forged)
+
+    with pytest.raises(ValueError):
+        _restore(replay, state)
+
+    _tree_equal(replay.state_dict(), before)
 
 
-def test_add_preflights_last_is_last_against_live_tail_transactionally() -> None:
-    replay = _replay(
-        capacity=20,
-        chunk_size=8,
-        sequence_length=3,
+@pytest.mark.parametrize("mode", ["train", "report"])
+@pytest.mark.parametrize("corruption", ["mid_chunk_rollover", "decreasing_chunk"])
+def test_restore_rejects_fully_evicted_stream_identity_chronology(
+    mode: str, corruption: str
+) -> None:
+    sequence = _sequence(
+        length=2,
         context=0,
-        online=False,
+        consecutive=2,
+        report_length=2,
+        report_consecutive=2,
     )
-    replay.add(_row(0, last=True))
-    writer = replay.writers[0]
-    writer.last_is_last = False
+    replay = _replay(capacity=1, chunk_size=3, sequence=sequence)
+    _add(replay, 5)
+    replay.sample(mode)
+    current_batch = replay.streams[mode].current
+    assert current_batch is not None
+    original_ids = {
+        ReplayKey.from_step_id(value).chunk_id
+        for value in current_batch.step_ids.reshape(-1, 20)
+    }
+    for index in range(5, 20):
+        replay.add(_row(index))
+    assert original_ids.isdisjoint(replay.chunks)
+    state = replay.state_dict()
     before = replay.state_dict()
+    current = _serialized_stream_current(state, mode)
+    first = (1).to_bytes(16, "big")
+    second = (2).to_bytes(16, "big")
+    if corruption == "mid_chunk_rollover":
+        keys = [
+            ReplayKey(first, 0),
+            ReplayKey(second, 0),
+            ReplayKey(second, 1),
+            ReplayKey(second, 2),
+        ]
+    else:
+        keys = [
+            ReplayKey(second, 1),
+            ReplayKey(second, 2),
+            ReplayKey(first, 0),
+            ReplayKey(first, 1),
+        ]
+    cast(Array, current["step_ids"])[0] = np.stack([key.to_step_id() for key in keys])
 
-    with pytest.raises((TypeError, ValueError, RuntimeError), match="chronology"):
-        replay.validate()
-    _assert_tree_equal(replay.state_dict(), before)
+    with pytest.raises(ValueError):
+        _restore(replay, state)
 
-    with pytest.raises((TypeError, ValueError, RuntimeError), match="chronology"):
-        replay.add(_row(1, first=False))
-    _assert_tree_equal(replay.state_dict(), before)
+    _tree_equal(replay.state_dict(), before)
 
 
-def test_add_preflights_pending_chunk_ownership_transactionally() -> None:
-    replay = _replay(
-        capacity=20,
-        chunk_size=2,
-        sequence_length=3,
+@pytest.mark.parametrize("mode", ["train", "report"])
+@pytest.mark.parametrize(
+    "partial_live", [False, True], ids=["fully_live", "partial_live"]
+)
+@pytest.mark.parametrize(
+    "leaf", ["obs", "action", "reward", "is_terminal", "is_first", "is_last"]
+)
+def test_restore_rejects_live_stream_immutable_transition_corruption(
+    mode: str, partial_live: bool, leaf: str
+) -> None:
+    replay = _active_stream_replay(mode, partial_live=partial_live)
+    state = replay.state_dict()
+    before = replay.state_dict()
+    current = _serialized_stream_current(state, mode)
+    data = cast(dict[str, Array], current["data"])
+    position = 1 if partial_live else 0
+    if leaf in ("obs", "action"):
+        data[leaf][0, position, 0] += np.asarray(1000, data[leaf].dtype)
+    elif leaf == "reward":
+        data[leaf][0, position] += np.float32(1000)
+    else:
+        data[leaf][0, position] = not bool(data[leaf][0, position])
+
+    with pytest.raises(ValueError):
+        _restore(replay, state)
+
+    _tree_equal(replay.state_dict(), before)
+
+
+@pytest.mark.parametrize("mode", ["train", "report"])
+def test_restore_accepts_unmodified_partial_live_stream_exact_next_slice(
+    mode: str,
+) -> None:
+    replay = _active_stream_replay(mode, partial_live=True)
+    restored = _restore(replay, replay.state_dict())
+
+    _tree_equal(restored.state_dict(), replay.state_dict())
+    _tree_equal(restored.sample(mode).state_dict(), replay.sample(mode).state_dict())
+    _tree_equal(restored.state_dict(), replay.state_dict())
+
+
+@pytest.mark.parametrize("mode", ["train", "report"])
+def test_restore_rejects_slice_only_consec_in_active_raw_stream(
+    mode: str,
+) -> None:
+    replay = _active_stream_replay(mode, partial_live=False)
+    state = replay.state_dict()
+    before = replay.state_dict()
+    current = _serialized_stream_current(state, mode)
+    data = cast(dict[str, Array], current["data"])
+    step_ids = cast(Array, current["step_ids"])
+    data["consec"] = np.zeros(step_ids.shape[:2], np.int32)
+
+    try:
+        restored = _restore(replay, state)
+    except (TypeError, ValueError) as error:
+        assert "consec" in str(error)
+    else:
+        restored_current = restored.streams[mode].current
+        assert restored_current is not None
+        assert "consec" in restored_current.data
+        _tree_equal(replay.state_dict(), before)
+        pytest.fail("active raw stream accepted and preserved slice-only consec")
+
+    _tree_equal(replay.state_dict(), before)
+
+
+@pytest.mark.parametrize("mode", ["train", "report"])
+def test_restore_accepts_partial_live_stream_with_skipped_successor_id(
+    mode: str,
+) -> None:
+    sequence = _sequence(
+        length=1,
         context=0,
-        online=False,
+        consecutive=2,
+        report_length=1,
+        report_consecutive=2,
+    )
+    replay = _replay(capacity=1, chunk_size=2, sequence=sequence)
+    replay.add(_row(0, first=True), worker=0)
+    replay.add(_row(100, first=True), worker=1)
+    replay.add(_row(1), worker=0)
+    replay.add(_row(2), worker=0)
+    replay.sample(mode)
+    current = replay.streams[mode].current
+    assert current is not None
+    keys = [ReplayKey.from_step_id(value) for value in current.step_ids[0]]
+    assert [int.from_bytes(key.chunk_id, "big") for key in keys] == [1, 3]
+    replay.add(_row(3), worker=0)
+    assert keys[0].chunk_id not in replay.chunks
+    assert keys[1].chunk_id in replay.chunks
+    restored = _restore(replay, replay.state_dict())
+
+    _tree_equal(restored.sample(mode).state_dict(), replay.sample(mode).state_dict())
+    _tree_equal(restored.state_dict(), replay.state_dict())
+
+
+@pytest.mark.parametrize("mode", ["train", "report"])
+def test_restore_accepts_partial_live_stream_latent_writeback_divergence(
+    mode: str,
+) -> None:
+    replay = _active_stream_replay(mode, partial_live=True)
+    current = replay.streams[mode].current
+    assert current is not None
+    live_step_id = current.step_ids[:, 1:2]
+    replay.update_context(
+        live_step_id,
+        {
+            "dyn/deter": np.full((1, 1, 2), -7, np.float32),
+            "dyn/stoch": np.full((1, 1, 1, 2), -8, np.float32),
+        },
+    )
+    assert not np.array_equal(
+        current.data["dyn/deter"][:, 1:2],
+        np.full((1, 1, 2), -7, np.float32),
+    )
+    restored = _restore(replay, replay.state_dict())
+
+    _tree_equal(restored.sample(mode).state_dict(), replay.sample(mode).state_dict())
+    _tree_equal(restored.state_dict(), replay.state_dict())
+
+
+@pytest.mark.parametrize("mode", ["train", "report"])
+def test_restore_accepts_live_stream_sampling_annotations(mode: str) -> None:
+    sequence = _sequence(
+        length=1,
+        context=0,
+        consecutive=2,
+        report_length=1,
+        report_consecutive=2,
+    )
+    replay = _replay(capacity=1, chunk_size=3, sequence=sequence)
+    replay.add(_row(0, first=True))
+    replay.add(_row(1))
+    replay.add(_row(2, first=True))
+    replay.sample(mode)
+    current = replay.streams[mode].current
+    assert current is not None
+    keys = [ReplayKey.from_step_id(value) for value in current.step_ids[0]]
+    stored_first = replay.chunks[keys[0].chunk_id].transition_data["is_first"]
+    stored_last = replay.chunks[keys[0].chunk_id].transition_data["is_last"]
+    assert not bool(stored_first[keys[0].offset])
+    assert not bool(stored_last[keys[0].offset])
+    assert bool(current.data["is_first"][0, 0])
+    assert bool(current.data["is_last"][0, 0])
+
+    restored = _restore(replay, replay.state_dict())
+
+    _tree_equal(restored.state_dict(), replay.state_dict())
+
+
+@pytest.mark.parametrize("corruption", ["swapped", "skipped"])
+def test_restore_rejects_wrong_writer_local_item_start_order(
+    corruption: str,
+) -> None:
+    replay = _replay(
+        capacity=3,
+        chunk_size=10,
+        sequence=_sequence(length=1, context=0),
+    )
+    _add(replay, 6)
+    state = replay.state_dict()
+    before = replay.state_dict()
+    items = cast(list[dict[str, object]], state["items"])
+    assert [cast(dict[str, object], item["key"])["offset"] for item in items] == [
+        3,
+        4,
+        5,
+    ]
+    if corruption == "swapped":
+        items[0]["key"], items[2]["key"] = items[2]["key"], items[0]["key"]
+    else:
+        first_key = cast(dict[str, object], items[0]["key"])
+        first_key["offset"] = 2
+
+    with pytest.raises(ValueError):
+        _restore(replay, state)
+
+    _tree_equal(replay.state_dict(), before)
+
+
+def test_restore_accepts_interleaved_multi_writer_item_start_order() -> None:
+    replay = _replay(
+        capacity=10,
+        chunk_size=8,
+        sequence=_sequence(length=1, context=0),
     )
     for index in range(3):
         replay.add(_row(index, first=index == 0), worker=0)
-    for index in range(2):
         replay.add(_row(100 + index, first=index == 0), worker=1)
-    writer = replay.writers[0]
-    foreign_writer = replay.writers[1]
-    foreign_chunk_id = foreign_writer.chunk_history[-2]
-    current_chunk_id = writer.current_chunk_id
-    assert current_chunk_id is not None
-    foreign_chunk = replay.chunks[foreign_chunk_id]
-    foreign_chunk.successor_id = current_chunk_id
-    writer.chunk_history[-2] = foreign_chunk_id
-    writer.pending = type(writer.pending)(
-        (
-            ReplayKey(foreign_chunk_id, foreign_chunk.length - 1),
-            ReplayKey(current_chunk_id, 0),
-        )
-    )
-    before = replay.state_dict()
+    starts = list(replay.items.values())
+    assert starts != sorted(starts)
 
-    with pytest.raises((TypeError, ValueError, RuntimeError), match="ownership"):
-        replay.validate()
-    _assert_tree_equal(replay.state_dict(), before)
+    restored = _restore(replay, replay.state_dict())
 
-    with pytest.raises((TypeError, ValueError, RuntimeError), match="ownership"):
-        replay.add(_row(3, first=False), worker=0)
-    _assert_tree_equal(replay.state_dict(), before)
+    _tree_equal(restored.state_dict(), replay.state_dict())
 
 
-def test_add_preflights_same_writer_pending_cycle_transactionally() -> None:
-    replay = _replay(
-        capacity=20,
-        chunk_size=2,
-        sequence_length=4,
-        context=0,
-        online=False,
-    )
-    _add_rows(replay, 3)
-    writer = replay.writers[0]
-    current_chunk_id = writer.current_chunk_id
-    assert current_chunk_id is not None
-    current_chunk = replay.chunks[current_chunk_id]
-    assert current_chunk.length == 1
-    current_chunk.successor_id = current_chunk_id
-    live_key = ReplayKey(current_chunk_id, 0)
-    writer.pending = type(writer.pending)((live_key, live_key, live_key))
-    before = replay.state_dict()
-
-    with pytest.raises((TypeError, ValueError, RuntimeError), match="cycle|chunk"):
-        replay.validate()
-    _assert_tree_equal(replay.state_dict(), before)
-
-    with pytest.raises((TypeError, ValueError, RuntimeError), match="cycle|chunk"):
-        replay.add(_row(3, first=False))
-    _assert_tree_equal(replay.state_dict(), before)
-
-
-def test_add_preflights_pending_chunk_self_identity_transactionally() -> None:
-    replay = _replay(
-        capacity=20,
-        chunk_size=2,
-        sequence_length=3,
-        context=0,
-        online=False,
-    )
-    _add_rows(replay, 3)
-    writer = replay.writers[0]
-    sealed_chunk_id = writer.chunk_history[-2]
-    replay.chunks[sealed_chunk_id].chunk_id = (999).to_bytes(16, "big")
-    before = replay.state_dict()
-
-    with pytest.raises((TypeError, ValueError, RuntimeError), match="chunk"):
-        replay.validate()
-    _assert_tree_equal(replay.state_dict(), before)
-
-    with pytest.raises((TypeError, ValueError, RuntimeError), match="chunk"):
-        replay.add(_row(3, first=False))
-    _assert_tree_equal(replay.state_dict(), before)
-
-
-@pytest.mark.parametrize(
-    "target_alias",
-    (False, np.int64(0)),
-    ids=("bool", "numpy-int"),
-)
-def test_evict_preflights_exact_selector_target_transactionally(
-    target_alias,
-) -> None:
-    replay = _replay(
-        capacity=2,
-        chunk_size=4,
-        sequence_length=1,
-        context=0,
-        online=False,
-    )
-    _add_rows(replay, 2)
-    item_id = replay.fifo[0]
-    target_index = replay.selector.indices[item_id]
-    assert target_index != len(replay.selector.keys) - 1
-    replay.selector.keys[target_index] = target_alias
-    before = replay.state_dict()
-
-    with pytest.raises((TypeError, ValueError, RuntimeError), match="selector"):
-        replay.validate()
-    _assert_tree_equal(replay.state_dict(), before)
-
-    with pytest.raises((TypeError, ValueError, RuntimeError), match="selector"):
-        replay._evict_item()
-    _assert_tree_equal(replay.state_dict(), before)
-
-    with pytest.raises((TypeError, ValueError, RuntimeError), match="selector"):
-        replay.add(_row(2, first=False))
-    _assert_tree_equal(replay.state_dict(), before)
-
-
-@pytest.mark.parametrize(
-    "key_alias",
-    (False, np.int64(0)),
-    ids=("bool", "numpy-int"),
-)
-def test_evict_preflights_exact_selector_index_key_transactionally(
-    key_alias,
-) -> None:
-    replay = _replay(
-        capacity=2,
-        chunk_size=4,
-        sequence_length=1,
-        context=0,
-        online=False,
-    )
-    _add_rows(replay, 2)
-    replay.selector.indices = {key_alias: 0, 1: 1}
-    before = replay.state_dict()
-
-    with pytest.raises((TypeError, ValueError, RuntimeError), match="selector"):
-        replay.validate()
-    _assert_tree_equal(replay.state_dict(), before)
-
-    with pytest.raises((TypeError, ValueError, RuntimeError), match="selector"):
-        replay._evict_item()
-    _assert_tree_equal(replay.state_dict(), before)
-
-    with pytest.raises((TypeError, ValueError, RuntimeError), match="selector"):
-        replay.add(_row(2, first=False))
-    _assert_tree_equal(replay.state_dict(), before)
-
-
-def test_evict_preflights_chunk_self_identity_transactionally() -> None:
+def test_restore_accepts_and_drains_evicted_stale_online_queue_exactly() -> None:
     replay = _replay(
         capacity=1,
         chunk_size=1,
-        sequence_length=1,
-        context=0,
-        online=False,
+        online_queue_size=20,
+        sequence=_sequence(length=1, context=0),
     )
-    replay.add(_row(0))
-    item_key = replay.items[replay.fifo[0]]
-    replay.chunks[item_key.chunk_id].chunk_id = (999).to_bytes(16, "big")
-    before = replay.state_dict()
+    _add(replay, 6)
+    stale = [
+        key for key in replay.online_queue.keys if key.chunk_id not in replay.chunks
+    ]
+    assert len(stale) >= 2
+    restored = _restore(replay, replay.state_dict())
 
-    with pytest.raises((TypeError, ValueError, RuntimeError), match="chunk"):
-        replay.validate()
-    _assert_tree_equal(replay.state_dict(), before)
-
-    with pytest.raises((TypeError, ValueError, RuntimeError), match="chunk"):
-        replay._evict_item()
-    _assert_tree_equal(replay.state_dict(), before)
-
-    with pytest.raises((TypeError, ValueError, RuntimeError), match="chunk"):
-        replay.add(_row(1, first=False))
-    _assert_tree_equal(replay.state_dict(), before)
-
-
-def test_restore_rejects_numpy_bytes_current_chunk_id_without_mutation() -> None:
-    replay = _replay(chunk_size=3, sequence_length=1, context=0, online=False)
-    _add_rows(replay, 4)
-    broken = copy.deepcopy(replay.state_dict())
-    current = broken["writers"][0]["current_chunk_id"]
-    assert type(current) is bytes
-    broken["writers"][0]["current_chunk_id"] = np.bytes_(current)
-
-    _assert_restore_rejected_without_mutation(replay, broken)
-
-
-def test_restore_rejects_numpy_bytes_ref_key_without_mutation() -> None:
-    replay = _replay(chunk_size=3, sequence_length=1, context=0, online=False)
-    _add_rows(replay, 4)
-    broken = copy.deepcopy(replay.state_dict())
-    old = next(iter(broken["refs"]))
-    value = broken["refs"].pop(old)
-    broken["refs"][np.bytes_(old)] = value
-
-    _assert_restore_rejected_without_mutation(replay, broken)
-
-
-def test_evict_preflight_rejects_selector_container_before_any_mutation() -> None:
-    replay = _replay(
-        capacity=2,
-        chunk_size=4,
-        sequence_length=1,
-        context=0,
-        online=False,
+    _tree_equal(restored.state_dict(), replay.state_dict())
+    _tree_equal(
+        restored.sample("train").state_dict(), replay.sample("train").state_dict()
     )
-    _add_rows(replay, 2)
-    item_id = replay.fifo[0]
-    assert item_id in replay.selector.indices
-    replay.selector.keys = tuple(replay.selector.keys)
-    keys_before = replay.selector.keys
-    indices_before = dict(replay.selector.indices)
-    before = replay.state_dict()
-    with pytest.raises((AttributeError, TypeError, ValueError, RuntimeError)):
-        replay._evict_item()
-    _assert_tree_equal(replay.state_dict(), before)
-    assert replay.selector.keys is keys_before
-    assert replay.selector.indices == indices_before
+    assert restored.stats()["stale_online"] == len(stale)
+    assert replay.stats()["stale_online"] == len(stale)
+    _tree_equal(restored.state_dict(), replay.state_dict())
 
 
-@pytest.mark.parametrize("corruption", ["duplicate", "wrong_indices"])
-def test_validate_rejects_selector_bijection_without_mutation(
-    corruption: str,
+@pytest.mark.parametrize("mode", ["train", "report"])
+def test_restore_accepts_retained_stream_after_source_chunks_are_evicted(
+    mode: str,
 ) -> None:
-    replay = _replay(
-        capacity=2,
-        chunk_size=4,
-        sequence_length=1,
+    sequence = _sequence(
+        length=1,
         context=0,
-        online=False,
+        consecutive=2,
+        report_length=1,
+        report_consecutive=2,
     )
-    _add_rows(replay, 2)
-    if corruption == "duplicate":
-        replay.selector.keys[1] = replay.selector.keys[0]
-    else:
-        replay.selector.indices = {0: 1, 1: 0}
-    before = replay.state_dict()
-    with pytest.raises((TypeError, ValueError, RuntimeError)):
-        replay.validate()
-    _assert_tree_equal(replay.state_dict(), before)
-
-
-@pytest.mark.parametrize(
-    "item_id_alias",
-    [False, np.int64(0)],
-    ids=["bool", "numpy-int"],
-)
-def test_item_key_alias_is_rejected_without_mutation(item_id_alias) -> None:
-    replay = _replay(
-        capacity=2,
-        chunk_size=4,
-        sequence_length=1,
-        context=0,
-        online=False,
-    )
-    _add_rows(replay, 2)
-    replay.items = {
-        item_id_alias: replay.items[0],
-        1: replay.items[1],
+    replay = _replay(capacity=1, chunk_size=2, sequence=sequence)
+    _add(replay, 3)
+    replay.sample(mode)
+    retained = replay.streams[mode].current
+    assert retained is not None
+    retained_chunk_ids = {
+        ReplayKey.from_step_id(step_id).chunk_id
+        for step_id in retained.step_ids.reshape(-1, 20)
     }
-    before = replay.state_dict()
-    with pytest.raises((TypeError, ValueError, RuntimeError)):
-        replay.validate()
-    _assert_tree_equal(replay.state_dict(), before)
-    with pytest.raises((TypeError, ValueError, RuntimeError)):
-        replay._evict_item()
-    _assert_tree_equal(replay.state_dict(), before)
+    for index in range(3, 12):
+        replay.add(_row(index))
+    assert retained_chunk_ids.isdisjoint(replay.chunks)
+    restored = _restore(replay, replay.state_dict())
+
+    _tree_equal(restored.state_dict(), replay.state_dict())
+    _tree_equal(restored.sample(mode).state_dict(), replay.sample(mode).state_dict())
+    _tree_equal(restored.state_dict(), replay.state_dict())
 
 
-def test_third_repair_canonical_fifo_restore_continues_exactly() -> None:
-    replay = _replay(
-        capacity=2,
-        chunk_size=4,
-        sequence_length=1,
-        context=0,
-        online=False,
-        seed=13,
-    )
-    _add_rows(replay, 4)
-    restored = _replay(
-        capacity=2,
-        chunk_size=4,
-        sequence_length=1,
-        context=0,
-        online=False,
-        seed=13,
-    )
-    restored.load_state_dict(replay.state_dict())
-    replay.add(_row(4, first=True))
-    restored.add(_row(4, first=True))
-    left = replay.sample_raw("train", timeout=0.1)
-    right = restored.sample_raw("train", timeout=0.1)
-    _assert_tree_equal(left.as_dict(), right.as_dict())
-    _assert_tree_equal(replay.state_dict(), restored.state_dict())
-
-
-@pytest.mark.parametrize("corruption", ["gap", "tail"])
-def test_third_repair_restore_rejects_incomplete_online_cadence_suffix(
-    corruption: str,
+@pytest.mark.parametrize("mode", ["train", "report"])
+def test_restore_rejects_empty_item_owner_with_active_retained_stream_transactionally(
+    mode: str,
 ) -> None:
-    replay = _replay(
-        capacity=20,
-        chunk_size=8,
-        sequence_length=2,
+    sequence = _sequence(
+        length=1,
         context=0,
-        online=True,
+        consecutive=2,
+        report_length=1,
+        report_consecutive=2,
     )
-    _add_rows(replay, 7)
-    broken = copy.deepcopy(replay.state_dict())
-    queue = broken["online_queue"]["keys"]
-    assert [key["offset"] for key in queue] == [1, 3, 5]
-    queue.pop(1 if corruption == "gap" else -1)
-    _assert_restore_rejected_without_mutation(replay, broken)
-
-
-def test_third_repair_offline_restore_rejects_queue_transactionally() -> None:
-    replay = _replay(
-        capacity=20,
-        chunk_size=8,
-        sequence_length=2,
-        context=0,
-        online=False,
-    )
-    _add_rows(replay, 4)
-    broken = copy.deepcopy(replay.state_dict())
-    broken["online_queue"]["keys"] = [copy.deepcopy(broken["items"][1]["key"])]
-    assert broken["online_queue"]["keys"][0]["offset"] == 1
-    _assert_restore_rejected_without_mutation(replay, broken)
-
-
-def test_third_repair_offline_sampling_ignores_injected_online_queue() -> None:
-    replay = _replay(
-        capacity=20,
-        chunk_size=8,
-        sequence_length=2,
-        context=0,
-        online=False,
-        seed=17,
-    )
-    _add_rows(replay, 6)
-    pristine = replay.state_dict()
-    clone = _replay(
-        capacity=20,
-        chunk_size=8,
-        sequence_length=2,
-        context=0,
-        online=False,
-        seed=17,
-    )
-    clone.load_state_dict(pristine)
-    injected = replay.items[1]
-    replay.online_queue.push(injected)
-    queue_before = replay.online_queue.state_dict()
-    left = replay.sample_raw("train", timeout=0.1)
-    right = clone.sample_raw("train", timeout=0.1)
-    _assert_tree_equal(left.as_dict(), right.as_dict())
-    assert replay.online_queue.state_dict() == queue_before
-    np.testing.assert_array_equal(
-        _selector_rng_bytes(replay.selector), _selector_rng_bytes(clone.selector)
-    )
-    assert replay.stats() == clone.stats()
-
-
-def test_third_repair_online_suffix_controls_resume_metrics_and_rng() -> None:
-    replay = _replay(
-        capacity=20,
-        chunk_size=4,
-        sequence_length=2,
-        context=0,
-        online=True,
-        seed=19,
-    )
-    for index in range(5):
-        replay.add(_row(index, first=index == 0), worker=1)
-    for index in range(2):
-        replay.add(_row(100 + index, first=index == 0), worker=2)
-    for index in range(3):
-        replay.add(_row(200 + index, first=index == 0), worker=3)
+    replay = _replay(capacity=1, chunk_size=2, sequence=sequence)
+    _add(replay, 3)
+    replay.sample(mode)
+    retained = replay.streams[mode].current
+    assert retained is not None
+    retained_chunk_ids = {
+        ReplayKey.from_step_id(step_id).chunk_id
+        for step_id in retained.step_ids.reshape(-1, 20)
+    }
+    for index in range(3, 12):
+        replay.add(_row(index))
+    assert retained_chunk_ids.isdisjoint(replay.chunks)
     state = replay.state_dict()
-    restored = _replay(
-        capacity=20,
-        chunk_size=4,
-        sequence_length=2,
-        context=0,
-        online=True,
-        seed=19,
+    cast(list[object], state["items"]).clear()
+    cast(list[object], state["fifo"]).clear()
+    selector = cast(dict[str, object], state["selector"])
+    cast(list[object], selector["keys"]).clear()
+    cast(dict[object, object], selector["indices"]).clear()
+    cast(list[object], cast(dict[str, object], state["online_queue"])["keys"]).clear()
+    state["next_item_id"] = 0
+    _recompute_serialized_refs(state)
+    assert all(
+        count > 0 for count in cast(dict[bytes, np.int64], state["refs"]).values()
     )
-    restored.load_state_dict(state)
-    _assert_tree_equal(restored.state_dict(), state)
-    for _ in range(4):
-        left = replay.sample_raw("train", timeout=0.1)
-        right = restored.sample_raw("train", timeout=0.1)
-        _assert_tree_equal(left.as_dict(), right.as_dict())
-        _assert_tree_equal(replay.state_dict(), restored.state_dict())
+    checkpoint_before = copy.deepcopy(state)
+    replay_before = replay.state_dict()
 
-    raw_one = _replay(
-        capacity=20,
-        chunk_size=2,
-        sequence_length=1,
-        context=0,
-        online=True,
-    )
-    _add_rows(raw_one, 3)
-    raw_state = raw_one.state_dict()
-    assert [key["offset"] for key in raw_state["online_queue"]["keys"]] == [0, 1, 0]
-    raw_clone = _replay(
-        capacity=20,
-        chunk_size=2,
-        sequence_length=1,
-        context=0,
-        online=True,
-    )
-    raw_clone.load_state_dict(raw_state)
-    _assert_tree_equal(raw_clone.state_dict(), raw_state)
-
-
-@pytest.mark.parametrize(
-    "leaf",
-    ["reward", "obs", "action", "value", "is_terminal"],
-)
-def test_third_repair_restore_binds_live_current_immutable_payload(leaf: str) -> None:
-    replay = _third_repair_live_current()
-    broken = copy.deepcopy(replay.state_dict())
-    current = broken["consecutive"]["report"]["current"]
-    if leaf == "obs":
-        current[leaf][0, 1, 0] += 1
-    elif leaf == "is_terminal":
-        current[leaf][0, 1] = not bool(current[leaf][0, 1])
+    try:
+        restored = _restore(replay, state)
+    except ValueError as error:
+        assert "empty item owner" in str(error)
     else:
-        current[leaf][0, 1] += 100
-    _assert_restore_rejected_without_mutation(replay, broken)
+        assert restored.can_sample_batch(mode) is True
+        next_slice = restored.sample(mode)
+        assert next_slice.step_ids.shape == (1, 1, 20)
+        assert next_slice.data["consec"].tolist() == [[1]]
+        _tree_equal(state, checkpoint_before)
+        _tree_equal(replay.state_dict(), replay_before)
+        pytest.fail(f"{mode} restored an empty item owner with an active stream")
+
+    _tree_equal(state, checkpoint_before)
+    _tree_equal(replay.state_dict(), replay_before)
 
 
-def test_third_repair_restore_binds_coordinated_current_flags_to_storage() -> None:
-    replay = _third_repair_live_current()
-    broken = copy.deepcopy(replay.state_dict())
-    current = broken["consecutive"]["report"]["current"]
-    assert not bool(current["is_first"][0, 1])
-    current["is_first"][0, 1] = True
-    current["is_last"][0, 0] = True
-    _assert_restore_rejected_without_mutation(replay, broken)
-
-
-def _third_repair_partially_live_current() -> DreamerReplay:
-    replay = _replay(
-        capacity=1,
-        chunk_size=2,
-        sequence_length=2,
-        context=0,
+def test_complete_state_is_fresh_transactional_and_resumes_exact_behavior() -> None:
+    sequence = _sequence(
+        batch=2,
+        length=2,
+        context=1,
         consecutive=2,
-        online=False,
+        report_length=2,
+        report_consecutive=2,
     )
-    _add_rows(replay, 5)
-    replay.sample("report", timeout=0.1)
-    for index in range(5, 30):
-        current = replay.consecutive_streams["report"].current
-        assert current is not None
-        live = [key.chunk_id in replay.chunks for key in _decode(current.step_ids)]
-        if any(live) and not all(live):
-            return replay
-        replay.add(_row(index, first=False))
-    raise AssertionError("failed to construct partially live retained current")
-
-
-def test_third_repair_restore_binds_partially_live_current_suffix() -> None:
-    replay = _third_repair_partially_live_current()
-    broken = copy.deepcopy(replay.state_dict())
-    current = broken["consecutive"]["report"]["current"]
-    keys = _decode(current["stepid"])
-    position = next(
-        index for index, key in enumerate(keys) if key.chunk_id in replay.chunks
-    )
-    current["reward"][0, position] += 100
-    _assert_restore_rejected_without_mutation(replay, broken)
-
-
-def test_partially_live_current_round_trip_resumes_exact_next_report_slice() -> None:
-    replay = _third_repair_partially_live_current()
-    state = replay.state_dict()
-    current = state["consecutive"]["report"]["current"]
-    keys = _decode(current["stepid"])
-    live = [key.chunk_id in replay.chunks for key in keys]
-    assert any(live) and not all(live)
-    restored = _replay(
-        capacity=1,
-        chunk_size=2,
-        sequence_length=2,
-        context=0,
-        consecutive=2,
-        online=False,
-    )
-    restored.load_state_dict(state)
-    _assert_tree_equal(restored.state_dict(), state)
-    left = replay.sample("report", timeout=0.1)
-    right = restored.sample("report", timeout=0.1)
-    np.testing.assert_array_equal(left.data["consec"], [[1, 1]])
-    _assert_tree_equal(left.as_dict(), right.as_dict())
-    _assert_tree_equal(replay.state_dict(), restored.state_dict())
-
-
-def test_third_repair_live_latent_divergence_and_evicted_current_resume() -> None:
-    replay = _third_repair_live_current()
-    current = replay.consecutive_streams["report"].current
-    assert current is not None
+    replay = _replay(capacity=5, chunk_size=3, sequence=sequence)
+    _add(replay, 14)
+    replay.sample("report")
+    replay.sample("train")
+    raw = replay.sample("report")
     replay.update_context(
-        current.step_ids,
+        raw.step_ids[:, 1:],
         {
-            "dyn/deter": np.full((1, replay.raw_length, 2), 91, np.float32),
-            "dyn/stoch": np.full((1, replay.raw_length, 1, 2), 92, np.float32),
+            "dyn/deter": np.full((2, 2, 2), 9, np.float32),
+            "dyn/stoch": np.full((2, 2, 1, 2), 8, np.float32),
         },
     )
-    restored = _replay(
-        capacity=20,
-        chunk_size=4,
-        sequence_length=2,
-        context=0,
-        consecutive=2,
-        online=False,
+    state = replay.state_dict()
+    restored = DreamerReplay.from_state_dict(
+        state,
+        replay.config,
+        sequence,
+        _transition_spaces(),
+        _latent_spaces(),
     )
-    restored.load_state_dict(replay.state_dict())
-    left = replay.sample("report", timeout=0.1)
-    right = restored.sample("report", timeout=0.1)
-    _assert_tree_equal(left.as_dict(), right.as_dict())
+    _tree_equal(restored.state_dict(), state)
+    chunks = cast(list[dict[str, object]], state["chunks"])
+    transition = cast(dict[str, Array], chunks[0]["transition"])
+    transition["obs"][0, 0] = -999
+    restored_chunks = cast(list[dict[str, object]], restored.state_dict()["chunks"])
+    restored_transition = cast(dict[str, Array], restored_chunks[0]["transition"])
+    assert restored_transition["obs"][0, 0] != -999
+    for index in range(14, 22):
+        assert replay.add(_row(index)) == restored.add(_row(index))
+    for mode in ("train", "report", "train", "report"):
+        _tree_equal(
+            replay.sample(mode).state_dict(), restored.sample(mode).state_dict()
+        )
+    _tree_equal(replay.state_dict(), restored.state_dict())
 
-    evicted = _evicted_consecutive_current_scenario()
-    evicted_clone = _replay(
-        capacity=1,
-        chunk_size=2,
-        sequence_length=2,
+    broken = restored.state_dict()
+    broken["next_item_id"] = 2**63 + 1
+    before = restored.state_dict()
+    with pytest.raises(ValueError):
+        DreamerReplay.from_state_dict(
+            broken,
+            restored.config,
+            sequence,
+            _transition_spaces(),
+            _latent_spaces(),
+        )
+    _tree_equal(restored.state_dict(), before)
+
+
+def _identity_record_replay() -> tuple[
+    DreamerReplay, dict[str, TensorSpace], dict[str, TensorSpace]
+]:
+    transition_spaces = {
+        **_transition_spaces(),
+        "disc": TensorSpace((), "int32", classes=3),
+    }
+    latent_spaces = _latent_spaces()
+    sequence = _sequence(
+        batch=1,
+        length=1,
         context=0,
-        consecutive=2,
-        online=False,
+        consecutive=1,
+        report_length=1,
+        report_consecutive=1,
     )
-    evicted_clone.load_state_dict(evicted.state_dict())
-    left = evicted.sample("report", timeout=0.1)
-    right = evicted_clone.sample("report", timeout=0.1)
-    _assert_tree_equal(left.as_dict(), right.as_dict())
+    replay = DreamerReplay(
+        ReplayConfig(capacity=1, chunk_size=1, online_queue_size=1),
+        sequence,
+        transition_spaces,
+        latent_spaces,
+    )
+    row = _row(0, first=True)
+    row["disc"] = np.int32(1)
+    replay.add(row)
+    return replay, transition_spaces, latent_spaces
+
+
+@pytest.mark.parametrize("owner", ["transition", "latent"])
+@pytest.mark.parametrize(
+    ("case_name", "space", "expected_classes"),
+    _SPACE_IDENTITY_CASES,
+    ids=[case[0] for case in _SPACE_IDENTITY_CASES],
+)
+def test_space_state_projects_classes_to_primitive_owner_records(
+    owner: str,
+    case_name: str,
+    space: TensorSpace,
+    expected_classes: object,
+) -> None:
+    del case_name
+    replay, _, _, _ = _space_identity_replay(owner, space)
+    state = replay.state_dict()
+    spaces = cast(dict[str, dict[str, dict[str, object]]], state["spaces"])
+    classes = spaces[owner][f"{owner}/probe"]["classes"]
+
+    assert type(classes) is type(expected_classes)
+    assert classes == expected_classes
+    if type(classes) is list:
+        assert all(type(value) is int for value in classes)
+    _assert_no_tuple(spaces)
+
+
+@pytest.mark.parametrize("owner", ["transition", "latent"])
+@pytest.mark.parametrize(
+    ("case_name", "space", "expected_classes"),
+    _SPACE_IDENTITY_CASES,
+    ids=[case[0] for case in _SPACE_IDENTITY_CASES],
+)
+def test_space_state_is_own_inverse_with_exact_next_state(
+    owner: str,
+    case_name: str,
+    space: TensorSpace,
+    expected_classes: object,
+) -> None:
+    del case_name
+    replay, transition_spaces, latent_spaces, row = _space_identity_replay(owner, space)
+    state = replay.state_dict()
+    canonical_state = copy.deepcopy(state)
+
+    restored = _restore_with_spaces(replay, state, transition_spaces, latent_spaces)
+
+    assert restored.transition_spaces == transition_spaces
+    assert restored.latent_spaces == latent_spaces
+    _tree_equal(restored.state_dict(), canonical_state)
+    spaces = cast(dict[str, dict[str, dict[str, object]]], state["spaces"])
+    classes = spaces[owner][f"{owner}/probe"]["classes"]
+    if type(expected_classes) is list:
+        cast(list[int], classes)[0] += 100
+        _tree_equal(restored.state_dict(), canonical_state)
+    next_row = copy.deepcopy(row)
+    next_row["is_first"] = False
+    assert replay.add(next_row) == restored.add(next_row)
+    _tree_equal(restored.state_dict(), replay.state_dict())
+
+
+@pytest.mark.parametrize("owner", ["transition", "latent"])
+@pytest.mark.parametrize(
+    ("case_name", "space", "expected_classes"),
+    _SPACE_IDENTITY_CASES,
+    ids=[case[0] for case in _SPACE_IDENTITY_CASES],
+)
+def test_space_state_subtree_round_trips_through_public_flax(
+    owner: str,
+    case_name: str,
+    space: TensorSpace,
+    expected_classes: object,
+) -> None:
+    del case_name, expected_classes
+    from flax import serialization
+
+    replay, _, _, _ = _space_identity_replay(owner, space)
+    spaces = cast(dict[str, object], replay.state_dict()["spaces"])
+
+    encoded = serialization.msgpack_serialize(spaces)
+    restored = serialization.msgpack_restore(encoded)
+
+    _tree_equal(restored, spaces)
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "tuple",
+        "ndarray",
+        "nested_list",
+        "numpy_integer",
+        "bool",
+        "wrong_length",
+        "wrong_order",
+        "wrong_value",
+    ],
+)
+def test_restore_rejects_noncanonical_shaped_discrete_classes_transactionally(
+    corruption: str,
+) -> None:
+    space = TensorSpace((2, 2), "int32", classes=cast(Any, ((2, 3), (4, 5))))
+    replay, transition_spaces, latent_spaces, _ = _space_identity_replay(
+        "transition", space
+    )
+    state = replay.state_dict()
+    before = replay.state_dict()
+    spaces = cast(dict[str, dict[str, dict[str, object]]], state["spaces"])
+    record = spaces["transition"]["transition/probe"]
+    replacements: dict[str, object] = {
+        "tuple": (2, 3, 4, 5),
+        "ndarray": np.asarray([2, 3, 4, 5], np.int64),
+        "nested_list": [[2, 3], [4, 5]],
+        "numpy_integer": [2, 3, 4, np.int64(5)],
+        "bool": [2, 3, 4, True],
+        "wrong_length": [2, 3, 4],
+        "wrong_order": [3, 2, 4, 5],
+        "wrong_value": [2, 3, 4, 6],
+    }
+    record["classes"] = replacements[corruption]
+
+    with pytest.raises((TypeError, ValueError)):
+        _restore_with_spaces(replay, state, transition_spaces, latent_spaces)
+
+    _tree_equal(replay.state_dict(), before)
+
+
+def test_restore_rejects_shaped_discrete_class_container_alias_transactionally() -> (
+    None
+):
+    transition_spaces = {
+        **_transition_spaces(),
+        "transition/probe": TensorSpace((2,), "int32", classes=(2, 3)),
+    }
+    latent_spaces = {
+        **_latent_spaces(),
+        "latent/probe": TensorSpace((2,), "int32", classes=(2, 3)),
+    }
+    replay = DreamerReplay(
+        ReplayConfig(capacity=1, chunk_size=1, online_queue_size=1),
+        _sequence(length=1, context=0),
+        transition_spaces,
+        latent_spaces,
+    )
+    state = replay.state_dict()
+    before = replay.state_dict()
+    spaces = cast(dict[str, dict[str, dict[str, object]]], state["spaces"])
+    shared = spaces["transition"]["transition/probe"]["classes"]
+    spaces["latent"]["latent/probe"]["classes"] = shared
+
+    with pytest.raises((TypeError, ValueError)):
+        _restore_with_spaces(replay, state, transition_spaces, latent_spaces)
+
+    _tree_equal(replay.state_dict(), before)
+
+
+def test_restore_accepts_exact_canonical_replay_identity_records() -> None:
+    replay, transition_spaces, latent_spaces = _identity_record_replay()
+    state = replay.state_dict()
+
+    restored = _restore_with_spaces(replay, state, transition_spaces, latent_spaces)
+
+    _tree_equal(restored.state_dict(), state)
+
+
+@pytest.mark.parametrize(
+    "alias",
+    [
+        "schema_numpy",
+        "schema_bool",
+        "config_numpy",
+        "config_bool",
+        "sequence_numpy",
+        "sequence_bool",
+        "sequence_false_context",
+        "space_shape_tuple",
+        "space_shape_numpy",
+        "space_shape_bool",
+        "space_dtype_numpy",
+        "space_classes_numpy",
+        "space_classes_bool",
+        "spaces_container",
+        "spaces_extra_key",
+        "space_group_extra_name",
+        "space_record_container",
+        "space_record_extra_key",
+    ],
+)
+def test_restore_rejects_noncanonical_equal_replay_identity_aliases(
+    alias: str,
+) -> None:
+    replay, transition_spaces, latent_spaces = _identity_record_replay()
+    state = replay.state_dict()
+    before = replay.state_dict()
+    spaces = cast(dict[str, object], state["spaces"])
+    transition = cast(dict[str, dict[str, object]], spaces["transition"])
+    obs = transition["obs"]
+
+    if alias == "schema_numpy":
+        state["schema_version"] = np.int64(replay.SCHEMA_VERSION)
+    elif alias == "schema_bool":
+        state["schema_version"] = True
+    elif alias == "config_numpy":
+        cast(dict[str, object], state["config"])["chunk_size"] = np.int64(1)
+    elif alias == "config_bool":
+        cast(dict[str, object], state["config"])["capacity"] = True
+    elif alias == "sequence_numpy":
+        cast(dict[str, object], state["sequence_shape"])["report_length"] = np.int64(1)
+    elif alias == "sequence_bool":
+        cast(dict[str, object], state["sequence_shape"])["batch_size"] = True
+    elif alias == "sequence_false_context":
+        cast(dict[str, object], state["sequence_shape"])["context"] = False
+    elif alias == "space_shape_tuple":
+        obs["shape"] = (1,)
+    elif alias == "space_shape_numpy":
+        obs["shape"] = [np.int64(1)]
+    elif alias == "space_shape_bool":
+        obs["shape"] = [True]
+    elif alias == "space_dtype_numpy":
+        obs["dtype"] = np.str_("float32")
+    elif alias == "space_classes_numpy":
+        transition["disc"]["classes"] = np.int64(3)
+    elif alias == "space_classes_bool":
+        transition["disc"]["classes"] = True
+    elif alias == "spaces_container":
+        state["spaces"] = [spaces]
+    elif alias == "spaces_extra_key":
+        spaces["extra"] = {}
+    elif alias == "space_group_extra_name":
+        transition["extra"] = copy.deepcopy(obs)
+    elif alias == "space_record_container":
+        transition["obs"] = cast(Any, [copy.deepcopy(obs)])
+    else:
+        obs["extra"] = None
+
+    with pytest.raises((TypeError, ValueError)):
+        _restore_with_spaces(replay, state, transition_spaces, latent_spaces)
+
+    _tree_equal(replay.state_dict(), before)
+
+
+@pytest.mark.parametrize(
+    "identity", ["zero_chunk", "negative_item", "bool_item", "upper_item"]
+)
+def test_restore_rejects_out_of_domain_identities_atomically(identity: str) -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0))
+    replay.add(_row(0, first=True))
+    state = replay.state_dict()
+    before = replay.state_dict()
+
+    if identity == "zero_chunk":
+        chunks = cast(list[dict[str, object]], state["chunks"])
+        old = cast(bytes, chunks[0]["chunk_id"])
+        state = cast(dict[str, object], _replace_chunk_id(state, old, bytes(16)))
+    elif identity == "negative_item":
+        _replace_item_id(state, -1)
+    elif identity == "bool_item":
+        _replace_item_id(state, True)
+        state["next_item_id"] = 2
+    else:
+        _replace_item_id(state, 2**63)
+        state["next_item_id"] = 2**63
+
+    with pytest.raises((TypeError, ValueError)):
+        _restore(replay, state)
+    _tree_equal(replay.state_dict(), before)
+
+
+@pytest.mark.parametrize("corruption", ["capacity", "owner"])
+def test_restore_binds_chunk_geometry_to_trusted_replay(
+    corruption: str,
+) -> None:
+    replay = _replay(chunk_size=3, sequence=_sequence(length=1, context=0))
+    replay.add(_row(0, first=True))
+    state = replay.state_dict()
+    before = replay.state_dict()
+    chunk = cast(list[dict[str, object]], state["chunks"])[0]
+    if corruption == "capacity":
+        chunk["capacity"] = 4
+    else:
+        chunk["owner_id"] = 99
+
+    with pytest.raises(ValueError):
+        _restore(replay, state)
+    _tree_equal(replay.state_dict(), before)
+
+
+@pytest.mark.parametrize(
+    "corruption", ["sealed_current", "suffix_not_tail", "cross_owner_successor"]
+)
+def test_restore_rejects_impossible_writer_chunk_relationships(
+    corruption: str,
+) -> None:
+    replay = _replay(chunk_size=2, sequence=_sequence(length=2, context=0))
+    _add(replay, 3)
+    state = replay.state_dict()
+    before = replay.state_dict()
+    chunks = cast(list[dict[str, object]], state["chunks"])
+    writer = cast(dict[object, dict[str, object]], state["writers"])[0]
+    first_id = cast(bytes, chunks[0]["chunk_id"])
+    if corruption == "sealed_current":
+        writer["current_chunk_id"] = first_id
+    elif corruption == "suffix_not_tail":
+        writer["suffix"] = [{"chunk_id": first_id, "offset": 0}]
+    else:
+        chunks[0]["owner_id"] = 1
+    _recompute_serialized_refs(state)
+
+    with pytest.raises(ValueError):
+        _restore(replay, state)
+    _tree_equal(replay.state_dict(), before)
+
+
+def test_restore_rejects_impossible_consecutive_stream_cursor() -> None:
+    sequence = _sequence(length=1, context=0, consecutive=2)
+    replay = _replay(sequence=sequence)
+    _add(replay, 2)
+    replay.sample("train")
+    state = replay.state_dict()
+    before = replay.state_dict()
+    streams = cast(dict[str, dict[str, object]], state["streams"])
+    assert streams["train"]["current"] is not None
+    streams["train"]["index"] = 0
+
+    with pytest.raises(ValueError):
+        _restore(replay, state)
+    _tree_equal(replay.state_dict(), before)
+
+
+@pytest.mark.parametrize(
+    "corruption", ["last_flag", "has_rows", "forged_terminal_tail", "false_last"]
+)
+def test_restore_reconciles_writer_flags_with_retained_tail(corruption: str) -> None:
+    replay = _replay(chunk_size=3, sequence=_sequence(length=2, context=0))
+    replay.add(_row(0, first=True))
+    if corruption == "false_last":
+        replay.add(_row(1))
+    else:
+        replay.add(_row(1, last=True, terminal=True))
+    state = replay.state_dict()
+    before = replay.state_dict()
+    writer = cast(dict[object, dict[str, object]], state["writers"])[0]
+    chunk = cast(list[dict[str, object]], state["chunks"])[0]
+    transition = cast(dict[str, Array], chunk["transition"])
+    if corruption == "last_flag":
+        writer["last_is_last"] = False
+    elif corruption == "has_rows":
+        writer["has_rows"] = False
+    elif corruption == "forged_terminal_tail":
+        transition["is_last"][-1] = False
+        writer["last_is_last"] = False
+    else:
+        writer["last_is_last"] = True
+
+    with pytest.raises(ValueError):
+        _restore(replay, state)
+    _tree_equal(replay.state_dict(), before)
+
+
+def test_restore_rejects_cross_chunk_row_after_last_without_first() -> None:
+    replay = _replay(chunk_size=2, sequence=_sequence(length=2, context=0))
+    replay.add(_row(0, first=True))
+    replay.add(_row(1, last=True, terminal=True))
+    replay.add(_row(2, first=True))
+    state = replay.state_dict()
+    before = replay.state_dict()
+    chunks = cast(list[dict[str, object]], state["chunks"])
+    transition = cast(dict[str, Array], chunks[1]["transition"])
+    transition["is_first"][0] = False
+
+    with pytest.raises(ValueError):
+        _restore(replay, state)
+    _tree_equal(replay.state_dict(), before)
+
+
+def test_identity_final_allocations_and_exhausted_sentinels_round_trip() -> None:
+    sequence = _sequence(length=1, context=0)
+    replay = _replay(sequence=sequence, chunk_size=2, capacity=2)
+    replay.next_chunk_id = 2**128 - 1
+    key = replay.add(_row(0, first=True))
+    assert int.from_bytes(key.chunk_id, "big") == 2**128 - 1
+    assert replay.next_chunk_id == 2**128
+    before = replay.state_dict()
+    with pytest.raises(OverflowError):
+        replay.add(_row(1))
+    _tree_equal(replay.state_dict(), before)
+    assert replay.next_chunk_id == 2**128
+
+    item_replay = _replay(sequence=sequence, capacity=2)
+    item_replay.next_item_id = 2**63 - 1
+    item_replay.add(_row(0, first=True))
+    assert item_replay.next_item_id == 2**63
+    item_before = item_replay.state_dict()
+    with pytest.raises(OverflowError):
+        item_replay.add(_row(1))
+    _tree_equal(item_replay.state_dict(), item_before)
+    restored_item = _restore(item_replay, item_before)
+    assert restored_item.next_item_id == 2**63
+    _tree_equal(restored_item.state_dict(), item_before)
+    restored = DreamerReplay.from_state_dict(
+        before,
+        replay.config,
+        sequence,
+        _transition_spaces(),
+        _latent_spaces(),
+    )
+    assert restored.next_chunk_id == 2**128
+
+
+def test_chunk_collision_preflight_rejects_at_rollover_without_mutation() -> None:
+    replay = _replay(sequence=_sequence(length=1, context=0), chunk_size=2, capacity=2)
+    replay.add(_row(0, first=True))
+    replay.next_chunk_id = 1
+    before = replay.state_dict()
+    with pytest.raises(RuntimeError, match="collision"):
+        replay.add(_row(1))
+    _tree_equal(replay.state_dict(), before)
+
+    item_replay = _replay(sequence=_sequence(length=1, context=0), capacity=2)
+    item_replay.add(_row(0, first=True))
+    item_replay.next_item_id = 0
+    item_before = item_replay.state_dict()
+    with pytest.raises(RuntimeError, match="item id collision"):
+        item_replay.add(_row(1))
+    _tree_equal(item_replay.state_dict(), item_before)
+
+
+def test_checkpoint_immediately_before_rollover_and_item_allocation_is_exact() -> None:
+    sequence = _sequence(
+        batch=2,
+        length=2,
+        context=0,
+        consecutive=1,
+        report_length=2,
+        report_consecutive=1,
+    )
+    replay = _replay(sequence=sequence, chunk_size=2, capacity=8)
+    replay.add(_row(0, first=True))
+    restored = DreamerReplay.from_state_dict(
+        replay.state_dict(),
+        replay.config,
+        sequence,
+        _transition_spaces(),
+        _latent_spaces(),
+    )
+    for index in range(1, 8):
+        assert replay.add(_row(index)) == restored.add(_row(index))
+    _tree_equal(replay.state_dict(), restored.state_dict())
+    for mode in ("train", "report"):
+        original_batch = replay.sample(mode)
+        restored_batch = restored.sample(mode)
+        _tree_equal(original_batch.state_dict(), restored_batch.state_dict())
+        values = {
+            "dyn/deter": np.full(
+                original_batch.step_ids.shape[:2] + (2,), 9, np.float32
+            ),
+            "dyn/stoch": np.full(
+                original_batch.step_ids.shape[:2] + (1, 2), 8, np.float32
+            ),
+        }
+        assert replay.update_context(
+            original_batch.step_ids, values
+        ) == restored.update_context(restored_batch.step_ids, values)
+    _tree_equal(replay.state_dict(), restored.state_dict())
+
+
+def test_replay_batch_and_component_state_records_copy_and_validate() -> None:
+    ids = np.stack(
+        [[ReplayKey((1).to_bytes(16, "big"), index).to_step_id() for index in range(2)]]
+    )
+    data = {
+        **{
+            name: np.zeros((1, 2, *space.shape), np.dtype(space.dtype))
+            for name, space in _transition_spaces().items()
+        },
+        **{
+            name: np.zeros((1, 2, *space.shape), np.dtype(space.dtype))
+            for name, space in _latent_spaces().items()
+        },
+        "consec": np.zeros((1, 2), np.int32),
+    }
+    batch = ReplayBatch(data, ids)
+    state = batch.state_dict()
+    restored = ReplayBatch.from_state(
+        state, _transition_spaces(), _latent_spaces(), 1, 2
+    )
+    _tree_equal(restored.state_dict(), state)
+    state_data = cast(dict[str, Array], state["data"])
+    state_data["obs"][0, 0, 0] = 7
+    assert restored.data["obs"][0, 0, 0] == 0
+
+    queue = OnlineQueue(2)
+    queue.push(ReplayKey((1).to_bytes(16, "big"), 0))
+    assert (
+        OnlineQueue.from_state_dict(queue.state_dict()).state_dict()
+        == queue.state_dict()
+    )
+    assert ConsecutiveStream.from_state_dict
+    assert ReplayChunk.from_state_dict
+    assert ReplayWriter.from_state_dict
+
+
+def test_fixture_generator_replay_parser() -> None:
+    args = _parse_args(
+        [
+            "replay",
+            "--profile",
+            "paper",
+            "--observation-mode",
+            "proprio",
+            "--reference-checkout",
+            str(OFFICIAL_CHECKOUT),
+            "--source-revision",
+            REVISIONS[DreamerProfile.PAPER],
+            "--output-dir",
+            str(FIXTURE_DIR),
+        ]
+    )
+    assert args.profile == "paper"
+    assert args.observation_mode == "proprio"
+    assert args.handler.__name__ == "generate_replay"
+
+
+@pytest.mark.parametrize("profile", tuple(DreamerProfile))
+def test_replay_fixture_exact_official_arrays_and_deterministic_generation(
+    profile: DreamerProfile, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from world_marl.dreamer_v3_baseline.fixture_generator import generate_replay
+
+    monkeypatch.setenv(
+        "GIT_DIR",
+        "/Users/bkaplowitz/Developer/work/wm-marl/.git/worktrees/"
+        "wm-marl-dreamer-v3-parity-port",
+    )
+    monkeypatch.setenv(
+        "GIT_OBJECT_DIRECTORY",
+        "/private/tmp/danijar-dreamerv3-20260713/.git/objects",
+    )
+    monkeypatch.setenv(
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "/Users/bkaplowitz/Developer/work/wm-marl/.git/objects",
+    )
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    common = {
+        "profile": profile.value,
+        "observation_mode": ObservationMode.PROPRIO.value,
+        "reference_checkout": OFFICIAL_CHECKOUT,
+        "source_revision": REVISIONS[profile],
+    }
+    generate_replay(Namespace(**common, output_dir=first))
+    generate_replay(Namespace(**common, output_dir=second))
+    stem = f"{profile.value}-proprio-replay"
+    for suffix in ("npz", "manifest.json"):
+        assert (first / f"{stem}.{suffix}").read_bytes() == (
+            second / f"{stem}.{suffix}"
+        ).read_bytes()
+        assert (first / f"{stem}.{suffix}").read_bytes() == (
+            FIXTURE_DIR / f"{stem}.{suffix}"
+        ).read_bytes()
+    manifest = OracleManifest.load(
+        first / f"{stem}.manifest.json", fixture_path=first / f"{stem}.npz"
+    )
+    assert manifest.official_commit == REVISIONS[profile]
+    assert manifest.source_spec == "replay"
+    with np.load(first / f"{stem}.npz", allow_pickle=False) as arrays:
+        assert sorted(arrays.files) == list(arrays.files)
+        remaining = set(arrays.files)
+
+        def expected(name: str) -> Array:
+            remaining.remove(name)
+            return arrays[name]
+
+        item_replay = _replay(
+            chunk_size=3,
+            sequence=_sequence(length=2, context=1),
+        )
+        _add(item_replay, 10)
+        starts = list(item_replay.items.values())
+        np.testing.assert_array_equal(
+            np.asarray(
+                [int.from_bytes(key.chunk_id, "big") for key in starts],
+                np.int64,
+            ),
+            expected("items.start_chunks"),
+        )
+        np.testing.assert_array_equal(
+            np.asarray([key.offset for key in starts], np.int32),
+            expected("items.start_offsets"),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(
+                [_value_at(item_replay, key) for key in item_replay.online_queue.keys],
+                np.int64,
+            ),
+            expected("online.starts"),
+        )
+
+        selector = UniformSelector(seed=7)
+        for item_id in (0, 1, 2):
+            selector.insert(item_id)
+        draws = np.asarray([selector.sample() for _ in range(6)], np.int64)
+        selector_state = selector.state_dict()
+        restored_selector = UniformSelector.from_state_dict(selector_state)
+        continuation = np.asarray([selector.sample() for _ in range(6)], np.int64)
+        resumed = np.asarray([restored_selector.sample() for _ in range(6)], np.int64)
+        np.testing.assert_array_equal(draws, expected("selector.draws"))
+        np.testing.assert_array_equal(continuation, expected("selector.continuation"))
+        np.testing.assert_array_equal(resumed, expected("selector.resumed"))
+
+        stream_replay = _replay(sequence=_sequence(length=2, context=1, consecutive=2))
+        _add(stream_replay, 5)
+        slice0 = stream_replay.commit_sample(stream_replay.prepare_sample("train"))
+        raw = stream_replay.streams["train"].current
+        assert raw is not None
+        slice1 = stream_replay.commit_sample(stream_replay.prepare_sample("train"))
+        np.testing.assert_array_equal(
+            np.asarray(raw.data["obs"].reshape(-1), np.int32),
+            expected("stream.raw"),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(slice0.data["obs"].reshape(-1), np.int32),
+            expected("stream.slice0"),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(slice1.data["obs"].reshape(-1), np.int32),
+            expected("stream.slice1"),
+        )
+        np.testing.assert_array_equal(
+            slice0.data["consec"].reshape(-1), expected("stream.consec0")
+        )
+        np.testing.assert_array_equal(
+            slice1.data["consec"].reshape(-1), expected("stream.consec1")
+        )
+        assert not remaining

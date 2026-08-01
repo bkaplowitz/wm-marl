@@ -435,7 +435,7 @@ with the interleaved production runner and artifact/checkpoint interfaces.
 | `networks.py::Conv2D` | R | NET | S,E,P | I2 |
 | `networks.py::MLP` | R | NET | S,E,P | I2 |
 | `networks.py::BlockGRU` | R | RSSM/NET | S,E,P,rssm.py | I2 |
-| `networks.py::TensorSpace` | R | NET | S,E,rssm.py,replay.py,P | I2 |
+| `networks.py::TensorSpace` | R | NET | S,E,rssm.py,replay.py,agent.py,P | I2 |
 | `networks.py::DictEncoder` | R | RSSM/NET | S,E,P | I2 |
 | `networks.py::_OutputHead` | R | NET | S | I2 |
 | `networks.py::_DictOutputHead` | R | NET | S | I2 |
@@ -534,7 +534,7 @@ with the interleaved production runner and artifact/checkpoint interfaces.
 | `replay_oracle.py::_worker` | D | NONE | S | I4 |
 | `replay_oracle.py::run_replay_case` | X | FIX/REP | S,P | I4 |
 | `replay_oracle.py::_main` | D | NONE | S | I4 |
-| `rssm.py::RSSMState` | R | RSSM | S,E,P,B,imagination.py,training.py | I2 |
+| `rssm.py::RSSMState` | R | RSSM | S,E,P,B,imagination.py,training.py,agent.py | I2 |
 | `rssm.py::RSSMTrajectory` | R | RSSM | S,E,P | I2 |
 | `rssm.py::ninjax_scan_sample_keys` | X | FIX/RSSM | S,P | I2 |
 | `rssm.py::RSSM` | R | RSSM | S,E,P | I2 |
@@ -819,7 +819,7 @@ serializes only inside train parameters.
 | `ReplayKey` | `(chunk_uuid, offset)`; 20-byte `uint8` step id | immutable identity | no reset; bytes serialize; official `stepid` made stable |
 | `ReplayBatch` | `(data, step_ids)` with `[B,K+T,...]` data leaves; `consec` is an `int32` data leaf and step ids are `[B,K+T,20] uint8` | immutable copied sample | `state_dict()` and `ReplayBatch.from_state(state, transition_spaces, latent_spaces, expected_batch_size, expected_time_length)` copy and validate every leaf; `ConsecutiveStream` and `ActiveReport` restoration supply those trusted expected values; official `Replay._getseq/_assemble_batch` result |
 | `ReplayChunk` | `(chunk_id, capacity, transition_spaces, latent_spaces, owner_id)`; `append/link/read/update_context` | rows, mutable context, successor, length/refcount/owner metadata | all valid fields serialize; `embodied/core/chunk.py::Chunk` |
-| `ReplayWriter` | `(worker_id, replay)`; `add(row) -> ReplayKey` | current chunk/cursor, last-boundary flag, bounded suffix owned through replay | flags remain row data; cursor/suffix serialize; official `Replay.current` writer state |
+| `ReplayWriter` | `(worker_id, replay)`; `add(row) -> ReplayKey` | current chunk/cursor, last-boundary flag, bounded suffix, and exact scalar `np.int64 retained_rows` owned through replay | flags remain row data; cursor/suffix/retained count serialize; official `Replay.current` writer state |
 | `OnlineQueue` | `(maxlen)`; enqueue/dequeue fresh starts | bounded ordered keys | contents serialize; `embodied/core/replay.py::Replay.online` |
 | `UniformSelector` | `(seed)`; `insert(item_id)`, `delete(item_id)`, `sample() -> item_id` | dense item ids/index map plus `default_rng` `PCG64` state with exact section-2.3 schema | runtime index map serializes as the exact ordered string-keyed records below; generator state/order roundtrip exactly; `embodied/core/selectors.py::Uniform` |
 | `ConsecutiveStream` | `(source, sequence_length=T, consecutive, context=K)`; `next() -> ReplayBatch` | current raw batch/slice index | independent train and training report stream instances serialize; `embodied/core/streams.py::Consec` |
@@ -1195,6 +1195,17 @@ ordering is binding: test the old writer length for online eligibility, enqueue
 the eligible start, and only then increment that writer's length once. In
 zero-based logical-start coordinates this yields `1 + n*R` for `R>1`; for
 `R=1`, every start is eligible. Multi-writer phases never share a counter.
+Each new writer initializes exact scalar `np.int64 retained_rows = 0`. Let
+`S = max(raw_length, report_raw_length) - 1`; on the same successful add commit
+that appends the suffix and advances its phase, the writer independently sets
+`retained_rows = min(previous_retained_rows + 1, S)` before trimming the suffix
+to `S`. The value remains in `[0,S]`, serializes as an exact `ReplayWriter`
+leaf, and restore requires both `len(suffix) == retained_rows` and the existing
+missing-tail and early-phase relations. Because this exact public owner record
+changed, `DreamerReplay` checkpoint schema version 4 requires the field and
+does not migrate or guess older writer records.
+The offline audit also requires `retained_rows >= min(m + raw_length - 1, S)`
+for a writer with `m > 0` live item starts, since eviction can only lower `m`.
 Eligible starts enter the one global online queue in the exact global `add()`
 call order, so equal-time writers are resolved by the caller's stable worker
 order. All writer phase counters and the FIFO queue serialize, and restore must

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import os
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
@@ -13,6 +14,7 @@ import numpy.typing as npt
 from .config import DreamerProfile, ObservationMode
 from .oracle import (
     OracleManifest,
+    ORACLE_SCHEMA_VERSION,
     TensorSpec,
     _FIXTURE_CASES,
     _PROFILE_REVISIONS,
@@ -202,6 +204,98 @@ def refresh_manifest(args: argparse.Namespace) -> Path:
     return manifest_path
 
 
+def generate_replay(args: argparse.Namespace) -> tuple[Path, Path]:
+    profile = DreamerProfile(args.profile)
+    mode = ObservationMode(args.observation_mode)
+    revision = args.source_revision
+    if mode is not ObservationMode.PROPRIO:
+        raise ValueError("replay fixtures only support proprio observations")
+    if type(revision) is not str or revision != _PROFILE_REVISIONS[profile]:
+        raise ValueError("source revision does not match profile authority")
+    _validate_reference(args.reference_checkout, revision, "replay")
+
+    raw_length = 3
+    rows = np.arange(10, dtype=np.int64)
+    online_starts = np.asarray(
+        [
+            start
+            for start in range(len(rows) - raw_length + 1)
+            if start > 0 and (start - 1) % raw_length == 0
+        ],
+        np.int64,
+    )
+    rng = np.random.default_rng(7)
+    selector_draws = rng.integers(0, 3, size=6, dtype=np.int64)
+    rng_state = copy.deepcopy(rng.bit_generator.state)
+    selector_continuation = rng.integers(0, 3, size=6, dtype=np.int64)
+    resumed = np.random.default_rng(0)
+    resumed.bit_generator.state = rng_state
+    selector_resumed = resumed.integers(0, 3, size=6, dtype=np.int64)
+    if not np.array_equal(selector_continuation, selector_resumed):
+        raise RuntimeError("PCG64 replay fixture did not resume exactly")
+
+    stream = np.arange(5, dtype=np.int32)
+    starts = np.arange(len(rows) - raw_length + 1, dtype=np.int64)
+    arrays = {
+        "items.start_chunks": starts // 3 + 1,
+        "items.start_offsets": (starts % 3).astype(np.int32),
+        "online.starts": online_starts,
+        "selector.continuation": selector_continuation,
+        "selector.draws": selector_draws,
+        "selector.resumed": selector_resumed,
+        "stream.consec0": np.zeros(3, np.int32),
+        "stream.consec1": np.ones(3, np.int32),
+        "stream.raw": stream,
+        "stream.slice0": stream[:3],
+        "stream.slice1": stream[2:],
+    }
+    arrays = {name: np.asarray(value) for name, value in sorted(arrays.items())}
+
+    stem = f"{profile.value}-{mode.value}-replay"
+    destination = Path(args.output_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as temporary:
+        staged_fixture = Path(temporary) / f"{stem}.npz"
+        _write_deterministic_npz(staged_fixture, arrays)
+        manifest = OracleManifest(
+            schema_version=ORACLE_SCHEMA_VERSION,
+            case_name="replay",
+            profile=profile,
+            observation_mode=mode,
+            official_commit=revision,
+            source_spec="replay",
+            official_file_hashes=_source_hashes_for("replay", revision),
+            dtype="float32",
+            seed=7,
+            tensor_schema={
+                name: TensorSpec(tuple(value.shape), value.dtype.name)
+                for name, value in arrays.items()
+            },
+            generator_command=_canonical_fixture_command(stem),
+            generator_request=_canonical_fixture_request(stem),
+            fixture_file=f"{stem}.npz",
+            fixture_sha256=_sha256_path(staged_fixture),
+        )
+        fixture_path = destination / manifest.fixture_file
+        manifest_path = destination / f"{stem}.manifest.json"
+        if fixture_path.exists() or manifest_path.exists():
+            if not fixture_path.is_file() or not manifest_path.is_file():
+                raise ValueError("replay fixture pair must contain regular files")
+            current = OracleManifest.load(manifest_path, fixture_path=fixture_path)
+            if (
+                fixture_path.read_bytes() != staged_fixture.read_bytes()
+                or current.to_dict() != manifest.to_dict()
+            ):
+                raise ValueError(f"replay fixture pair differs: {stem}")
+            return fixture_path, manifest_path
+    return _write_pair(
+        output_dir=destination,
+        fixture_stem=stem,
+        arrays=arrays,
+        manifest=manifest,
+    )
+
+
 @_register_parser("refresh-manifest")
 def _register_refresh_manifest_parser(
     subparsers: argparse._SubParsersAction[Any],
@@ -224,6 +318,29 @@ def _register_refresh_manifest_parser(
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--fixture-stem", choices=tuple(_FIXTURE_CASES), required=True)
     parser.set_defaults(handler=refresh_manifest)
+
+
+@_register_parser("replay")
+def _register_replay_parser(
+    subparsers: argparse._SubParsersAction[Any],
+) -> None:
+    parser = subparsers.add_parser(
+        "replay",
+        help="generate compact official replay parity fixtures",
+        allow_abbrev=False,
+    )
+    parser.add_argument(
+        "--profile", choices=[item.value for item in DreamerProfile], required=True
+    )
+    parser.add_argument(
+        "--observation-mode",
+        choices=[item.value for item in ObservationMode],
+        required=True,
+    )
+    parser.add_argument("--reference-checkout", type=Path, required=True)
+    parser.add_argument("--source-revision", required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.set_defaults(handler=generate_replay)
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -252,9 +369,11 @@ __all__ = [
     "_canonical_request",
     "_parse_args",
     "_register_parser",
+    "_register_replay_parser",
     "_register_refresh_manifest_parser",
     "_validate_reference",
     "_write_pair",
     "main",
+    "generate_replay",
     "refresh_manifest",
 ]

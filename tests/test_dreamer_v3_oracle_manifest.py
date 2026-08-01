@@ -92,10 +92,10 @@ EXPECTED_NPZ_DIGESTS = {
         "04b28028fd05df124af6e51204827475c67b5bf87e139299c07d7576135fad3a"
     ),
     "paper-proprio-replay": (
-        "c65d650b6359b335470d43abd3d4f2bd4352f1599510835fada493194910f08e"
+        "8f9d5843621d6fd33cbe5e7a5a69ae32457d0686b997193468f130d4a155459a"
     ),
     "upstream-current-proprio-replay": (
-        "c65d650b6359b335470d43abd3d4f2bd4352f1599510835fada493194910f08e"
+        "8f9d5843621d6fd33cbe5e7a5a69ae32457d0686b997193468f130d4a155459a"
     ),
     "paper-proprio-rssm": (
         "6990bae306c641a059d33177cee2df6f62e9ad8f9c425133f4e5b9f4a362d72e"
@@ -818,7 +818,7 @@ def test_fixture_generator_refresh_manifest_parser() -> None:
         _parse_args,
     )
 
-    assert tuple(_PARSER_REGISTRY) == ("refresh-manifest",)
+    assert tuple(_PARSER_REGISTRY) == ("refresh-manifest", "replay")
     args = _parse_args(
         [
             "refresh-manifest",

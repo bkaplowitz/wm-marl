@@ -1,3 +1,9 @@
+from world_marl.dreamer_v3_baseline.agent import (
+    AgentCarry,
+    DreamerAgent,
+    validate_action_tree,
+    validate_replay_row,
+)
 from world_marl.dreamer_v3_baseline.config import (
     ContinueHeadConfig,
     DebugSnapshot,
@@ -80,6 +86,7 @@ from world_marl.dreamer_v3_baseline.replay import (
 )
 
 __all__ = [
+    "AgentCarry",
     "AggregateOutput",
     "BlockGRU",
     "BlockLinear",
@@ -95,6 +102,7 @@ __all__ = [
     "DictEncoder",
     "DreamerDecoder",
     "DreamerEncoder",
+    "DreamerAgent",
     "DreamerActor",
     "DreamerCritic",
     "DreamerRSSM",
@@ -146,4 +154,6 @@ __all__ = [
     "symexp",
     "symlog",
     "two_hot",
+    "validate_action_tree",
+    "validate_replay_row",
 ]
