@@ -582,8 +582,8 @@
         },
         {
           "cosine": 0.06847184896469116,
-          "loss": 4.239919185638428,
-          "raw_kl": 4.239919185638428,
+          "loss": 4.2476019859313965,
+          "raw_kl": 4.2476019859313965,
           "step": 100,
           "valid_transitions": 1280.0
         }
@@ -592,25 +592,25 @@
         "correct": {
           "cosine": 0.06325981765985489,
           "horizons": {},
-          "raw_kl": 2.8907270431518555,
+          "raw_kl": 2.8912644386291504,
           "valid_transitions": 1280.0
         },
         "null": {
           "cosine": 0.06325981765985489,
           "horizons": {},
-          "raw_kl": 2.9745826721191406,
+          "raw_kl": 2.9746346473693848,
           "valid_transitions": 1280.0
         },
         "shuffle_agents": {
           "cosine": 0.06325981765985489,
           "horizons": {},
-          "raw_kl": 2.889338731765747,
+          "raw_kl": 2.8917882442474365,
           "valid_transitions": 1280.0
         },
         "shuffle_environments": {
           "cosine": 0.06325981765985489,
           "horizons": {},
-          "raw_kl": 2.8933675289154053,
+          "raw_kl": 2.892908811569214,
           "valid_transitions": 1280.0
         }
       }

@@ -15,6 +15,8 @@ DreaMARL world model, and at which representation interface?
 - Training and validation are split by replay window.
 - Only a zero-initialized, permutation-equivariant residual adapter is trained.
 - Predictor probes are parameter matched at 397,888 parameters.
+- Latent/action pairs are transition aligned: both source variables come from
+  the same previous transition when predicting the next latent.
 - Correct, agent-shuffled, environment-shuffled, and null controls are reported.
 - Raw categorical KL includes the model's 1% uniform mixture and is measured
   before free-nats clipping.
@@ -43,12 +45,12 @@ Externality validation after 100 adapter updates:
 | Other actions -> predictor | cosine | 0.12728 | 0.12636 | 0.12636 | Small capacity gain; no alignment use |
 | Other latents -> predictor | cosine | 0.12728 | 0.12631 | 0.12630 | Small capacity gain; no alignment use |
 | Paired latent/action -> predictor | cosine | 0.12728 | 0.12632 | 0.12632 | Pairing gives no held-out benefit |
-| Paired latent/action -> prior | raw KL | 2.99217 | 2.89073 | 2.88934 | Lower KL, but shuffled is equally good |
+| Paired latent/action -> prior | raw KL | 2.99217 | 2.89126 | 2.89179 | Lower KL, but shuffled is equally good |
 | Recurrent paired context -> predictor | cosine | 0.12728 | 0.12631 | 0.12631 | Persistence does not reveal aligned signal |
 
 At 1,000 updates, aligned latent and paired predictor probes overfit and become
 worse than baseline: 0.12950 and 0.12974 respectively. The prior also worsens
-to 3.11093. Null and shuffled controls remain as good as or better than correct
+to 3.13569. Null and shuffled controls remain as good as or better than correct
 context. Pure Coordination shows the same absence of a correct-context gap.
 
 ## Decision
