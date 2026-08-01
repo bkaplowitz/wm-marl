@@ -224,10 +224,12 @@ def _extract_function(
             -1,
         )
         openloop = {
-            "openloop_pair": openloop_pair,
-            "openloop_stoch": previous_stoch,
-            "openloop_prior_logit": imagined["logit"],
-            "openloop_pred_token": dynamics.predictor(imagined["deter"]),
+            "openloop_pair": jnp.float32(openloop_pair),
+            "openloop_stoch": jnp.float32(previous_stoch),
+            "openloop_prior_logit": jnp.float32(imagined["logit"]),
+            "openloop_pred_token": jnp.float32(
+                dynamics.predictor(imagined["deter"])
+            ),
         }
         grouped.update(
             {
