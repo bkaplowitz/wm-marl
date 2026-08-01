@@ -9,6 +9,7 @@ from world_marl.dreamarl.meltingpot import (
     BENCHMARK_SUBSTRATES,
     MeltingPotEnv,
 )
+from world_marl.dreamarl.transformer_rssm import _encoded_action_dim
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,17 @@ def test_meltingpot_adapter_preserves_agent_geometry_and_benchmark_score() -> No
     assert step["log/reward_max"] == 3.0
     assert step["log/reward_std"] == 1.0
     assert not step["is_last"]
+
+
+def test_transformer_action_width_matches_dict_concat_encoding() -> None:
+    import elements
+
+    assert _encoded_action_dim(
+        {"action": elements.Space(np.int32, (), 0, 8)}
+    ) == 8
+    assert _encoded_action_dim(
+        {"action": elements.Space(np.float32, (2,), -1.0, 1.0)}
+    ) == 2
 
 
 def test_all_registered_meltingpot_benchmarks_reset_and_step() -> None:

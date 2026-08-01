@@ -23,6 +23,21 @@ f32 = jnp.float32
 sg = jax.lax.stop_gradient
 
 
+def _encoded_action_dim(act_space):
+    """Return the width produced by ``nn.DictConcat`` for an action tree."""
+
+    total = 0
+    for space in act_space.values():
+        elements_count = math.prod(space.shape) if space.shape else 1
+        if space.discrete:
+            classes = np.asarray(space.classes).reshape(-1)
+            if not (classes == classes[0]).all():
+                raise ValueError("each discrete action tensor must share one cardinality")
+            elements_count *= int(classes[0])
+        total += elements_count
+    return total
+
+
 class CausalKVTransformer(nj.Module):
     units: int = 512
     output: int = 8192
@@ -153,7 +168,7 @@ class TransformerRSSM(rssm.RSSM):
 
     def __init__(self, act_space, enc_output, **kw):
         super().__init__(act_space, enc_output, **kw)
-        self.action_dim = sum(math.prod(space.shape) for space in act_space.values())
+        self.action_dim = _encoded_action_dim(act_space)
         self.pair_dim = self.stoch * self.classes + self.action_dim
 
     @property
