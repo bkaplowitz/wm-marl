@@ -8,6 +8,7 @@ import pickle
 from pathlib import Path
 
 import elements
+import embodied.jax.nets as nn
 import jax
 import jax.numpy as jnp
 import ninjax as nj
@@ -200,10 +201,42 @@ def _extract_function(
             reset,
             training=False,
         )
-        return {
+        grouped = {
             key: unfold_agent_sequence(value, num_agents)
             for key, value in tensors.items()
         }
+        length = reset.shape[1]
+        _, imagined, _ = dynamics.imagine(
+            dyn_carry,
+            previous_actions,
+            length=length,
+            training=False,
+        )
+        previous_stoch = jnp.concatenate(
+            [dyn_carry["stoch"][:, None], imagined["stoch"][:, :-1]], 1
+        )
+        action_embedding = nn.DictConcat(dynamics.act_space, 1)(previous_actions)
+        action_embedding /= jax.lax.stop_gradient(
+            jnp.maximum(1, jnp.abs(action_embedding))
+        )
+        openloop_pair = jnp.concatenate(
+            [previous_stoch.reshape((*previous_stoch.shape[:2], -1)), action_embedding],
+            -1,
+        )
+        openloop = {
+            "openloop_pair": openloop_pair,
+            "openloop_stoch": previous_stoch,
+            "openloop_prior_logit": imagined["logit"],
+            "openloop_pred_token": dynamics.predictor(imagined["deter"]),
+        }
+        grouped.update(
+            {
+                key: unfold_agent_sequence(value, num_agents)
+                for key, value in openloop.items()
+            }
+        )
+        grouped["valid"] = jnp.cumprod(~grouped["reset"], axis=1).astype(bool)
+        return grouped
 
     return extract
 

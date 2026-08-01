@@ -31,6 +31,15 @@ REQUIRED_KEYS = frozenset(
         "reset",
     }
 )
+OPENLOOP_KEYS = frozenset(
+    {
+        "openloop_pair",
+        "openloop_stoch",
+        "openloop_prior_logit",
+        "openloop_pred_token",
+        "valid",
+    }
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -52,12 +61,62 @@ def _load(path: Path) -> dict[str, np.ndarray]:
         if missing:
             raise ValueError(f"dataset is missing keys: {sorted(missing)}")
         tensors = {key: archive[key] for key in REQUIRED_KEYS}
+        present_openloop = OPENLOOP_KEYS & set(archive.files)
+        if present_openloop and present_openloop != OPENLOOP_KEYS:
+            missing_openloop = OPENLOOP_KEYS - present_openloop
+            raise ValueError(
+                f"dataset has incomplete open-loop tensors: {sorted(missing_openloop)}"
+            )
+        tensors.update({key: archive[key] for key in present_openloop})
     leading = {key: value.shape[:3] for key, value in tensors.items()}
     if len(set(leading.values())) != 1:
         raise ValueError(f"unaligned [batch,time,agent] axes: {leading}")
     if tensors["pair"].shape[-1] <= np.prod(tensors["stoch"].shape[-2:]):
         raise ValueError("pair tensor does not contain an encoded action suffix")
     return tensors
+
+
+def _objective_tensors(
+    tensors: dict[str, jax.Array], intervention: Intervention
+) -> dict[str, jax.Array]:
+    if not OPENLOOP_KEYS <= tensors.keys() or intervention is Intervention.PAIRED_PRIOR:
+        return {key: tensors[key] for key in REQUIRED_KEYS if key in tensors}
+    result = {key: tensors[key] for key in REQUIRED_KEYS if key in tensors}
+    result.update(
+        pair=tensors["openloop_pair"],
+        stoch=tensors["openloop_stoch"],
+        prior_logit=tensors["openloop_prior_logit"],
+        pred_token=tensors["openloop_pred_token"],
+        valid=tensors["valid"],
+    )
+    return result
+
+
+def _horizon_metrics(
+    params,
+    tensors: dict[str, jax.Array],
+    intervention: Intervention,
+    control: Control,
+    seed: int,
+) -> dict[str, dict[str, float]]:
+    if intervention is Intervention.PAIRED_PRIOR or "valid" not in tensors:
+        return {}
+    length = tensors["reset"].shape[1]
+    horizons = [value for value in (1, 2, 4, 8, 16, 32) if value <= length]
+    result = {}
+    for index, horizon in enumerate(horizons):
+        step_tensors = jax.tree.map(
+            lambda value: value[:, horizon - 1 : horizon], tensors
+        )
+        _, metrics = loss_and_metrics(
+            params,
+            step_tensors,
+            intervention,
+            control=control,
+            key=jax.random.key(seed + index),
+        )
+        result[f"h{horizon}"] = _json_metrics(metrics)
+    return result
 
 
 def _split(
@@ -94,7 +153,9 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     )
     results = {}
     for intervention in INTERVENTIONS:
-        params, history = train_adapter(train, intervention, config)
+        train_objective = _objective_tensors(train, intervention)
+        validation_objective = _objective_tensors(validation, intervention)
+        params, history = train_adapter(train_objective, intervention, config)
         controls = [Control.CORRECT]
         if intervention not in {
             Intervention.BASELINE,
@@ -111,12 +172,21 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         for index, control in enumerate(controls):
             _, metrics = loss_and_metrics(
                 params,
-                validation,
+                validation_objective,
                 intervention,
                 control=control,
                 key=jax.random.key(args.seed + index + 1),
             )
-            evaluations[control.value] = _json_metrics(metrics)
+            evaluations[control.value] = {
+                **_json_metrics(metrics),
+                "horizons": _horizon_metrics(
+                    params,
+                    validation_objective,
+                    intervention,
+                    control,
+                    args.seed + 100 * (index + 1),
+                ),
+            }
         parameter_count = 0 if params is None else sum(
             int(value.size) for value in jax.tree.leaves(params)
         )

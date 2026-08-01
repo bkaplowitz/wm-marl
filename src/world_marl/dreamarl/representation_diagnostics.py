@@ -251,7 +251,7 @@ def loss_and_metrics(
     prediction, prior = intervention_prediction(
         tensors, intervention, params, control=control, key=key
     )
-    valid = ~tensors["reset"]
+    valid = tensors.get("valid", ~tensors["reset"])
     cosine = cosine_error(prediction, tensors["target_token"])
     kl = categorical_kl(tensors["post_logit"], prior)
     denominator = jnp.maximum(valid.sum(), 1)
