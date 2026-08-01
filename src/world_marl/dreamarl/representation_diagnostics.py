@@ -205,12 +205,18 @@ def cosine_error(prediction: Array, target: Array) -> Array:
     return 1.0 - (prediction * target).sum(-1)
 
 
-def categorical_kl(post_logit: Array, prior_logit: Array) -> Array:
-    """Raw unclipped KL summed over categorical stochastic variables."""
+def categorical_kl(
+    post_logit: Array, prior_logit: Array, unimix: float = 0.01
+) -> Array:
+    """Raw unclipped model KL summed over categorical stochastic variables."""
 
-    post_logprob = jax.nn.log_softmax(post_logit, -1)
-    prior_logprob = jax.nn.log_softmax(prior_logit, -1)
-    post_prob = jnp.exp(post_logprob)
+    classes = post_logit.shape[-1]
+    post_prob = jax.nn.softmax(post_logit, -1)
+    prior_prob = jax.nn.softmax(prior_logit, -1)
+    post_prob = (1 - unimix) * post_prob + unimix / classes
+    prior_prob = (1 - unimix) * prior_prob + unimix / classes
+    post_logprob = jnp.log(post_prob)
+    prior_logprob = jnp.log(prior_prob)
     return (post_prob * (post_logprob - prior_logprob)).sum((-1, -2))
 
 

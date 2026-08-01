@@ -10,6 +10,7 @@ from world_marl.dreamarl.representation_diagnostics import (
     adapter_residual,
     apply_control,
     build_source,
+    categorical_kl,
     init_adapter,
     intervention_prediction,
     leave_one_out_mean,
@@ -113,3 +114,8 @@ def test_controls_keep_shape_and_null_information():
     np.testing.assert_array_equal(
         apply_control(values, Control.NULL, key), jnp.zeros_like(values)
     )
+
+
+def test_raw_kl_is_zero_for_identical_logits():
+    logits = jax.random.normal(jax.random.key(9), (2, 3, 4, 5))
+    np.testing.assert_allclose(categorical_kl(logits, logits), 0, atol=1e-6)
