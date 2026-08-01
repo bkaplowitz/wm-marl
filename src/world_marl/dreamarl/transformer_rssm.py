@@ -411,6 +411,14 @@ class TransformerRSSM(rssm.RSSM):
         token = jnp.concatenate([belief, action], -1)
         grouped_belief = unfold_agent_sequence(belief, self.num_agents)
         grouped_token = unfold_agent_sequence(token, self.num_agents)
+        if self.interaction == "none":
+            shape = (*grouped_belief.shape[:-1], self.interaction_units)
+            message = jnp.zeros(shape, grouped_belief.dtype)
+            has_other = jnp.zeros((*shape[:-1], 1), bool)
+            return (
+                fold_agent_sequence(message, self.num_agents),
+                fold_agent_sequence(has_other, self.num_agents),
+            )
         valid = jnp.ones(grouped_belief.shape[:-1], bool)
         message, has_other = self._interaction()(
             grouped_belief,
@@ -418,8 +426,6 @@ class TransformerRSSM(rssm.RSSM):
             valid,
             shuffled=self.interaction == "shuffled",
         )
-        if self.interaction == "none":
-            has_other = jnp.zeros_like(has_other)
         message = fold_agent_sequence(message, self.num_agents)
         has_other = fold_agent_sequence(has_other, self.num_agents)
         message = nn.mask(message, ~reset)
@@ -432,6 +438,14 @@ class TransformerRSSM(rssm.RSSM):
         token = jnp.concatenate([belief, action], -1)
         grouped_belief = unfold_agent_batch(belief, self.num_agents)
         grouped_token = unfold_agent_batch(token, self.num_agents)
+        if self.interaction == "none":
+            shape = (*grouped_belief.shape[:-1], self.interaction_units)
+            message = jnp.zeros(shape, grouped_belief.dtype)
+            has_other = jnp.zeros((*shape[:-1], 1), bool)
+            return (
+                fold_agent_batch(message, self.num_agents),
+                fold_agent_batch(has_other, self.num_agents),
+            )
         valid = jnp.ones(grouped_belief.shape[:-1], bool)
         message, has_other = self._interaction()(
             grouped_belief,
@@ -439,14 +453,20 @@ class TransformerRSSM(rssm.RSSM):
             valid,
             shuffled=self.interaction == "shuffled",
         )
-        if self.interaction == "none":
-            has_other = jnp.zeros_like(has_other)
         return (
             fold_agent_batch(message, self.num_agents),
             fold_agent_batch(has_other, self.num_agents),
         )
 
     def _interaction_outputs(self, deter, message, has_other, *, base_prior):
+        if self.interaction == "none":
+            return (
+                base_prior,
+                jnp.zeros((*deter.shape[:-1], self.enc_output), deter.dtype),
+                jnp.zeros(
+                    (*deter.shape[:-1], self.local_feature_dim), deter.dtype
+                ),
+            )
         prior_delta = self.sub(
             "interaction_prior",
             InteractionResidual,
