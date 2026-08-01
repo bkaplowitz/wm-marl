@@ -22,6 +22,12 @@ def main(argv: list[str] | None = None) -> int:
         default=1,
         help="Extent of the explicit agent tensor axis; does not select a regime.",
     )
+    parser.add_argument(
+        "--interaction-context",
+        choices=("none", "aligned", "shuffled"),
+        default="none",
+        help="World-model interaction arm; actor and critic remain local.",
+    )
     parser.add_argument("--total-env-steps", type=int, default=250_000)
     parser.add_argument("--experiment-dir", type=Path)
     parser.add_argument(
@@ -50,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
         train_steps=args.total_env_steps,
         num_agents=args.num_agents,
+        interaction_context=args.interaction_context,
         platform=args.platform,
         infrastructure_root=args.infrastructure_root,
         python=args.python,

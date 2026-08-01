@@ -14,6 +14,8 @@ ALGORITHM_FILES = (
     "axes.py",
     "configs.yaml",
     "environments.py",
+    "interaction.py",
+    "train.py",
     "main.py",
     "rssm.py",
     "transformer_rssm.py",

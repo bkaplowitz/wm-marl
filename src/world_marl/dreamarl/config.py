@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from world_marl.baselines.dreamer_cdp.config import (
     default_dreamer_cdp_python,
@@ -22,6 +23,7 @@ class DreaMARLRunSpec:
     seed: int = 0
     train_steps: int = 250_000
     num_agents: int = 1
+    interaction_context: Literal["none", "aligned", "shuffled"] = "none"
     platform: str = "cuda"
     infrastructure_root: Path = field(default_factory=default_upstream_root)
     python: Path = field(default_factory=default_dreamer_cdp_python)
@@ -43,6 +45,8 @@ class DreaMARLRunSpec:
         object.__setattr__(self, "python", absolute_path(self.python))
         if self.num_agents < 1:
             raise ValueError("num_agents must be positive")
+        if self.interaction_context not in {"none", "aligned", "shuffled"}:
+            raise ValueError("interaction_context must be none, aligned, or shuffled")
         if not self.task:
             raise ValueError("task must be non-empty")
         if self.train_steps < 1:
@@ -57,15 +61,24 @@ class DreaMARLRunSpec:
         return self.experiment_dir / "run"
 
     @property
-    def command(self) -> list[str]:
-        outputs = ["jsonl", "scope"]
-        if self.wandb_project:
-            outputs.append("wandb")
-        suite_config = (
+    def configs(self) -> list[str]:
+        suite = (
             "meltingpot_vision"
             if self.task.startswith("meltingpot_")
             else "dmc_vision"
         )
+        configs = [suite, "jepa_transformer"]
+        if self.interaction_context == "aligned":
+            configs.append("interaction_jepa")
+        elif self.interaction_context == "shuffled":
+            configs.append("interaction_jepa_shuffled")
+        return configs
+
+    @property
+    def command(self) -> list[str]:
+        outputs = ["jsonl", "scope"]
+        if self.wandb_project:
+            outputs.append("wandb")
         command = [
             str(self.python),
             "-m",
@@ -73,8 +86,7 @@ class DreaMARLRunSpec:
             "--logdir",
             str(self.logdir),
             "--configs",
-            suite_config,
-            "jepa_transformer",
+            *self.configs,
             "--task",
             self.task,
             "--seed",
@@ -108,22 +120,20 @@ class DreaMARLRunSpec:
             "seed": self.seed,
             "train_env_steps_budget": self.train_steps,
             "num_agents": self.num_agents,
+            "interaction_context": self.interaction_context,
             "agent_axis_native": True,
             "agent_count_dependent_modules": [],
-            "algorithm_overrides": [],
+            "algorithm_overrides": (
+                []
+                if self.interaction_context == "none"
+                else [f"interaction_context={self.interaction_context}"]
+            ),
             "platform": self.platform,
             "observation_mode": "vision",
             "accelerator_memory_preallocation": not self.task.startswith(
                 "meltingpot_"
             ),
-            "configs": [
-                (
-                    "meltingpot_vision"
-                    if self.task.startswith("meltingpot_")
-                    else "dmc_vision"
-                ),
-                "jepa_transformer",
-            ],
+            "configs": self.configs,
             "source_fingerprint": runtime_fingerprint(),
             "save_every_seconds": self.save_every_seconds,
             "wandb_project": self.wandb_project,

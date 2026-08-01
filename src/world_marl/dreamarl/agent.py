@@ -21,6 +21,8 @@ from .axes import (
     fold_agent_batch,
     fold_agent_sequence,
     fold_tree_batch,
+    restore_folded_start_order,
+    select_joint_starts,
     unfold_agent_sequence,
     unfold_tree_batch,
 )
@@ -98,11 +100,18 @@ class Agent(embodied.jax.Agent):
         else:
             self.slowenc = None
 
+        dynamics_type = config.dyn.typ
+        dynamics_config = config.dyn[dynamics_type]
+        if dynamics_type == "jepa_transformer":
+            dynamics_config = dynamics_config.update(
+                num_agents=self.num_agents,
+                interaction_seed=int(config.seed),
+            )
         self.dyn = {
             "rssm": rssm.RSSM,
             "jepa_transformer": transformer_rssm.TransformerRSSM,
-        }[config.dyn.typ](
-            act_space, self.enc_output_dim, **config.dyn[config.dyn.typ], name="dyn"
+        }[dynamics_type](
+            act_space, self.enc_output_dim, **dynamics_config, name="dyn"
         )
         self.feat2tensor = lambda x: jnp.concatenate(
             [
@@ -111,6 +120,13 @@ class Agent(embodied.jax.Agent):
             ],
             -1,
         )
+
+        def world_feat2tensor(feat):
+            local = self.feat2tensor(feat)
+            delta = feat.get("world_delta")
+            return local if delta is None else local + nn.cast(delta)
+
+        self.world_feat2tensor = world_feat2tensor
         self.dec = {
             "simple": rssm.Decoder,
         }[config.dec.typ](dec_space, **config.dec[config.dec.typ], name="dec")
@@ -374,12 +390,12 @@ class Agent(embodied.jax.Agent):
             reset,
             training,
         )
-        inp = sg(self.feat2tensor(repfeat), skip=self.config.reward_grad)
+        inp = sg(self.world_feat2tensor(repfeat), skip=self.config.reward_grad)
         losses["rew"] = self.rew(inp, 2).loss(obs["reward"])
         con = f32(~obs["is_terminal"])
         if self.config.contdisc:
             con *= 1 - 1 / self.config.horizon
-        losses["con"] = self.con(self.feat2tensor(repfeat), 2).loss(con)
+        losses["con"] = self.con(self.world_feat2tensor(repfeat), 2).loss(con)
         for key, recon in recons.items():
             space, value = self.obs_space[key], obs[key]
             assert value.dtype == space.dtype, (key, space, value.dtype)
@@ -400,7 +416,8 @@ class Agent(embodied.jax.Agent):
 
         _, imgfeat, imgprevact = self.dyn.imagine(starts, policyfn, H, training)
         first = jax.tree.map(
-            lambda x: x[:, -K:].reshape((B * K, 1, *x.shape[2:])), repfeat
+            lambda x: select_joint_starts(x, self.num_agents, K)[:, None],
+            repfeat,
         )
         imgfeat = concat([sg(first, skip=self.config.ac_grads), sg(imgfeat)], 1)
         lastact = policyfn(jax.tree.map(lambda x: x[:, -1], imgfeat))
@@ -409,10 +426,11 @@ class Agent(embodied.jax.Agent):
         assert all(x.shape[:2] == (B * K, H + 1) for x in jax.tree.leaves(imgfeat))
         assert all(x.shape[:2] == (B * K, H + 1) for x in jax.tree.leaves(imgact))
         inp = self.feat2tensor(imgfeat)
+        world_inp = self.world_feat2tensor(imgfeat)
         los, imgloss_out, mets = imag_loss(
             imgact,
-            self.rew(inp, 2).pred(),
-            self.con(inp, 2).prob(1),
+            self.rew(world_inp, 2).pred(),
+            self.con(world_inp, 2).prob(1),
             self.pol(inp, 2),
             self.val(inp, 2),
             self.slowval(inp, 2),
@@ -424,14 +442,23 @@ class Agent(embodied.jax.Agent):
             horizon=self.config.horizon,
             **self.config.imag_loss,
         )
-        losses.update({k: v.mean(1).reshape((B, K)) for k, v in los.items()})
+        losses.update(
+            {
+                key: restore_folded_start_order(
+                    value.mean(1), self.num_agents, K
+                )
+                for key, value in los.items()
+            }
+        )
         metrics.update(mets)
 
         # Replay
         if self.config.repval_loss:
             feat = sg(repfeat, skip=self.config.repval_grad)
             last, term, rew = [obs[k] for k in ("is_last", "is_terminal", "reward")]
-            boot = imgloss_out["ret"][:, 0].reshape(B, K)
+            boot = restore_folded_start_order(
+                imgloss_out["ret"][:, 0], self.num_agents, K
+            )
             feat, last, term, rew, boot = jax.tree.map(
                 lambda x: x[:, -K:], (feat, last, term, rew, boot)
             )
@@ -508,7 +535,9 @@ class Agent(embodied.jax.Agent):
         carry, obs, prevact, _ = self._apply_replay_context(carry, data)
         (enc_carry, dyn_carry, dec_carry) = carry
         B, T = obs["is_first"].shape
-        RB = min(6, B)
+        complete_groups = B // self.num_agents
+        report_groups = min(complete_groups, max(1, 6 // self.num_agents))
+        RB = report_groups * self.num_agents
         metrics = {}
 
         # Train metrics

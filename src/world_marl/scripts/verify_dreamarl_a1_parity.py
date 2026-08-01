@@ -36,19 +36,39 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--logdir", type=Path, required=True)
     parser.add_argument("--platform", choices=("cpu", "cuda"), default="cuda")
     parser.add_argument("--seed", type=int, default=17)
+    parser.add_argument("--updates", type=int, default=1)
+    parser.add_argument("--num-agents", type=int, default=1)
+    parser.add_argument(
+        "--interaction-context",
+        choices=("none", "aligned", "shuffled"),
+        default="none",
+    )
     parser.add_argument(
         "--mini",
         action="store_true",
         help="Use reduced dynamics and heads while preserving the exact axis lift.",
     )
     args = parser.parse_args(argv)
+    if args.num_agents != 1 and args.implementation != "dreamarl":
+        parser.error("the frozen M3 reference only supports num_agents=1")
+    if args.updates < 1:
+        parser.error("updates must be positive")
+    if args.implementation != "dreamarl" and args.interaction_context != "none":
+        parser.error("interaction context is a DreaMARL-only option")
 
     args.logdir.mkdir(parents=True, exist_ok=True)
-    config = _resolve_config(args.logdir, args.platform, args.seed, args.mini)
+    config = _resolve_config(
+        args.logdir,
+        args.platform,
+        args.seed,
+        args.mini,
+        args.num_agents,
+        args.interaction_context,
+    )
     local_obs_space, local_act_space = _local_spaces()
     if args.implementation == "dreamarl":
-        obs_space = _add_agent_axes(local_obs_space)
-        act_space = _add_agent_axes(local_act_space)
+        obs_space = _add_agent_axes(local_obs_space, args.num_agents)
+        act_space = _add_agent_axes(local_act_space, args.num_agents)
         agent_type = DreaMARLAgent
     else:
         obs_space = local_obs_space
@@ -67,8 +87,30 @@ def main(argv: list[str] | None = None) -> int:
         replica=config.replica,
         replicas=config.replicas,
     )
+    if args.implementation == "m3":
+        dynamics = dict(agent_config.dyn.jepa_transformer)
+        for key in (
+            "num_agents",
+            "interaction",
+            "interaction_units",
+            "interaction_heads",
+            "interaction_seed",
+        ):
+            dynamics.pop(key, None)
+        dyn_config = dict(agent_config.dyn)
+        dyn_config["jepa_transformer"] = elements.Config(dynamics)
+        agent_values = dict(agent_config)
+        agent_values["dyn"] = elements.Config(dyn_config)
+        agent_config = elements.Config(agent_values)
     agent = agent_type(obs_space, act_space, agent_config)
     initial_state = _digest_tree(jax.device_get(agent.params))
+    shared_initial_state = _digest_tree(
+        jax.device_get(_without_interaction(agent.params))
+    )
+    interaction_initial = jax.device_get(_only_interaction(agent.params))
+    direct_interaction_initial = jax.device_get(
+        _direct_interaction(agent.params)
+    )
 
     batch_size = int(config.batch_size)
     policy_seed = agent._seeds(0, agent.policy_mirrored)
@@ -77,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     policy_obs = _policy_observations(local_obs_space, batch_size, args.seed)
     if args.implementation == "dreamarl":
-        policy_obs = _insert_policy_agent_axes(policy_obs)
+        policy_obs = _insert_policy_agent_axes(policy_obs, args.num_agents)
     policy_obs = jax_internal.device_put(policy_obs, agent.policy_sharded)
     policy_carry, actions, policy_outputs = agent._policy(
         agent.policy_params,
@@ -86,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
         policy_obs,
         "train",
     )
-    if args.implementation == "dreamarl":
+    if args.implementation == "dreamarl" and args.num_agents == 1:
         policy_carry, actions, policy_outputs = jax.device_get(
             (policy_carry, actions, policy_outputs)
         )
@@ -100,18 +142,27 @@ def main(argv: list[str] | None = None) -> int:
         int(config.batch_length + config.replay_context),
         args.seed,
         has_agent_axis=args.implementation == "dreamarl",
+        num_agents=args.num_agents,
     )
     replay = jax_internal.device_put(replay, agent.train_sharded)
-    train_seed = agent._seeds(0, agent.train_mirrored)
     train_carry = agent.init_train(batch_size)
-    allowed = {key: value for key, value in agent.params.items() if key in agent.policy_keys}
-    donated = {
-        key: value for key, value in agent.params.items() if key not in agent.policy_keys
-    }
-    updated, train_carry, train_outputs, train_metrics = agent._train(
-        donated, allowed, train_seed, train_carry, replay
-    )
-    if args.implementation == "dreamarl":
+    updated = agent.params
+    for update_index in range(args.updates):
+        train_seed = agent._seeds(update_index, agent.train_mirrored)
+        allowed = {
+            key: value
+            for key, value in updated.items()
+            if key in agent.policy_keys
+        }
+        donated = {
+            key: value
+            for key, value in updated.items()
+            if key not in agent.policy_keys
+        }
+        updated, train_carry, train_outputs, train_metrics = agent._train(
+            donated, allowed, train_seed, train_carry, replay
+        )
+    if args.implementation == "dreamarl" and args.num_agents == 1:
         train_carry, train_outputs = jax.device_get(
             (train_carry, train_outputs)
         )
@@ -121,17 +172,40 @@ def main(argv: list[str] | None = None) -> int:
     result = {
         "implementation": args.implementation,
         "mini": args.mini,
+        "num_agents": args.num_agents,
+        "interaction_context": args.interaction_context,
         "seed": args.seed,
+        "updates": args.updates,
         "batch_size": batch_size,
         "sequence_length": int(config.batch_length + config.replay_context),
         "initial_state": initial_state,
+        "shared_initial_state": shared_initial_state,
         "policy_carry": _digest_tree(policy_carry),
         "policy_actions": _digest_tree(actions),
         "policy_outputs": _digest_tree(policy_outputs),
         "loss_metrics": _digest_tree(train_metrics),
+        "core_loss_metrics": _digest_tree(
+            _without_interaction(train_metrics)
+        ),
+        "interaction_metrics": {
+            key: float(np.asarray(jax.device_get(value)))
+            for key, value in train_metrics.items()
+            if "interaction" in key
+        },
         "train_carry": _digest_tree(train_carry),
         "train_outputs": _digest_tree(train_outputs),
         "updated_state": _digest_tree(updated),
+        "shared_updated_state": _digest_tree(
+            _without_interaction(updated)
+        ),
+        "interaction_update": _tree_change(
+            interaction_initial,
+            jax.device_get(_only_interaction(updated)),
+        ),
+        "direct_interaction_update": _tree_change(
+            direct_interaction_initial,
+            jax.device_get(_direct_interaction(updated)),
+        ),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
@@ -139,7 +213,14 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _resolve_config(logdir: Path, platform: str, seed: int, mini: bool):
+def _resolve_config(
+    logdir: Path,
+    platform: str,
+    seed: int,
+    mini: bool,
+    num_agents: int,
+    interaction_context: str,
+):
     raw = yaml.YAML(typ="safe").load(
         (algorithm_root() / "configs.yaml").read_text(encoding="utf-8")
     )
@@ -147,7 +228,13 @@ def _resolve_config(logdir: Path, platform: str, seed: int, mini: bool):
     config = config.update(raw["dmc_vision"])
     config = config.update(raw["jepa_transformer"])
     jax_config = config.jax.update(platform=platform)
-    agent_config = config.agent.update(num_agents=1)
+    dynamics = config.agent.dyn.jepa_transformer.update(
+        interaction=interaction_context
+    )
+    agent_config = config.agent.update(
+        num_agents=num_agents,
+        dyn=config.agent.dyn.update(jepa_transformer=dynamics),
+    )
     updates: dict[str, Any] = {
         "logdir": str(logdir),
         "seed": seed,
@@ -200,13 +287,13 @@ def _local_spaces():
     return obs_space, act_space
 
 
-def _add_agent_axes(spaces):
+def _add_agent_axes(spaces, num_agents: int):
     result = {}
     for key, space in spaces.items():
         if key in GLOBAL_OBSERVATION_KEYS:
             result[key] = space
             continue
-        shape = (1, *space.shape)
+        shape = (num_agents, *space.shape)
         low = None if space.low is None else np.broadcast_to(space.low, shape)
         high = None if space.high is None else np.broadcast_to(space.high, shape)
         result[key] = elements.Space(space.dtype, shape, low, high)
@@ -227,11 +314,15 @@ def _policy_observations(spaces, batch_size: int, seed: int):
     return observations
 
 
-def _insert_policy_agent_axes(tree):
-    return jax.tree.map(
-        lambda value: value if value.ndim == 1 else value[:, None],
-        tree,
-    )
+def _insert_policy_agent_axes(tree, num_agents: int):
+    return {
+        key: (
+            value
+            if key in GLOBAL_OBSERVATION_KEYS
+            else np.repeat(value[:, None], num_agents, axis=1)
+        )
+        for key, value in tree.items()
+    }
 
 
 def _squeeze_policy_agent_axes(tree):
@@ -245,6 +336,7 @@ def _fixed_replay(
     seed: int,
     *,
     has_agent_axis: bool,
+    num_agents: int,
 ):
     result = {}
     global_keys = GLOBAL_OBSERVATION_KEYS | GLOBAL_REPLAY_KEYS
@@ -265,7 +357,7 @@ def _fixed_replay(
             if key == "action":
                 value = np.tanh(value).astype(space.dtype)
         if has_agent_axis and key not in global_keys:
-            value = value[:, :, None]
+            value = np.repeat(value[:, :, None], num_agents, axis=2)
         result[key] = value
     result["is_first"][:, 0] = True
     result["is_last"][:, -1] = True
@@ -301,6 +393,67 @@ def _digest_tree(tree) -> dict[str, object]:
         "treedef": str(treedef),
         "leaves": len(leaves),
         "values": total_values,
+    }
+
+
+def _without_interaction(tree):
+    if not isinstance(tree, dict):
+        return tree
+    return {
+        key: _without_interaction(value)
+        for key, value in tree.items()
+        if "interaction" not in key
+        and key
+        not in {
+            "local_dyn_ent",
+            "opt/grad_rms",
+            "opt/param_count",
+            "opt/param_rms",
+            "opt/update_rms",
+        }
+    }
+
+
+def _only_interaction(tree):
+    if not isinstance(tree, dict):
+        return tree
+    result = {}
+    for key, value in tree.items():
+        if "interaction" in key:
+            result[key] = value
+        elif isinstance(value, dict):
+            nested = _only_interaction(value)
+            if nested:
+                result[key] = nested
+    return result
+
+
+def _direct_interaction(tree):
+    return {
+        key: value
+        for key, value in tree.items()
+        if key.startswith("dyn/interaction")
+    }
+
+
+def _tree_change(before, after):
+    before_leaves = jax.tree_util.tree_leaves(before)
+    after_leaves = jax.tree_util.tree_leaves(after)
+    if len(before_leaves) != len(after_leaves):
+        raise ValueError((len(before_leaves), len(after_leaves)))
+    squared = 0.0
+    maximum = 0.0
+    changed = 0
+    for old, new in zip(before_leaves, after_leaves, strict=True):
+        delta = np.asarray(new, np.float64) - np.asarray(old, np.float64)
+        squared += float(np.square(delta).sum())
+        maximum = max(maximum, float(np.abs(delta).max(initial=0.0)))
+        changed += int(np.any(delta != 0))
+    return {
+        "l2": float(np.sqrt(squared)),
+        "max_abs": maximum,
+        "changed_leaves": changed,
+        "leaves": len(before_leaves),
     }
 
 

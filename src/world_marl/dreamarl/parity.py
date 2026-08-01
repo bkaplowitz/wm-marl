@@ -69,6 +69,11 @@ def verify_m3_reduction_contract(spec: DreaMARLRunSpec) -> dict[str, object]:
         oracle.command, normalize_environment=normalize_environment
     ):
         raise RuntimeError("first-party DreaMARL training regime diverged from M3")
+    overrides = (
+        []
+        if spec.interaction_context == "none"
+        else [f"interaction_context={spec.interaction_context}"]
+    )
     return {
         "verified_official_commit": revision,
         "verified_algorithm_hashes": actual,
@@ -77,7 +82,7 @@ def verify_m3_reduction_contract(spec: DreaMARLRunSpec) -> dict[str, object]:
         "num_agents": spec.num_agents,
         "agent_axis_reduction": "identity reshape when num_agents=1",
         "agent_count_semantics": "tensor geometry only",
-        "algorithm_overrides": [],
+        "algorithm_overrides": overrides,
     }
 
 
@@ -90,6 +95,9 @@ def _semantic_arguments(
     if "--agent.num_agents" in arguments:
         index = arguments.index("--agent.num_agents")
         del arguments[index : index + 2]
+    for interaction_config in ("interaction_jepa", "interaction_jepa_shuffled"):
+        if interaction_config in arguments:
+            arguments.remove(interaction_config)
     logdir = arguments.index("--logdir") + 1
     arguments[logdir] = "<logdir>"
     if normalize_environment:

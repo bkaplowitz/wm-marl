@@ -62,7 +62,8 @@ def main(argv=None):
   )
 
   if config.script == 'train':
-    embodied.run.train(
+    from . import train as first_party_train
+    first_party_train.train(
         bind(make_agent, config),
         bind(make_replay, config, 'replay'),
         bind(make_env, config),

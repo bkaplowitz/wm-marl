@@ -11,6 +11,8 @@ from world_marl.dreamarl.axes import (
     broadcast_global_sequence,
     fold_agent_batch,
     fold_agent_sequence,
+    restore_folded_start_order,
+    select_joint_starts,
     unfold_agent_batch,
     unfold_agent_sequence,
 )
@@ -166,6 +168,42 @@ def test_multi_agent_axis_round_trips_without_value_changes() -> None:
     np.testing.assert_array_equal(
         unfold_agent_sequence(fold_agent_sequence(replay, 3), 3), replay
     )
+
+
+def test_joint_start_order_groups_agents_at_each_start() -> None:
+    # Value encodes environment, agent, and time.
+    grouped = np.zeros((2, 4, 3), np.int32)
+    for environment in range(2):
+        for time in range(4):
+            for agent in range(3):
+                grouped[environment, time, agent] = 100 * environment + 10 * time + agent
+    folded = fold_agent_sequence(grouped, 3)
+    starts = select_joint_starts(folded, 3, 2)
+    np.testing.assert_array_equal(
+        starts,
+        np.array([20, 21, 22, 30, 31, 32, 120, 121, 122, 130, 131, 132]),
+    )
+    restored = restore_folded_start_order(starts, 3, 2)
+    np.testing.assert_array_equal(
+        restored,
+        np.array([[20, 30], [21, 31], [22, 32], [120, 130], [121, 131], [122, 132]]),
+    )
+
+
+def test_interaction_arms_change_algorithm_not_agent_count(tmp_path: Path) -> None:
+    aligned = _spec(tmp_path, num_agents=1, interaction_context="aligned")
+    shuffled = _spec(tmp_path, num_agents=7, interaction_context="shuffled")
+    assert "interaction_jepa" in aligned.command
+    assert "interaction_jepa_shuffled" in shuffled.command
+    assert aligned.to_dict()["algorithm_overrides"] == [
+        "interaction_context=aligned"
+    ]
+    assert shuffled.to_dict()["algorithm_overrides"] == [
+        "interaction_context=shuffled"
+    ]
+    assert verify_m3_reduction_contract(aligned)["algorithm_overrides"] == [
+        "interaction_context=aligned"
+    ]
 
 
 def test_global_fields_are_shared_without_changing_singleton_values() -> None:
