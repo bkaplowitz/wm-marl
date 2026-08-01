@@ -69,6 +69,7 @@ def run_training(
         env["WANDB_PROJECT"] = spec.wandb_project
     if spec.wandb_entity:
         env["WANDB_ENTITY"] = spec.wandb_entity
+    env.setdefault("WANDB_NAME", spec.experiment_dir.name)
     pythonpath = [str(spec.infrastructure_root), str(repository_root() / "src")]
     if env.get("PYTHONPATH"):
         pythonpath.append(env["PYTHONPATH"])
