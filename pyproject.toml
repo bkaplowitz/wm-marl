@@ -14,6 +14,7 @@ dependencies = [
   "jaxlib==0.4.36",
   "jaxmarl[algs]==0.1.0",
   "matplotlib",
+  "moviepy>=1.0.3,<2",
   "numpy",
   "omegaconf",
   "optax",
