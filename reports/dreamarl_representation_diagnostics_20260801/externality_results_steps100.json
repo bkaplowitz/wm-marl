@@ -1,0 +1,859 @@
+{
+  "adapter": {
+    "batch_size": 8,
+    "hidden": 64,
+    "learning_rate": 0.0003,
+    "seed": 17,
+    "steps": 100
+  },
+  "contract": "frozen_checkpoint_frozen_replay_v1",
+  "dataset": "/workspace/dreamarl_publish/runs/representation_diagnostics_20260801/externality_32x32.npz",
+  "interventions": {
+    "actions_predictor": {
+      "adapter_parameters": 397888,
+      "source": "actions",
+      "training_history": [
+        {
+          "cosine": 0.1244623214006424,
+          "loss": 0.1244623214006424,
+          "raw_kl": 14.2097749710083,
+          "step": 1,
+          "valid_transitions": 1280.0
+        },
+        {
+          "cosine": 0.1915104240179062,
+          "loss": 0.1915104240179062,
+          "raw_kl": 23.01663589477539,
+          "step": 100,
+          "valid_transitions": 1280.0
+        }
+      ],
+      "validation": {
+        "correct": {
+          "cosine": 0.12635628879070282,
+          "horizons": {
+            "h1": {
+              "cosine": 0.08336709439754486,
+              "raw_kl": 8.279314041137695,
+              "valid_transitions": 40.0
+            },
+            "h16": {
+              "cosine": 0.12593279778957367,
+              "raw_kl": 10.89013957977295,
+              "valid_transitions": 40.0
+            },
+            "h2": {
+              "cosine": 0.08571118116378784,
+              "raw_kl": 9.106886863708496,
+              "valid_transitions": 40.0
+            },
+            "h32": {
+              "cosine": 0.15369771420955658,
+              "raw_kl": 18.35077476501465,
+              "valid_transitions": 40.0
+            },
+            "h4": {
+              "cosine": 0.10096599906682968,
+              "raw_kl": 10.926997184753418,
+              "valid_transitions": 40.0
+            },
+            "h8": {
+              "cosine": 0.11758724600076675,
+              "raw_kl": 10.846060752868652,
+              "valid_transitions": 40.0
+            }
+          },
+          "raw_kl": 12.55820369720459,
+          "valid_transitions": 1280.0
+        },
+        "null": {
+          "cosine": 0.126657173037529,
+          "horizons": {
+            "h1": {
+              "cosine": 0.0834273025393486,
+              "raw_kl": 8.279314041137695,
+              "valid_transitions": 40.0
+            },
+            "h16": {
+              "cosine": 0.12612967193126678,
+              "raw_kl": 10.89013957977295,
+              "valid_transitions": 40.0
+            },
+            "h2": {
+              "cosine": 0.08573468774557114,
+              "raw_kl": 9.106886863708496,
+              "valid_transitions": 40.0
+            },
+            "h32": {
+              "cosine": 0.15422038733959198,
+              "raw_kl": 18.35077476501465,
+              "valid_transitions": 40.0
+            },
+            "h4": {
+              "cosine": 0.10106431692838669,
+              "raw_kl": 10.926997184753418,
+              "valid_transitions": 40.0
+            },
+            "h8": {
+              "cosine": 0.11787191778421402,
+              "raw_kl": 10.846060752868652,
+              "valid_transitions": 40.0
+            }
+          },
+          "raw_kl": 12.55820369720459,
+          "valid_transitions": 1280.0
+        },
+        "shuffle_agents": {
+          "cosine": 0.12635590136051178,
+          "horizons": {
+            "h1": {
+              "cosine": 0.08336655050516129,
+              "raw_kl": 8.279314041137695,
+              "valid_transitions": 40.0
+            },
+            "h16": {
+              "cosine": 0.12592823803424835,
+              "raw_kl": 10.89013957977295,
+              "valid_transitions": 40.0
+            },
+            "h2": {
+              "cosine": 0.0857122465968132,
+              "raw_kl": 9.106886863708496,
+              "valid_transitions": 40.0
+            },
+            "h32": {
+              "cosine": 0.15369583666324615,
+              "raw_kl": 18.35077476501465,
+              "valid_transitions": 40.0
+            },
+            "h4": {
+              "cosine": 0.10096617043018341,
+              "raw_kl": 10.926997184753418,
+              "valid_transitions": 40.0
+            },
+            "h8": {
+              "cosine": 0.11758480221033096,
+              "raw_kl": 10.846060752868652,
+              "valid_transitions": 40.0
+            }
+          },
+          "raw_kl": 12.55820369720459,
+          "valid_transitions": 1280.0
+        },
+        "shuffle_environments": {
+          "cosine": 0.1263585388660431,
+          "horizons": {
+            "h1": {
+              "cosine": 0.08337235450744629,
+              "raw_kl": 8.279314041137695,
+              "valid_transitions": 40.0
+            },
+            "h16": {
+              "cosine": 0.1259310394525528,
+              "raw_kl": 10.89013957977295,
+              "valid_transitions": 40.0
+            },
+            "h2": {
+              "cosine": 0.08571573346853256,
+              "raw_kl": 9.106886863708496,
+              "valid_transitions": 40.0
+            },
+            "h32": {
+              "cosine": 0.1536935418844223,
+              "raw_kl": 18.35077476501465,
+              "valid_transitions": 40.0
+            },
+            "h4": {
+              "cosine": 0.10096948593854904,
+              "raw_kl": 10.926997184753418,
+              "valid_transitions": 40.0
+            },
+            "h8": {
+              "cosine": 0.11759982258081436,
+              "raw_kl": 10.846060752868652,
+              "valid_transitions": 40.0
+            }
+          },
+          "raw_kl": 12.55820369720459,
+          "valid_transitions": 1280.0
+        }
+      }
+    },
+    "baseline": {
+      "adapter_parameters": 0,
+      "source": "baseline",
+      "training_history": [
+        {
+          "cosine": 0.15537682175636292,
+          "raw_kl": 17.046602249145508,
+          "valid_transitions": 3835.0
+        }
+      ],
+      "validation": {
+        "correct": {
+          "cosine": 0.1272815763950348,
+          "horizons": {
+            "h1": {
+              "cosine": 0.08374067395925522,
+              "raw_kl": 8.279314041137695,
+              "valid_transitions": 40.0
+            },
+            "h16": {
+              "cosine": 0.12662260234355927,
+              "raw_kl": 10.89013957977295,
+              "valid_transitions": 40.0
+            },
+            "h2": {
+              "cosine": 0.08600310981273651,
+              "raw_kl": 9.106886863708496,
+              "valid_transitions": 40.0
+            },
+            "h32": {
+              "cosine": 0.1551171839237213,
+              "raw_kl": 18.35077476501465,
+              "valid_transitions": 40.0
+            },
+            "h4": {
+              "cosine": 0.10142234712839127,
+              "raw_kl": 10.926997184753418,
+              "valid_transitions": 40.0
+            },
+            "h8": {
+              "cosine": 0.11849906295537949,
+              "raw_kl": 10.846060752868652,
+              "valid_transitions": 40.0
+            }
+          },
+          "raw_kl": 12.55820369720459,
+          "valid_transitions": 1280.0
+        }
+      }
+    },
+    "latents_predictor": {
+      "adapter_parameters": 397888,
+      "source": "latents",
+      "training_history": [
+        {
+          "cosine": 0.1244623214006424,
+          "loss": 0.1244623214006424,
+          "raw_kl": 14.2097749710083,
+          "step": 1,
+          "valid_transitions": 1280.0
+        },
+        {
+          "cosine": 0.18809323012828827,
+          "loss": 0.18809323012828827,
+          "raw_kl": 23.01663589477539,
+          "step": 100,
+          "valid_transitions": 1280.0
+        }
+      ],
+      "validation": {
+        "correct": {
+          "cosine": 0.12631022930145264,
+          "horizons": {
+            "h1": {
+              "cosine": 0.08473287522792816,
+              "raw_kl": 8.279314041137695,
+              "valid_transitions": 40.0
+            },
+            "h16": {
+              "cosine": 0.12646304070949554,
+              "raw_kl": 10.89013957977295,
+              "valid_transitions": 40.0
+            },
+            "h2": {
+              "cosine": 0.08727238327264786,
+              "raw_kl": 9.106886863708496,
+              "valid_transitions": 40.0
+            },
+            "h32": {
+              "cosine": 0.15248610079288483,
+              "raw_kl": 18.35077476501465,
+              "valid_transitions": 40.0
+            },
+            "h4": {
+              "cosine": 0.10196568071842194,
+              "raw_kl": 10.926997184753418,
+              "valid_transitions": 40.0
+            },
+            "h8": {
+              "cosine": 0.11762507259845734,
+              "raw_kl": 10.846060752868652,
+              "valid_transitions": 40.0
+            }
+          },
+          "raw_kl": 12.55820369720459,
+          "valid_transitions": 1280.0
+        },
+        "null": {
+          "cosine": 0.12701334059238434,
+          "horizons": {
+            "h1": {
+              "cosine": 0.0836041197180748,
+              "raw_kl": 8.279314041137695,
+              "valid_transitions": 40.0
+            },
+            "h16": {
+              "cosine": 0.1264091432094574,
+              "raw_kl": 10.89013957977295,
+              "valid_transitions": 40.0
+            },
+            "h2": {
+              "cosine": 0.08588377386331558,
+              "raw_kl": 9.106886863708496,
+              "valid_transitions": 40.0
+            },
+            "h32": {
+              "cosine": 0.15473918616771698,
+              "raw_kl": 18.35077476501465,
+              "valid_transitions": 40.0
+            },
+            "h4": {
+              "cosine": 0.10125919431447983,
+              "raw_kl": 10.926997184753418,
+              "valid_transitions": 40.0
+            },
+            "h8": {
+              "cosine": 0.1182343140244484,
+              "raw_kl": 10.846060752868652,
+              "valid_transitions": 40.0
+            }
+          },
+          "raw_kl": 12.55820369720459,
+          "valid_transitions": 1280.0
+        },
+        "shuffle_agents": {
+          "cosine": 0.1263161599636078,
+          "horizons": {
+            "h1": {
+              "cosine": 0.08472466468811035,
+              "raw_kl": 8.279314041137695,
+              "valid_transitions": 40.0
+            },
+            "h16": {
+              "cosine": 0.12646420300006866,
+              "raw_kl": 10.89013957977295,
+              "valid_transitions": 40.0
+            },
+            "h2": {
+              "cosine": 0.0872751995921135,
+              "raw_kl": 9.106886863708496,
+              "valid_transitions": 40.0
+            },
+            "h32": {
+              "cosine": 0.15246053040027618,
+              "raw_kl": 18.35077476501465,
+              "valid_transitions": 40.0
+            },
+            "h4": {
+              "cosine": 0.10195451229810715,
+              "raw_kl": 10.926997184753418,
+              "valid_transitions": 40.0
+            },
+            "h8": {
+              "cosine": 0.1176680251955986,
+              "raw_kl": 10.846060752868652,
+              "valid_transitions": 40.0
+            }
+          },
+          "raw_kl": 12.55820369720459,
+          "valid_transitions": 1280.0
+        },
+        "shuffle_environments": {
+          "cosine": 0.12629926204681396,
+          "horizons": {
+            "h1": {
+              "cosine": 0.08474228531122208,
+              "raw_kl": 8.279314041137695,
+              "valid_transitions": 40.0
+            },
+            "h16": {
+              "cosine": 0.12645116448402405,
+              "raw_kl": 10.89013957977295,
+              "valid_transitions": 40.0
+            },
+            "h2": {
+              "cosine": 0.08727007359266281,
+              "raw_kl": 9.106886863708496,
+              "valid_transitions": 40.0
+            },
+            "h32": {
+              "cosine": 0.15252254903316498,
+              "raw_kl": 18.35077476501465,
+              "valid_transitions": 40.0
+            },
+            "h4": {
+              "cosine": 0.10196268558502197,
+              "raw_kl": 10.926997184753418,
+              "valid_transitions": 40.0
+            },
+            "h8": {
+              "cosine": 0.11770480871200562,
+              "raw_kl": 10.846060752868652,
+              "valid_transitions": 40.0
+            }
+          },
+          "raw_kl": 12.55820369720459,
+          "valid_transitions": 1280.0
+        }
+      }
+    },
+    "paired_predictor": {
+      "adapter_parameters": 397888,
+      "source": "paired",
+      "training_history": [
+        {
+          "cosine": 0.1244623214006424,
+          "loss": 0.1244623214006424,
+          "raw_kl": 14.2097749710083,
+          "step": 1,
+          "valid_transitions": 1280.0
+        },
+        {
+          "cosine": 0.18800386786460876,
+          "loss": 0.18800386786460876,
+          "raw_kl": 23.01663589477539,
+          "step": 100,
+          "valid_transitions": 1280.0
+        }
+      ],
+      "validation": {
+        "correct": {
+          "cosine": 0.12632106244564056,
+          "horizons": {
+            "h1": {
+              "cosine": 0.08474551886320114,
+              "raw_kl": 8.279314041137695,
+              "valid_transitions": 40.0
+            },
+            "h16": {
+              "cosine": 0.1264791041612625,
+              "raw_kl": 10.89013957977295,
+              "valid_transitions": 40.0
+            },
+            "h2": {
+              "cosine": 0.08730446547269821,
+              "raw_kl": 9.106886863708496,
+              "valid_transitions": 40.0
+            },
+            "h32": {
+              "cosine": 0.15247826278209686,
+              "raw_kl": 18.35077476501465,
+              "valid_transitions": 40.0
+            },
+            "h4": {
+              "cosine": 0.10197415202856064,
+              "raw_kl": 10.926997184753418,
+              "valid_transitions": 40.0
+            },
+            "h8": {
+              "cosine": 0.11762173473834991,
+              "raw_kl": 10.846060752868652,
+              "valid_transitions": 40.0
+            }
+          },
+          "raw_kl": 12.55820369720459,
+          "valid_transitions": 1280.0
+        },
+        "null": {
+          "cosine": 0.1270187646150589,
+          "horizons": {
+            "h1": {
+              "cosine": 0.08360650390386581,
+              "raw_kl": 8.279314041137695,
+              "valid_transitions": 40.0
+            },
+            "h16": {
+              "cosine": 0.12641304731369019,
+              "raw_kl": 10.89013957977295,
+              "valid_transitions": 40.0
+            },
+            "h2": {
+              "cosine": 0.08588603138923645,
+              "raw_kl": 9.106886863708496,
+              "valid_transitions": 40.0
+            },
+            "h32": {
+              "cosine": 0.1547471284866333,
+              "raw_kl": 18.35077476501465,
+              "valid_transitions": 40.0
+            },
+            "h4": {
+              "cosine": 0.10126250982284546,
+              "raw_kl": 10.926997184753418,
+              "valid_transitions": 40.0
+            },
+            "h8": {
+              "cosine": 0.11823949962854385,
+              "raw_kl": 10.846060752868652,
+              "valid_transitions": 40.0
+            }
+          },
+          "raw_kl": 12.55820369720459,
+          "valid_transitions": 1280.0
+        },
+        "shuffle_agents": {
+          "cosine": 0.1263265460729599,
+          "horizons": {
+            "h1": {
+              "cosine": 0.08473353832960129,
+              "raw_kl": 8.279314041137695,
+              "valid_transitions": 40.0
+            },
+            "h16": {
+              "cosine": 0.12649178504943848,
+              "raw_kl": 10.89013957977295,
+              "valid_transitions": 40.0
+            },
+            "h2": {
+              "cosine": 0.08730955421924591,
+              "raw_kl": 9.106886863708496,
+              "valid_transitions": 40.0
+            },
+            "h32": {
+              "cosine": 0.1524520069360733,
+              "raw_kl": 18.35077476501465,
+              "valid_transitions": 40.0
+            },
+            "h4": {
+              "cosine": 0.10196154564619064,
+              "raw_kl": 10.926997184753418,
+              "valid_transitions": 40.0
+            },
+            "h8": {
+              "cosine": 0.11765670031309128,
+              "raw_kl": 10.846060752868652,
+              "valid_transitions": 40.0
+            }
+          },
+          "raw_kl": 12.55820369720459,
+          "valid_transitions": 1280.0
+        },
+        "shuffle_environments": {
+          "cosine": 0.1263161450624466,
+          "horizons": {
+            "h1": {
+              "cosine": 0.08475305140018463,
+              "raw_kl": 8.279314041137695,
+              "valid_transitions": 40.0
+            },
+            "h16": {
+              "cosine": 0.12647747993469238,
+              "raw_kl": 10.89013957977295,
+              "valid_transitions": 40.0
+            },
+            "h2": {
+              "cosine": 0.0873098373413086,
+              "raw_kl": 9.106886863708496,
+              "valid_transitions": 40.0
+            },
+            "h32": {
+              "cosine": 0.15252149105072021,
+              "raw_kl": 18.35077476501465,
+              "valid_transitions": 40.0
+            },
+            "h4": {
+              "cosine": 0.10197021067142487,
+              "raw_kl": 10.926997184753418,
+              "valid_transitions": 40.0
+            },
+            "h8": {
+              "cosine": 0.1177162155508995,
+              "raw_kl": 10.846060752868652,
+              "valid_transitions": 40.0
+            }
+          },
+          "raw_kl": 12.55820369720459,
+          "valid_transitions": 1280.0
+        }
+      }
+    },
+    "paired_prior": {
+      "adapter_parameters": 264768,
+      "source": "paired",
+      "training_history": [
+        {
+          "cosine": 0.06392212957143784,
+          "loss": 3.4140262603759766,
+          "raw_kl": 3.4140262603759766,
+          "step": 1,
+          "valid_transitions": 1280.0
+        },
+        {
+          "cosine": 0.06847184896469116,
+          "loss": 4.239919185638428,
+          "raw_kl": 4.239919185638428,
+          "step": 100,
+          "valid_transitions": 1280.0
+        }
+      ],
+      "validation": {
+        "correct": {
+          "cosine": 0.06325981765985489,
+          "horizons": {},
+          "raw_kl": 2.8907270431518555,
+          "valid_transitions": 1280.0
+        },
+        "null": {
+          "cosine": 0.06325981765985489,
+          "horizons": {},
+          "raw_kl": 2.9745826721191406,
+          "valid_transitions": 1280.0
+        },
+        "shuffle_agents": {
+          "cosine": 0.06325981765985489,
+          "horizons": {},
+          "raw_kl": 2.889338731765747,
+          "valid_transitions": 1280.0
+        },
+        "shuffle_environments": {
+          "cosine": 0.06325981765985489,
+          "horizons": {},
+          "raw_kl": 2.8933675289154053,
+          "valid_transitions": 1280.0
+        }
+      }
+    },
+    "paired_shuffled_predictor": {
+      "adapter_parameters": 397888,
+      "source": "paired",
+      "training_history": [
+        {
+          "cosine": 0.1244623214006424,
+          "loss": 0.1244623214006424,
+          "raw_kl": 14.2097749710083,
+          "step": 1,
+          "valid_transitions": 1280.0
+        },
+        {
+          "cosine": 0.1883976310491562,
+          "loss": 0.1883976310491562,
+          "raw_kl": 23.01663589477539,
+          "step": 100,
+          "valid_transitions": 1280.0
+        }
+      ],
+      "validation": {
+        "correct": {
+          "cosine": 0.12635943293571472,
+          "horizons": {
+            "h1": {
+              "cosine": 0.08480783551931381,
+              "raw_kl": 8.279314041137695,
+              "valid_transitions": 40.0
+            },
+            "h16": {
+              "cosine": 0.12647034227848053,
+              "raw_kl": 10.89013957977295,
+              "valid_transitions": 40.0
+            },
+            "h2": {
+              "cosine": 0.08736108988523483,
+              "raw_kl": 9.106886863708496,
+              "valid_transitions": 40.0
+            },
+            "h32": {
+              "cosine": 0.15249595046043396,
+              "raw_kl": 18.35077476501465,
+              "valid_transitions": 40.0
+            },
+            "h4": {
+              "cosine": 0.10203208774328232,
+              "raw_kl": 10.926997184753418,
+              "valid_transitions": 40.0
+            },
+            "h8": {
+              "cosine": 0.11773760616779327,
+              "raw_kl": 10.846060752868652,
+              "valid_transitions": 40.0
+            }
+          },
+          "raw_kl": 12.55820369720459,
+          "valid_transitions": 1280.0
+        }
+      }
+    },
+    "paired_temporal": {
+      "adapter_parameters": 402048,
+      "source": "paired",
+      "training_history": [
+        {
+          "cosine": 0.1244623214006424,
+          "loss": 0.1244623214006424,
+          "raw_kl": 14.2097749710083,
+          "step": 1,
+          "valid_transitions": 1280.0
+        },
+        {
+          "cosine": 0.18824557960033417,
+          "loss": 0.18824557960033417,
+          "raw_kl": 23.01663589477539,
+          "step": 100,
+          "valid_transitions": 1280.0
+        }
+      ],
+      "validation": {
+        "correct": {
+          "cosine": 0.1263069212436676,
+          "horizons": {
+            "h1": {
+              "cosine": 0.08334929496049881,
+              "raw_kl": 8.279314041137695,
+              "valid_transitions": 40.0
+            },
+            "h16": {
+              "cosine": 0.12596848607063293,
+              "raw_kl": 10.89013957977295,
+              "valid_transitions": 40.0
+            },
+            "h2": {
+              "cosine": 0.08570756763219833,
+              "raw_kl": 9.106886863708496,
+              "valid_transitions": 40.0
+            },
+            "h32": {
+              "cosine": 0.15397505462169647,
+              "raw_kl": 18.35077476501465,
+              "valid_transitions": 40.0
+            },
+            "h4": {
+              "cosine": 0.10099506378173828,
+              "raw_kl": 10.926997184753418,
+              "valid_transitions": 40.0
+            },
+            "h8": {
+              "cosine": 0.11765860766172409,
+              "raw_kl": 10.846060752868652,
+              "valid_transitions": 40.0
+            }
+          },
+          "raw_kl": 12.55820369720459,
+          "valid_transitions": 1280.0
+        },
+        "null": {
+          "cosine": 0.12605413794517517,
+          "horizons": {
+            "h1": {
+              "cosine": 0.08363256603479385,
+              "raw_kl": 8.279314041137695,
+              "valid_transitions": 40.0
+            },
+            "h16": {
+              "cosine": 0.12647651135921478,
+              "raw_kl": 10.89013957977295,
+              "valid_transitions": 40.0
+            },
+            "h2": {
+              "cosine": 0.0859115943312645,
+              "raw_kl": 9.106886863708496,
+              "valid_transitions": 40.0
+            },
+            "h32": {
+              "cosine": 0.15487085282802582,
+              "raw_kl": 18.35077476501465,
+              "valid_transitions": 40.0
+            },
+            "h4": {
+              "cosine": 0.101309634745121,
+              "raw_kl": 10.926997184753418,
+              "valid_transitions": 40.0
+            },
+            "h8": {
+              "cosine": 0.11830716580152512,
+              "raw_kl": 10.846060752868652,
+              "valid_transitions": 40.0
+            }
+          },
+          "raw_kl": 12.55820369720459,
+          "valid_transitions": 1280.0
+        },
+        "shuffle_agents": {
+          "cosine": 0.12631283700466156,
+          "horizons": {
+            "h1": {
+              "cosine": 0.08334247022867203,
+              "raw_kl": 8.279314041137695,
+              "valid_transitions": 40.0
+            },
+            "h16": {
+              "cosine": 0.1259775012731552,
+              "raw_kl": 10.89013957977295,
+              "valid_transitions": 40.0
+            },
+            "h2": {
+              "cosine": 0.0857054591178894,
+              "raw_kl": 9.106886863708496,
+              "valid_transitions": 40.0
+            },
+            "h32": {
+              "cosine": 0.15397457778453827,
+              "raw_kl": 18.35077476501465,
+              "valid_transitions": 40.0
+            },
+            "h4": {
+              "cosine": 0.10099153965711594,
+              "raw_kl": 10.926997184753418,
+              "valid_transitions": 40.0
+            },
+            "h8": {
+              "cosine": 0.11767084896564484,
+              "raw_kl": 10.846060752868652,
+              "valid_transitions": 40.0
+            }
+          },
+          "raw_kl": 12.55820369720459,
+          "valid_transitions": 1280.0
+        },
+        "shuffle_environments": {
+          "cosine": 0.12631474435329437,
+          "horizons": {
+            "h1": {
+              "cosine": 0.08336932212114334,
+              "raw_kl": 8.279314041137695,
+              "valid_transitions": 40.0
+            },
+            "h16": {
+              "cosine": 0.1259649246931076,
+              "raw_kl": 10.89013957977295,
+              "valid_transitions": 40.0
+            },
+            "h2": {
+              "cosine": 0.08571877330541611,
+              "raw_kl": 9.106886863708496,
+              "valid_transitions": 40.0
+            },
+            "h32": {
+              "cosine": 0.1539694219827652,
+              "raw_kl": 18.35077476501465,
+              "valid_transitions": 40.0
+            },
+            "h4": {
+              "cosine": 0.10098518431186676,
+              "raw_kl": 10.926997184753418,
+              "valid_transitions": 40.0
+            },
+            "h8": {
+              "cosine": 0.11768847703933716,
+              "raw_kl": 10.846060752868652,
+              "valid_transitions": 40.0
+            }
+          },
+          "raw_kl": 12.55820369720459,
+          "valid_transitions": 1280.0
+        }
+      }
+    }
+  },
+  "references": {
+    "teacher_forced_baseline": {
+      "cosine": 0.06325981765985489,
+      "raw_kl": 2.992173433303833,
+      "valid_transitions": 1280.0
+    }
+  },
+  "trajectory_split": {
+    "train": 24,
+    "validation": 8
+  }
+}
