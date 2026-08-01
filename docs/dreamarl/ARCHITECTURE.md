@@ -25,10 +25,12 @@ computation therefore reduce to M3.
 
 ## 2. First-Party Source
 
-The executable implementation is maintained under `world_marl.dreamarl`.
-DreaMARL executes its own `main.py`, `agent.py`, configuration, and environment
-contracts directly. It uses the pinned Dreamer-CDP checkout only for the
-Embodied runtime, replay storage, device distribution, and utility libraries.
+The executable algorithm is maintained under `world_marl.dreamarl`. DreaMARL
+executes its own `main.py`, `agent.py`, `rssm.py`, `transformer_rssm.py`,
+configuration, axis operations, and environment contracts directly. These
+active modules do not import or subclass the frozen M3 reference. The pinned
+Dreamer-CDP checkout supplies only the third-party Embodied runtime, replay
+storage, device distribution, neural-network primitives, and utilities.
 
 The exact registered M3 source is preserved under `world_marl.dreamarl.m3` as
 the reduction oracle. Its provenance is:
@@ -37,7 +39,9 @@ the reduction oracle. Its provenance is:
 - the registered causal-Transformer RSSM integration from this repository;
 - the upstream MIT license retained beside the source.
 
-No generated overlay or prior M3 launcher is used by the DreaMARL executable.
+No generated overlay, inherited M3 agent, or prior M3 launcher is used by the
+DreaMARL executable. The frozen reference is test-only and remains deliberately
+unmodified so exact one-agent reduction can be checked against it.
 
 ## 3. Shared M3 Model Lifted Across Agents
 
@@ -183,9 +187,16 @@ episode values.
 ## 8. Current Scope
 
 The model and replay contracts are agent-axis-native. The currently connected
-behavioral gate is visual DMC through the singleton adapter. A native MAMuJoCo
-adapter is the next environment integration after the numerical and behavioral
-single-agent gates pass.
+executable environment is visual DMC through the singleton adapter. Therefore,
+the implementation has proven numerical `A=1` reduction and supports `A=N`
+tensor geometry, but it cannot yet claim an executed native MAMuJoCo result. A
+native MAMuJoCo adapter must preserve the same joint-step, lifecycle, reward,
+observation, and action contracts without changing the learner or schedule.
+
+Matching M3 numerically on a one-agent MAMuJoCo configuration is expected only
+when that environment configuration is semantically equivalent to the M3 task.
+Changing simulator observations, rewards, action repeat, termination, or camera
+semantics changes the benchmark even though the learner remains identical.
 
 The first multi-agent experiment is intentionally the unchanged, parameter-
 shared M3 model described above. Cross-agent communication, centralized value

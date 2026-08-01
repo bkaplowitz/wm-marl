@@ -69,9 +69,7 @@ def test_single_agent_source_and_regime_match_registered_m3(tmp_path: Path) -> N
 
 
 def test_multi_agent_invocation_keeps_the_m3_regime(tmp_path: Path) -> None:
-    verification = verify_m3_reduction_contract(
-        _spec(tmp_path, num_agents=7)
-    )
+    verification = verify_m3_reduction_contract(_spec(tmp_path, num_agents=7))
     assert verification["num_agents"] == 7
     assert verification["agent_count_semantics"] == "tensor geometry only"
     assert verification["algorithm_overrides"] == []
@@ -116,6 +114,18 @@ def test_first_party_entrypoint_owns_all_algorithm_files() -> None:
     assert all((algorithm_root() / name).is_file() for name in ALGORITHM_FILES)
 
 
+def test_active_learner_does_not_import_the_frozen_oracle() -> None:
+    for filename in ("agent.py", "rssm.py", "transformer_rssm.py"):
+        source = (algorithm_root() / filename).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        imports = [
+            ast.unparse(node)
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+        ]
+        assert not any("dreamarl.m3" in item or "from .m3" in item for item in imports)
+
+
 def test_singleton_policy_axis_is_an_identity_reshape() -> None:
     value = np.arange(24, dtype=np.float32).reshape(3, 1, 8)
     folded = fold_agent_batch(value, 1)
@@ -145,9 +155,7 @@ def test_global_fields_are_shared_without_changing_singleton_values() -> None:
     policy = np.arange(4, dtype=np.float32)
     replay = np.arange(12, dtype=np.float32).reshape(4, 3)
     np.testing.assert_array_equal(broadcast_global_batch(policy, 1), policy)
-    np.testing.assert_array_equal(
-        broadcast_global_sequence(replay, 1), replay
-    )
+    np.testing.assert_array_equal(broadcast_global_sequence(replay, 1), replay)
     np.testing.assert_array_equal(
         broadcast_global_batch(policy, 3).reshape(4, 3),
         np.repeat(policy[:, None], 3, axis=1),

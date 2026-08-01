@@ -15,12 +15,8 @@ ALGORITHM_FILES = (
     "configs.yaml",
     "environments.py",
     "main.py",
-    "m3/__init__.py",
-    "m3/agent.py",
-    "m3/configs.yaml",
-    "m3/m3_rssm.py",
-    "m3/main.py",
-    "m3/rssm.py",
+    "rssm.py",
+    "transformer_rssm.py",
 )
 
 

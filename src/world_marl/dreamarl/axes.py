@@ -13,9 +13,7 @@ from collections.abc import Mapping
 from typing import Any
 
 
-GLOBAL_OBSERVATION_KEYS = frozenset(
-    {"is_first", "is_last", "is_terminal", "reward"}
-)
+GLOBAL_OBSERVATION_KEYS = frozenset({"is_first", "is_last", "is_terminal", "reward"})
 GLOBAL_REPLAY_KEYS = frozenset({"consec", "stepid"})
 
 
@@ -35,8 +33,7 @@ def unfold_agent_batch(value: Any, num_agents: int) -> Any:
 
     if value.ndim < 1 or value.shape[0] % num_agents:
         raise ValueError(
-            f"leading dimension {value.shape[0]} is not divisible by "
-            f"{num_agents}"
+            f"leading dimension {value.shape[0]} is not divisible by {num_agents}"
         )
     batch = value.shape[0] // num_agents
     return value.reshape((batch, num_agents, *value.shape[1:]))
@@ -62,13 +59,10 @@ def unfold_agent_sequence(value: Any, num_agents: int) -> Any:
 
     if value.ndim < 2 or value.shape[0] % num_agents:
         raise ValueError(
-            f"leading dimension {value.shape[0]} is not divisible by "
-            f"{num_agents}"
+            f"leading dimension {value.shape[0]} is not divisible by {num_agents}"
         )
     batch = value.shape[0] // num_agents
-    grouped = value.reshape(
-        (batch, num_agents, value.shape[1], *value.shape[2:])
-    )
+    grouped = value.reshape((batch, num_agents, value.shape[1], *value.shape[2:]))
     axes = (0, 2, 1, *range(3, grouped.ndim))
     return grouped.transpose(axes)
 
@@ -101,15 +95,11 @@ def unfold_tree_batch(tree: Any, num_agents: int) -> Any:
     return _map_tree(lambda value: unfold_agent_batch(value, num_agents), tree)
 
 
-def unfold_tree_sequence(tree: Any, num_agents: int) -> Any:
-    """Restore every array leaf in a replay-update tree."""
-
-    return _map_tree(lambda value: unfold_agent_sequence(value, num_agents), tree)
-
-
 def _map_tree(function, tree: Any) -> Any:
     if isinstance(tree, Mapping):
-        return type(tree)((key, _map_tree(function, value)) for key, value in tree.items())
+        return type(tree)(
+            (key, _map_tree(function, value)) for key, value in tree.items()
+        )
     if isinstance(tree, tuple):
         return type(tree)(_map_tree(function, value) for value in tree)
     if isinstance(tree, list):
