@@ -34,6 +34,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--split-seed", type=int, default=0)
     parser.add_argument("--projection-seed", type=int, default=0)
     parser.add_argument("--seeds", type=int, nargs="+", default=[0, 1])
+    parser.add_argument(
+        "--variants",
+        choices=[variant.value for variant in ScreenInput],
+        nargs="+",
+        default=[variant.value for variant in ScreenInput],
+    )
     parser.add_argument("--bootstrap-samples", type=int, default=2_000)
     parser.add_argument("--promotion-delta", type=float, default=0.02)
     parser.add_argument("--wandb-project")
@@ -56,7 +62,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         action_dim=int(bundle.manifest["action_dim"]),
         projection_seed=args.projection_seed,
     )
-    variants = tuple(ScreenInput)
+    variants = tuple(ScreenInput(value) for value in args.variants)
     results = {}
     expected_parameters = None
     for seed in args.seeds:
@@ -93,19 +99,28 @@ def run(args: argparse.Namespace) -> dict[str, object]:
                 "validation": summarize_screen_errors(validation, config),
                 "test": summarize_screen_errors(test, config),
             }
-        seed_results["effects"] = {
-            "local_compression": _mean_error(seed_results, ScreenInput.BELIEF_LOCAL)
-            - _mean_error(seed_results, ScreenInput.OBSERVATION_LOCAL),
-            "other_agent_information": _mean_error(
+        effects = {}
+        if {
+            ScreenInput.BELIEF_LOCAL,
+            ScreenInput.OBSERVATION_LOCAL,
+        }.issubset(variants):
+            effects["local_compression"] = _mean_error(
+                seed_results, ScreenInput.BELIEF_LOCAL
+            ) - _mean_error(seed_results, ScreenInput.OBSERVATION_LOCAL)
+        if {
+            ScreenInput.OBSERVATION_LOCAL,
+            ScreenInput.OBSERVATION_JOINT,
+        }.issubset(variants):
+            effects["other_agent_information"] = _mean_error(
                 seed_results, ScreenInput.OBSERVATION_LOCAL
-            )
-            - _mean_error(seed_results, ScreenInput.OBSERVATION_JOINT),
-        }
+            ) - _mean_error(seed_results, ScreenInput.OBSERVATION_JOINT)
+        seed_results["effects"] = effects
         results[str(seed)] = seed_results
 
+    effect_names = tuple(next(iter(results.values()))["effects"])
     effects = {
         name: [float(result["effects"][name]) for result in results.values()]
-        for name in ("local_compression", "other_agent_information")
+        for name in effect_names
     }
     promotion = {
         name: {
@@ -145,6 +160,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "split_seed": args.split_seed,
             "projection_seed": args.projection_seed,
             "predictor_seeds": args.seeds,
+            "variants": [variant.value for variant in variants],
             "promotion_delta": args.promotion_delta,
         },
         "split": {
@@ -182,14 +198,11 @@ def _log_wandb(args: argparse.Namespace, output: dict[str, object]) -> None:
     )
     for seed_index, (seed, seed_results) in enumerate(output["seeds"].items()):
         metrics = {
-            f"seed_{seed}/local_compression": seed_results["effects"][
-                "local_compression"
-            ],
-            f"seed_{seed}/other_agent_information": seed_results["effects"][
-                "other_agent_information"
-            ],
+            f"seed_{seed}/{name}": value
+            for name, value in seed_results["effects"].items()
         }
-        for variant in ScreenInput:
+        for variant_name in output["config"]["variants"]:
+            variant = ScreenInput(variant_name)
             metrics[f"seed_{seed}/{variant.value}_test_error"] = seed_results[
                 variant.value
             ]["test"]["overall"]["mean"]
@@ -202,7 +215,8 @@ def main(argv: list[str] | None = None) -> int:
     output = run(args)
     for seed, result in output["seeds"].items():
         print(f"seed={seed}")
-        for variant in ScreenInput:
+        for variant_name in output["config"]["variants"]:
+            variant = ScreenInput(variant_name)
             error = result[variant.value]["test"]["overall"]["mean"]
             print(f"  {variant.value:30s} error={error:.6f}")
         print(f"  effects={result['effects']}")
