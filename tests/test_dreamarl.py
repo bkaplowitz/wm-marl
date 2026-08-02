@@ -103,6 +103,22 @@ def test_local_memory_is_an_explicit_task_neutral_algorithm_arm(tmp_path: Path) 
     assert many.to_dict()["algorithm_overrides"] == ["local_memory_sidecar"]
 
 
+def test_unified_memory_is_an_explicit_task_neutral_algorithm_arm(
+    tmp_path: Path,
+) -> None:
+    one = _spec(tmp_path, num_agents=1, unified_memory=True)
+    many = _spec(tmp_path, num_agents=7, unified_memory=True)
+    assert one.configs[-1] == "local_memory_unified"
+    assert many.configs == one.configs
+    assert one.to_dict()["algorithm_overrides"] == ["local_memory_unified"]
+    assert many.to_dict()["algorithm_overrides"] == ["local_memory_unified"]
+
+
+def test_memory_architecture_arms_are_mutually_exclusive(tmp_path: Path) -> None:
+    with np.testing.assert_raises(ValueError):
+        _spec(tmp_path, local_memory=True, unified_memory=True)
+
+
 def test_agent_count_never_selects_learner_computation() -> None:
     source = (algorithm_root() / "agent.py").read_text(encoding="utf-8")
     tree = ast.parse(source)

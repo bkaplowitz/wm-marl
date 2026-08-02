@@ -175,6 +175,7 @@ class TransformerRSSM(rssm.RSSM):
     memory_heads: int = 4
     memory_ffup: int = 2
     memory_seed: int = 0
+    memory_mode: str = "residual"
 
     def __init__(self, act_space, enc_output, **kw):
         super().__init__(act_space, enc_output, **kw)
@@ -184,6 +185,10 @@ class TransformerRSSM(rssm.RSSM):
         self.pair_dim = self.stoch * self.classes + self.action_dim
         self.local_feature_dim = self.deter + self.stoch * self.classes
         self.memory_enabled = self.memory_tokens > 0
+        if self.memory_mode not in {"residual", "unified"}:
+            raise ValueError(f"unknown memory mode: {self.memory_mode}")
+        if self.memory_mode == "unified" and not self.memory_enabled:
+            raise ValueError("unified memory mode requires memory tokens")
 
     @property
     def entry_space(self):
@@ -279,7 +284,11 @@ class TransformerRSSM(rssm.RSSM):
         if self.memory_enabled:
             previous_belief = jnp.concatenate([carry["deter"], previous_stoch], -1)
             memory_prior = self._memory().imagine(
-                carry["memory"], previous_belief, action, reset
+                carry["memory"],
+                previous_belief,
+                action,
+                reset,
+                use_belief=self.memory_mode == "residual",
             )
             memory, memory_target = self._memory().observe(
                 carry["memory"], tokens, action, reset
@@ -330,6 +339,7 @@ class TransformerRSSM(rssm.RSSM):
                     belief,
                     action_embedding,
                     jnp.zeros((stoch.shape[0],), bool),
+                    use_belief=self.memory_mode == "residual",
                 )
             pair = jnp.concatenate([stoch, action_embedding], -1)
             reset = jnp.zeros((pair.shape[0],), bool)
@@ -456,10 +466,13 @@ class TransformerRSSM(rssm.RSSM):
         belief = jnp.concatenate([nn.cast(feat["deter"]), nn.cast(stoch)], -1)
         if not self.memory_enabled:
             return belief
-        residual = self._memory().control_residual(
+        if self.memory_mode == "unified":
+            return self._memory().control_state(
+                feat["memory"], self.local_feature_dim
+            )
+        return belief + self._memory().control_residual(
             feat["memory"], self.local_feature_dim
         )
-        return belief + residual
 
     def _cache(self, carry):
         return {key: carry[key] for key in ("keys", "values", "valid", "position")}

@@ -244,4 +244,10 @@ jepa_transformer:
 
 local_memory_sidecar:
   agent.dyn.jepa_transformer.memory_tokens: 4
+  agent.dyn.jepa_transformer.memory_mode: residual
+  agent.loss_scales.memory_dyn: 100.0
+
+local_memory_unified:
+  agent.dyn.jepa_transformer.memory_tokens: 4
+  agent.dyn.jepa_transformer.memory_mode: unified
   agent.loss_scales.memory_dyn: 100.0

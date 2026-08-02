@@ -22,6 +22,7 @@ class DreaMARLRunSpec:
     train_steps: int = 250_000
     num_agents: int = 1
     local_memory: bool = False
+    unified_memory: bool = False
     platform: str = "cuda"
     infrastructure_root: Path = field(default_factory=default_upstream_root)
     python: Path = field(default_factory=default_dreamer_cdp_python)
@@ -43,6 +44,8 @@ class DreaMARLRunSpec:
         object.__setattr__(self, "python", absolute_path(self.python))
         if self.num_agents < 1:
             raise ValueError("num_agents must be positive")
+        if self.local_memory and self.unified_memory:
+            raise ValueError("dual-path and unified memory are mutually exclusive")
         if not self.task:
             raise ValueError("task must be non-empty")
         if self.train_steps < 1:
@@ -64,6 +67,8 @@ class DreaMARLRunSpec:
         configs = [suite, "jepa_transformer"]
         if self.local_memory:
             configs.append("local_memory_sidecar")
+        if self.unified_memory:
+            configs.append("local_memory_unified")
         return configs
 
     @property
@@ -113,11 +118,10 @@ class DreaMARLRunSpec:
             "train_env_steps_budget": self.train_steps,
             "num_agents": self.num_agents,
             "local_memory": self.local_memory,
+            "unified_memory": self.unified_memory,
             "agent_axis_native": True,
             "agent_count_dependent_modules": [],
-            "algorithm_overrides": (
-                ["local_memory_sidecar"] if self.local_memory else []
-            ),
+            "algorithm_overrides": self.configs[2:],
             "platform": self.platform,
             "observation_mode": "vision",
             "accelerator_memory_preallocation": not self.task.startswith("meltingpot_"),
