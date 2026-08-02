@@ -1,8 +1,8 @@
 contract: equal_capacity_h1_information_ladder_v1
 dataset:
-  trajectories: 48
+  trajectories: 36
   context: 64
-  length: 32
+  length: 64
   include_observations: true
   target: stopped_next_representation
   split:
