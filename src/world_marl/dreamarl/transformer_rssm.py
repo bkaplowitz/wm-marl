@@ -17,14 +17,7 @@ import numpy as np
 import optax
 
 from . import rssm
-from .axes import (
-    fold_agent_batch,
-    fold_agent_sequence,
-    select_joint_starts,
-    unfold_agent_batch,
-    unfold_agent_sequence,
-)
-from .interaction import AgentInteraction, InteractionResidual
+from .axes import select_joint_starts
 from .local_memory import LocalMemorySidecar
 
 
@@ -177,10 +170,6 @@ class TransformerRSSM(rssm.RSSM):
     context: int = 64
     ffup: int = 4
     num_agents: int = 1
-    interaction: str = "none"
-    interaction_units: int = 128
-    interaction_heads: int = 4
-    interaction_seed: int = 0
     memory_tokens: int = 0
     memory_units: int = 256
     memory_heads: int = 4
@@ -189,8 +178,6 @@ class TransformerRSSM(rssm.RSSM):
 
     def __init__(self, act_space, enc_output, **kw):
         super().__init__(act_space, enc_output, **kw)
-        if self.interaction not in {"none", "aligned", "shuffled"}:
-            raise ValueError(f"unknown interaction context: {self.interaction!r}")
         if self.num_agents < 1:
             raise ValueError("num_agents must be positive")
         self.action_dim = _encoded_action_dim(act_space)
@@ -334,7 +321,6 @@ class TransformerRSSM(rssm.RSSM):
             action = policy(sg(carry)) if callable(policy) else policy
             action_embedding = nn.DictConcat(self.act_space, 1)(action)
             action_embedding /= sg(jnp.maximum(1, jnp.abs(action_embedding)))
-            message, has_other = self._interaction_step(carry, action_embedding)
             stoch = carry["stoch"].reshape((carry["stoch"].shape[0], -1))
             memory = None
             if self.memory_enabled:
@@ -348,10 +334,7 @@ class TransformerRSSM(rssm.RSSM):
             pair = jnp.concatenate([stoch, action_embedding], -1)
             reset = jnp.zeros((pair.shape[0],), bool)
             cache, deter = self._temporal().step(self._cache(carry), pair, reset)
-            base_prior = self._prior(deter)
-            logit, _, world_delta = self._interaction_outputs(
-                deter, message, has_other, base_prior=base_prior
-            )
+            logit = self._prior(deter)
             stoch = nn.cast(self._dist(logit).sample(seed=nj.seed()))
             carry = nn.cast(
                 dict(
@@ -366,7 +349,6 @@ class TransformerRSSM(rssm.RSSM):
                     deter=deter,
                     stoch=stoch,
                     logit=logit,
-                    world_delta=world_delta,
                     **({"memory": memory} if self.memory_enabled else {}),
                 )
             )
@@ -394,22 +376,15 @@ class TransformerRSSM(rssm.RSSM):
 
     def loss(self, carry, tokens, acts, reset, training, slow_tokens=None):
         metrics = {}
-        initial_carry = carry
         carry, entries, feat, _ = self.observe(carry, tokens, acts, reset, training)
-        base_prior = self._prior(feat["deter"])
-        message, has_other = self._interaction_sequence(
-            initial_carry, feat, acts, reset
-        )
-        prior, pred_delta, world_delta = self._interaction_outputs(
-            feat["deter"], message, has_other, base_prior=base_prior
-        )
+        prior = self._prior(feat["deter"])
         post = feat["logit"]
         dyn = self._dist(sg(post)).kl(self._dist(prior))
-        rep = self._dist(post).kl(self._dist(sg(base_prior)))
+        rep = self._dist(post).kl(self._dist(sg(prior)))
         if self.free_nats:
             dyn = jnp.maximum(dyn, self.free_nats)
             rep = jnp.maximum(rep, self.free_nats)
-        pred_enc = self.predictor(feat["deter"]) + pred_delta
+        pred_enc = self.predictor(feat["deter"])
         dyn_deter = optax.losses.cosine_distance(
             sg(slow_tokens), pred_enc, axis=-1, epsilon=1e-8
         )
@@ -435,26 +410,14 @@ class TransformerRSSM(rssm.RSSM):
             metrics["memory/prior_std"] = jnp.std(f32(memory_prior))
             metrics["memory/posterior_gate"] = self._memory().gate("posterior_gate")
             metrics["memory/control_gate"] = self._memory().gate("control_gate")
-        else:
-            losses["memory_dyn"] = jnp.zeros_like(dyn_deter)
         metrics["dyn_ent"] = self._dist(prior).entropy().mean()
-        metrics["local_dyn_ent"] = self._dist(base_prior).entropy().mean()
         metrics["rep_ent"] = self._dist(post).entropy().mean()
-        metrics["interaction/message_rms"] = self._masked_rms(message, has_other)
-        metrics["interaction/prior_delta_rms"] = self._masked_rms(
-            prior - base_prior, has_other
-        )
-        metrics["interaction/predictor_delta_rms"] = self._masked_rms(
-            pred_delta, has_other
-        )
-        metrics["interaction/active_fraction"] = has_other.mean()
         if self.memory_enabled:
             feat = {
                 key: value
                 for key, value in feat.items()
                 if key not in {"memory_prior", "memory_target"}
             }
-        feat = {**feat, "world_delta": world_delta}
         return carry, entries, losses, feat, metrics, None
 
     def representation_diagnostics(
@@ -462,16 +425,9 @@ class TransformerRSSM(rssm.RSSM):
     ):
         """Return transition-aligned frozen-model tensors for offline studies."""
 
-        initial_carry = carry
         carry, entries, feat, _ = self.observe(carry, tokens, acts, reset, training)
-        base_prior = self._prior(feat["deter"])
-        message, has_other = self._interaction_sequence(
-            initial_carry, feat, acts, reset
-        )
-        prior, pred_delta, _ = self._interaction_outputs(
-            feat["deter"], message, has_other, base_prior=base_prior
-        )
-        pred_token = self.predictor(feat["deter"]) + pred_delta
+        prior = self._prior(feat["deter"])
+        pred_token = self.predictor(feat["deter"])
         target_token = tokens if slow_tokens is None else slow_tokens
         return carry, {
             "pair": f32(entries["pair"]),
@@ -479,7 +435,6 @@ class TransformerRSSM(rssm.RSSM):
             "stoch": f32(feat["stoch"]),
             "post_logit": f32(feat["logit"]),
             "prior_logit": f32(prior),
-            "base_prior_logit": f32(base_prior),
             "pred_token": f32(pred_token),
             "target_token": f32(target_token),
             "reset": reset,
@@ -505,127 +460,6 @@ class TransformerRSSM(rssm.RSSM):
             feat["memory"], self.local_feature_dim
         )
         return belief + residual
-
-    def _interaction_sequence(self, initial_carry, feat, actions, reset):
-        source_deter = jnp.concatenate(
-            [initial_carry["deter"][:, None], feat["deter"][:, :-1]], 1
-        )
-        source_stoch = jnp.concatenate(
-            [initial_carry["stoch"][:, None], feat["stoch"][:, :-1]], 1
-        )
-        action = nn.DictConcat(self.act_space, 1)(actions)
-        action = nn.mask(action, ~reset)
-        action /= sg(jnp.maximum(1, jnp.abs(action)))
-        belief = jnp.concatenate(
-            [source_deter, source_stoch.reshape((*source_stoch.shape[:-2], -1))],
-            -1,
-        )
-        token = jnp.concatenate([belief, action], -1)
-        grouped_belief = unfold_agent_sequence(belief, self.num_agents)
-        grouped_token = unfold_agent_sequence(token, self.num_agents)
-        if self.interaction == "none":
-            shape = (*grouped_belief.shape[:-1], self.interaction_units)
-            message = jnp.zeros(shape, grouped_belief.dtype)
-            has_other = jnp.zeros((*shape[:-1], 1), bool)
-            return (
-                fold_agent_sequence(message, self.num_agents),
-                fold_agent_sequence(has_other, self.num_agents),
-            )
-        valid = jnp.ones(grouped_belief.shape[:-1], bool)
-        message, has_other = self._interaction()(
-            grouped_belief,
-            grouped_token,
-            valid,
-            shuffled=self.interaction == "shuffled",
-        )
-        message = fold_agent_sequence(message, self.num_agents)
-        has_other = fold_agent_sequence(has_other, self.num_agents)
-        message = nn.mask(message, ~reset)
-        has_other = has_other & (~reset[..., None])
-        return message, has_other
-
-    def _interaction_step(self, carry, action):
-        stoch = carry["stoch"].reshape((carry["stoch"].shape[0], -1))
-        belief = jnp.concatenate([carry["deter"], stoch], -1)
-        token = jnp.concatenate([belief, action], -1)
-        grouped_belief = unfold_agent_batch(belief, self.num_agents)
-        grouped_token = unfold_agent_batch(token, self.num_agents)
-        if self.interaction == "none":
-            shape = (*grouped_belief.shape[:-1], self.interaction_units)
-            message = jnp.zeros(shape, grouped_belief.dtype)
-            has_other = jnp.zeros((*shape[:-1], 1), bool)
-            return (
-                fold_agent_batch(message, self.num_agents),
-                fold_agent_batch(has_other, self.num_agents),
-            )
-        valid = jnp.ones(grouped_belief.shape[:-1], bool)
-        message, has_other = self._interaction()(
-            grouped_belief,
-            grouped_token,
-            valid,
-            shuffled=self.interaction == "shuffled",
-        )
-        return (
-            fold_agent_batch(message, self.num_agents),
-            fold_agent_batch(has_other, self.num_agents),
-        )
-
-    def _interaction_outputs(self, deter, message, has_other, *, base_prior):
-        if self.interaction == "none":
-            return (
-                base_prior,
-                jnp.zeros((*deter.shape[:-1], self.enc_output), deter.dtype),
-                jnp.zeros((*deter.shape[:-1], self.local_feature_dim), deter.dtype),
-            )
-        prior_delta = self.sub(
-            "interaction_prior",
-            InteractionResidual,
-            self.stoch * self.classes,
-            hidden=self.interaction_units,
-            act=self.act,
-            norm=self.norm,
-            seed=self.interaction_seed + 100,
-        )(deter, message, has_other)
-        prior_delta = prior_delta.reshape(base_prior.shape)
-        pred_delta = self.sub(
-            "interaction_predictor",
-            InteractionResidual,
-            self.enc_output,
-            hidden=self.interaction_units,
-            act=self.act,
-            norm=self.norm,
-            seed=self.interaction_seed + 200,
-        )(deter, message, has_other)
-        world_delta = self.sub(
-            "interaction_world",
-            InteractionResidual,
-            self.local_feature_dim,
-            hidden=self.interaction_units,
-            act=self.act,
-            norm=self.norm,
-            seed=self.interaction_seed + 300,
-        )(deter, message, has_other)
-        return base_prior + prior_delta, pred_delta, world_delta
-
-    def _interaction(self):
-        return self.sub(
-            "interaction",
-            AgentInteraction,
-            self.local_feature_dim,
-            self.local_feature_dim + self.action_dim,
-            units=self.interaction_units,
-            heads=self.interaction_heads,
-            norm=self.norm,
-            seed=self.interaction_seed,
-        )
-
-    @staticmethod
-    def _masked_rms(value, mask):
-        while mask.ndim < value.ndim:
-            mask = mask[..., None]
-        expanded = jnp.broadcast_to(mask, value.shape)
-        count = jnp.maximum(expanded.sum(), 1)
-        return jnp.sqrt((jnp.square(f32(value)) * expanded).sum() / count)
 
     def _cache(self, carry):
         return {key: carry[key] for key in ("keys", "values", "valid", "position")}

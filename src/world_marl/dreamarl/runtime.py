@@ -14,7 +14,6 @@ ALGORITHM_FILES = (
     "axes.py",
     "configs.yaml",
     "environments.py",
-    "interaction.py",
     "local_memory.py",
     "train.py",
     "main.py",

@@ -105,7 +105,6 @@ class Agent(embodied.jax.Agent):
         if dynamics_type == "jepa_transformer":
             dynamics_config = dynamics_config.update(
                 num_agents=self.num_agents,
-                interaction_seed=int(config.seed),
                 memory_seed=int(config.seed) + 10_000,
             )
         self.dyn = {
@@ -126,12 +125,7 @@ class Agent(embodied.jax.Agent):
 
         self.feat2tensor = feat2tensor
 
-        def world_feat2tensor(feat):
-            local = self.feat2tensor(feat)
-            delta = feat.get("world_delta")
-            return local if delta is None else local + nn.cast(delta)
-
-        self.world_feat2tensor = world_feat2tensor
+        self.world_feat2tensor = self.feat2tensor
         self.dec = {
             "simple": rssm.Decoder,
         }[config.dec.typ](dec_space, **config.dec[config.dec.typ], name="dec")
@@ -206,6 +200,8 @@ class Agent(embodied.jax.Agent):
 
         scales = self.config.loss_scales.copy()
         rec = scales.pop("rec")
+        if scales.get("memory_dyn") == 0:
+            scales.pop("memory_dyn")
         scales.update({k: rec for k in dec_space})
         self.scales = scales
 

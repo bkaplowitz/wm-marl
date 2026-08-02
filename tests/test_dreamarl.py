@@ -206,18 +206,6 @@ def test_joint_start_order_groups_agents_at_each_start() -> None:
     )
 
 
-def test_interaction_arms_change_algorithm_not_agent_count(tmp_path: Path) -> None:
-    aligned = _spec(tmp_path, num_agents=1, interaction_context="aligned")
-    shuffled = _spec(tmp_path, num_agents=7, interaction_context="shuffled")
-    assert "interaction_jepa" in aligned.command
-    assert "interaction_jepa_shuffled" in shuffled.command
-    assert aligned.to_dict()["algorithm_overrides"] == ["interaction_context=aligned"]
-    assert shuffled.to_dict()["algorithm_overrides"] == ["interaction_context=shuffled"]
-    assert verify_m3_reduction_contract(aligned)["algorithm_overrides"] == [
-        "interaction_context=aligned"
-    ]
-
-
 def test_global_fields_are_shared_without_changing_singleton_values() -> None:
     policy = np.arange(4, dtype=np.float32)
     replay = np.arange(12, dtype=np.float32).reshape(4, 3)

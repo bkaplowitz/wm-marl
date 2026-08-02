@@ -23,12 +23,6 @@ def main(argv: list[str] | None = None) -> int:
         help="Extent of the explicit agent tensor axis; does not select a regime.",
     )
     parser.add_argument(
-        "--interaction-context",
-        choices=("none", "aligned", "shuffled"),
-        default="none",
-        help="World-model interaction arm; actor and critic remain local.",
-    )
-    parser.add_argument(
         "--local-memory",
         action="store_true",
         help="Enable the four-token local memory sidecar.",
@@ -61,7 +55,6 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
         train_steps=args.total_env_steps,
         num_agents=args.num_agents,
-        interaction_context=args.interaction_context,
         local_memory=args.local_memory,
         platform=args.platform,
         infrastructure_root=args.infrastructure_root,

@@ -10,10 +10,20 @@ import jax
 import jax.numpy as jnp
 import ninjax as nj
 
-from .interaction import isolated_winit
-
-
 f32 = jnp.float32
+
+
+def isolated_winit(seed):
+    """Fan-in initializer that does not consume the learner RNG stream."""
+
+    def initialize(shape, dtype=jnp.float32):
+        fan_in = jnp.prod(jnp.asarray(shape[:-1]))
+        value = jax.random.truncated_normal(
+            jax.random.key(seed), -2.0, 2.0, shape, dtype
+        )
+        return value * (1.1368 / jnp.sqrt(fan_in))
+
+    return initialize
 
 
 class LocalMemorySidecar(nj.Module):
