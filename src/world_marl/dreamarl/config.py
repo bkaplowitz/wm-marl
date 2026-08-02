@@ -24,6 +24,7 @@ class DreaMARLRunSpec:
     train_steps: int = 250_000
     num_agents: int = 1
     interaction_context: Literal["none", "aligned", "shuffled"] = "none"
+    local_memory: bool = False
     platform: str = "cuda"
     infrastructure_root: Path = field(default_factory=default_upstream_root)
     python: Path = field(default_factory=default_dreamer_cdp_python)
@@ -63,15 +64,15 @@ class DreaMARLRunSpec:
     @property
     def configs(self) -> list[str]:
         suite = (
-            "meltingpot_vision"
-            if self.task.startswith("meltingpot_")
-            else "dmc_vision"
+            "meltingpot_vision" if self.task.startswith("meltingpot_") else "dmc_vision"
         )
         configs = [suite, "jepa_transformer"]
         if self.interaction_context == "aligned":
             configs.append("interaction_jepa")
         elif self.interaction_context == "shuffled":
             configs.append("interaction_jepa_shuffled")
+        if self.local_memory:
+            configs.append("local_memory_sidecar")
         return configs
 
     @property
@@ -121,18 +122,20 @@ class DreaMARLRunSpec:
             "train_env_steps_budget": self.train_steps,
             "num_agents": self.num_agents,
             "interaction_context": self.interaction_context,
+            "local_memory": self.local_memory,
             "agent_axis_native": True,
             "agent_count_dependent_modules": [],
-            "algorithm_overrides": (
-                []
-                if self.interaction_context == "none"
-                else [f"interaction_context={self.interaction_context}"]
-            ),
+            "algorithm_overrides": [
+                *(
+                    []
+                    if self.interaction_context == "none"
+                    else [f"interaction_context={self.interaction_context}"]
+                ),
+                *(["local_memory_sidecar"] if self.local_memory else []),
+            ],
             "platform": self.platform,
             "observation_mode": "vision",
-            "accelerator_memory_preallocation": not self.task.startswith(
-                "meltingpot_"
-            ),
+            "accelerator_memory_preallocation": not self.task.startswith("meltingpot_"),
             "configs": self.configs,
             "source_fingerprint": runtime_fingerprint(),
             "save_every_seconds": self.save_every_seconds,

@@ -196,6 +196,10 @@ def _extract_function(
                 data["dyn/stoch"][:, :context], num_agents
             ),
         }
+        if "dyn/memory" in data:
+            context_entries["memory"] = fold_agent_sequence(
+                data["dyn/memory"][:, :context], num_agents
+            )
         dyn_carry = dynamics.truncate(context_entries)
         target = slice(context, None)
         obs = {
@@ -251,6 +255,11 @@ def _extract_function(
             "openloop_prior_logit": jnp.float32(imagined["logit"]),
             "openloop_pred_token": jnp.float32(
                 dynamics.predictor(imagined["deter"])
+            ),
+            **(
+                {"openloop_memory": jnp.float32(imagined["memory"])}
+                if "memory" in imagined
+                else {}
             ),
         }
         grouped_all.update(
@@ -324,6 +333,9 @@ def run(args: argparse.Namespace) -> Path:
             "reward",
         }
     )
+    dyn_config = config.agent.dyn[config.agent.dyn.typ]
+    if int(getattr(dyn_config, "memory_tokens", 0)):
+        required.add("dyn/memory")
     extra = 1 if args.transition_contract else 0
     windows, provenance = _sample_windows(
         run_dir / "replay",
@@ -339,7 +351,6 @@ def run(args: argparse.Namespace) -> Path:
             "EMA target extraction must instantiate the resolved SlowModel; "
             "this run enables slowenc but the extractor does not"
         )
-    dyn_config = config.agent.dyn[config.agent.dyn.typ]
     if getattr(dyn_config, "interaction", "none") != "none":
         raise ValueError(
             "the neutral information ladder requires an interaction-free checkpoint"

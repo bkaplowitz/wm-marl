@@ -88,7 +88,7 @@ defaults:
     # Static agent geometry only; it does not select a different algorithm,
     # optimizer, loss, replay schedule, or imagination regime.
     num_agents: 1
-    loss_scales: {rec: 1.0, rew: 1.0, con: 1.0, dyn: 1.0, rep: 0.1, policy: 1.0, value: 1.0, repval: 0.3, dyn_deter: 500} 
+    loss_scales: {rec: 1.0, rew: 1.0, con: 1.0, dyn: 1.0, rep: 0.1, policy: 1.0, value: 1.0, repval: 0.3, dyn_deter: 500, memory_dyn: 0.0}
     opt: {lr: 4e-5, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
     enc_lr: 6e-6
     dyn_lr: 4e-4
@@ -96,7 +96,7 @@ defaults:
     dyn:
       typ: rssm
       rssm: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, act: silu, norm: rms, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0}
-      jepa_transformer: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, act: silu, norm: rms, unroll: False, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0, model: 512, layers: 4, heads: 8, context: 64, ffup: 4, num_agents: 1, interaction: none, interaction_units: 128, interaction_heads: 4, interaction_seed: 0}
+      jepa_transformer: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, act: silu, norm: rms, unroll: False, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0, model: 512, layers: 4, heads: 8, context: 64, ffup: 4, num_agents: 1, interaction: none, interaction_units: 128, interaction_heads: 4, interaction_seed: 0, memory_tokens: 0, memory_units: 256, memory_heads: 4, memory_ffup: 2, memory_seed: 0}
     enc:
       typ: simple
       simple: {depth: 64, mults: [2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: rms, winit: trunc_normal_in, symlog: True, outer: False, kernel: 5, strided: False}
@@ -247,3 +247,7 @@ interaction_jepa:
 
 interaction_jepa_shuffled:
   agent.dyn.jepa_transformer.interaction: shuffled
+
+local_memory_sidecar:
+  agent.dyn.jepa_transformer.memory_tokens: 4
+  agent.loss_scales.memory_dyn: 100.0

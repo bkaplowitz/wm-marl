@@ -15,6 +15,7 @@ ALGORITHM_FILES = (
     "configs.yaml",
     "environments.py",
     "interaction.py",
+    "local_memory.py",
     "train.py",
     "main.py",
     "rssm.py",

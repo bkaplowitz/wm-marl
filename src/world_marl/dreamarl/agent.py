@@ -106,20 +106,25 @@ class Agent(embodied.jax.Agent):
             dynamics_config = dynamics_config.update(
                 num_agents=self.num_agents,
                 interaction_seed=int(config.seed),
+                memory_seed=int(config.seed) + 10_000,
             )
         self.dyn = {
             "rssm": rssm.RSSM,
             "jepa_transformer": transformer_rssm.TransformerRSSM,
-        }[dynamics_type](
-            act_space, self.enc_output_dim, **dynamics_config, name="dyn"
-        )
-        self.feat2tensor = lambda x: jnp.concatenate(
-            [
-                nn.cast(x["deter"]),
-                nn.cast(x["stoch"].reshape((*x["stoch"].shape[:-2], -1))),
-            ],
-            -1,
-        )
+        }[dynamics_type](act_space, self.enc_output_dim, **dynamics_config, name="dyn")
+
+        def feat2tensor(feat):
+            if hasattr(self.dyn, "control_feature"):
+                return self.dyn.control_feature(feat)
+            return jnp.concatenate(
+                [
+                    nn.cast(feat["deter"]),
+                    nn.cast(feat["stoch"].reshape((*feat["stoch"].shape[:-2], -1))),
+                ],
+                -1,
+            )
+
+        self.feat2tensor = feat2tensor
 
         def world_feat2tensor(feat):
             local = self.feat2tensor(feat)
@@ -444,9 +449,7 @@ class Agent(embodied.jax.Agent):
         )
         losses.update(
             {
-                key: restore_folded_start_order(
-                    value.mean(1), self.num_agents, K
-                )
+                key: restore_folded_start_order(value.mean(1), self.num_agents, K)
                 for key, value in los.items()
             }
         )
@@ -500,19 +503,13 @@ class Agent(embodied.jax.Agent):
 
         flat_carry = fold_tree_batch(carry, self.num_agents)
         flat_data = self._fold_replay(data)
-        flat_carry, obs, prevact, _ = self._apply_replay_context(
-            flat_carry, flat_data
-        )
+        flat_carry, obs, prevact, _ = self._apply_replay_context(flat_carry, flat_data)
         enc_carry, dyn_carry, dec_carry = flat_carry
         reset = obs["is_first"]
-        enc_carry, _, tokens = self.enc(
-            enc_carry, obs, reset, training=False
-        )
+        enc_carry, _, tokens = self.enc(enc_carry, obs, reset, training=False)
         slow_tokens = None
         if self.slowenc is not None:
-            _, _, slow_tokens = self.slowenc(
-                enc_carry, obs, reset, training=False
-            )
+            _, _, slow_tokens = self.slowenc(enc_carry, obs, reset, training=False)
         dyn_carry, tensors = self.dyn.representation_diagnostics(
             dyn_carry,
             tokens,

@@ -25,6 +25,7 @@ from .axes import (
     unfold_agent_sequence,
 )
 from .interaction import AgentInteraction, InteractionResidual
+from .local_memory import LocalMemorySidecar
 
 
 f32 = jnp.float32
@@ -40,7 +41,9 @@ def _encoded_action_dim(act_space):
         if space.discrete:
             classes = np.asarray(space.classes).reshape(-1)
             if not (classes == classes[0]).all():
-                raise ValueError("each discrete action tensor must share one cardinality")
+                raise ValueError(
+                    "each discrete action tensor must share one cardinality"
+                )
             elements_count *= int(classes[0])
         total += elements_count
     return total
@@ -178,6 +181,11 @@ class TransformerRSSM(rssm.RSSM):
     interaction_units: int = 128
     interaction_heads: int = 4
     interaction_seed: int = 0
+    memory_tokens: int = 0
+    memory_units: int = 256
+    memory_heads: int = 4
+    memory_ffup: int = 2
+    memory_seed: int = 0
 
     def __init__(self, act_space, enc_output, **kw):
         super().__init__(act_space, enc_output, **kw)
@@ -188,26 +196,33 @@ class TransformerRSSM(rssm.RSSM):
         self.action_dim = _encoded_action_dim(act_space)
         self.pair_dim = self.stoch * self.classes + self.action_dim
         self.local_feature_dim = self.deter + self.stoch * self.classes
+        self.memory_enabled = self.memory_tokens > 0
 
     @property
     def entry_space(self):
-        return dict(
+        spaces = dict(
             deter=elements.Space(np.float32, self.deter),
             stoch=elements.Space(np.float32, (self.stoch, self.classes)),
             pair=elements.Space(np.float32, self.pair_dim),
             reset=elements.Space(bool),
         )
+        if self.memory_enabled:
+            spaces["memory"] = elements.Space(
+                np.float32, (self.memory_tokens, self.memory_units)
+            )
+        return spaces
 
     def initial(self, batch_size):
         temporal = self._temporal()
         cache = temporal.initial(batch_size)
-        return nn.cast(
-            dict(
-                deter=jnp.zeros((batch_size, self.deter), f32),
-                stoch=jnp.zeros((batch_size, self.stoch, self.classes), f32),
-                **cache,
-            )
+        carry = dict(
+            deter=jnp.zeros((batch_size, self.deter), f32),
+            stoch=jnp.zeros((batch_size, self.stoch, self.classes), f32),
+            **cache,
         )
+        if self.memory_enabled:
+            carry["memory"] = self._memory().initial(batch_size)
+        return nn.cast(carry)
 
     def truncate(self, entries, carry=None):
         assert entries["pair"].ndim == 3, entries["pair"].shape
@@ -215,22 +230,31 @@ class TransformerRSSM(rssm.RSSM):
         carry = self.initial(batch_size)
 
         def advance(current, inputs):
-            pair, reset, stoch = inputs
+            pair, reset, stoch, memory = inputs
             cache, deter = self._temporal().step(self._cache(current), pair, reset)
             current = dict(deter=deter, stoch=nn.cast(stoch), **cache)
+            if self.memory_enabled:
+                current["memory"] = nn.cast(memory)
             return current, ()
 
+        memory = (
+            entries["memory"]
+            if self.memory_enabled
+            else jnp.zeros((*entries["reset"].shape, 0, 0), f32)
+        )
         carry, _ = nj.scan(
             advance,
             carry,
-            (entries["pair"], entries["reset"], entries["stoch"]),
+            (entries["pair"], entries["reset"], entries["stoch"], memory),
             axis=1,
         )
         return carry
 
     def starts(self, entries, carry, nlast):
         del carry
-        keys = ("deter", "stoch", "keys", "values", "valid", "position")
+        keys = ["deter", "stoch", "keys", "values", "valid", "position"]
+        if self.memory_enabled:
+            keys.append("memory")
         return {
             key: select_joint_starts(entries[key], self.num_agents, nlast)
             for key in keys
@@ -264,20 +288,43 @@ class TransformerRSSM(rssm.RSSM):
         pair = jnp.concatenate([previous_stoch, action], -1)
         cache, deter = self._temporal().step(self._cache(carry), pair, reset)
         tokens = tokens.reshape((*deter.shape[:-1], -1))
+        memory_values = {}
+        if self.memory_enabled:
+            previous_belief = jnp.concatenate([carry["deter"], previous_stoch], -1)
+            memory_prior = self._memory().imagine(
+                carry["memory"], previous_belief, action, reset
+            )
+            memory, memory_target = self._memory().observe(
+                carry["memory"], tokens, action, reset
+            )
+            memory_values = dict(
+                memory=memory,
+                memory_prior=memory_prior,
+                memory_target=memory_target,
+            )
         x = tokens if self.absolute else jnp.concatenate([deter, tokens], -1)
         for index in range(self.obslayers):
             x = self.sub(f"obs{index}", nn.Linear, self.hidden, **self.kw)(x)
             x = nn.act(self.act)(self.sub(f"obs{index}norm", nn.Norm, self.norm)(x))
         logit = self._logit("obslogit", x)
         stoch = nn.cast(self._dist(logit).sample(seed=nj.seed()))
-        carry = nn.cast(dict(deter=deter, stoch=stoch, **cache))
-        feat = nn.cast(dict(deter=deter, stoch=stoch, logit=logit))
+        carry = nn.cast(
+            dict(
+                deter=deter,
+                stoch=stoch,
+                **cache,
+                **({"memory": memory_values["memory"]} if self.memory_enabled else {}),
+            )
+        )
+        feat = nn.cast(dict(deter=deter, stoch=stoch, logit=logit, **memory_values))
         entry = dict(
             deter=f32(deter),
             stoch=f32(stoch),
             pair=f32(pair),
             reset=reset,
         )
+        if self.memory_enabled:
+            entry["memory"] = f32(memory_values["memory"])
         if include_cache:
             entry.update(cache)
         return carry, (entry, feat, x)
@@ -289,6 +336,15 @@ class TransformerRSSM(rssm.RSSM):
             action_embedding /= sg(jnp.maximum(1, jnp.abs(action_embedding)))
             message, has_other = self._interaction_step(carry, action_embedding)
             stoch = carry["stoch"].reshape((carry["stoch"].shape[0], -1))
+            memory = None
+            if self.memory_enabled:
+                belief = jnp.concatenate([carry["deter"], stoch], -1)
+                memory = self._memory().imagine(
+                    carry["memory"],
+                    belief,
+                    action_embedding,
+                    jnp.zeros((stoch.shape[0],), bool),
+                )
             pair = jnp.concatenate([stoch, action_embedding], -1)
             reset = jnp.zeros((pair.shape[0],), bool)
             cache, deter = self._temporal().step(self._cache(carry), pair, reset)
@@ -297,13 +353,21 @@ class TransformerRSSM(rssm.RSSM):
                 deter, message, has_other, base_prior=base_prior
             )
             stoch = nn.cast(self._dist(logit).sample(seed=nj.seed()))
-            carry = nn.cast(dict(deter=deter, stoch=stoch, **cache))
+            carry = nn.cast(
+                dict(
+                    deter=deter,
+                    stoch=stoch,
+                    **cache,
+                    **({"memory": memory} if self.memory_enabled else {}),
+                )
+            )
             feat = nn.cast(
                 dict(
                     deter=deter,
                     stoch=stoch,
                     logit=logit,
                     world_delta=world_delta,
+                    **({"memory": memory} if self.memory_enabled else {}),
                 )
             )
             return carry, (feat, action)
@@ -350,6 +414,29 @@ class TransformerRSSM(rssm.RSSM):
             sg(slow_tokens), pred_enc, axis=-1, epsilon=1e-8
         )
         losses = dict(dyn=dyn, rep=rep, dyn_deter=dyn_deter)
+        if self.memory_enabled:
+            memory_target = sg(feat["memory_target"])
+            memory_prior = feat["memory_prior"]
+            memory_dyn = optax.losses.cosine_distance(
+                memory_target,
+                memory_prior,
+                axis=-1,
+                epsilon=1e-8,
+            ).mean(-1)
+            losses["memory_dyn"] = nn.mask(memory_dyn, ~reset)
+            metrics["memory/dyn_error"] = losses["memory_dyn"].mean()
+            metrics["memory/target_rms"] = jnp.sqrt(
+                jnp.mean(f32(memory_target) ** 2)
+            )
+            metrics["memory/target_std"] = jnp.std(f32(memory_target))
+            metrics["memory/prior_rms"] = jnp.sqrt(
+                jnp.mean(f32(memory_prior) ** 2)
+            )
+            metrics["memory/prior_std"] = jnp.std(f32(memory_prior))
+            metrics["memory/posterior_gate"] = self._memory().gate("posterior_gate")
+            metrics["memory/control_gate"] = self._memory().gate("control_gate")
+        else:
+            losses["memory_dyn"] = jnp.zeros_like(dyn_deter)
         metrics["dyn_ent"] = self._dist(prior).entropy().mean()
         metrics["local_dyn_ent"] = self._dist(base_prior).entropy().mean()
         metrics["rep_ent"] = self._dist(post).entropy().mean()
@@ -361,6 +448,12 @@ class TransformerRSSM(rssm.RSSM):
             pred_delta, has_other
         )
         metrics["interaction/active_fraction"] = has_other.mean()
+        if self.memory_enabled:
+            feat = {
+                key: value
+                for key, value in feat.items()
+                if key not in {"memory_prior", "memory_target"}
+            }
         feat = {**feat, "world_delta": world_delta}
         return carry, entries, losses, feat, metrics, None
 
@@ -370,9 +463,7 @@ class TransformerRSSM(rssm.RSSM):
         """Return transition-aligned frozen-model tensors for offline studies."""
 
         initial_carry = carry
-        carry, entries, feat, _ = self.observe(
-            carry, tokens, acts, reset, training
-        )
+        carry, entries, feat, _ = self.observe(carry, tokens, acts, reset, training)
         base_prior = self._prior(feat["deter"])
         message, has_other = self._interaction_sequence(
             initial_carry, feat, acts, reset
@@ -392,7 +483,28 @@ class TransformerRSSM(rssm.RSSM):
             "pred_token": f32(pred_token),
             "target_token": f32(target_token),
             "reset": reset,
+            **(
+                {
+                    "memory": f32(feat["memory"]),
+                    "memory_prior": f32(feat["memory_prior"]),
+                    "memory_target": f32(feat["memory_target"]),
+                }
+                if self.memory_enabled
+                else {}
+            ),
         }
+
+    def control_feature(self, feat):
+        """Return the unchanged belief plus a zero-gated memory residual."""
+
+        stoch = feat["stoch"].reshape((*feat["stoch"].shape[:-2], -1))
+        belief = jnp.concatenate([nn.cast(feat["deter"]), nn.cast(stoch)], -1)
+        if not self.memory_enabled:
+            return belief
+        residual = self._memory().control_residual(
+            feat["memory"], self.local_feature_dim
+        )
+        return belief + residual
 
     def _interaction_sequence(self, initial_carry, feat, actions, reset):
         source_deter = jnp.concatenate(
@@ -463,9 +575,7 @@ class TransformerRSSM(rssm.RSSM):
             return (
                 base_prior,
                 jnp.zeros((*deter.shape[:-1], self.enc_output), deter.dtype),
-                jnp.zeros(
-                    (*deter.shape[:-1], self.local_feature_dim), deter.dtype
-                ),
+                jnp.zeros((*deter.shape[:-1], self.local_feature_dim), deter.dtype),
             )
         prior_delta = self.sub(
             "interaction_prior",
@@ -519,6 +629,24 @@ class TransformerRSSM(rssm.RSSM):
 
     def _cache(self, carry):
         return {key: carry[key] for key in ("keys", "values", "valid", "position")}
+
+    def _memory(self):
+        if not self.memory_enabled:
+            raise RuntimeError("local memory sidecar is disabled")
+        return self.sub(
+            "local_memory",
+            LocalMemorySidecar,
+            self.enc_output,
+            self.local_feature_dim,
+            self.action_dim,
+            tokens=self.memory_tokens,
+            units=self.memory_units,
+            heads=self.memory_heads,
+            ffup=self.memory_ffup,
+            act=self.act,
+            norm=self.norm,
+            seed=self.memory_seed,
+        )
 
     def _temporal(self):
         return self.sub(

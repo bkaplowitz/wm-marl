@@ -94,6 +94,15 @@ def test_meltingpot_invocation_changes_environment_only(tmp_path: Path) -> None:
     ]
 
 
+def test_local_memory_is_an_explicit_task_neutral_algorithm_arm(tmp_path: Path) -> None:
+    one = _spec(tmp_path, num_agents=1, local_memory=True)
+    many = _spec(tmp_path, num_agents=7, local_memory=True)
+    assert one.configs[-1] == "local_memory_sidecar"
+    assert many.configs == one.configs
+    assert one.to_dict()["algorithm_overrides"] == ["local_memory_sidecar"]
+    assert many.to_dict()["algorithm_overrides"] == ["local_memory_sidecar"]
+
+
 def test_agent_count_never_selects_learner_computation() -> None:
     source = (algorithm_root() / "agent.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -134,7 +143,12 @@ def test_first_party_entrypoint_owns_all_algorithm_files() -> None:
 
 
 def test_active_learner_does_not_import_the_frozen_oracle() -> None:
-    for filename in ("agent.py", "rssm.py", "transformer_rssm.py"):
+    for filename in (
+        "agent.py",
+        "local_memory.py",
+        "rssm.py",
+        "transformer_rssm.py",
+    ):
         source = (algorithm_root() / filename).read_text(encoding="utf-8")
         tree = ast.parse(source)
         imports = [
@@ -176,7 +190,9 @@ def test_joint_start_order_groups_agents_at_each_start() -> None:
     for environment in range(2):
         for time in range(4):
             for agent in range(3):
-                grouped[environment, time, agent] = 100 * environment + 10 * time + agent
+                grouped[environment, time, agent] = (
+                    100 * environment + 10 * time + agent
+                )
     folded = fold_agent_sequence(grouped, 3)
     starts = select_joint_starts(folded, 3, 2)
     np.testing.assert_array_equal(
@@ -195,12 +211,8 @@ def test_interaction_arms_change_algorithm_not_agent_count(tmp_path: Path) -> No
     shuffled = _spec(tmp_path, num_agents=7, interaction_context="shuffled")
     assert "interaction_jepa" in aligned.command
     assert "interaction_jepa_shuffled" in shuffled.command
-    assert aligned.to_dict()["algorithm_overrides"] == [
-        "interaction_context=aligned"
-    ]
-    assert shuffled.to_dict()["algorithm_overrides"] == [
-        "interaction_context=shuffled"
-    ]
+    assert aligned.to_dict()["algorithm_overrides"] == ["interaction_context=aligned"]
+    assert shuffled.to_dict()["algorithm_overrides"] == ["interaction_context=shuffled"]
     assert verify_m3_reduction_contract(aligned)["algorithm_overrides"] == [
         "interaction_context=aligned"
     ]
