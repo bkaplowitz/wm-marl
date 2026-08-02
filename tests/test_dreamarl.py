@@ -119,6 +119,18 @@ def test_memory_architecture_arms_are_mutually_exclusive(tmp_path: Path) -> None
         _spec(tmp_path, local_memory=True, unified_memory=True)
 
 
+def test_unified_memory_override_is_declared_in_base_schema() -> None:
+    loader = yaml.YAML(typ="safe")
+    configs = loader.load(
+        (algorithm_root() / "configs.yaml").read_text(encoding="utf-8")
+    )
+    base = configs["defaults"]["agent"]["dyn"]["jepa_transformer"]
+    assert base["memory_mode"] == "residual"
+    assert configs["local_memory_unified"][
+        "agent.dyn.jepa_transformer.memory_mode"
+    ] == "unified"
+
+
 def test_agent_count_never_selects_learner_computation() -> None:
     source = (algorithm_root() / "agent.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
