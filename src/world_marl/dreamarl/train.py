@@ -32,9 +32,12 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     def logfn(tran, worker):
         episode = episodes[worker]
         tran["is_first"] and episode.reset()
-        episode.add("score", tran["reward"], agg="sum")
+        rewards = np.asarray(tran["reward"], np.float32)
+        mean_reward = np.float32(rewards.mean())
+        episode.add("score", mean_reward, agg="sum")
+        episode.add("agent_scores", rewards, agg="sum")
         episode.add("length", 1, agg="sum")
-        episode.add("rewards", tran["reward"], agg="stack")
+        episode.add("rewards", mean_reward, agg="stack")
         for key, value in tran.items():
             if value.dtype == np.uint8 and value.ndim == 3:
                 if worker == 0:
@@ -46,10 +49,14 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
                 episode.add(key + "/sum", value, agg="sum")
         if tran["is_last"]:
             result = episode.result()
+            agent_scores = np.asarray(result.pop("agent_scores"), np.float32)
             logger.add(
                 {
                     "score": result.pop("score"),
                     "length": result.pop("length"),
+                    "agent_return_min": agent_scores.min(),
+                    "agent_return_max": agent_scores.max(),
+                    "agent_return_std": agent_scores.std(),
                 },
                 prefix="episode",
             )

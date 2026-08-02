@@ -1,5 +1,48 @@
 # World MARL
 
+## DreaMARL
+
+DreaMARL is the first-party multi-agent JEPA world-model learner described in
+[`docs/dreamarl/ARCHITECTURE.md`](docs/dreamarl/ARCHITECTURE.md). It combines a
+causal Transformer world model, structured local memory, decentralized actors,
+and an optional joint-action-conditioned interaction transition.
+
+Run the local-memory reference on Melting Pot:
+
+```bash
+uv run world-marl-train-dreamarl \
+  --task meltingpot_externality_mushrooms__dense \
+  --num-agents 5 \
+  --local-memory \
+  --seed 0 \
+  --total-env-steps 50000 \
+  --wandb-project world-marl \
+  --wandb-entity osaze-obahor
+```
+
+Enable the baseline-preserving joint transition with one additional flag:
+
+```bash
+uv run world-marl-train-dreamarl \
+  --task meltingpot_externality_mushrooms__dense \
+  --num-agents 5 \
+  --local-memory \
+  --joint-interaction \
+  --seed 0 \
+  --total-env-steps 50000 \
+  --wandb-project world-marl \
+  --wandb-entity osaze-obahor
+```
+
+Evaluate the latest checkpoint deterministically on exactly 20 complete
+episodes:
+
+```bash
+uv run world-marl-eval-dreamarl runs/dreamarl/<experiment> \
+  --episodes 20 \
+  --eval-seed 10000
+```
+
 ## JEPA Transformer Programme
 
 The new visual world-model programme is defined in

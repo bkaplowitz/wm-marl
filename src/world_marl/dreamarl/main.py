@@ -83,7 +83,8 @@ def main(argv=None):
         args)
 
   elif config.script == 'eval_only':
-    embodied.run.eval_only(
+    from . import evaluation
+    evaluation.eval_only(
         bind(make_agent, config),
         bind(make_env, config),
         bind(make_logger, config),

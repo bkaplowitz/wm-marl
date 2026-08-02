@@ -1,9 +1,9 @@
 """Melting Pot environment contract for DreaMARL.
 
-The adapter exposes homogeneous local observations and actions with a leading
-agent axis while retaining joint episode boundaries. The scalar environment
-reward is the arithmetic mean of the agents' rewards, so its episode sum is
-the average per-agent return reported by the Melting Pot benchmark.
+The adapter exposes homogeneous local observations, actions, and rewards with
+a leading agent axis while retaining joint episode boundaries. Reporting
+reduces the reward vector to the mean per-agent return; replay never discards
+which agent received each reward.
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ class MeltingPotEnv(embodied.Env):
                 0,
                 256,
             ),
-            "reward": elements.Space(np.float32, ()),
+            "reward": elements.Space(np.float32, (self.num_agents,)),
             "is_first": elements.Space(bool, ()),
             "is_last": elements.Space(bool, ()),
             "is_terminal": elements.Space(bool, ()),
@@ -147,7 +147,7 @@ class MeltingPotEnv(embodied.Env):
         )
         return {
             "image": images,
-            "reward": np.float32(reward_values.mean()),
+            "reward": reward_values,
             "is_first": np.bool_(is_first),
             "is_last": np.bool_(is_last),
             "is_terminal": np.bool_(is_terminal),

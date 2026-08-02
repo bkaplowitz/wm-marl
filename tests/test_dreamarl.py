@@ -29,6 +29,7 @@ from world_marl.dreamarl.runtime import (
     algorithm_root,
     verify_first_party_source,
 )
+from world_marl.scripts.eval_dreamarl import main as evaluate_dreamarl
 
 
 def _spec(tmp_path: Path, **updates) -> DreaMARLRunSpec:
@@ -119,6 +120,27 @@ def test_memory_architecture_arms_are_mutually_exclusive(tmp_path: Path) -> None
         _spec(tmp_path, local_memory=True, unified_memory=True)
 
 
+def test_joint_interaction_is_an_explicit_task_neutral_algorithm_arm(
+    tmp_path: Path,
+) -> None:
+    one = _spec(tmp_path, num_agents=1, local_memory=True, joint_interaction=True)
+    many = _spec(tmp_path, num_agents=7, local_memory=True, joint_interaction=True)
+    assert one.configs[-1] == "joint_interaction"
+    assert many.configs == one.configs
+    assert one.to_dict()["algorithm_overrides"] == [
+        "local_memory_sidecar",
+        "joint_interaction",
+    ]
+    assert many.to_dict()["agent_count_dependent_modules"] == [
+        "joint_interaction"
+    ]
+
+
+def test_joint_interaction_requires_structured_local_memory(tmp_path: Path) -> None:
+    with np.testing.assert_raises(ValueError):
+        _spec(tmp_path, num_agents=5, joint_interaction=True)
+
+
 def test_unified_memory_override_is_declared_in_base_schema() -> None:
     loader = yaml.YAML(typ="safe")
     configs = loader.load(
@@ -173,6 +195,7 @@ def test_first_party_entrypoint_owns_all_algorithm_files() -> None:
 def test_active_learner_does_not_import_the_frozen_oracle() -> None:
     for filename in (
         "agent.py",
+        "joint_transition.py",
         "local_memory.py",
         "rssm.py",
         "transformer_rssm.py",
@@ -256,6 +279,26 @@ def test_dry_run_records_first_party_provenance(tmp_path: Path) -> None:
     assert manifest["algorithm_overrides"] == []
     assert manifest["agent_axis_native"] is True
     assert manifest["agent_count_dependent_modules"] == []
+
+
+def test_fixed_evaluation_command_uses_latest_checkpoint(tmp_path: Path) -> None:
+    experiment = tmp_path / "experiment"
+    experiment.mkdir()
+    spec = _spec(tmp_path, experiment_dir=experiment, local_memory=True)
+    (experiment / "launch.json").write_text(
+        json.dumps(spec.to_dict()), encoding="utf-8"
+    )
+    assert (
+        evaluate_dreamarl(
+            [str(experiment), "--episodes", "20", "--dry-run"]
+        )
+        == 0
+    )
+    manifests = list((experiment / "evaluation").glob("*.launch.json"))
+    assert len(manifests) == 1
+    command = json.loads(manifests[0].read_text(encoding="utf-8"))["command"]
+    assert "eval_only" in command
+    assert str(experiment / "run" / "ckpt") in command
 
 
 def test_retired_independent_learner_is_absent() -> None:

@@ -23,6 +23,7 @@ class DreaMARLRunSpec:
     num_agents: int = 1
     local_memory: bool = False
     unified_memory: bool = False
+    joint_interaction: bool = False
     platform: str = "cuda"
     infrastructure_root: Path = field(default_factory=default_upstream_root)
     python: Path = field(default_factory=default_dreamer_cdp_python)
@@ -46,6 +47,10 @@ class DreaMARLRunSpec:
             raise ValueError("num_agents must be positive")
         if self.local_memory and self.unified_memory:
             raise ValueError("dual-path and unified memory are mutually exclusive")
+        if self.joint_interaction and not (
+            self.local_memory or self.unified_memory
+        ):
+            raise ValueError("joint interaction requires the canonical local memory")
         if not self.task:
             raise ValueError("task must be non-empty")
         if self.train_steps < 1:
@@ -69,6 +74,8 @@ class DreaMARLRunSpec:
             configs.append("local_memory_sidecar")
         if self.unified_memory:
             configs.append("local_memory_unified")
+        if self.joint_interaction:
+            configs.append("joint_interaction")
         return configs
 
     @property
@@ -119,8 +126,11 @@ class DreaMARLRunSpec:
             "num_agents": self.num_agents,
             "local_memory": self.local_memory,
             "unified_memory": self.unified_memory,
+            "joint_interaction": self.joint_interaction,
             "agent_axis_native": True,
-            "agent_count_dependent_modules": [],
+            "agent_count_dependent_modules": (
+                ["joint_interaction"] if self.joint_interaction else []
+            ),
             "algorithm_overrides": self.configs[2:],
             "platform": self.platform,
             "observation_mode": "vision",

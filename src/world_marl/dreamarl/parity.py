@@ -89,7 +89,11 @@ def _semantic_arguments(
     if "--agent.num_agents" in arguments:
         index = arguments.index("--agent.num_agents")
         del arguments[index : index + 2]
-    for algorithm_config in ("local_memory_sidecar", "local_memory_unified"):
+    for algorithm_config in (
+        "local_memory_sidecar",
+        "local_memory_unified",
+        "joint_interaction",
+    ):
         if algorithm_config in arguments:
             arguments.remove(algorithm_config)
     logdir = arguments.index("--logdir") + 1

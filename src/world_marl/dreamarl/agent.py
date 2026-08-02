@@ -106,6 +106,7 @@ class Agent(embodied.jax.Agent):
             dynamics_config = dynamics_config.update(
                 num_agents=self.num_agents,
                 memory_seed=int(config.seed) + 10_000,
+                joint_seed=int(config.seed) + 20_000,
             )
         self.dyn = {
             "rssm": rssm.RSSM,
@@ -286,7 +287,12 @@ class Agent(embodied.jax.Agent):
         rew = self.rew(self.feat2tensor(feat), bdims=1).pred()
         val = self.val(self.feat2tensor(feat), bdims=1).pred()
         con = self.con(self.feat2tensor(feat), bdims=1).prob(1)
-        act = sample(policy)
+        if mode == "train":
+            act = sample(policy)
+        elif mode == "eval":
+            act = jax.tree.map(lambda distribution: distribution.mode(), policy)
+        else:
+            raise ValueError(f"unknown policy mode: {mode}")
         out = {}
         out["finite"] = elements.tree.flatdict(
             jax.tree.map(
@@ -494,33 +500,6 @@ class Agent(embodied.jax.Agent):
         flat_carry, metrics = self._report_local(flat_carry, self._fold_replay(data))
         return unfold_tree_batch(flat_carry, self.num_agents), metrics
 
-    def representation_diagnostics(self, carry, data):
-        """Extract grouped frozen-model tensors without altering learner state."""
-
-        flat_carry = fold_tree_batch(carry, self.num_agents)
-        flat_data = self._fold_replay(data)
-        flat_carry, obs, prevact, _ = self._apply_replay_context(flat_carry, flat_data)
-        enc_carry, dyn_carry, dec_carry = flat_carry
-        reset = obs["is_first"]
-        enc_carry, _, tokens = self.enc(enc_carry, obs, reset, training=False)
-        slow_tokens = None
-        if self.slowenc is not None:
-            _, _, slow_tokens = self.slowenc(enc_carry, obs, reset, training=False)
-        dyn_carry, tensors = self.dyn.representation_diagnostics(
-            dyn_carry,
-            tokens,
-            prevact,
-            reset,
-            training=False,
-            slow_tokens=slow_tokens,
-        )
-        grouped = {
-            key: unfold_agent_sequence(value, self.num_agents)
-            for key, value in tensors.items()
-        }
-        next_carry = (enc_carry, dyn_carry, dec_carry)
-        return unfold_tree_batch(next_carry, self.num_agents), grouped
-
     def _report_local(self, carry, data):
         if not self.config.report:
             return carry, {}
@@ -573,6 +552,14 @@ class Agent(embodied.jax.Agent):
         _, imgfeat, _ = self.dyn.imagine(
             dyn_carry, secondhalf(prevact), length=T - T // 2, training=False
         )
+        metrics.update(
+            self._recursive_world_model_metrics(
+                imgfeat,
+                secondhalf(outs["tokens"]),
+                secondhalf(obs["reward"]),
+                secondhalf(obs["is_terminal"]),
+            )
+        )
         dec_carry, _, obsrecons = self.dec(
             dec_carry, obsfeat, firsthalf(obs["is_first"]), training=False
         )
@@ -605,6 +592,40 @@ class Agent(embodied.jax.Agent):
 
         carry = (*new_carry, {k: data[k][:, -1] for k in self.act_space})
         return carry, metrics
+
+    def _recursive_world_model_metrics(
+        self, imagined, target_tokens, target_rewards, target_terminals
+    ):
+        predicted_tokens = self.dyn.predictor(imagined["deter"])
+        world_state = self.world_feat2tensor(imagined)
+        predicted_rewards = self.rew(world_state, 2).pred()
+        predicted_continuation = self.con(world_state, 2).prob(1)
+        target_continuation = f32(~target_terminals)
+        metrics = {}
+        length = predicted_tokens.shape[1]
+        for horizon in (1, 2, 4, 8):
+            if horizon > length:
+                continue
+            index = horizon - 1
+            latent_error = optax.losses.cosine_distance(
+                f32(predicted_tokens[:, index]),
+                sg(f32(target_tokens[:, index])),
+                axis=-1,
+                epsilon=1e-8,
+            )
+            reward_error = jnp.abs(
+                f32(predicted_rewards[:, index]) - f32(target_rewards[:, index])
+            )
+            continuation_error = jnp.square(
+                f32(predicted_continuation[:, index])
+                - f32(target_continuation[:, index])
+            )
+            metrics[f"world_model/h{horizon}_latent_cosine"] = latent_error.mean()
+            metrics[f"world_model/h{horizon}_reward_mae"] = reward_error.mean()
+            metrics[f"world_model/h{horizon}_continuation_brier"] = (
+                continuation_error.mean()
+            )
+        return metrics
 
     def _fold_replay(self, data):
         per_agent = set(self.joint_obs_space) - GLOBAL_OBSERVATION_KEYS

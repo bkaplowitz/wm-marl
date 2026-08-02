@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from typing import Any
 
 
-GLOBAL_OBSERVATION_KEYS = frozenset({"is_first", "is_last", "is_terminal", "reward"})
+GLOBAL_OBSERVATION_KEYS = frozenset({"is_first", "is_last", "is_terminal"})
 GLOBAL_REPLAY_KEYS = frozenset({"consec", "stepid"})
 
 

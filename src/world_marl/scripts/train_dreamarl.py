@@ -33,6 +33,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Use the four memory tokens as the learned-head state.",
     )
+    parser.add_argument(
+        "--joint-interaction",
+        action="store_true",
+        help=(
+            "Add the baseline-preserving, joint-action-conditioned "
+            "interaction residual."
+        ),
+    )
     parser.add_argument("--total-env-steps", type=int, default=250_000)
     parser.add_argument("--experiment-dir", type=Path)
     parser.add_argument(
@@ -63,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
         num_agents=args.num_agents,
         local_memory=args.local_memory,
         unified_memory=args.unified_memory,
+        joint_interaction=args.joint_interaction,
         platform=args.platform,
         infrastructure_root=args.infrastructure_root,
         python=args.python,
