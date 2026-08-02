@@ -183,8 +183,13 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "rungs": [rung.value for rung in rungs],
         "seeds": seeds,
     }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(output, indent=2, sort_keys=True) + "\n")
+    output_path = (
+        args.output / "results.json"
+        if args.output.exists() and args.output.is_dir()
+        else args.output
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(output, indent=2, sort_keys=True) + "\n")
     _log_wandb(args, output)
     return output
 
