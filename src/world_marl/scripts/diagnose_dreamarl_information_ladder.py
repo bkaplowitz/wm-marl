@@ -205,7 +205,7 @@ def _log_wandb(args: argparse.Namespace, output: dict[str, object]) -> None:
         name=args.wandb_name or args.output.stem,
         config={**output["config"], **output["scope"]},
     )
-    for seed, results in output["seeds"].items():
+    for seed_index, (seed, results) in enumerate(output["seeds"].items()):
         for rung_index, (rung, result) in enumerate(results.items()):
             metrics = {
                 f"seed_{seed}/test_error": result["test"]["overall"]["mean"],
@@ -222,7 +222,16 @@ def _log_wandb(args: argparse.Namespace, output: dict[str, object]) -> None:
                 metrics[f"seed_{seed}/delta_ci_high"] = result[
                     "test_delta_from_previous"
                 ]["high"]
-            run.log({**metrics, "rung": rung}, step=rung_index)
+            step = seed_index * len(results) + rung_index
+            run.log(
+                {
+                    **metrics,
+                    "predictor_seed": int(seed),
+                    "rung": rung,
+                    "rung_index": rung_index,
+                },
+                step=step,
+            )
     run.finish()
 
 
