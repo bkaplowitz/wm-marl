@@ -19,7 +19,7 @@ import optax
 from . import rssm
 from .axes import select_joint_starts
 from .joint_transition import JointInteractionResidual
-from .local_memory import LocalMemorySidecar
+from .local_memory import StructuredLocalMemory
 
 
 f32 = jnp.float32
@@ -176,7 +176,6 @@ class TransformerRSSM(rssm.RSSM):
     memory_heads: int = 4
     memory_ffup: int = 2
     memory_seed: int = 0
-    memory_mode: str = "residual"
     joint_enabled: bool = False
     joint_units: int = 256
     joint_heads: int = 4
@@ -191,10 +190,6 @@ class TransformerRSSM(rssm.RSSM):
         self.pair_dim = self.stoch * self.classes + self.action_dim
         self.local_feature_dim = self.deter + self.stoch * self.classes
         self.memory_enabled = self.memory_tokens > 0
-        if self.memory_mode not in {"residual", "unified"}:
-            raise ValueError(f"unknown memory mode: {self.memory_mode}")
-        if self.memory_mode == "unified" and not self.memory_enabled:
-            raise ValueError("unified memory mode requires memory tokens")
 
     @property
     def entry_space(self):
@@ -295,7 +290,6 @@ class TransformerRSSM(rssm.RSSM):
                 previous_belief,
                 action,
                 reset,
-                use_belief=self.memory_mode == "residual",
             )
         deter_residual, memory_residual = self._interaction_residual(
             carry, action, reset
@@ -373,7 +367,6 @@ class TransformerRSSM(rssm.RSSM):
                     belief,
                     action_embedding,
                     jnp.zeros((stoch.shape[0],), bool),
-                    use_belief=self.memory_mode == "residual",
                 )
             pair = jnp.concatenate([stoch, action_embedding], -1)
             reset = jnp.zeros((pair.shape[0],), bool)
@@ -462,13 +455,9 @@ class TransformerRSSM(rssm.RSSM):
             ).mean(-1)
             losses["memory_dyn"] = nn.mask(memory_dyn, ~reset)
             metrics["memory/dyn_error"] = losses["memory_dyn"].mean()
-            metrics["memory/target_rms"] = jnp.sqrt(
-                jnp.mean(f32(memory_target) ** 2)
-            )
+            metrics["memory/target_rms"] = jnp.sqrt(jnp.mean(f32(memory_target) ** 2))
             metrics["memory/target_std"] = jnp.std(f32(memory_target))
-            metrics["memory/prior_rms"] = jnp.sqrt(
-                jnp.mean(f32(memory_prior) ** 2)
-            )
+            metrics["memory/prior_rms"] = jnp.sqrt(jnp.mean(f32(memory_prior) ** 2))
             metrics["memory/prior_std"] = jnp.std(f32(memory_prior))
             metrics["memory/posterior_gate"] = self._memory().gate("posterior_gate")
             metrics["memory/control_gate"] = self._memory().gate("control_gate")
@@ -497,10 +486,6 @@ class TransformerRSSM(rssm.RSSM):
         belief = jnp.concatenate([nn.cast(feat["deter"]), nn.cast(stoch)], -1)
         if not self.memory_enabled:
             return belief
-        if self.memory_mode == "unified":
-            return self._memory().control_state(
-                feat["memory"], self.local_feature_dim
-            )
         return belief + self._memory().control_residual(
             feat["memory"], self.local_feature_dim
         )
@@ -511,9 +496,7 @@ class TransformerRSSM(rssm.RSSM):
     def _interaction_residual(self, carry, action, reset):
         if not self.joint_enabled:
             deter = jnp.zeros_like(carry["deter"])
-            memory = (
-                jnp.zeros_like(carry["memory"]) if self.memory_enabled else None
-            )
+            memory = jnp.zeros_like(carry["memory"]) if self.memory_enabled else None
             return deter, memory
         stoch = carry["stoch"].reshape((carry["stoch"].shape[0], -1))
         state = jnp.concatenate([carry["deter"], stoch], -1)
@@ -542,10 +525,10 @@ class TransformerRSSM(rssm.RSSM):
 
     def _memory(self):
         if not self.memory_enabled:
-            raise RuntimeError("local memory sidecar is disabled")
+            raise RuntimeError("structured local memory is disabled")
         return self.sub(
             "local_memory",
-            LocalMemorySidecar,
+            StructuredLocalMemory,
             self.enc_output,
             self.local_feature_dim,
             self.action_dim,

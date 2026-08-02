@@ -106,6 +106,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     checkpoint.load_or_save()
 
     print("Start training loop")
+
     def policy(*values):
         return agent.policy(*values, mode="train")
 
@@ -116,9 +117,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
         if should_report(step) and len(replay):
             aggregate = elements.Agg()
             for _ in range(args.consec_report * args.report_batches):
-                carry_report, metrics = agent.report(
-                    carry_report, next(stream_report)
-                )
+                carry_report, metrics = agent.report(carry_report, next(stream_report))
                 aggregate.add(metrics)
             logger.add(aggregate.result(), prefix="report")
 

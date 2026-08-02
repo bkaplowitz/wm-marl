@@ -46,9 +46,7 @@ class JointInteractionResidual(nj.Module):
         self.action_dim = int(action_dim)
         self.deter_dim = int(deter_dim)
         self.memory_shape = memory_shape
-        self.memory_dim = (
-            0 if memory_shape is None else math.prod(memory_shape)
-        )
+        self.memory_dim = 0 if memory_shape is None else math.prod(memory_shape)
         self.num_agents = int(num_agents)
         self.input_dim = self.state_dim + self.memory_dim + self.action_dim
         self.output_dim = self.deter_dim + self.memory_dim

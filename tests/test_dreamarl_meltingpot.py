@@ -65,9 +65,7 @@ class _ParallelEnv:
 
 
 def test_meltingpot_adapter_preserves_agent_geometry_and_benchmark_score() -> None:
-    env = MeltingPotEnv(
-        "unused", size=(4, 4), seed=7, parallel_env=_ParallelEnv()
-    )
+    env = MeltingPotEnv("unused", size=(4, 4), seed=7, parallel_env=_ParallelEnv())
     assert env.num_agents == 2
     assert env.obs_space["image"].shape == (2, 4, 4, 3)
     assert env.act_space["action"].shape == (2,)
@@ -86,12 +84,11 @@ def test_meltingpot_adapter_preserves_agent_geometry_and_benchmark_score() -> No
 
 
 def test_transformer_action_width_matches_dict_concat_encoding() -> None:
-    assert _encoded_action_dim(
-        {"action": elements.Space(np.int32, (), 0, 8)}
-    ) == 8
-    assert _encoded_action_dim(
-        {"action": elements.Space(np.float32, (2,), -1.0, 1.0)}
-    ) == 2
+    assert _encoded_action_dim({"action": elements.Space(np.int32, (), 0, 8)}) == 8
+    assert (
+        _encoded_action_dim({"action": elements.Space(np.float32, (2,), -1.0, 1.0)})
+        == 2
+    )
 
 
 class _SingletonEnv:

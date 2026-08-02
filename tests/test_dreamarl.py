@@ -19,9 +19,8 @@ from world_marl.dreamarl.axes import (
 from world_marl.dreamarl.config import DreaMARLRunSpec
 from world_marl.dreamarl.launcher import run_training
 from world_marl.dreamarl.parity import (
-    ORACLE_COMMIT,
-    ORACLE_HASHES,
-    verify_m3_reduction_contract,
+    FOUNDATION_COMMIT,
+    verify_single_agent_reduction_contract,
 )
 from world_marl.dreamarl.runtime import (
     ALGORITHM_FILES,
@@ -58,14 +57,13 @@ def test_agent_count_changes_geometry_only(tmp_path: Path) -> None:
     assert many_command[index] == "7"
     many_command[index] = "1"
     assert many_command == one_command
-    assert one.to_dict()["agent_count_dependent_modules"] == []
+    assert one.to_dict()["agent_axis_semantics"].startswith("shared architecture")
     assert many.to_dict()["algorithm_overrides"] == []
 
 
 def test_single_agent_source_and_regime_match_registered_m3(tmp_path: Path) -> None:
-    verification = verify_m3_reduction_contract(_spec(tmp_path))
-    assert verification["verified_official_commit"] == ORACLE_COMMIT
-    assert verification["verified_algorithm_hashes"] == ORACLE_HASHES
+    verification = verify_single_agent_reduction_contract(_spec(tmp_path))
+    assert verification["verified_foundation_commit"] == FOUNDATION_COMMIT
     assert verification["num_agents"] == 1
     assert verification["agent_axis_reduction"] == (
         "identity reshape when num_agents=1"
@@ -73,7 +71,7 @@ def test_single_agent_source_and_regime_match_registered_m3(tmp_path: Path) -> N
 
 
 def test_multi_agent_invocation_keeps_the_m3_regime(tmp_path: Path) -> None:
-    verification = verify_m3_reduction_contract(_spec(tmp_path, num_agents=7))
+    verification = verify_single_agent_reduction_contract(_spec(tmp_path, num_agents=7))
     assert verification["num_agents"] == 7
     assert verification["agent_count_semantics"] == "tensor geometry only"
     assert verification["algorithm_overrides"] == []
@@ -86,7 +84,7 @@ def test_meltingpot_invocation_changes_environment_only(tmp_path: Path) -> None:
         num_agents=6,
         train_steps=50_000,
     )
-    verification = verify_m3_reduction_contract(spec)
+    verification = verify_single_agent_reduction_contract(spec)
     assert verification["num_agents"] == 6
     assert verification["algorithm_overrides"] == []
     assert spec.to_dict()["configs"] == [
@@ -98,26 +96,10 @@ def test_meltingpot_invocation_changes_environment_only(tmp_path: Path) -> None:
 def test_local_memory_is_an_explicit_task_neutral_algorithm_arm(tmp_path: Path) -> None:
     one = _spec(tmp_path, num_agents=1, local_memory=True)
     many = _spec(tmp_path, num_agents=7, local_memory=True)
-    assert one.configs[-1] == "local_memory_sidecar"
+    assert one.configs[-1] == "structured_local_memory"
     assert many.configs == one.configs
-    assert one.to_dict()["algorithm_overrides"] == ["local_memory_sidecar"]
-    assert many.to_dict()["algorithm_overrides"] == ["local_memory_sidecar"]
-
-
-def test_unified_memory_is_an_explicit_task_neutral_algorithm_arm(
-    tmp_path: Path,
-) -> None:
-    one = _spec(tmp_path, num_agents=1, unified_memory=True)
-    many = _spec(tmp_path, num_agents=7, unified_memory=True)
-    assert one.configs[-1] == "local_memory_unified"
-    assert many.configs == one.configs
-    assert one.to_dict()["algorithm_overrides"] == ["local_memory_unified"]
-    assert many.to_dict()["algorithm_overrides"] == ["local_memory_unified"]
-
-
-def test_memory_architecture_arms_are_mutually_exclusive(tmp_path: Path) -> None:
-    with np.testing.assert_raises(ValueError):
-        _spec(tmp_path, local_memory=True, unified_memory=True)
+    assert one.to_dict()["algorithm_overrides"] == ["structured_local_memory"]
+    assert many.to_dict()["algorithm_overrides"] == ["structured_local_memory"]
 
 
 def test_joint_interaction_is_an_explicit_task_neutral_algorithm_arm(
@@ -128,12 +110,12 @@ def test_joint_interaction_is_an_explicit_task_neutral_algorithm_arm(
     assert one.configs[-1] == "joint_interaction"
     assert many.configs == one.configs
     assert one.to_dict()["algorithm_overrides"] == [
-        "local_memory_sidecar",
+        "structured_local_memory",
         "joint_interaction",
     ]
-    assert many.to_dict()["agent_count_dependent_modules"] == [
-        "joint_interaction"
-    ]
+    assert many.to_dict()["singleton_interaction_semantics"] == (
+        "exact zero without valid peers"
+    )
 
 
 def test_joint_interaction_requires_structured_local_memory(tmp_path: Path) -> None:
@@ -141,16 +123,16 @@ def test_joint_interaction_requires_structured_local_memory(tmp_path: Path) -> N
         _spec(tmp_path, num_agents=5, joint_interaction=True)
 
 
-def test_unified_memory_override_is_declared_in_base_schema() -> None:
+def test_structured_memory_override_is_declared_in_base_schema() -> None:
     loader = yaml.YAML(typ="safe")
     configs = loader.load(
         (algorithm_root() / "configs.yaml").read_text(encoding="utf-8")
     )
-    base = configs["defaults"]["agent"]["dyn"]["jepa_transformer"]
-    assert base["memory_mode"] == "residual"
-    assert configs["local_memory_unified"][
-        "agent.dyn.jepa_transformer.memory_mode"
-    ] == "unified"
+    assert (
+        configs["structured_local_memory"]["agent.dyn.jepa_transformer.memory_tokens"]
+        == 4
+    )
+    assert "local_memory_unified" not in configs
 
 
 def test_agent_count_never_selects_learner_computation() -> None:
@@ -187,12 +169,16 @@ def test_agent_count_never_selects_learner_computation() -> None:
 
 def test_first_party_entrypoint_owns_all_algorithm_files() -> None:
     source = verify_first_party_source()
-    assert source["infrastructure_commit"] == ORACLE_COMMIT
+    assert source["infrastructure_commit"] == FOUNDATION_COMMIT
     assert algorithm_entrypoint() == algorithm_root() / "main.py"
     assert all((algorithm_root() / name).is_file() for name in ALGORITHM_FILES)
 
 
-def test_active_learner_does_not_import_the_frozen_oracle() -> None:
+def test_installed_algorithm_does_not_bundle_the_frozen_oracle() -> None:
+    assert not any((algorithm_root() / "m3").glob("*"))
+    assert (
+        algorithm_root().parents[2] / "docs" / "dreamarl" / "PROVENANCE.md"
+    ).is_file()
     for filename in (
         "agent.py",
         "joint_transition.py",
@@ -278,25 +264,26 @@ def test_dry_run_records_first_party_provenance(tmp_path: Path) -> None:
     assert manifest["command"] == spec.command
     assert manifest["algorithm_overrides"] == []
     assert manifest["agent_axis_native"] is True
-    assert manifest["agent_count_dependent_modules"] == []
+    assert manifest["agent_axis_semantics"].startswith("shared architecture")
 
 
 def test_fixed_evaluation_command_uses_latest_checkpoint(tmp_path: Path) -> None:
     experiment = tmp_path / "experiment"
     experiment.mkdir()
     spec = _spec(tmp_path, experiment_dir=experiment, local_memory=True)
-    (experiment / "launch.json").write_text(
-        json.dumps(spec.to_dict()), encoding="utf-8"
-    )
-    assert (
-        evaluate_dreamarl(
-            [str(experiment), "--episodes", "20", "--dry-run"]
-        )
-        == 0
-    )
+    manifest = spec.to_dict()
+    manifest["configs"] = [
+        "dmc_vision",
+        "jepa_transformer",
+        "local_memory_sidecar",
+    ]
+    (experiment / "launch.json").write_text(json.dumps(manifest), encoding="utf-8")
+    assert evaluate_dreamarl([str(experiment), "--episodes", "20", "--dry-run"]) == 0
     manifests = list((experiment / "evaluation").glob("*.launch.json"))
     assert len(manifests) == 1
     command = json.loads(manifests[0].read_text(encoding="utf-8"))["command"]
+    assert "structured_local_memory" in command
+    assert "local_memory_sidecar" not in command
     assert "eval_only" in command
     assert str(experiment / "run" / "ckpt") in command
 

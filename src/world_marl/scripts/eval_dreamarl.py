@@ -12,6 +12,11 @@ from pathlib import Path
 from world_marl.jepa_transformer.foundation import repository_root
 
 
+_CONFIG_MIGRATIONS = {
+    "local_memory_sidecar": "structured_local_memory",
+}
+
+
 def _timestamp():
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
@@ -38,6 +43,13 @@ def main(argv: list[str] | None = None) -> int:
     outputs = ["jsonl", "scope"]
     if args.wandb_project:
         outputs.append("wandb")
+    recorded_configs = manifest["configs"]
+    if "local_memory_unified" in recorded_configs:
+        raise ValueError(
+            "unified-memory checkpoints require their recorded source fingerprint; "
+            "the rejected architecture is not part of maintained DreaMARL"
+        )
+    configs = [_CONFIG_MIGRATIONS.get(name, name) for name in recorded_configs]
     command = [
         str(python),
         "-m",
@@ -45,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
         "--logdir",
         str(evaluation),
         "--configs",
-        *manifest["configs"],
+        *configs,
         "--task",
         manifest["task"],
         "--seed",
@@ -97,7 +109,9 @@ def main(argv: list[str] | None = None) -> int:
         env["WANDB_NAME"] = f"{experiment.name}_fixed_eval"
     if args.wandb_entity:
         env["WANDB_ENTITY"] = args.wandb_entity
-    return subprocess.run(command, cwd=repository_root(), env=env, check=False).returncode
+    return subprocess.run(
+        command, cwd=repository_root(), env=env, check=False
+    ).returncode
 
 
 if __name__ == "__main__":

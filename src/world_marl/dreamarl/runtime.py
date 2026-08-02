@@ -10,16 +10,20 @@ from world_marl.baselines.dreamer_cdp.launcher import verify_upstream
 
 
 ALGORITHM_FILES = (
+    "__init__.py",
     "agent.py",
     "axes.py",
+    "config.py",
     "configs.yaml",
     "environments.py",
     "evaluation.py",
     "joint_transition.py",
+    "launcher.py",
     "local_memory.py",
-    "train.py",
     "main.py",
+    "meltingpot.py",
     "rssm.py",
+    "train.py",
     "transformer_rssm.py",
 )
 
@@ -42,10 +46,13 @@ def runtime_fingerprint() -> str:
     return digest.hexdigest()[:12]
 
 
-def verify_first_party_source() -> dict[str, str]:
+def verify_first_party_source(
+    infrastructure_root: Path | None = None,
+) -> dict[str, str]:
     """Verify the infrastructure pin and hash the executable source tree."""
 
-    revision = verify_upstream(default_upstream_root())
+    infrastructure_root = Path(infrastructure_root or default_upstream_root()).resolve()
+    revision = verify_upstream(infrastructure_root)
     missing = [
         name for name in ALGORITHM_FILES if not (algorithm_root() / name).is_file()
     ]
@@ -53,5 +60,6 @@ def verify_first_party_source() -> dict[str, str]:
         raise FileNotFoundError(f"DreaMARL source files are missing: {missing}")
     return {
         "infrastructure_commit": revision,
+        "infrastructure_root": str(infrastructure_root),
         "algorithm_fingerprint": runtime_fingerprint(),
     }

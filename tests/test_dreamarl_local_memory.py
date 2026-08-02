@@ -5,11 +5,11 @@ import jax.numpy as jnp
 import ninjax as nj
 import numpy as np
 
-from world_marl.dreamarl.local_memory import LocalMemorySidecar
+from world_marl.dreamarl.local_memory import StructuredLocalMemory
 
 
 def _module():
-    return LocalMemorySidecar(
+    return StructuredLocalMemory(
         32,
         12,
         3,
@@ -98,49 +98,6 @@ def test_control_residual_is_exactly_zero_at_initialization():
     assert not np.allclose(residual, 0)
 
 
-def test_unified_control_state_is_active_with_matched_parameters():
-    module = _module()
-    memory = jax.random.normal(jax.random.key(14), (3, 4, 8))
-
-    def residual(value):
-        return module.control_residual(value, 12)
-
-    def unified(value):
-        return module.control_state(value, 12)
-
-    residual_params = nj.init(residual)({}, memory, seed=15)
-    unified_params = nj.init(unified)({}, memory, seed=15)
-    assert residual_params.keys() == unified_params.keys()
-    assert sum(value.size for value in residual_params.values()) == sum(
-        value.size for value in unified_params.values()
-    )
-    state = nj.pure(unified)(unified_params, memory, seed=16)[1]
-    assert state.shape == (3, 12)
-    assert not np.allclose(state, 0)
-
-
-def test_unified_memory_transition_does_not_use_legacy_belief():
-    module = _module()
-    memory = jax.random.normal(jax.random.key(17), (2, 4, 8))
-    first_belief = jnp.ones((2, 12), jnp.float32)
-    second_belief = first_belief * 100
-    action = jnp.ones((2, 3), jnp.float32)
-    reset = jnp.zeros((2,), bool)
-
-    def function(previous, belief):
-        return module.imagine(
-            previous, belief, action, reset, use_belief=False
-        )
-
-    params, expected = _initialize(function, memory, first_belief)
-    actual = nj.pure(function)(params, memory, second_belief, seed=18)[1]
-    np.testing.assert_allclose(
-        np.asarray(actual, np.float32),
-        np.asarray(expected, np.float32),
-        atol=2e-5,
-    )
-
-
 def test_memory_prior_receives_gradients_before_control_gate_opens():
     module = _module()
     memory = jnp.zeros((2, 4, 8), jnp.float32)
@@ -168,7 +125,7 @@ def test_memory_prior_receives_gradients_before_control_gate_opens():
     assert prior_norm > 0
 
 
-def test_sidecar_initialization_does_not_consume_learner_rng_stream():
+def test_memory_initialization_does_not_consume_learner_rng_stream():
     module = _module()
     memory = jnp.zeros((2, 4, 8), jnp.float32)
     belief = jnp.ones((2, 12), jnp.float32)

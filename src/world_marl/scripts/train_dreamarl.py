@@ -22,16 +22,10 @@ def main(argv: list[str] | None = None) -> int:
         default=1,
         help="Extent of the explicit agent tensor axis; does not select a regime.",
     )
-    memory = parser.add_mutually_exclusive_group()
-    memory.add_argument(
+    parser.add_argument(
         "--local-memory",
         action="store_true",
-        help="Enable the validated dual-path four-token local memory.",
-    )
-    memory.add_argument(
-        "--unified-memory",
-        action="store_true",
-        help="Use the four memory tokens as the learned-head state.",
+        help="Enable the canonical four-token structured local memory.",
     )
     parser.add_argument(
         "--joint-interaction",
@@ -70,7 +64,6 @@ def main(argv: list[str] | None = None) -> int:
         train_steps=args.total_env_steps,
         num_agents=args.num_agents,
         local_memory=args.local_memory,
-        unified_memory=args.unified_memory,
         joint_interaction=args.joint_interaction,
         platform=args.platform,
         infrastructure_root=args.infrastructure_root,

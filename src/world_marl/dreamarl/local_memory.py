@@ -1,4 +1,4 @@
-"""Local persistent memory sidecar for DreaMARL.
+"""Structured local predictive memory for DreaMARL.
 
 The module is shared across agents and never receives another agent's state.
 It exposes a posterior path for real observations and a prior path used during
@@ -26,7 +26,7 @@ def isolated_winit(seed):
     return initialize
 
 
-class LocalMemorySidecar(nj.Module):
+class StructuredLocalMemory(nj.Module):
     tokens: int = 4
     units: int = 256
     heads: int = 4
@@ -97,7 +97,7 @@ class LocalMemorySidecar(nj.Module):
         posterior = target + nn.cast(gate) * (update - target)
         return nn.cast(posterior), nn.cast(target)
 
-    def imagine(self, previous, belief, action, reset, use_belief=True):
+    def imagine(self, previous, belief, action, reset):
         """Predict the next memory without access to future observations."""
 
         self._check_inputs(previous, action, reset)
@@ -107,10 +107,7 @@ class LocalMemorySidecar(nj.Module):
             raise ValueError((belief.shape, self.belief_dim))
         start = self._start(previous.shape[:-2])
         previous = nn.where(reset, start, nn.cast(previous))
-        belief = nn.cast(belief)
-        if not use_belief:
-            belief = jnp.zeros_like(belief)
-        condition = jnp.concatenate([belief, nn.cast(action)], -1)
+        condition = jnp.concatenate([nn.cast(belief), nn.cast(action)], -1)
         condition = self.sub(
             "prior_condition",
             nn.Linear,
@@ -124,14 +121,9 @@ class LocalMemorySidecar(nj.Module):
     def control_residual(self, memory, output_dim):
         """Project memory through an exact zero-initialized scalar gate."""
 
-        return self._control_projection(memory, output_dim, gated=True)
+        return self._control_projection(memory, output_dim)
 
-    def control_state(self, memory, output_dim):
-        """Project memory directly into the shared world/control feature width."""
-
-        return self._control_projection(memory, output_dim, gated=False)
-
-    def _control_projection(self, memory, output_dim, gated):
+    def _control_projection(self, memory, output_dim):
         pooled = nn.cast(memory).reshape((*memory.shape[:-2], -1))
         pooled = self.sub(
             "control_bottleneck",
@@ -149,11 +141,7 @@ class LocalMemorySidecar(nj.Module):
             winit=self._winit("control_projection"),
         )(pooled)
         gate = self.value("control_gate", jnp.zeros, (), f32)
-        if gated:
-            return nn.cast(gate) * residual
-        # Keep the parameterization identical to the dual-path arm while making
-        # the structured memory state the complete learned-head interface.
-        return residual + nn.cast(gate) * jnp.zeros_like(residual)
+        return nn.cast(gate) * residual
 
     def gate(self, name):
         if name not in {"posterior_gate", "control_gate"}:

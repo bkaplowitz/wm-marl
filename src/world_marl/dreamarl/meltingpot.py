@@ -78,9 +78,7 @@ class MeltingPotEnv(embodied.Env):
     @functools.cached_property
     def act_space(self):
         return {
-            "action": elements.Space(
-                np.int32, (self.num_agents,), 0, self._action_dim
-            ),
+            "action": elements.Space(np.int32, (self.num_agents,), 0, self._action_dim),
             "reset": elements.Space(bool, (), 0, 2),
         }
 
@@ -93,10 +91,7 @@ class MeltingPotEnv(embodied.Env):
                 f"expected actions shaped {(self.num_agents,)}, got {actions.shape}"
             )
         observations, rewards, terminations, truncations, _ = self._env.step(
-            {
-                agent: int(actions[index])
-                for index, agent in enumerate(self._agents)
-            }
+            {agent: int(actions[index]) for index, agent in enumerate(self._agents)}
         )
         terminal = self._joint_flag(terminations, "termination")
         truncated = self._joint_flag(truncations, "truncation")
@@ -139,9 +134,7 @@ class MeltingPotEnv(embodied.Env):
         )
         images = np.stack(
             [
-                self._resize_nearest(
-                    np.asarray(observations[agent]["RGB"], np.uint8)
-                )
+                self._resize_nearest(np.asarray(observations[agent]["RGB"], np.uint8))
                 for agent in self._agents
             ]
         )

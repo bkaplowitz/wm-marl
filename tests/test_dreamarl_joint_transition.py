@@ -100,7 +100,7 @@ def test_interaction_is_permutation_equivariant():
     actual = nj.pure(function)(params, *changed, seed=4)[1]
     for actual_value, expected_value in zip(actual, expected, strict=True):
         np.testing.assert_allclose(
-                np.asarray(actual_value, np.float32),
+            np.asarray(actual_value, np.float32),
             np.asarray(permute(expected_value), np.float32),
             rtol=2e-5,
             atol=2e-5,
@@ -193,9 +193,7 @@ def test_full_dynamics_has_exact_single_agent_output_parity():
             )
 
         params = nj.init(observe)({}, carry, tokens, action, reset, seed=20)
-        output = nj.pure(observe)(
-            params, carry, tokens, action, reset, seed=21
-        )[1]
+        output = nj.pure(observe)(params, carry, tokens, action, reset, seed=21)[1]
         return params, output
 
     local_params, local = run(False)

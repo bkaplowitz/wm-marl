@@ -22,7 +22,6 @@ class DreaMARLRunSpec:
     train_steps: int = 250_000
     num_agents: int = 1
     local_memory: bool = False
-    unified_memory: bool = False
     joint_interaction: bool = False
     platform: str = "cuda"
     infrastructure_root: Path = field(default_factory=default_upstream_root)
@@ -45,12 +44,8 @@ class DreaMARLRunSpec:
         object.__setattr__(self, "python", absolute_path(self.python))
         if self.num_agents < 1:
             raise ValueError("num_agents must be positive")
-        if self.local_memory and self.unified_memory:
-            raise ValueError("dual-path and unified memory are mutually exclusive")
-        if self.joint_interaction and not (
-            self.local_memory or self.unified_memory
-        ):
-            raise ValueError("joint interaction requires the canonical local memory")
+        if self.joint_interaction and not self.local_memory:
+            raise ValueError("joint interaction requires structured local memory")
         if not self.task:
             raise ValueError("task must be non-empty")
         if self.train_steps < 1:
@@ -71,9 +66,7 @@ class DreaMARLRunSpec:
         )
         configs = [suite, "jepa_transformer"]
         if self.local_memory:
-            configs.append("local_memory_sidecar")
-        if self.unified_memory:
-            configs.append("local_memory_unified")
+            configs.append("structured_local_memory")
         if self.joint_interaction:
             configs.append("joint_interaction")
         return configs
@@ -125,12 +118,12 @@ class DreaMARLRunSpec:
             "train_env_steps_budget": self.train_steps,
             "num_agents": self.num_agents,
             "local_memory": self.local_memory,
-            "unified_memory": self.unified_memory,
             "joint_interaction": self.joint_interaction,
             "agent_axis_native": True,
-            "agent_count_dependent_modules": (
-                ["joint_interaction"] if self.joint_interaction else []
+            "agent_axis_semantics": (
+                "shared architecture and training schedule for every agent count"
             ),
+            "singleton_interaction_semantics": "exact zero without valid peers",
             "algorithm_overrides": self.configs[2:],
             "platform": self.platform,
             "observation_mode": "vision",

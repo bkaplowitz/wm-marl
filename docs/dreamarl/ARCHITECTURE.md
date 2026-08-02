@@ -8,9 +8,23 @@ history. During centralized training, the world transition additionally sees
 the synchronized states and realized actions of the other controlled agents.
 
 The maintained implementation lives in `world_marl.dreamarl`. The pinned
-Dreamer-CDP checkout supplies only Embodied infrastructure. A frozen M3 source
-snapshot remains as the single-agent parity oracle and is never imported by
-the active learner.
+Dreamer-CDP checkout supplies only Embodied infrastructure. The registered M3
+foundation and completed parity milestone are recorded in `PROVENANCE.md`;
+the active package contains only DreaMARL source.
+
+## Source Map
+
+- `agent.py`: learner, decentralized actor-critic, losses, and reporting;
+- `transformer_rssm.py`: local recurrent JEPA dynamics and imagination;
+- `local_memory.py`: structured agent-local predictive memory;
+- `joint_transition.py`: peer-only joint-action interaction residual;
+- `axes.py`: explicit agent-axis transformations;
+- `meltingpot.py` and `environments.py`: environment tensor contracts;
+- `train.py` and `evaluation.py`: training and fixed-evaluation loops;
+- `config.py`, `launcher.py`, and `runtime.py`: reproducible public execution.
+
+Research alternatives that fail their promotion gate are removed from this
+path rather than retained as dormant configuration switches.
 
 ## Tensor And Replay Contract
 

@@ -38,11 +38,7 @@ class SingletonAgentEnv(embodied.Env):
     @functools.cached_property
     def act_space(self):
         return {
-            key: (
-                space
-                if key == "reset"
-                else _add_agent_axis(space, self.num_agents)
-            )
+            key: (space if key == "reset" else _add_agent_axis(space, self.num_agents))
             for key, space in self._env.act_space.items()
         }
 

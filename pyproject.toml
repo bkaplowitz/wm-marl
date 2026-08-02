@@ -22,7 +22,7 @@ dependencies = [
   "tqdm",
   "wandb",
 ]
-description = "JaxMARL-style PPO validation on Melting Pot substrates through Shimmy."
+description = "World-model-based single-agent and multi-agent reinforcement learning."
 name = "world-marl"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
@@ -99,6 +99,9 @@ world-marl-runpod = "world_marl.runpod:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"world_marl.dreamarl" = ["LICENSE"]
 
 [tool.pytest.ini_options]
 markers = [

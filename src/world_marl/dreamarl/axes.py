@@ -93,14 +93,10 @@ def restore_folded_start_order(value: Any, num_agents: int, nlast: int) -> Any:
             f"leading dimension {value.shape[0]} is not divisible by {divisor}"
         )
     environments = value.shape[0] // divisor
-    grouped = value.reshape(
-        (environments, nlast, num_agents, *value.shape[1:])
-    )
+    grouped = value.reshape((environments, nlast, num_agents, *value.shape[1:]))
     axes = (0, 2, 1, *range(3, grouped.ndim))
     folded = grouped.transpose(axes)
-    return folded.reshape(
-        (environments * num_agents, nlast, *value.shape[1:])
-    )
+    return folded.reshape((environments * num_agents, nlast, *value.shape[1:]))
 
 
 def broadcast_global_batch(value: Any, num_agents: int) -> Any:
