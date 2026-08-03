@@ -1,0 +1,545 @@
+{
+  "checkpoint": "/tmp/dreamarl_joint_gate_e6ae5f0/dreamarl_externality_local_memory_seed0_50k/run/ckpt/20260803T033535F020639",
+  "contract": "fixed_complete_replay_windows_v1",
+  "dataset": "/tmp/dreamarl_fixed_rollouts_20260803/externality_joint_policy_20x64.npz",
+  "dataset_manifest": {
+    "contract": "fixed_complete_replay_windows_v1",
+    "dataset_sha256": "f699463b4297ad937d89fa29dd4b2a658d1b75793f7f8b481902b8d77943179b",
+    "length": 64,
+    "provenance": [
+      {
+        "source_chunk": "20260802T235009F604764-2o6KqZzVz6Lm6hlO5CVFSb-0y0jX3TYdvJkpUQigTDjYp-1024.npz",
+        "source_chunk_sha256": "665bfaed965e91d1576ceda891b072dc58354d15f3ac4f2cbcf3d4a9fcb07a84",
+        "source_start": 131
+      },
+      {
+        "source_chunk": "20260802T230201F086529-4VtJAjtaWW32h6St69tnB1-3LPGcSq0FfWI16pG7i9koC-1024.npz",
+        "source_chunk_sha256": "450ba8329b6294d9675f0a93bc583a6b5333d1bc58ae18b1f205a22fbbc00a85",
+        "source_start": 932
+      },
+      {
+        "source_chunk": "20260803T022021F912258-6OTKyMlFTChswKxt0PMXXQ-0RFrwmKdKPgmkCEhhwWY5K-1024.npz",
+        "source_chunk_sha256": "3ff5a24f314628254f01470576a0e695087fbcc2eee5b3155c6811b50c20fda0",
+        "source_start": 75
+      },
+      {
+        "source_chunk": "20260803T033255F054042-2rX9LKRSbxb5DncWfPyduK-3Va03UPND5N6hvzie53R1d-1024.npz",
+        "source_chunk_sha256": "18348357531ce97afed6201855447265dfc88cf99780379cf69451dc8479baf7",
+        "source_start": 339
+      },
+      {
+        "source_chunk": "20260803T025017F694541-10uC3FUGcuXhdV6gNApluc-4qujvcSUwqTaRL8KuWgPAl-1024.npz",
+        "source_chunk_sha256": "2a6748c6dd5b98570bd46b42cabe1ca4985b3f515071a23887781e4c630857c0",
+        "source_start": 260
+      },
+      {
+        "source_chunk": "20260803T015647F639903-1QYnhodwpZb2tg9WzRZzZP-4KK2ITZTCBwvA4yICzeTD6-1024.npz",
+        "source_chunk_sha256": "ee7653b51263205f5741e7f6c5b7910c479130a592517010a52c6e9379f87959",
+        "source_start": 768
+      },
+      {
+        "source_chunk": "20260803T012015F113472-3ZOrE6AEb2F6uclPgvJM4I-53AvXNoGtRRDNmwuIhOix9-1024.npz",
+        "source_chunk_sha256": "aa03f6816ae1bf5acda52428d9561bd0d74aa44e66ccfdf8ade3439df3370b6a",
+        "source_start": 546
+      },
+      {
+        "source_chunk": "20260803T003907F624702-1gOlnxUbnbpsXfReXfZLlE-6RlF4w1ZLjrJFXIgLI79vM-1024.npz",
+        "source_chunk_sha256": "a1dfe2a6b4b2bc2500504e59d8b8aa23f04d9c6a7c857399483a4287158535f7",
+        "source_start": 197
+      },
+      {
+        "source_chunk": "20260803T010905F364566-2QFIAgPoQeo1DgJhRHDnNI-4Ox37H330t4rDbhCSQOI86-1024.npz",
+        "source_chunk_sha256": "c678d981a508883abd8ada068b10b01e6531c3b0203b7a204e66e0d7c0c10258",
+        "source_start": 342
+      },
+      {
+        "source_chunk": "20260803T001521F811943-4vs4xDVY1wuDo8Nc9mFYLk-26tL68PJhWS1tN3dYEmHER-774.npz",
+        "source_chunk_sha256": "3718e416d5076078b763bcf3373b94d9412e3036a178a40818b348a88d53d6fb",
+        "source_start": 39
+      },
+      {
+        "source_chunk": "20260802T230819F210803-3LPGcSq0FfWI16pG7i9koC-7L9Liu7Qz3aYK6gWMg05VV-1024.npz",
+        "source_chunk_sha256": "130a0758ed30d79067aa02e21d91c7ee9e3b2ecf272b5fe3637087ed1bec1256",
+        "source_start": 909
+      },
+      {
+        "source_chunk": "20260803T011523F560768-4Ox37H330t4rDbhCSQOI86-3ZOrE6AEb2F6uclPgvJM4I-774.npz",
+        "source_chunk_sha256": "52f5253b35eb340c1202273937034c10b0f018deadabd8d0d9c0c3579c6889f1",
+        "source_start": 319
+      },
+      {
+        "source_chunk": "20260803T005011F145940-0GadYsU9paNSu5VRQy6epS-1SoIcREMtfvmfKOP6KZMRG-1024.npz",
+        "source_chunk_sha256": "2a275942be9490040b723b01307586243922a40c7a7d5f2bbbfc2e597e5bae0d",
+        "source_start": 411
+      },
+      {
+        "source_chunk": "20260803T033911F429401-3Va03UPND5N6hvzie53R1d-4PG9juTE1Gc1tccw3p02d9-1024.npz",
+        "source_chunk_sha256": "f6a6823580658e8a66043be56a2c3842f5f1b0dc66527f91f14096ff506d205b",
+        "source_start": 316
+      },
+      {
+        "source_chunk": "20260803T003249F139367-5RuNXHoWwE62IkpsBQck3T-1gOlnxUbnbpsXfReXfZLlE-1024.npz",
+        "source_chunk_sha256": "b4ec07894685160b039fff59cea20646e8dd92e46ed4c7fecd220c491cbab540",
+        "source_start": 220
+      },
+      {
+        "source_chunk": "20260803T014554F915530-6sYTcQWmnHddCC4XSSh01Y-5YL4QvyzbvE4pgeMxpXU7o-664.npz",
+        "source_chunk_sha256": "23bdcc9055f71c7d6169c66a42d98ca549b073b42da628c6798c7bc1f10c291c",
+        "source_start": 454
+      },
+      {
+        "source_chunk": "20260803T030254F204988-2axO2CUdGsRqe0Av8S5wJT-73PGmszEjpf8xCKdMAOP02-1024.npz",
+        "source_chunk_sha256": "0d46e0c6c058c904bc7ea530e1f20f7b472cf3054136fb015b0ee3deda462e88",
+        "source_start": 214
+      },
+      {
+        "source_chunk": "20260803T010248F814375-6Fty8yqV9I7xPXo9Tdal91-2QFIAgPoQeo1DgJhRHDnNI-1024.npz",
+        "source_chunk_sha256": "69cfdff9bc6ab0aa90cbb24b2e507cb938bd3814d589307de72bed1fc814622c",
+        "source_start": 365
+      },
+      {
+        "source_chunk": "20260803T002630F439894-67RFzmt82EzDL5jxoIhkp4-5RuNXHoWwE62IkpsBQck3T-1024.npz",
+        "source_chunk_sha256": "32b9a1f9af2ad52417ff0ea0f3debd178d0125066e4dbf76a35dac63b5e63bbb",
+        "source_start": 243
+      },
+      {
+        "source_chunk": "20260803T005629F798047-1SoIcREMtfvmfKOP6KZMRG-6Fty8yqV9I7xPXo9Tdal91-1024.npz",
+        "source_chunk_sha256": "4cbbb78a590490e5bcbb90bd6b749381987b9adf250e6590d1a0344bf12a617f",
+        "source_start": 388
+      }
+    ],
+    "replay_dir": "/workspace/dreamarl_joint_gate_e6ae5f0/dreamarl_externality_joint_memory_seed0_50k/run/replay",
+    "seed": 20260803,
+    "trajectories": 20
+  },
+  "metrics": {
+    "world_model/h1_continuation_brier": {
+      "mean": 8.972362411441282e-06,
+      "std": 2.4256267890159976e-07
+    },
+    "world_model/h1_image_mae": {
+      "mean": 0.022145275212824344,
+      "std": 0.0078017498057693525
+    },
+    "world_model/h1_latent_cosine": {
+      "mean": 0.16833884194493293,
+      "std": 0.05295543029198993
+    },
+    "world_model/h1_reward_mae": {
+      "mean": 0.06359795695607318,
+      "std": 0.08848887636690704
+    },
+    "world_model/h2_continuation_brier": {
+      "mean": 8.967863095676876e-06,
+      "std": 2.7265073362257706e-07
+    },
+    "world_model/h2_image_mae": {
+      "mean": 0.02893520761281252,
+      "std": 0.01742943195969666
+    },
+    "world_model/h2_latent_cosine": {
+      "mean": 0.1966216627508402,
+      "std": 0.07606962385091527
+    },
+    "world_model/h2_reward_mae": {
+      "mean": 0.02917925307992846,
+      "std": 0.03795641687668495
+    },
+    "world_model/h4_continuation_brier": {
+      "mean": 9.012799046104191e-06,
+      "std": 3.495157700097409e-07
+    },
+    "world_model/h4_image_mae": {
+      "mean": 0.03391805114224553,
+      "std": 0.017021010039448094
+    },
+    "world_model/h4_latent_cosine": {
+      "mean": 0.22796272933483125,
+      "std": 0.06736149553761385
+    },
+    "world_model/h4_reward_mae": {
+      "mean": 0.05344631842453964,
+      "std": 0.13159338347139485
+    },
+    "world_model/h8_continuation_brier": {
+      "mean": 9.060500724444865e-06,
+      "std": 2.811043313144023e-07
+    },
+    "world_model/h8_image_mae": {
+      "mean": 0.039493069099262354,
+      "std": 0.023861627421480923
+    },
+    "world_model/h8_latent_cosine": {
+      "mean": 0.2689860839396715,
+      "std": 0.09636733691694502
+    },
+    "world_model/h8_reward_mae": {
+      "mean": 0.036025821577641184,
+      "std": 0.07849050235920392
+    }
+  },
+  "per_trajectory": [
+    {
+      "world_model/h1_continuation_brier": 9.121916264120955e-06,
+      "world_model/h1_image_mae": 0.02200198359787464,
+      "world_model/h1_latent_cosine": 0.23143433034420013,
+      "world_model/h1_reward_mae": 0.0035527346190065145,
+      "world_model/h2_continuation_brier": 8.893338417692576e-06,
+      "world_model/h2_image_mae": 0.02010268345475197,
+      "world_model/h2_latent_cosine": 0.2157190889120102,
+      "world_model/h2_reward_mae": 0.018614359200000763,
+      "world_model/h4_continuation_brier": 8.79239996720571e-06,
+      "world_model/h4_image_mae": 0.021550830453634262,
+      "world_model/h4_latent_cosine": 0.3039108216762543,
+      "world_model/h4_reward_mae": 0.003979333210736513,
+      "world_model/h8_continuation_brier": 9.243546628567856e-06,
+      "world_model/h8_image_mae": 0.01927298493683338,
+      "world_model/h8_latent_cosine": 0.2366749495267868,
+      "world_model/h8_reward_mae": 0.012282545678317547
+    },
+    {
+      "world_model/h1_continuation_brier": 8.893338417692576e-06,
+      "world_model/h1_image_mae": 0.010273631662130356,
+      "world_model/h1_latent_cosine": 0.11602722853422165,
+      "world_model/h1_reward_mae": 0.0019373748218640685,
+      "world_model/h2_continuation_brier": 8.779049494478386e-06,
+      "world_model/h2_image_mae": 0.02352546527981758,
+      "world_model/h2_latent_cosine": 0.11739714443683624,
+      "world_model/h2_reward_mae": 0.002707748906686902,
+      "world_model/h4_continuation_brier": 8.79239996720571e-06,
+      "world_model/h4_image_mae": 0.03180762752890587,
+      "world_model/h4_latent_cosine": 0.1675795018672943,
+      "world_model/h4_reward_mae": 0.000529121549334377,
+      "world_model/h8_continuation_brier": 8.79933486430673e-06,
+      "world_model/h8_image_mae": 0.022932251915335655,
+      "world_model/h8_latent_cosine": 0.15413089096546173,
+      "world_model/h8_reward_mae": 0.00015355856157839298
+    },
+    {
+      "world_model/h1_continuation_brier": 8.671696377859917e-06,
+      "world_model/h1_image_mae": 0.01618155837059021,
+      "world_model/h1_latent_cosine": 0.11206787824630737,
+      "world_model/h1_reward_mae": 0.009608713909983635,
+      "world_model/h2_continuation_brier": 8.68504594109254e-06,
+      "world_model/h2_image_mae": 0.017264466732740402,
+      "world_model/h2_latent_cosine": 0.1285683661699295,
+      "world_model/h2_reward_mae": 0.011308388784527779,
+      "world_model/h4_continuation_brier": 8.779049494478386e-06,
+      "world_model/h4_image_mae": 0.01720680482685566,
+      "world_model/h4_latent_cosine": 0.14906691014766693,
+      "world_model/h4_reward_mae": 0.011706280522048473,
+      "world_model/h8_continuation_brier": 8.893338417692576e-06,
+      "world_model/h8_image_mae": 0.02183012291789055,
+      "world_model/h8_latent_cosine": 0.17564727365970612,
+      "world_model/h8_reward_mae": 0.015997711569070816
+    },
+    {
+      "world_model/h1_continuation_brier": 8.463402991765179e-06,
+      "world_model/h1_image_mae": 0.012396574951708317,
+      "world_model/h1_latent_cosine": 0.09231752157211304,
+      "world_model/h1_reward_mae": 0.002845696872100234,
+      "world_model/h2_continuation_brier": 8.46340390125988e-06,
+      "world_model/h2_image_mae": 0.014425987377762794,
+      "world_model/h2_latent_cosine": 0.10291999578475952,
+      "world_model/h2_reward_mae": 0.0007603452540934086,
+      "world_model/h4_continuation_brier": 8.900274224288296e-06,
+      "world_model/h4_image_mae": 0.014557892456650734,
+      "world_model/h4_latent_cosine": 0.1161370500922203,
+      "world_model/h4_reward_mae": 0.0010947665432468057,
+      "world_model/h8_continuation_brier": 8.57075701787835e-06,
+      "world_model/h8_image_mae": 0.01364466454833746,
+      "world_model/h8_latent_cosine": 0.11603435128927231,
+      "world_model/h8_reward_mae": 0.0019397464348003268
+    },
+    {
+      "world_model/h1_continuation_brier": 8.584106581110973e-06,
+      "world_model/h1_image_mae": 0.02131975069642067,
+      "world_model/h1_latent_cosine": 0.195088192820549,
+      "world_model/h1_reward_mae": 0.13821622729301453,
+      "world_model/h2_continuation_brier": 9.129257705353666e-06,
+      "world_model/h2_image_mae": 0.02066032588481903,
+      "world_model/h2_latent_cosine": 0.1943110078573227,
+      "world_model/h2_reward_mae": 0.14017708599567413,
+      "world_model/h4_continuation_brier": 9.236205187335145e-06,
+      "world_model/h4_image_mae": 0.02351430431008339,
+      "world_model/h4_latent_cosine": 0.20862355828285217,
+      "world_model/h4_reward_mae": 0.025217128917574883,
+      "world_model/h8_continuation_brier": 9.258655154553708e-06,
+      "world_model/h8_image_mae": 0.02125542238354683,
+      "world_model/h8_latent_cosine": 0.2225559502840042,
+      "world_model/h8_reward_mae": 0.008039689622819424
+    },
+    {
+      "world_model/h1_continuation_brier": 9.0283183453721e-06,
+      "world_model/h1_image_mae": 0.03402760624885559,
+      "world_model/h1_latent_cosine": 0.17470140755176544,
+      "world_model/h1_reward_mae": 0.004778412636369467,
+      "world_model/h2_continuation_brier": 9.129257705353666e-06,
+      "world_model/h2_image_mae": 0.01571490615606308,
+      "world_model/h2_latent_cosine": 0.12457890808582306,
+      "world_model/h2_reward_mae": 0.0007837796001695096,
+      "world_model/h4_continuation_brier": 9.365176083520055e-06,
+      "world_model/h4_image_mae": 0.019086787477135658,
+      "world_model/h4_latent_cosine": 0.15605585277080536,
+      "world_model/h4_reward_mae": 0.004430381581187248,
+      "world_model/h8_continuation_brier": 9.480297194386367e-06,
+      "world_model/h8_image_mae": 0.01922561600804329,
+      "world_model/h8_latent_cosine": 0.17885027825832367,
+      "world_model/h8_reward_mae": 0.0004715433460660279
+    },
+    {
+      "world_model/h1_continuation_brier": 8.893338417692576e-06,
+      "world_model/h1_image_mae": 0.030245106667280197,
+      "world_model/h1_latent_cosine": 0.18118122220039368,
+      "world_model/h1_reward_mae": 0.030597055330872536,
+      "world_model/h2_continuation_brier": 9.243546628567856e-06,
+      "world_model/h2_image_mae": 0.03137284144759178,
+      "world_model/h2_latent_cosine": 0.2628217935562134,
+      "world_model/h2_reward_mae": 0.04395025223493576,
+      "world_model/h4_continuation_brier": 9.586819032847416e-06,
+      "world_model/h4_image_mae": 0.025689879432320595,
+      "world_model/h4_latent_cosine": 0.2242647260427475,
+      "world_model/h4_reward_mae": 0.08193829655647278,
+      "world_model/h8_continuation_brier": 9.129256795858964e-06,
+      "world_model/h8_image_mae": 0.062484294176101685,
+      "world_model/h8_latent_cosine": 0.34183475375175476,
+      "world_model/h8_reward_mae": 0.1233731284737587
+    },
+    {
+      "world_model/h1_continuation_brier": 9.021903679240495e-06,
+      "world_model/h1_image_mae": 0.020471714437007904,
+      "world_model/h1_latent_cosine": 0.11528521031141281,
+      "world_model/h1_reward_mae": 0.08873380720615387,
+      "world_model/h2_continuation_brier": 8.893338417692576e-06,
+      "world_model/h2_image_mae": 0.021462569013237953,
+      "world_model/h2_latent_cosine": 0.15585355460643768,
+      "world_model/h2_reward_mae": 0.056778233498334885,
+      "world_model/h4_continuation_brier": 8.671696377859917e-06,
+      "world_model/h4_image_mae": 0.028133729472756386,
+      "world_model/h4_latent_cosine": 0.17707335948944092,
+      "world_model/h4_reward_mae": 0.009719070978462696,
+      "world_model/h8_continuation_brier": 9.014968782139476e-06,
+      "world_model/h8_image_mae": 0.0638745129108429,
+      "world_model/h8_latent_cosine": 0.36755838990211487,
+      "world_model/h8_reward_mae": 0.001107867225073278
+    },
+    {
+      "world_model/h1_continuation_brier": 9.007627340906765e-06,
+      "world_model/h1_image_mae": 0.015148990787565708,
+      "world_model/h1_latent_cosine": 0.13121019303798676,
+      "world_model/h1_reward_mae": 0.2784193158149719,
+      "world_model/h2_continuation_brier": 9.114980457525235e-06,
+      "world_model/h2_image_mae": 0.028699662536382675,
+      "world_model/h2_latent_cosine": 0.14346009492874146,
+      "world_model/h2_reward_mae": 0.029238635674118996,
+      "world_model/h4_continuation_brier": 8.886403520591557e-06,
+      "world_model/h4_image_mae": 0.05711682513356209,
+      "world_model/h4_latent_cosine": 0.27360016107559204,
+      "world_model/h4_reward_mae": 0.018351178616285324,
+      "world_model/h8_continuation_brier": 8.671696377859917e-06,
+      "world_model/h8_image_mae": 0.10260196775197983,
+      "world_model/h8_latent_cosine": 0.4291631877422333,
+      "world_model/h8_reward_mae": 0.07105854153633118
+    },
+    {
+      "world_model/h1_continuation_brier": 8.826147677609697e-06,
+      "world_model/h1_image_mae": 0.02965223416686058,
+      "world_model/h1_latent_cosine": 0.25452396273612976,
+      "world_model/h1_reward_mae": 0.011378796771168709,
+      "world_model/h2_continuation_brier": 8.722831807972398e-06,
+      "world_model/h2_image_mae": 0.03452184796333313,
+      "world_model/h2_latent_cosine": 0.27113044261932373,
+      "world_model/h2_reward_mae": 0.019005661830306053,
+      "world_model/h4_continuation_brier": 8.501188858645037e-06,
+      "world_model/h4_image_mae": 0.03225792944431305,
+      "world_model/h4_latent_cosine": 0.23075459897518158,
+      "world_model/h4_reward_mae": 0.2016836404800415,
+      "world_model/h8_continuation_brier": 9.465187758905813e-06,
+      "world_model/h8_image_mae": 0.08170827478170395,
+      "world_model/h8_latent_cosine": 0.44876620173454285,
+      "world_model/h8_reward_mae": 0.03934420645236969
+    },
+    {
+      "world_model/h1_continuation_brier": 9.143534043687396e-06,
+      "world_model/h1_image_mae": 0.027850959450006485,
+      "world_model/h1_latent_cosine": 0.2440788745880127,
+      "world_model/h1_reward_mae": 0.004485612269490957,
+      "world_model/h2_continuation_brier": 9.358241186419036e-06,
+      "world_model/h2_image_mae": 0.09009387344121933,
+      "world_model/h2_latent_cosine": 0.3929996192455292,
+      "world_model/h2_reward_mae": 0.011622506193816662,
+      "world_model/h4_continuation_brier": 9.465187758905813e-06,
+      "world_model/h4_image_mae": 0.07916360348463058,
+      "world_model/h4_latent_cosine": 0.30036357045173645,
+      "world_model/h4_reward_mae": 0.011383931152522564,
+      "world_model/h8_continuation_brier": 9.236610821972135e-06,
+      "world_model/h8_image_mae": 0.04472419247031212,
+      "world_model/h8_latent_cosine": 0.3395642936229706,
+      "world_model/h8_reward_mae": 0.032206181436777115
+    },
+    {
+      "world_model/h1_continuation_brier": 9.601927558833268e-06,
+      "world_model/h1_image_mae": 0.022337956354022026,
+      "world_model/h1_latent_cosine": 0.20345747470855713,
+      "world_model/h1_reward_mae": 0.0009891859954223037,
+      "world_model/h2_continuation_brier": 9.594160474080127e-06,
+      "world_model/h2_image_mae": 0.021294379606842995,
+      "world_model/h2_latent_cosine": 0.23254509270191193,
+      "world_model/h2_reward_mae": 0.0007775839767418802,
+      "world_model/h4_continuation_brier": 9.716216482047457e-06,
+      "world_model/h4_image_mae": 0.021172406151890755,
+      "world_model/h4_latent_cosine": 0.26363274455070496,
+      "world_model/h4_reward_mae": 0.0010722423903644085,
+      "world_model/h8_continuation_brier": 9.586818123352714e-06,
+      "world_model/h8_image_mae": 0.020377708598971367,
+      "world_model/h8_latent_cosine": 0.2566174864768982,
+      "world_model/h8_reward_mae": 0.0014508015010505915
+    },
+    {
+      "world_model/h1_continuation_brier": 9.007627340906765e-06,
+      "world_model/h1_image_mae": 0.02840489149093628,
+      "world_model/h1_latent_cosine": 0.19274528324604034,
+      "world_model/h1_reward_mae": 0.20539335906505585,
+      "world_model/h2_continuation_brier": 8.698395504325163e-06,
+      "world_model/h2_image_mae": 0.031815193593502045,
+      "world_model/h2_latent_cosine": 0.23149371147155762,
+      "world_model/h2_reward_mae": 0.004902021959424019,
+      "world_model/h4_continuation_brier": 9.114980457525235e-06,
+      "world_model/h4_image_mae": 0.06348253786563873,
+      "world_model/h4_latent_cosine": 0.35571497678756714,
+      "world_model/h4_reward_mae": 0.00967797078192234,
+      "world_model/h8_continuation_brier": 9.350899745186325e-06,
+      "world_model/h8_image_mae": 0.06060688942670822,
+      "world_model/h8_latent_cosine": 0.3976444900035858,
+      "world_model/h8_reward_mae": 0.0036249756813049316
+    },
+    {
+      "world_model/h1_continuation_brier": 9.000692443805747e-06,
+      "world_model/h1_image_mae": 0.012234426103532314,
+      "world_model/h1_latent_cosine": 0.1078432947397232,
+      "world_model/h1_reward_mae": 0.016789820045232773,
+      "world_model/h2_continuation_brier": 9.007627340906765e-06,
+      "world_model/h2_image_mae": 0.01760222762823105,
+      "world_model/h2_latent_cosine": 0.10420804470777512,
+      "world_model/h2_reward_mae": 0.0020396162290126085,
+      "world_model/h4_continuation_brier": 9.350899745186325e-06,
+      "world_model/h4_image_mae": 0.03505251929163933,
+      "world_model/h4_latent_cosine": 0.18654857575893402,
+      "world_model/h4_reward_mae": 0.0012574488064274192,
+      "world_model/h8_continuation_brier": 8.779049494478386e-06,
+      "world_model/h8_image_mae": 0.025542467832565308,
+      "world_model/h8_latent_cosine": 0.180609792470932,
+      "world_model/h8_reward_mae": 0.018425684422254562
+    },
+    {
+      "world_model/h1_continuation_brier": 8.900274224288296e-06,
+      "world_model/h1_image_mae": 0.024815397337079048,
+      "world_model/h1_latent_cosine": 0.16782808303833008,
+      "world_model/h1_reward_mae": 0.012295498512685299,
+      "world_model/h2_continuation_brier": 9.129256795858964e-06,
+      "world_model/h2_image_mae": 0.03751532360911369,
+      "world_model/h2_latent_cosine": 0.24486570060253143,
+      "world_model/h2_reward_mae": 0.012550706043839455,
+      "world_model/h4_continuation_brier": 8.811871339275967e-06,
+      "world_model/h4_image_mae": 0.03374478220939636,
+      "world_model/h4_latent_cosine": 0.3084442913532257,
+      "world_model/h4_reward_mae": 0.06131225451827049,
+      "world_model/h8_continuation_brier": 8.79933486430673e-06,
+      "world_model/h8_image_mae": 0.04871847853064537,
+      "world_model/h8_latent_cosine": 0.3524373471736908,
+      "world_model/h8_reward_mae": 0.3534865975379944
+    },
+    {
+      "world_model/h1_continuation_brier": 9.243546628567856e-06,
+      "world_model/h1_image_mae": 0.023867763578891754,
+      "world_model/h1_latent_cosine": 0.12518954277038574,
+      "world_model/h1_reward_mae": 0.0003858072159346193,
+      "world_model/h2_continuation_brier": 8.68504594109254e-06,
+      "world_model/h2_image_mae": 0.041124455630779266,
+      "world_model/h2_latent_cosine": 0.18544697761535645,
+      "world_model/h2_reward_mae": 0.0005525849992409348,
+      "world_model/h4_continuation_brier": 8.785984391579404e-06,
+      "world_model/h4_image_mae": 0.04116462916135788,
+      "world_model/h4_latent_cosine": 0.21213297545909882,
+      "world_model/h4_reward_mae": 0.0005675979773513973,
+      "world_model/h8_continuation_brier": 8.785984391579404e-06,
+      "world_model/h8_image_mae": 0.02454904094338417,
+      "world_model/h8_latent_cosine": 0.19493180513381958,
+      "world_model/h8_reward_mae": 0.0004913258599117398
+    },
+    {
+      "world_model/h1_continuation_brier": 9.007627340906765e-06,
+      "world_model/h1_image_mae": 0.010899373330175877,
+      "world_model/h1_latent_cosine": 0.09847725927829742,
+      "world_model/h1_reward_mae": 0.11986716836690903,
+      "world_model/h2_continuation_brier": 9.250887160305865e-06,
+      "world_model/h2_image_mae": 0.0106648039072752,
+      "world_model/h2_latent_cosine": 0.1066279411315918,
+      "world_model/h2_reward_mae": 0.11401378363370895,
+      "world_model/h4_continuation_brier": 9.114980457525235e-06,
+      "world_model/h4_image_mae": 0.012893574312329292,
+      "world_model/h4_latent_cosine": 0.11705129593610764,
+      "world_model/h4_reward_mae": 0.022268150001764297,
+      "world_model/h8_continuation_brier": 9.007627340906765e-06,
+      "world_model/h8_image_mae": 0.019179757684469223,
+      "world_model/h8_latent_cosine": 0.1632441282272339,
+      "world_model/h8_reward_mae": 0.01021444983780384
+    },
+    {
+      "world_model/h1_continuation_brier": 9.236610821972135e-06,
+      "world_model/h1_image_mae": 0.038286659866571426,
+      "world_model/h1_latent_cosine": 0.26277342438697815,
+      "world_model/h1_reward_mae": 0.007016072515398264,
+      "world_model/h2_continuation_brier": 9.007627340906765e-06,
+      "world_model/h2_image_mae": 0.05452979728579521,
+      "world_model/h2_latent_cosine": 0.31775447726249695,
+      "world_model/h2_reward_mae": 0.06431286782026291,
+      "world_model/h4_continuation_brier": 8.671696377859917e-06,
+      "world_model/h4_image_mae": 0.05161208659410477,
+      "world_model/h4_latent_cosine": 0.3160611689090729,
+      "world_model/h4_reward_mae": 0.005795682314783335,
+      "world_model/h8_continuation_brier": 9.229270290234126e-06,
+      "world_model/h8_image_mae": 0.053980566561222076,
+      "world_model/h8_latent_cosine": 0.31135082244873047,
+      "world_model/h8_reward_mae": 0.0037442611064761877
+    },
+    {
+      "world_model/h1_continuation_brier": 8.785984391579404e-06,
+      "world_model/h1_image_mae": 0.026788420975208282,
+      "world_model/h1_latent_cosine": 0.1991085410118103,
+      "world_model/h1_reward_mae": 0.2641329765319824,
+      "world_model/h2_continuation_brier": 8.678631274960935e-06,
+      "world_model/h2_image_mae": 0.017155177891254425,
+      "world_model/h2_latent_cosine": 0.1753198504447937,
+      "world_model/h2_reward_mae": 0.042866017669439316,
+      "world_model/h4_continuation_brier": 9.236610821972135e-06,
+      "world_model/h4_image_mae": 0.04229084774851799,
+      "world_model/h4_latent_cosine": 0.2597060799598694,
+      "world_model/h4_reward_mae": 0.5918567776679993,
+      "world_model/h8_continuation_brier": 9.000692443805747e-06,
+      "world_model/h8_image_mae": 0.03350482136011124,
+      "world_model/h8_latent_cosine": 0.23539486527442932,
+      "world_model/h8_reward_mae": 0.002971149981021881
+    },
+    {
+      "world_model/h1_continuation_brier": 9.007627340906765e-06,
+      "world_model/h1_image_mae": 0.015700504183769226,
+      "world_model/h1_latent_cosine": 0.16143791377544403,
+      "world_model/h1_reward_mae": 0.07053550332784653,
+      "world_model/h2_continuation_brier": 8.893338417692576e-06,
+      "world_model/h2_image_mae": 0.02915816381573677,
+      "world_model/h2_latent_cosine": 0.22441144287586212,
+      "world_model/h2_reward_mae": 0.006622882094234228,
+      "world_model/h4_continuation_brier": 8.475940376229119e-06,
+      "world_model/h4_image_mae": 0.02686142548918724,
+      "world_model/h4_latent_cosine": 0.23253236711025238,
+      "world_model/h4_reward_mae": 0.005085113923996687,
+      "world_model/h8_continuation_brier": 8.906687980925199e-06,
+      "world_model/h8_image_mae": 0.029847346246242523,
+      "world_model/h8_latent_cosine": 0.2767104208469391,
+      "world_model/h8_reward_mae": 0.020132465288043022
+    }
+  ],
+  "run_dir": "/tmp/dreamarl_joint_gate_e6ae5f0/dreamarl_externality_local_memory_seed0_50k/run",
+  "trajectories": 20
+}

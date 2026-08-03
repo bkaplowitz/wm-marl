@@ -1,0 +1,110 @@
+{
+  "contract": "fixed_complete_replay_windows_v1",
+  "dataset_sha256": "4a378a18f33b841dc467c89e631f92d8bb97c49232d6f06435b6a370fbea3758",
+  "length": 64,
+  "provenance": [
+    {
+      "source_chunk": "20260803T005958F996611-5pxmcq6WElgVTgU0AN8543-7gRIiatEV10JQH4g6D7TW7-1024.npz",
+      "source_chunk_sha256": "de0f6c01642d11c410aa40c72f1ecceec40c3dd61decbd0696688dba86ab123f",
+      "source_start": 813
+    },
+    {
+      "source_chunk": "20260802T231727F679800-1ppqOEiuJ3qgItsYIvInt2-643t8FaL6VvRSx6PQsKbTg-1024.npz",
+      "source_chunk_sha256": "ff18503e0a01ec6d6ac3b80b83148e706a94becedc7aa2221043418bee32cb19",
+      "source_start": 844
+    },
+    {
+      "source_chunk": "20260802T225254F319212-1mhUKtnJvwfvlXkbBToz1A-6hqM4HjA1pSvXZWPKY6vgf-1024.npz",
+      "source_chunk_sha256": "84744087d50aa193fe5db7462deb36534605f87c06808765ddcc0a0b569794c6",
+      "source_start": 932
+    },
+    {
+      "source_chunk": "20260803T021741F551213-16JxLlBzqOkCeS8dUtaUuL-48TeDsjWzUtsVzwEUCFmzE-1024.npz",
+      "source_chunk_sha256": "60c4077f940b0cd7d5f3bedcdbb8b9aa68d6c8e5ff698abcec9f722090546142",
+      "source_start": 914
+    },
+    {
+      "source_chunk": "20260803T015351F715575-6WlVJDk5rNLyUJxiT2VWRe-2BgQf0XUpGn9CEfpiJ9gqb-1024.npz",
+      "source_chunk_sha256": "2d6446d7a528f173223c90c6a8e7857535370ecbbbf43e604969b13294bb59b9",
+      "source_start": 866
+    },
+    {
+      "source_chunk": "20260803T000551F541180-5BQDJlI15UGnsTM4jj2y6f-5H61oK9Yy516sX70Da03is-914.npz",
+      "source_chunk_sha256": "684df194e551bdb551a18688d8bc81e7851e65d4cb7f97014d935512b43869c4",
+      "source_start": 780
+    },
+    {
+      "source_chunk": "20260802T234121F507010-7GxgraWoEaHi6MWwVmD3TL-5lBfSn9e0wJ6fhnwNQxYFd-1024.npz",
+      "source_chunk_sha256": "b89b8ce2bfd2319378629fccf9dddadc5a52204486e24ff6fbba4b0e07e4df16",
+      "source_start": 872
+    },
+    {
+      "source_chunk": "20260803T005346F761213-5LuAJFWacWJux9hJv7Nq8k-5pxmcq6WElgVTgU0AN8543-1024.npz",
+      "source_chunk_sha256": "05d2789b10e4365ff6fecb9cf26daaf21eedb3e27e4a8d75e382a9f24f0d7bf8",
+      "source_start": 836
+    },
+    {
+      "source_chunk": "20260803T002341F463080-75swT7IfeVgkPEx7SsGJDf-6Cqxu831fSxVHUbWUvrUD4-1024.npz",
+      "source_chunk_sha256": "5fc7fb9a23fc5a84276bbb7b3b00e33fff669e8d6328b70aecc9bea1bf2e07ed",
+      "source_start": 821
+    },
+    {
+      "source_chunk": "20260802T225900F360295-6hqM4HjA1pSvXZWPKY6vgf-7s5c9wTzPWXHh7tZvyQodm-1024.npz",
+      "source_chunk_sha256": "dee7b8e565cf71438f7b3b1ce51e4b21bed4a5032327f49b339ceb782b0b3792",
+      "source_start": 909
+    },
+    {
+      "source_chunk": "20260803T020608F872005-43EOLHZGc132gqzmsYJn6d-4hmtxRCwQwILQApvPmFpcX-884.npz",
+      "source_chunk_sha256": "3d0ad4df8dea3d73e8fe817f9a65e54d833a2bffedafad63fe332d0f93c75610",
+      "source_start": 820
+    },
+    {
+      "source_chunk": "20260803T013604F094755-5q0Wzr9Y3pgiIjh4sKG0fe-4ugRLtXSGXb2Si3YH05WNK-904.npz",
+      "source_chunk_sha256": "6fb851f80e2b30441e911a85ccb490e8eac2e6e1b51eab889d48da5f31132432",
+      "source_start": 815
+    },
+    {
+      "source_chunk": "20260803T010607F197403-7gRIiatEV10JQH4g6D7TW7-3UzX4Gr3Q78r83cghj5nab-884.npz",
+      "source_chunk_sha256": "9bafc3a8fa613cd7d31e1d34aa47a9d3237dcd122920f1037c1f95d45a1620d5",
+      "source_start": 790
+    },
+    {
+      "source_chunk": "20260803T002949F578806-6Cqxu831fSxVHUbWUvrUD4-32mUMvpwIjAtmJPzeZtkLq-1024.npz",
+      "source_chunk_sha256": "ca7670a37775a9162ccef02efb2a7a6dea6ba48a541d9b5dfa7e47a644885afa",
+      "source_start": 798
+    },
+    {
+      "source_chunk": "20260803T011129F925990-3UzX4Gr3Q78r83cghj5nab-5P8FEoxu0WxQOWiQ1TyMcX-1024.npz",
+      "source_chunk_sha256": "68c51bf579230cd7d46dee609c1586300ecea1fdf7544d8a3d83553775023448",
+      "source_start": 907
+    },
+    {
+      "source_chunk": "20260803T004127F731028-6Gnal2XoqyPcZAeZDI4YHb-06s2TlCj0Epvj35KpilWp8-1024.npz",
+      "source_chunk_sha256": "8fe081732fe1604139714711a3772849f854d0b6c6f1dd8f1dbaa4e6f41b2b61",
+      "source_start": 882
+    },
+    {
+      "source_chunk": "20260803T001731F338442-1oQHOhu15a7j7tFpRybVw8-75swT7IfeVgkPEx7SsGJDf-1024.npz",
+      "source_chunk_sha256": "d315064d1f2eb65bd7f2c24674b0de940e16f1a4f002d2689b1c31c9308fc20e",
+      "source_start": 844
+    },
+    {
+      "source_chunk": "20260803T004738F541413-06s2TlCj0Epvj35KpilWp8-5LuAJFWacWJux9hJv7Nq8k-1024.npz",
+      "source_chunk_sha256": "b1aac053d4b8df91ae677c6d212e3e39c62efd331d4ac3ef55fb80e8747fe52b",
+      "source_start": 859
+    },
+    {
+      "source_chunk": "20260802T232946F476244-3WUZBUavAQkNMupMWguoyM-0olZD6bd0Gx3hrGTUw1gjy-1024.npz",
+      "source_chunk_sha256": "d871a5f293faf512546521a9b0f044b3738e307c6d8331b87efa8743426ee1c1",
+      "source_start": 798
+    },
+    {
+      "source_chunk": "20260803T001123F589233-5H61oK9Yy516sX70Da03is-1oQHOhu15a7j7tFpRybVw8-1024.npz",
+      "source_chunk_sha256": "02f0178bcd33ccace7f442cb07f605ff0af8fffbff863db6383019893da03f06",
+      "source_start": 867
+    }
+  ],
+  "replay_dir": "/tmp/dreamarl_joint_gate_e6ae5f0/dreamarl_externality_local_memory_seed0_50k/run/replay",
+  "seed": 20260803,
+  "trajectories": 20
+}

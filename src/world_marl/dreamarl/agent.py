@@ -573,9 +573,17 @@ class Agent(embodied.jax.Agent):
             jnp.zeros_like(secondhalf(obs["is_first"])),
             training=False,
         )
+        metrics.update(
+            self._recursive_decoder_metrics(
+                imgrecons,
+                {key: secondhalf(obs[key]) for key in self.dec.imgkeys},
+            )
+        )
 
         # Video preds
         for key in self.dec.imgkeys:
+            if not getattr(self.config, "report_video", True):
+                break
             assert obs[key].dtype == jnp.uint8
             true = obs[key][:RB]
             pred = jnp.concatenate([obsrecons[key].pred(), imgrecons[key].pred()], 1)
@@ -629,6 +637,36 @@ class Agent(embodied.jax.Agent):
             metrics[f"world_model/h{horizon}_continuation_brier"] = (
                 continuation_error.mean()
             )
+            for name in ("deter", "memory"):
+                key = f"interaction_{name}"
+                if key not in imagined:
+                    continue
+                residual = f32(imagined[key][:, index])
+                axes = tuple(range(1, residual.ndim))
+                residual_rms = jnp.sqrt(jnp.mean(residual**2, axis=axes))
+                metrics[f"world_model/h{horizon}_interaction_{name}_rms"] = (
+                    residual_rms.mean()
+                )
+                metrics[f"world_model/h{horizon}_interaction_{name}_latent_corr"] = (
+                    _pearson_correlation(residual_rms, latent_error)
+                )
+                metrics[f"world_model/h{horizon}_interaction_{name}_reward_corr"] = (
+                    _pearson_correlation(residual_rms, reward_error)
+                )
+        return metrics
+
+    def _recursive_decoder_metrics(self, predictions, targets):
+        metrics = {}
+        for key in self.dec.imgkeys:
+            prediction = f32(predictions[key].pred())
+            target = f32(targets[key]) / 255.0
+            length = prediction.shape[1]
+            for horizon in (1, 2, 4, 8):
+                if horizon > length:
+                    continue
+                index = horizon - 1
+                error = jnp.abs(prediction[:, index] - target[:, index])
+                metrics[f"world_model/h{horizon}_{key}_mae"] = error.mean()
         return metrics
 
     def _fold_replay(self, data):
@@ -766,6 +804,15 @@ def _remove_bound_axis(bound):
     if bound is None:
         return None
     return np.asarray(bound)[0]
+
+
+def _pearson_correlation(left, right):
+    left = f32(left).reshape((-1,))
+    right = f32(right).reshape((-1,))
+    left = left - left.mean()
+    right = right - right.mean()
+    denominator = jnp.sqrt(jnp.sum(left**2) * jnp.sum(right**2))
+    return jnp.where(denominator > 1e-8, jnp.sum(left * right) / denominator, 0.0)
 
 
 def imag_loss(
