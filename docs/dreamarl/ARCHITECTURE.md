@@ -44,7 +44,7 @@ encoder maps it to a 4,096-dimensional embedding:
 e_t^i = Encoder(o_t^i)
 ```
 
-A two-layer causal Transformer of width 512 and eight attention heads maintains
+A two-layer causal Transformer of width 768 and 12 attention heads maintains
 the local policy belief:
 
 ```text
@@ -72,9 +72,9 @@ The authoritative environment state is one stochastic joint latent, not a set
 of independent local simulators. Its carry contains:
 
 ```text
-global token          g_t       [B, 512]
-agent states          d_t       [B, A, 512]
-categorical latents   s_t       [B, A, 32, 32]
+global token          g_t       [B, 768]
+agent states          d_t       [B, A, 768]
+categorical latents   s_t       [B, A, 32, 64]
 ```
 
 The posterior infers this state from the complete synchronized set of local
@@ -90,7 +90,7 @@ The prior advances it with the complete joint action:
 p(S_{t+1} | S_t, a_t^{1:A})
 ```
 
-Both use a two-layer, width-512, eight-head set Transformer over one global
+Both use a two-layer, width-768, 12-head set Transformer over one global
 token and `A` agent tokens. Agent positional identifiers are absent, making the
 model permutation equivariant for homogeneous agents. Every next-agent
 prediction is generated from the same sampled world state.
@@ -107,10 +107,10 @@ representation KL terms, and open-loop JEPA overshooting at horizons 2, 4, and
 8. Overshooting weights are 0.5, 0.25, and 0.125 and reset-crossing targets are
 masked.
 
-An observation decoder is retained for visual reports and an auxiliary
-reconstruction loss. It receives stopped-gradient world features, so decoder
-gradients cannot shape the encoder or world state. Control and latent dynamics
-do not require pixel reconstruction.
+The maintained model has no observation decoder and no reconstruction loss.
+World-model learning is entirely predictive in representation space. Optional
+visual probes may train a separate decoder from frozen checkpoints, but that
+probe is not part of the algorithm, optimizer, checkpoint, or parameter count.
 
 ## Synchronous Imagination
 
@@ -165,23 +165,22 @@ The maintained Melting Pot configuration uses:
 - adaptive gradient clipping of 0.3.
 
 Learning rates are `6e-6` for the visual encoder, `4e-4` for the local belief
-and joint world, and `4e-5` for prediction heads, actor, critic, and decoder.
+and joint world, and `4e-5` for prediction heads, actor, and critic.
 Replay context is recomputed from raw observations as learner-side burn-in;
 implementation-specific recurrent caches are not authoritative replay data.
 
-The Externality-sized model contains 58,194,186 trainable parameters:
+The Externality-sized model contains 81,847,303 trainable parameters:
 
 | Module | Parameters |
 | --- | ---: |
-| Joint world | 20,484,608 |
-| Report decoder | 14,252,803 |
-| Local belief | 8,405,504 |
-| Central critic | 4,461,823 |
+| Joint world | 44,488,448 |
+| Local belief | 17,326,848 |
+| Central critic | 6,034,687 |
 | Visual encoder | 3,492,864 |
-| Decentralized actor | 2,635,784 |
-| Reward head | 2,360,575 |
-| Continuation head | 2,100,225 |
-| **Total** | **58,194,186** |
+| Decentralized actor | 2,897,928 |
+| Reward head | 3,933,439 |
+| Continuation head | 3,673,089 |
+| **Total** | **81,847,303** |
 
 Parameters are shared across agents, so model size does not grow with team
 size. Activation and attention compute do grow with `A`.
@@ -217,7 +216,7 @@ Automated contracts require:
 - `agent.py`: loss composition, joint imagination, actor, and critic;
 - `local_belief.py`: strictly local recurrent execution state;
 - `joint_model.py`: joint posterior, prior, JEPA losses, and overshooting;
-- `perception.py`: local visual encoder and report decoder;
+- `perception.py`: local visual encoder and optional offline visual probe;
 - `axes.py`: explicit local/joint tensor transformations;
 - `meltingpot.py`: environment and reward-vector contract;
 - `train.py` and `evaluation.py`: training and fixed evaluation;

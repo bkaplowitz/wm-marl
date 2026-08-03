@@ -43,10 +43,6 @@ def deterministic(distributions):
     return {key: value.pred() for key, value in distributions.items()}
 
 
-def isimage(space):
-    return space.dtype == np.uint8 and len(space.shape) == 3
-
-
 class Agent(embodied.jax.Agent):
     """Joint-world model with strictly decentralized shared actors."""
 
@@ -80,7 +76,6 @@ class Agent(embodied.jax.Agent):
 
         excluded = {"is_first", "is_last", "is_terminal", "reward"}
         enc_space = {key: value for key, value in self.obs_space.items() if key not in excluded}
-        dec_space = dict(enc_space)
         self.enc = perception.Encoder(enc_space, **config.enc.simple, name="enc")
         self.embedding_dim = self.enc.calculate_output_dim()
         self.belief = LocalBelief(
@@ -97,8 +92,6 @@ class Agent(embodied.jax.Agent):
             **config.joint,
             name="world",
         )
-        self.dec = perception.Decoder(dec_space, **config.dec.simple, name="dec")
-
         scalar = elements.Space(np.float32, ())
         binary = elements.Space(bool, (), 0, 2)
         self.rew = embodied.jax.MLPHead(scalar, **config.rewhead, name="rew")
@@ -124,7 +117,6 @@ class Agent(embodied.jax.Agent):
             self.enc,
             self.belief,
             self.world,
-            self.dec,
             self.rew,
             self.con,
             self.pol,
@@ -135,10 +127,7 @@ class Agent(embodied.jax.Agent):
             self.modules, optimizer, summary_depth=1, name="opt"
         )
 
-        scales = dict(config.loss_scales)
-        reconstruction = scales.pop("rec")
-        scales.update({key: reconstruction for key in dec_space})
-        self.scales = scales
+        self.scales = dict(config.loss_scales)
 
     @property
     def policy_keys(self):
@@ -247,11 +236,6 @@ class Agent(embodied.jax.Agent):
         metrics["world_model/reward_vector_mae"] = jnp.abs(
             reward_prediction[:, target] - data["reward"][:, target]
         ).mean()
-
-        decoder_losses = self._decoder_losses(
-            artifacts["world_features"], data, training
-        )
-        losses.update({key: value[:, target] for key, value in decoder_losses.items()})
 
         sliced_features = {
             key: value[:, target]
@@ -519,30 +503,6 @@ class Agent(embodied.jax.Agent):
             **self.config.repl_loss,
         )
         return losses, {f"replay_value/{key}": value for key, value in metrics.items()}
-
-    def _decoder_losses(self, world_features, data, training):
-        batch, length = data["is_first"].shape
-        local_batch = batch * self.num_agents
-        feature = {
-            "deter": fold_agent_sequence(world_features["deter"], self.num_agents),
-            "stoch": fold_agent_sequence(world_features["stoch"], self.num_agents),
-        }
-        reset = broadcast_global_sequence(data["is_first"], self.num_agents)
-        _, _, reconstructions = self.dec(
-            self.dec.initial(local_batch),
-            jax.tree.map(sg, feature),
-            reset,
-            training,
-        )
-        local_obs = self._local_observations(data)
-        losses = {}
-        for key, reconstruction in reconstructions.items():
-            target = local_obs[key]
-            target = f32(target) / 255 if isimage(self.obs_space[key]) else target
-            losses[key] = unfold_agent_sequence(
-                reconstruction.loss(sg(target)), self.num_agents
-            ).mean(-1)
-        return losses
 
     def _local_observations(self, data):
         result = {}

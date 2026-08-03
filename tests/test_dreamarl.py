@@ -112,9 +112,31 @@ def test_joint_world_configuration_has_no_optional_adapter_flags() -> None:
         "priority": 0.0,
         "recency": 0.5,
     }
+    assert "rec" not in configs["defaults"]["agent"]["loss_scales"]
+    assert "dec" not in configs["defaults"]["agent"]
+    assert configs["defaults"]["agent"]["local_belief"] == {
+        "units": 768,
+        "layers": 2,
+        "heads": 12,
+        "context": 64,
+        "ffup": 4,
+        "act": "silu",
+        "norm": "rms",
+        "winit": "trunc_normal_in",
+    }
+    assert configs["defaults"]["agent"]["joint"]["units"] == 768
+    assert configs["defaults"]["agent"]["joint"]["layers"] == 2
+    assert configs["defaults"]["agent"]["joint"]["heads"] == 12
+    assert configs["defaults"]["agent"]["joint"]["classes"] == 64
     assert "structured_local_memory" not in configs
     assert "shared_transition_context" not in configs
     assert "jepa_transformer" not in configs
+
+
+def test_maintained_agent_is_decoder_free() -> None:
+    source = (algorithm_root() / "agent.py").read_text(encoding="utf-8")
+    assert "self.dec" not in source
+    assert "_decoder_losses" not in source
 
 
 def test_first_party_runtime_contains_only_maintained_algorithm_files() -> None:

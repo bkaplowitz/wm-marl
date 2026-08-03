@@ -1,10 +1,7 @@
 """Pure tensor-axis operations used by the DreaMARL agent.
 
 The learner keeps environment and agent axes explicit in replay as
-``[batch, time, agent, ...]``. Neural modules share parameters across agents,
-so their existing M3 implementation receives ``batch * agent`` trajectories.
-These functions only reshape and transpose arrays; they do not change values
-or introduce an agent-count-dependent code path.
+``[batch, time, agent, ...]``. Neural modules share parameters across agents.
 """
 
 from __future__ import annotations
