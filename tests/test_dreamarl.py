@@ -128,6 +128,9 @@ def test_joint_world_configuration_has_no_optional_adapter_flags() -> None:
     assert configs["defaults"]["agent"]["joint"]["layers"] == 2
     assert configs["defaults"]["agent"]["joint"]["heads"] == 12
     assert configs["defaults"]["agent"]["joint"]["classes"] == 64
+    shared_lr = configs["defaults"]["agent"]["opt"]["lr"]
+    assert configs["defaults"]["agent"]["belief_lr"] == shared_lr
+    assert configs["defaults"]["agent"]["world_lr"] == shared_lr
     assert "structured_local_memory" not in configs
     assert "shared_transition_context" not in configs
     assert "jepa_transformer" not in configs

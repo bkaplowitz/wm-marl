@@ -164,7 +164,7 @@ The maintained Melting Pot configuration uses:
 - BF16 compute;
 - adaptive gradient clipping of 0.3.
 
-Learning rates are `6e-6` for the visual encoder, `4e-4` for the local belief
+Learning rates are `6e-6` for the visual encoder, `4e-5` for the local belief
 and joint world, and `4e-5` for prediction heads, actor, and critic.
 Replay context is recomputed from raw observations as learner-side burn-in;
 implementation-specific recurrent caches are not authoritative replay data.
