@@ -16,6 +16,7 @@ from world_marl.dreamarl.axes import (
     unfold_agent_batch,
     unfold_agent_sequence,
 )
+from world_marl.dreamarl.agent import deterministic
 from world_marl.dreamarl.config import DreaMARLRunSpec
 from world_marl.dreamarl.launcher import run_training
 from world_marl.dreamarl.parity import (
@@ -278,6 +279,10 @@ def test_fixed_evaluation_command_uses_latest_checkpoint(tmp_path: Path) -> None
         "local_memory_sidecar",
     ]
     (experiment / "launch.json").write_text(json.dumps(manifest), encoding="utf-8")
+    checkpoint = experiment / "run" / "ckpt" / "20260803T035309F029093"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "done").touch()
+    (checkpoint.parent / "latest").write_text(checkpoint.name, encoding="utf-8")
     assert evaluate_dreamarl([str(experiment), "--episodes", "20", "--dry-run"]) == 0
     manifests = list((experiment / "evaluation").glob("*.launch.json"))
     assert len(manifests) == 1
@@ -285,7 +290,16 @@ def test_fixed_evaluation_command_uses_latest_checkpoint(tmp_path: Path) -> None
     assert "structured_local_memory" in command
     assert "local_memory_sidecar" not in command
     assert "eval_only" in command
-    assert str(experiment / "run" / "ckpt") in command
+    assert str(checkpoint) in command
+
+
+def test_deterministic_policy_uses_distribution_prediction() -> None:
+    class Distribution:
+        def pred(self):
+            return np.asarray([1, 2], np.int32)
+
+    result = deterministic({"action": Distribution()})
+    np.testing.assert_array_equal(result["action"], np.asarray([1, 2], np.int32))
 
 
 def test_retired_independent_learner_is_absent() -> None:

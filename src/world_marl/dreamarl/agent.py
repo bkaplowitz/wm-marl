@@ -39,6 +39,10 @@ def sample(xs):
     return jax.tree.map(lambda x: x.sample(nj.seed()), xs)
 
 
+def deterministic(xs):
+    return jax.tree.map(lambda x: x.pred(), xs)
+
+
 def prefix(xs, value):
     return {f"{value}/{key}": item for key, item in xs.items()}
 
@@ -290,7 +294,7 @@ class Agent(embodied.jax.Agent):
         if mode == "train":
             act = sample(policy)
         elif mode == "eval":
-            act = jax.tree.map(lambda distribution: distribution.mode(), policy)
+            act = deterministic(policy)
         else:
             raise ValueError(f"unknown policy mode: {mode}")
         out = {}

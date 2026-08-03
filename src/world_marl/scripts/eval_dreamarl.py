@@ -9,6 +9,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+from world_marl.baselines.dreamerv3.config import absolute_path
 from world_marl.jepa_transformer.foundation import repository_root
 
 
@@ -19,6 +20,17 @@ _CONFIG_MIGRATIONS = {
 
 def _timestamp():
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _latest_checkpoint(experiment: Path) -> Path:
+    root = experiment / "run" / "ckpt"
+    latest = root / "latest"
+    if not latest.is_file():
+        raise FileNotFoundError(f"checkpoint pointer is missing: {latest}")
+    checkpoint = root / latest.read_text(encoding="utf-8").strip()
+    if not checkpoint.is_dir() or not (checkpoint / "done").is_file():
+        raise FileNotFoundError(f"latest checkpoint is incomplete: {checkpoint}")
+    return checkpoint
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -38,7 +50,8 @@ def main(argv: list[str] | None = None) -> int:
     manifest_path = experiment / "launch.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     evaluation = experiment / "evaluation" / f"seed_{args.eval_seed}_{_timestamp()}"
-    python = (args.python or Path(manifest["python"])).expanduser().resolve()
+    python = absolute_path(args.python or Path(manifest["python"]))
+    checkpoint = _latest_checkpoint(experiment)
     platform = args.platform or manifest["platform"]
     outputs = ["jsonl", "scope"]
     if args.wandb_project:
@@ -67,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
         "--script",
         "eval_only",
         "--run.from_checkpoint",
-        str(experiment / "run" / "ckpt"),
+        str(checkpoint),
         "--run.eval_eps",
         str(args.episodes),
         "--run.envs",
