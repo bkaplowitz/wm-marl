@@ -17,7 +17,7 @@ ALGORITHM_FILES = (
     "configs.yaml",
     "environments.py",
     "evaluation.py",
-    "joint_transition.py",
+    "joint_context.py",
     "launcher.py",
     "local_memory.py",
     "main.py",

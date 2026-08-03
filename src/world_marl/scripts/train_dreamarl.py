@@ -28,12 +28,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Enable the canonical four-token structured local memory.",
     )
     parser.add_argument(
-        "--joint-interaction",
+        "--shared-transition-context",
         action="store_true",
-        help=(
-            "Add the baseline-preserving, joint-action-conditioned "
-            "interaction residual."
-        ),
+        help=("Condition local dynamics on baseline-preserving peer context."),
     )
     parser.add_argument("--total-env-steps", type=int, default=250_000)
     parser.add_argument("--experiment-dir", type=Path)
@@ -64,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         train_steps=args.total_env_steps,
         num_agents=args.num_agents,
         local_memory=args.local_memory,
-        joint_interaction=args.joint_interaction,
+        shared_transition_context=args.shared_transition_context,
         platform=args.platform,
         infrastructure_root=args.infrastructure_root,
         python=args.python,

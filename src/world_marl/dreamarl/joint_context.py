@@ -1,4 +1,4 @@
-"""Permutation-equivariant interaction residual for DreaMARL dynamics."""
+"""Permutation-equivariant peer context for DreaMARL transitions."""
 
 import math
 
@@ -12,14 +12,13 @@ from .local_memory import isolated_winit
 f32 = jnp.float32
 
 
-class JointInteractionResidual(nj.Module):
-    """Predict peer-caused corrections without replacing local dynamics.
+class JointTransitionContext(nj.Module):
+    """Condition local transitions on peers without writing persistent state.
 
-    Inputs use folded ``[environment * agent, ...]`` ordering with agents from
-    each environment adjacent. The focal token is used only as an attention
-    query; keys and values exclude that same agent. Consequently, the module
-    cannot act as an additional self-transition network and returns exactly
-    zero when there is no valid peer.
+    Inputs use folded ``[environment * agent, ...]`` ordering. The module
+    attends only to valid peers and returns gated conditioning vectors for the
+    existing temporal and memory transitions. The gate is exactly zero at
+    initialization, and the result remains exactly zero when no peer exists.
     """
 
     units: int = 256
@@ -33,7 +32,7 @@ class JointInteractionResidual(nj.Module):
         self,
         state_dim: int,
         action_dim: int,
-        deter_dim: int,
+        pair_dim: int,
         memory_shape: tuple[int, int] | None,
         num_agents: int,
         **kw,
@@ -44,19 +43,17 @@ class JointInteractionResidual(nj.Module):
             raise ValueError((self.units, self.heads))
         self.state_dim = int(state_dim)
         self.action_dim = int(action_dim)
-        self.deter_dim = int(deter_dim)
+        self.pair_dim = int(pair_dim)
         self.memory_shape = memory_shape
         self.memory_dim = 0 if memory_shape is None else math.prod(memory_shape)
         self.num_agents = int(num_agents)
         self.input_dim = self.state_dim + self.memory_dim + self.action_dim
-        self.output_dim = self.deter_dim + self.memory_dim
         self.kw = kw
 
     def __call__(self, state, memory, action, reset):
         self._check_inputs(state, memory, action, reset)
-        if memory is None:
-            parts = (state, action)
-        else:
+        parts = (state, action)
+        if memory is not None:
             flat_memory = memory.reshape((*memory.shape[:-2], -1))
             parts = (state, flat_memory, action)
         token = jnp.concatenate([nn.cast(value) for value in parts], -1)
@@ -66,39 +63,38 @@ class JointInteractionResidual(nj.Module):
             self.units,
             winit=self._winit("token_projection"),
         )(token)
-        token = self.sub("token_norm", nn.Norm, self.norm)(token)
-        token = nn.act(self.act)(token)
+        token = nn.act(self.act)(self.sub("token_norm", nn.Norm, self.norm)(token))
 
         groups = token.shape[0] // self.num_agents
         token = token.reshape((groups, self.num_agents, self.units))
         valid = (~reset).reshape((groups, self.num_agents))
-        interaction, has_peer = self._leave_one_out_attention(token, valid)
+        peer, has_peer = self._leave_one_out_attention(token, valid)
+        context = self._feedforward(token + peer)
+        context *= has_peer[..., None]
+        context = context.reshape((state.shape[0], self.units))
 
-        # Every term depends on peer context. The branch cannot reduce to an
-        # extra focal-only MLP even when the output projection becomes active.
-        relation = interaction * (1 + jnp.tanh(token))
-        relation = self._feedforward(relation)
-        relation *= has_peer[..., None]
-        relation = relation.reshape((state.shape[0], self.units))
+        gate = jnp.tanh(self.value("gate", jnp.zeros, (), f32))
         active = has_peer.reshape((state.shape[0], 1))
-
-        residual = self.sub(
-            "output_projection",
+        pair = self.sub(
+            "pair_projection",
             nn.Linear,
-            self.output_dim,
+            self.pair_dim,
             bias=False,
-            winit=self._winit("output_projection"),
-            outscale=0.0,
-        )(relation)
-        residual = nn.cast(residual) * active
-        deter = residual[..., : self.deter_dim]
-        if self.memory_shape is None:
-            memory_residual = None
-        else:
-            memory_residual = residual[..., self.deter_dim :].reshape(
-                (*residual.shape[:-1], *self.memory_shape)
-            )
-        return deter, memory_residual
+            winit=self._winit("pair_projection"),
+        )(context)
+        belief = self.sub(
+            "belief_projection",
+            nn.Linear,
+            self.state_dim,
+            bias=False,
+            winit=self._winit("belief_projection"),
+        )(context)
+        pair = nn.cast(gate * pair) * active
+        belief = nn.cast(gate * belief) * active
+        return pair, belief
+
+    def gate(self):
+        return jnp.tanh(self.value("gate", jnp.zeros, (), f32))
 
     def _leave_one_out_attention(self, token, valid):
         normalized = self.sub("attention_norm", nn.Norm, self.norm)(token)
@@ -121,8 +117,6 @@ class JointInteractionResidual(nj.Module):
         peer_mask &= valid[:, :, None]
         peer_mask &= valid[:, None, :]
         mask = peer_mask[:, None]
-        # A normalized masked exponential avoids NaNs for A=1 or an absent
-        # agent, where a conventional all-masked softmax is undefined.
         masked_logits = jnp.where(mask, logits, -1e30)
         maximum = jnp.max(masked_logits, axis=-1, keepdims=True)
         weights = jnp.where(mask, jnp.exp(masked_logits - maximum), 0.0)
@@ -135,8 +129,7 @@ class JointInteractionResidual(nj.Module):
             self.units,
             winit=self._winit("attention_output"),
         )(attended)
-        has_peer = peer_mask.any(-1).astype(attended.dtype)
-        return attended, has_peer
+        return attended, peer_mask.any(-1).astype(attended.dtype)
 
     def _feedforward(self, value):
         residual = value

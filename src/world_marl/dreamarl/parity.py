@@ -74,7 +74,7 @@ def _semantic_arguments(
         del arguments[index : index + 2]
     for algorithm_config in (
         "structured_local_memory",
-        "joint_interaction",
+        "shared_transition_context",
     ):
         if algorithm_config in arguments:
             arguments.remove(algorithm_config)

@@ -22,7 +22,7 @@ class DreaMARLRunSpec:
     train_steps: int = 250_000
     num_agents: int = 1
     local_memory: bool = False
-    joint_interaction: bool = False
+    shared_transition_context: bool = False
     platform: str = "cuda"
     infrastructure_root: Path = field(default_factory=default_upstream_root)
     python: Path = field(default_factory=default_dreamer_cdp_python)
@@ -44,8 +44,10 @@ class DreaMARLRunSpec:
         object.__setattr__(self, "python", absolute_path(self.python))
         if self.num_agents < 1:
             raise ValueError("num_agents must be positive")
-        if self.joint_interaction and not self.local_memory:
-            raise ValueError("joint interaction requires structured local memory")
+        if self.shared_transition_context and not self.local_memory:
+            raise ValueError(
+                "shared transition context requires structured local memory"
+            )
         if not self.task:
             raise ValueError("task must be non-empty")
         if self.train_steps < 1:
@@ -67,8 +69,8 @@ class DreaMARLRunSpec:
         configs = [suite, "jepa_transformer"]
         if self.local_memory:
             configs.append("structured_local_memory")
-        if self.joint_interaction:
-            configs.append("joint_interaction")
+        if self.shared_transition_context:
+            configs.append("shared_transition_context")
         return configs
 
     @property
@@ -99,7 +101,8 @@ class DreaMARLRunSpec:
             "--logger.filter",
             (
                 "score|length|fps|ratio|train/loss/|train/rand/|"
-                "train/dyn_ent|train/rep_ent"
+                "train/dyn_ent|train/rep_ent|train/joint_context/|"
+                "report/world_model/"
             ),
         ]
         if self.save_every_seconds is not None:
@@ -118,12 +121,12 @@ class DreaMARLRunSpec:
             "train_env_steps_budget": self.train_steps,
             "num_agents": self.num_agents,
             "local_memory": self.local_memory,
-            "joint_interaction": self.joint_interaction,
+            "shared_transition_context": self.shared_transition_context,
             "agent_axis_native": True,
             "agent_axis_semantics": (
                 "shared architecture and training schedule for every agent count"
             ),
-            "singleton_interaction_semantics": "exact zero without valid peers",
+            "singleton_context_semantics": "exact zero without valid peers",
             "algorithm_overrides": self.configs[2:],
             "platform": self.platform,
             "observation_mode": "vision",

@@ -18,7 +18,7 @@ import optax
 
 from . import rssm
 from .axes import select_joint_starts
-from .joint_transition import JointInteractionResidual
+from .joint_context import JointTransitionContext
 from .local_memory import StructuredLocalMemory
 
 
@@ -176,11 +176,11 @@ class TransformerRSSM(rssm.RSSM):
     memory_heads: int = 4
     memory_ffup: int = 2
     memory_seed: int = 0
-    joint_enabled: bool = False
-    joint_units: int = 256
-    joint_heads: int = 4
-    joint_ffup: int = 2
-    joint_seed: int = 0
+    joint_context_enabled: bool = False
+    joint_context_units: int = 256
+    joint_context_heads: int = 4
+    joint_context_ffup: int = 2
+    joint_context_seed: int = 0
 
     def __init__(self, act_space, enc_output, **kw):
         super().__init__(act_space, enc_output, **kw)
@@ -278,25 +278,21 @@ class TransformerRSSM(rssm.RSSM):
         action = nn.mask(action, ~reset)
         action /= sg(jnp.maximum(1, jnp.abs(action)))
         previous_stoch = carry["stoch"].reshape((carry["stoch"].shape[0], -1))
+        previous_belief = jnp.concatenate([carry["deter"], previous_stoch], -1)
         pair = jnp.concatenate([previous_stoch, action], -1)
+        pair_context, belief_context = self._transition_context(carry, action, reset)
+        pair = pair + pair_context
         cache, deter = self._temporal().step(self._cache(carry), pair, reset)
         tokens = tokens.reshape((*deter.shape[:-1], -1))
         memory_values = {}
         memory_prior = None
         if self.memory_enabled:
-            previous_belief = jnp.concatenate([carry["deter"], previous_stoch], -1)
             memory_prior = self._memory().imagine(
                 carry["memory"],
-                previous_belief,
+                previous_belief + belief_context,
                 action,
                 reset,
             )
-        deter_residual, memory_residual = self._interaction_residual(
-            carry, action, reset
-        )
-        deter = deter + deter_residual
-        if memory_prior is not None:
-            memory_prior = memory_prior + memory_residual
 
         if self.memory_enabled:
             memory, memory_target = self._memory().observe(
@@ -329,14 +325,10 @@ class TransformerRSSM(rssm.RSSM):
                 **memory_values,
                 **(
                     {
-                        "interaction_deter": deter_residual,
-                        **(
-                            {"interaction_memory": memory_residual}
-                            if memory_residual is not None
-                            else {}
-                        ),
+                        "joint_context_pair": pair_context,
+                        "joint_context_belief": belief_context,
                     }
-                    if self.joint_enabled
+                    if self.joint_context_enabled
                     else {}
                 ),
             )
@@ -359,24 +351,23 @@ class TransformerRSSM(rssm.RSSM):
             action_embedding = nn.DictConcat(self.act_space, 1)(action)
             action_embedding /= sg(jnp.maximum(1, jnp.abs(action_embedding)))
             stoch = carry["stoch"].reshape((carry["stoch"].shape[0], -1))
+            pair_context, belief_context = self._transition_context(
+                carry,
+                action_embedding,
+                jnp.zeros((stoch.shape[0],), bool),
+            )
             memory = None
             if self.memory_enabled:
                 belief = jnp.concatenate([carry["deter"], stoch], -1)
                 memory = self._memory().imagine(
                     carry["memory"],
-                    belief,
+                    belief + belief_context,
                     action_embedding,
                     jnp.zeros((stoch.shape[0],), bool),
                 )
-            pair = jnp.concatenate([stoch, action_embedding], -1)
+            pair = jnp.concatenate([stoch, action_embedding], -1) + pair_context
             reset = jnp.zeros((pair.shape[0],), bool)
             cache, deter = self._temporal().step(self._cache(carry), pair, reset)
-            deter_residual, memory_residual = self._interaction_residual(
-                carry, action_embedding, reset
-            )
-            deter = deter + deter_residual
-            if memory is not None:
-                memory = memory + memory_residual
             logit = self._prior(deter)
             stoch = nn.cast(self._dist(logit).sample(seed=nj.seed()))
             carry = nn.cast(
@@ -395,14 +386,10 @@ class TransformerRSSM(rssm.RSSM):
                     **({"memory": memory} if self.memory_enabled else {}),
                     **(
                         {
-                            "interaction_deter": deter_residual,
-                            **(
-                                {"interaction_memory": memory_residual}
-                                if memory_residual is not None
-                                else {}
-                            ),
+                            "joint_context_pair": pair_context,
+                            "joint_context_belief": belief_context,
                         }
-                        if self.joint_enabled
+                        if self.joint_context_enabled
                         else {}
                     ),
                 )
@@ -461,14 +448,14 @@ class TransformerRSSM(rssm.RSSM):
             metrics["memory/prior_std"] = jnp.std(f32(memory_prior))
             metrics["memory/posterior_gate"] = self._memory().gate("posterior_gate")
             metrics["memory/control_gate"] = self._memory().gate("control_gate")
-        if self.joint_enabled:
-            metrics["interaction/deter_rms"] = jnp.sqrt(
-                jnp.mean(f32(feat["interaction_deter"]) ** 2)
+        if self.joint_context_enabled:
+            metrics["joint_context/gate"] = self._context().gate()
+            metrics["joint_context/pair_rms"] = jnp.sqrt(
+                jnp.mean(f32(feat["joint_context_pair"]) ** 2)
             )
-            if self.memory_enabled:
-                metrics["interaction/memory_rms"] = jnp.sqrt(
-                    jnp.mean(f32(feat["interaction_memory"]) ** 2)
-                )
+            metrics["joint_context/belief_rms"] = jnp.sqrt(
+                jnp.mean(f32(feat["joint_context_belief"]) ** 2)
+            )
         metrics["dyn_ent"] = self._dist(prior).entropy().mean()
         metrics["rep_ent"] = self._dist(post).entropy().mean()
         if self.memory_enabled:
@@ -493,34 +480,34 @@ class TransformerRSSM(rssm.RSSM):
     def _cache(self, carry):
         return {key: carry[key] for key in ("keys", "values", "valid", "position")}
 
-    def _interaction_residual(self, carry, action, reset):
-        if not self.joint_enabled:
-            deter = jnp.zeros_like(carry["deter"])
-            memory = jnp.zeros_like(carry["memory"]) if self.memory_enabled else None
-            return deter, memory
+    def _transition_context(self, carry, action, reset):
+        if not self.joint_context_enabled:
+            pair = jnp.zeros((action.shape[0], self.pair_dim), f32)
+            belief = jnp.zeros((action.shape[0], self.local_feature_dim), f32)
+            return pair, belief
         stoch = carry["stoch"].reshape((carry["stoch"].shape[0], -1))
         state = jnp.concatenate([carry["deter"], stoch], -1)
         memory = carry["memory"] if self.memory_enabled else None
-        return self._interaction()(state, memory, action, reset)
+        return self._context()(state, memory, action, reset)
 
-    def _interaction(self):
+    def _context(self):
         memory_shape = (
             (self.memory_tokens, self.memory_units) if self.memory_enabled else None
         )
         return self.sub(
-            "joint_interaction",
-            JointInteractionResidual,
+            "joint_context",
+            JointTransitionContext,
             self.local_feature_dim,
             self.action_dim,
-            self.deter,
+            self.pair_dim,
             memory_shape,
             self.num_agents,
-            units=self.joint_units,
-            heads=self.joint_heads,
-            ffup=self.joint_ffup,
+            units=self.joint_context_units,
+            heads=self.joint_context_heads,
+            ffup=self.joint_context_ffup,
             act=self.act,
             norm=self.norm,
-            seed=self.joint_seed,
+            seed=self.joint_context_seed,
         )
 
     def _memory(self):

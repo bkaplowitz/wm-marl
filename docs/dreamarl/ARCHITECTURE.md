@@ -17,7 +17,7 @@ the active package contains only DreaMARL source.
 - `agent.py`: learner, decentralized actor-critic, losses, and reporting;
 - `transformer_rssm.py`: local recurrent JEPA dynamics and imagination;
 - `local_memory.py`: structured agent-local predictive memory;
-- `joint_transition.py`: peer-only joint-action interaction residual;
+- `joint_context.py`: peer-only context for local transition conditioning;
 - `axes.py`: explicit agent-axis transformations;
 - `meltingpot.py` and `environments.py`: environment tensor contracts;
 - `train.py` and `evaluation.py`: training and fixed-evaluation loops;
@@ -116,41 +116,47 @@ The actor, critic, reward head, and continuation head consume the established
 belief plus the structured memory control representation. The same interface
 is used for every agent count.
 
-## Joint Interaction Transition
+## Shared Transition Context
 
-The local transition remains the complete fallback model. DreaMARL adds only a
-peer-caused correction:
+The validated local transition remains the complete fallback model. During
+centralized training and synchronous imagination, DreaMARL computes a peer
+context before applying that transition:
 
 ```text
-local_next_i = F_local(z_t^i, a_t^i)
-delta_i      = F_interaction(z_t^{-i}, a_t^{-i}; z_t^i, a_t^i)
-next_i       = local_next_i + delta_i
+context_i          = AgentAttention({z_t^j, a_t^j | j != i})
+conditioned_pair_i = [stoch_t^i, a_t^i] + gate * P_pair(context_i)
+conditioned_state_i = z_t^i + gate * P_state(context_i)
+next_i             = F_local(conditioned_pair_i, conditioned_state_i)
 ```
 
-For every focal agent, its local state-action token becomes an attention query.
-Only other valid agents become keys and values. Attention parameters are
-shared, and there are no numerical agent identifiers, so the transition is
-permutation equivariant for homogeneous agents.
+The first conditioned input drives the causal temporal Transformer. The second
+drives the structured-memory prior. There is one calibrated local transition
+output: peer context cannot directly add a separate correction to the next
+deterministic state or persistent memory.
 
-The interaction block has:
+For every focal agent, its local state-action token becomes an attention query.
+Only other valid agents become keys and values. Attention parameters are shared,
+and there are no numerical agent identifiers, so the mechanism is permutation
+equivariant for homogeneous agents.
+
+The context block has:
 
 - token width: 256;
 - attention heads: 4;
 - one leave-one-out relational attention block;
 - feed-forward expansion: 2;
 - explicit validity masking;
-- corrections for the deterministic belief and imagined memory prior.
+- separate projections into the temporal pair and memory-prior belief inputs.
 
-The output projection is initialized to exactly zero. Initial outputs are
-therefore numerically identical to the local-memory model. The output
-projection learns first; after it moves away from zero, gradients reach the
-attention and token projections. With one agent or no valid peer, the masked
-context and residual are exactly zero without an all-masked softmax.
+One shared scalar gate uses `tanh` and is initialized to exactly zero. Initial
+transition outputs are therefore numerically identical to the local-memory
+model. The gate learns first; after it moves away from zero, gradients reach
+the attention and projection parameters. With one agent or no valid peer, the
+masked context remains exactly zero even after the gate has learned.
 
-The branch cannot become a larger single-agent transition: every output term
-depends on leave-one-out peer context. Its 5,772,032 parameters do not grow with
-agent count. On Externality, the complete candidate has 178,030,092 parameters,
-compared with 172,258,060 for the local-memory reference.
+The module cannot become a larger single-agent transition: every conditioning
+term depends on leave-one-out peer context. Its parameter count is fixed and
+does not grow with agent count.
 
 ## Synchronous Imagination
 
@@ -204,15 +210,16 @@ World-model reports include, at recursive horizons 1, 2, 4, and 8:
 - per-agent reward mean absolute error;
 - continuation Brier error.
 
-Training also reports deterministic-belief and memory residual RMS. These
-metrics establish whether a control improvement accompanies a real change in
-joint prediction rather than only additional parameter count.
+Training also reports the shared-context gate and the RMS magnitude of both
+conditioning vectors. These metrics establish whether a control improvement
+accompanies a real change in joint prediction rather than only additional
+parameter count.
 
 ## Correctness Contract
 
 The maintained tests require:
 
-1. exact zero-residual containment of the local model;
+1. exact zero-context containment of the local model;
 2. exact one-agent reduction and finite all-masked behavior;
 3. permutation equivariance;
 4. sensitivity to peer actions;

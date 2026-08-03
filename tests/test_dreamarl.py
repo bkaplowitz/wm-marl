@@ -103,25 +103,35 @@ def test_local_memory_is_an_explicit_task_neutral_algorithm_arm(tmp_path: Path) 
     assert many.to_dict()["algorithm_overrides"] == ["structured_local_memory"]
 
 
-def test_joint_interaction_is_an_explicit_task_neutral_algorithm_arm(
+def test_shared_transition_context_is_a_task_neutral_algorithm_arm(
     tmp_path: Path,
 ) -> None:
-    one = _spec(tmp_path, num_agents=1, local_memory=True, joint_interaction=True)
-    many = _spec(tmp_path, num_agents=7, local_memory=True, joint_interaction=True)
-    assert one.configs[-1] == "joint_interaction"
+    one = _spec(
+        tmp_path,
+        num_agents=1,
+        local_memory=True,
+        shared_transition_context=True,
+    )
+    many = _spec(
+        tmp_path,
+        num_agents=7,
+        local_memory=True,
+        shared_transition_context=True,
+    )
+    assert one.configs[-1] == "shared_transition_context"
     assert many.configs == one.configs
     assert one.to_dict()["algorithm_overrides"] == [
         "structured_local_memory",
-        "joint_interaction",
+        "shared_transition_context",
     ]
-    assert many.to_dict()["singleton_interaction_semantics"] == (
+    assert many.to_dict()["singleton_context_semantics"] == (
         "exact zero without valid peers"
     )
 
 
-def test_joint_interaction_requires_structured_local_memory(tmp_path: Path) -> None:
+def test_shared_transition_context_requires_local_memory(tmp_path: Path) -> None:
     with np.testing.assert_raises(ValueError):
-        _spec(tmp_path, num_agents=5, joint_interaction=True)
+        _spec(tmp_path, num_agents=5, shared_transition_context=True)
 
 
 def test_structured_memory_override_is_declared_in_base_schema() -> None:
@@ -182,7 +192,7 @@ def test_installed_algorithm_does_not_bundle_the_frozen_oracle() -> None:
     ).is_file()
     for filename in (
         "agent.py",
-        "joint_transition.py",
+        "joint_context.py",
         "local_memory.py",
         "rssm.py",
         "transformer_rssm.py",

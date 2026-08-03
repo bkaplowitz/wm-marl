@@ -110,7 +110,7 @@ class Agent(embodied.jax.Agent):
             dynamics_config = dynamics_config.update(
                 num_agents=self.num_agents,
                 memory_seed=int(config.seed) + 10_000,
-                joint_seed=int(config.seed) + 20_000,
+                joint_context_seed=int(config.seed) + 20_000,
             )
         self.dyn = {
             "rssm": rssm.RSSM,
@@ -637,20 +637,20 @@ class Agent(embodied.jax.Agent):
             metrics[f"world_model/h{horizon}_continuation_brier"] = (
                 continuation_error.mean()
             )
-            for name in ("deter", "memory"):
-                key = f"interaction_{name}"
+            for name in ("pair", "belief"):
+                key = f"joint_context_{name}"
                 if key not in imagined:
                     continue
                 residual = f32(imagined[key][:, index])
                 axes = tuple(range(1, residual.ndim))
                 residual_rms = jnp.sqrt(jnp.mean(residual**2, axis=axes))
-                metrics[f"world_model/h{horizon}_interaction_{name}_rms"] = (
+                metrics[f"world_model/h{horizon}_joint_context_{name}_rms"] = (
                     residual_rms.mean()
                 )
-                metrics[f"world_model/h{horizon}_interaction_{name}_latent_corr"] = (
+                metrics[f"world_model/h{horizon}_joint_context_{name}_latent_corr"] = (
                     _pearson_correlation(residual_rms, latent_error)
                 )
-                metrics[f"world_model/h{horizon}_interaction_{name}_reward_corr"] = (
+                metrics[f"world_model/h{horizon}_joint_context_{name}_reward_corr"] = (
                     _pearson_correlation(residual_rms, reward_error)
                 )
         return metrics
