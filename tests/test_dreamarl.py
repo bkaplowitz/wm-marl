@@ -78,6 +78,22 @@ def test_multi_agent_invocation_keeps_the_m3_regime(tmp_path: Path) -> None:
     assert verification["algorithm_overrides"] == []
 
 
+def test_observability_filter_does_not_change_the_learning_regime(
+    tmp_path: Path,
+) -> None:
+    spec = _spec(
+        tmp_path,
+        num_agents=5,
+        local_memory=True,
+        shared_transition_context=True,
+    )
+    verification = verify_single_agent_reduction_contract(spec)
+    assert verification["algorithm_overrides"] == [
+        "structured_local_memory",
+        "shared_transition_context",
+    ]
+
+
 def test_meltingpot_invocation_changes_environment_only(tmp_path: Path) -> None:
     spec = _spec(
         tmp_path,

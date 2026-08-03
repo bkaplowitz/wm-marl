@@ -80,6 +80,11 @@ def _semantic_arguments(
             arguments.remove(algorithm_config)
     logdir = arguments.index("--logdir") + 1
     arguments[logdir] = "<logdir>"
+    # Metric selection changes observability only; it cannot affect collection,
+    # replay, optimization, or imagination. Keep the logger implementation and
+    # outputs under comparison while allowing DreaMARL-specific metrics.
+    logger_filter = arguments.index("--logger.filter") + 1
+    arguments[logger_filter] = "<logger-filter>"
     if normalize_environment:
         configs = arguments.index("--configs") + 1
         arguments[configs] = "<environment-config>"
