@@ -95,11 +95,27 @@ def test_imagination_samples_all_actions_before_joint_advance() -> None:
         if isinstance(node, ast.FunctionDef) and node.name == "step"
     )
     statements = [ast.unparse(node) for node in step.body]
-    action_index = next(i for i, value in enumerate(statements) if "action = sample" in value)
+    action_index = next(
+        i for i, value in enumerate(statements) if "action = sample" in value
+    )
     advance_index = next(
         i for i, value in enumerate(statements) if "self.world.imagine_step" in value
     )
     assert action_index < advance_index
+
+
+def test_imagination_uses_world_predicted_belief_directly() -> None:
+    source = (algorithm_root() / "agent.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imagine = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_imagine"
+    )
+    text = ast.unparse(imagine)
+    assert "world_state['belief']" in text
+    assert "self.belief.observe" not in text
+    assert "self.world.predict_embedding" not in text
 
 
 def test_joint_world_configuration_has_no_optional_adapter_flags() -> None:
@@ -128,6 +144,7 @@ def test_joint_world_configuration_has_no_optional_adapter_flags() -> None:
     assert configs["defaults"]["agent"]["joint"]["layers"] == 2
     assert configs["defaults"]["agent"]["joint"]["heads"] == 12
     assert configs["defaults"]["agent"]["joint"]["classes"] == 64
+    assert "overshoot" not in configs["defaults"]["agent"]["loss_scales"]
     shared_lr = configs["defaults"]["agent"]["opt"]["lr"]
     assert configs["defaults"]["agent"]["belief_lr"] == shared_lr
     assert configs["defaults"]["agent"]["world_lr"] == shared_lr
@@ -198,6 +215,9 @@ def test_dry_run_records_marl_contract(tmp_path: Path) -> None:
     assert manifest["implementation"] == "first-party DreaMARL"
     assert manifest["policy_peer_access"] is False
     assert manifest["world_action_conditioning"] == "synchronous joint action"
+    assert manifest["imagined_actor_state"] == (
+        "joint prior directly predicts each local belief"
+    )
     assert manifest["configs"] == ["meltingpot_vision", "joint_world"]
 
 

@@ -96,6 +96,20 @@ def test_joint_prior_is_permutation_equivariant() -> None:
             rtol=3e-5,
         )
 
+    def mean_belief(state):
+        state = dict(state)
+        state["stoch"] = jax.nn.softmax(state["logit"], axis=-1)
+        return module.predict_belief(state)
+
+    expected_belief = nj.pure(mean_belief)(params, expected, seed=12)[1]
+    actual_belief = nj.pure(mean_belief)(params, actual, seed=12)[1]
+    np.testing.assert_allclose(
+        np.asarray(actual_belief, np.float32),
+        np.asarray(expected_belief[:, permutation], np.float32),
+        atol=3e-5,
+        rtol=3e-5,
+    )
+
 
 def test_one_agent_action_can_change_multiple_predicted_agents() -> None:
     module = _joint(3)
@@ -109,10 +123,11 @@ def test_one_agent_action_can_change_multiple_predicted_agents() -> None:
     params, expected = _run(step, carry, action, reset, seed=20)
     changed_action = {"action": action["action"].at[0, 0].set(3)}
     actual = nj.pure(step)(params, carry, changed_action, reset, seed=21)[1]
-    difference = np.linalg.norm(
-        np.asarray(actual["deter"][0] - expected["deter"][0], np.float32), axis=-1
-    )
-    assert (difference > 1e-6).sum() >= 2
+    for key in ("deter", "belief"):
+        difference = np.linalg.norm(
+            np.asarray(actual[key][0] - expected[key][0], np.float32), axis=-1
+        )
+        assert (difference > 1e-6).sum() >= 2
     np.testing.assert_allclose(
         np.asarray(actual["deter"][1], np.float32),
         np.asarray(expected["deter"][1], np.float32),
@@ -126,6 +141,7 @@ def test_joint_state_has_one_global_and_complete_agent_axis() -> None:
     state = module.initial(4)
     assert state["global"].shape == (4, 16)
     assert state["deter"].shape == (4, 5, 16)
+    assert state["belief"].shape == (4, 5, 8)
     assert state["stoch"].shape == (4, 5, 2, 4)
     assert state["logit"].shape == (4, 5, 2, 4)
 
@@ -142,4 +158,44 @@ def test_single_agent_joint_world_is_well_defined() -> None:
     _, output = _run(step, carry, action, reset, seed=30)
     assert output["global"].shape == (3, 16)
     assert output["deter"].shape == (3, 1, 16)
+    assert output["belief"].shape == (3, 1, 8)
     assert np.isfinite(np.asarray(output["deter"], np.float32)).all()
+    assert np.isfinite(np.asarray(output["belief"], np.float32)).all()
+
+
+def test_posterior_keeps_real_belief_and_prior_predicts_actor_state() -> None:
+    module = _joint(3)
+    carry = module.initial(2)
+    embeddings = jax.random.normal(jax.random.key(40), (2, 4, 3, 12))
+    beliefs = jax.random.normal(jax.random.key(41), (2, 4, 3, 8))
+    previous_actions = {"action": jnp.zeros((2, 4, 3), jnp.int32)}
+    reset = jnp.zeros((2, 4), bool).at[:, 0].set(True)
+
+    def observe(state, image_features, local_beliefs, actions, first):
+        return module.observe(
+            state,
+            image_features,
+            local_beliefs,
+            actions,
+            first,
+            training=False,
+        )[1]
+
+    _, features = _run(
+        observe,
+        carry,
+        embeddings,
+        beliefs,
+        previous_actions,
+        reset,
+        seed=42,
+    )
+    np.testing.assert_allclose(
+        np.asarray(features["belief"], np.float32),
+        np.asarray(beliefs.astype(jnp.bfloat16), np.float32),
+        atol=0,
+        rtol=0,
+    )
+    assert features["prior_belief"].shape == beliefs.shape
+    assert features["pred_embedding"].shape == embeddings.shape
+    assert np.isfinite(np.asarray(features["prior_belief"], np.float32)).all()

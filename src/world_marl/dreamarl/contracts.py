@@ -16,12 +16,13 @@ def verify_run_contract(spec: "DreaMARLRunSpec") -> dict[str, object]:
         raise ValueError("num_agents must be positive")
     values = asdict(spec)
     return {
-        "contract_version": 1,
+        "contract_version": 2,
         "num_agents": spec.num_agents,
         "policy_information": "focal observation, focal action history, local carry",
         "policy_peer_access": False,
         "world_state_axis": "one environment state with an explicit agent axis",
         "world_action_conditioning": "synchronous joint action",
+        "imagined_actor_state": "joint prior directly predicts each local belief",
         "world_reward_prediction": "complete per-agent reward vector",
         "continuation_prediction": "one joint continuation",
         "critic_information": "joint latent state during centralized training",

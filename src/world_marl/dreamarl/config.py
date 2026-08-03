@@ -113,7 +113,10 @@ class DreaMARLRunSpec:
             "num_agents": self.num_agents,
             "agent_axis_native": True,
             "execution": "decentralized shared local-belief actor",
-            "training_state": "joint posterior and joint-action-conditioned prior",
+            "training_state": (
+                "joint posterior and joint-action-conditioned prior with directly "
+                "predicted local control beliefs"
+            ),
             "critic": "centralized team value over the joint latent state",
             "algorithm_overrides": [],
             "platform": self.platform,

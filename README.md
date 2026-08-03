@@ -4,8 +4,8 @@
 
 DreaMARL is the first-party multi-agent JEPA world-model learner described in
 [`docs/dreamarl/ARCHITECTURE.md`](docs/dreamarl/ARCHITECTURE.md). It combines a
-causal Transformer world model, structured local memory, decentralized actors,
-and an optional joint-action-conditioned interaction transition.
+causal local-belief Transformer, a stochastic joint-action-conditioned world
+model, decentralized actors, and a centralized training critic.
 Foundation provenance and third-party attribution are recorded in
 [`docs/dreamarl/PROVENANCE.md`](docs/dreamarl/PROVENANCE.md).
 
@@ -19,27 +19,12 @@ uv run world-marl-setup-dreamer-cdp --accelerator cuda12
 
 Use `--accelerator cpu` for installation smoke tests without a CUDA device.
 
-Run the local-memory reference on Melting Pot:
+Run DreaMARL on Melting Pot:
 
 ```bash
 uv run world-marl-train-dreamarl \
   --task meltingpot_externality_mushrooms__dense \
   --num-agents 5 \
-  --local-memory \
-  --seed 0 \
-  --total-env-steps 50000 \
-  --wandb-project world-marl \
-  --wandb-entity osaze-obahor
-```
-
-Enable the baseline-preserving joint transition with one additional flag:
-
-```bash
-uv run world-marl-train-dreamarl \
-  --task meltingpot_externality_mushrooms__dense \
-  --num-agents 5 \
-  --local-memory \
-  --joint-interaction \
   --seed 0 \
   --total-env-steps 50000 \
   --wandb-project world-marl \

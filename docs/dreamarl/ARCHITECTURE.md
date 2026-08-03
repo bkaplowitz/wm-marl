@@ -75,6 +75,7 @@ of independent local simulators. Its carry contains:
 global token          g_t       [B, 768]
 agent states          d_t       [B, A, 768]
 categorical latents   s_t       [B, A, 32, 64]
+local control beliefs l_t       [B, A, 768]
 ```
 
 The posterior infers this state from the complete synchronized set of local
@@ -87,7 +88,7 @@ q(S_t | S_{t-1}, a_{t-1}^{1:A}, e_t^{1:A}, l_t^{1:A})
 The prior advances it with the complete joint action:
 
 ```text
-p(S_{t+1} | S_t, a_t^{1:A})
+p(S_{t+1}, l_hat_{t+1}^{1:A} | S_t, l_t^{1:A}, a_t^{1:A})
 ```
 
 Both use a two-layer, width-768, 12-head set Transformer over one global
@@ -95,17 +96,23 @@ token and `A` agent tokens. Agent positional identifiers are absent, making the
 model permutation equivariant for homogeneous agents. Every next-agent
 prediction is generated from the same sampled world state.
 
-The world predicts:
+The posterior stores the local beliefs computed from real local histories. The
+prior predicts their next values directly. These predicted beliefs are the
+exact states consumed by the actors during imagination; there is no second
+embedding-to-belief transition between the world and policy.
+
+The world also predicts:
 
 - every agent's next local encoder embedding;
 - a reward for every agent;
 - one joint continuation probability.
 
-The principal JEPA target is the stopped-gradient next encoder embedding. The
-world objective combines one-step cosine prediction, categorical dynamics and
-representation KL terms, and open-loop JEPA overshooting at horizons 2, 4, and
-8. Overshooting weights are 0.5, 0.25, and 0.125 and reset-crossing targets are
-masked.
+The one-step JEPA objective is the equally weighted mean of two cosine errors:
+the predicted local control belief against the stopped real local belief, and
+the auxiliary embedding prediction against the stopped local encoder output.
+The combined latent loss retains scale 500. Categorical dynamics and
+representation KL terms regularize the stochastic joint state. First
+transitions after resets are masked from both predictive targets.
 
 The maintained model has no observation decoder and no reconstruction loss.
 World-model learning is entirely predictive in representation space. Optional
@@ -120,8 +127,8 @@ An imagined transition is atomic:
 1. Each actor samples from its own local belief.
 2. The actions are assembled into one joint action.
 3. The joint prior advances exactly once.
-4. The world predicts every next local embedding.
-5. Each local belief advances from its own predicted embedding and action.
+4. The joint prior directly predicts every next local control belief.
+5. Those beliefs become the actors' inputs for the next imagined step.
 ```
 
 No agent advances before the current actions of all agents are known. The
@@ -169,18 +176,18 @@ and joint world, and `4e-5` for prediction heads, actor, and critic.
 Replay context is recomputed from raw observations as learner-side burn-in;
 implementation-specific recurrent caches are not authoritative replay data.
 
-The Externality-sized model contains 81,847,303 trainable parameters:
+The Externality-sized model contains 83,619,847 trainable parameters:
 
 | Module | Parameters |
 | --- | ---: |
-| Joint world | 44,488,448 |
+| Joint world | 46,260,992 |
 | Local belief | 17,326,848 |
 | Central critic | 6,034,687 |
 | Visual encoder | 3,492,864 |
 | Decentralized actor | 2,897,928 |
 | Reward head | 3,933,439 |
 | Continuation head | 3,673,089 |
-| **Total** | **81,847,303** |
+| **Total** | **83,619,847** |
 
 Parameters are shared across agents, so model size does not grow with team
 size. Activation and attention compute do grow with `A`.
@@ -192,9 +199,10 @@ the latest checkpoint, uses deterministic actor modes and an explicit seed,
 and records every team and per-agent return. Evaluation episodes are reporting
 only: they neither train the model nor select a checkpoint.
 
-World-model reports expose one-step and 2/4/8-step latent error, per-agent reward
-error, and continuation calibration. These are paired with return curves to
-distinguish model improvement from control improvement.
+World-model reports expose the combined one-step latent error, its separate
+belief and embedding components, per-agent reward error, and continuation
+calibration. These are paired with return curves to distinguish model
+improvement from control improvement.
 
 ## Correctness Invariants
 
@@ -205,17 +213,19 @@ Automated contracts require:
 3. permutation equivariance under consistent agent reordering;
 4. cross-agent sensitivity to a changed focal action;
 5. one coherent global state sample for all predicted agents;
-6. atomic synchronous imagination;
-7. vector reward preservation and one joint continuation;
-8. a centralized critic used only during training;
-9. validity at `A=1` without an agent-count-dependent architecture branch;
-10. a 50/50 uniform-recency replay contract.
+6. direct prediction of the local actor state by the joint prior;
+7. no embedding-to-belief recursion during imagination;
+8. atomic synchronous imagination;
+9. vector reward preservation and one joint continuation;
+10. a centralized critic used only during training;
+11. validity at `A=1` without an agent-count-dependent architecture branch;
+12. a 50/50 uniform-recency replay contract.
 
 ## Source Map
 
 - `agent.py`: loss composition, joint imagination, actor, and critic;
 - `local_belief.py`: strictly local recurrent execution state;
-- `joint_model.py`: joint posterior, prior, JEPA losses, and overshooting;
+- `joint_model.py`: joint posterior, joint-action prior, and one-step JEPA losses;
 - `perception.py`: local visual encoder and optional offline visual probe;
 - `axes.py`: explicit local/joint tensor transformations;
 - `meltingpot.py`: environment and reward-vector contract;

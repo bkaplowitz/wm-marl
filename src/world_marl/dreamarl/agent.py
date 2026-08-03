@@ -75,7 +75,9 @@ class Agent(embodied.jax.Agent):
         }
 
         excluded = {"is_first", "is_last", "is_terminal", "reward"}
-        enc_space = {key: value for key, value in self.obs_space.items() if key not in excluded}
+        enc_space = {
+            key: value for key, value in self.obs_space.items() if key not in excluded
+        }
         self.enc = perception.Encoder(enc_space, **config.enc.simple, name="enc")
         self.embedding_dim = self.enc.calculate_output_dim()
         self.belief = LocalBelief(
@@ -218,8 +220,7 @@ class Agent(embodied.jax.Agent):
         prefix = int(self.config.replay_context)
         target = slice(prefix, None)
         losses = {
-            key: value[:, target]
-            for key, value in artifacts["world_losses"].items()
+            key: value[:, target] for key, value in artifacts["world_losses"].items()
         }
         metrics = dict(artifacts["metrics"])
 
@@ -238,26 +239,10 @@ class Agent(embodied.jax.Agent):
         ).mean()
 
         sliced_features = {
-            key: value[:, target]
-            for key, value in artifacts["world_features"].items()
+            key: value[:, target] for key, value in artifacts["world_features"].items()
         }
-        sliced_actions = {
-            key: value[:, target] for key, value in self._joint_actions(data).items()
-        }
-        sliced_targets = artifacts["target_embeddings"][:, target]
-        sliced_resets = data["is_first"][:, target]
-        overshoot, overshoot_metrics = self.world.overshoot_loss(
-            sliced_features,
-            sliced_actions,
-            sliced_targets,
-            sliced_resets,
-            training=training,
-        )
-        losses["overshoot"] = overshoot
-        metrics.update(overshoot_metrics)
-
-        imagination_losses, imagination_metrics, imagination_output = self._control_loss(
-            artifacts, data, target, training
+        imagination_losses, imagination_metrics, imagination_output = (
+            self._control_loss(artifacts, data, target, training)
         )
         losses.update(imagination_losses)
         metrics.update(imagination_metrics)
@@ -310,7 +295,7 @@ class Agent(embodied.jax.Agent):
             key: fold_agent_sequence(value, self.num_agents)
             for key, value in previous_actions.items()
         }
-        _, beliefs, belief_entries = self.belief.observe(
+        _, beliefs, _ = self.belief.observe(
             self.belief.initial(local_batch),
             embeddings,
             flat_previous_actions,
@@ -329,16 +314,9 @@ class Agent(embodied.jax.Agent):
             training,
             target_embeddings=joint_targets,
         )
-        joint_belief_entries = jax.tree.map(
-            lambda value: unfold_agent_sequence(value, self.num_agents),
-            belief_entries,
-        )
         return {
             "world_features": world_features,
             "world_losses": world_losses,
-            "beliefs": joint_beliefs,
-            "belief_entries": joint_belief_entries,
-            "target_embeddings": joint_targets,
             "metrics": metrics,
         }
 
@@ -346,36 +324,24 @@ class Agent(embodied.jax.Agent):
         features = {
             key: value[:, target] for key, value in artifacts["world_features"].items()
         }
-        belief_entries = {
-            key: value[:, target] for key, value in artifacts["belief_entries"].items()
-        }
         batch, length = features["global"].shape[:2]
         starts = min(self.config.imag_last or length, length)
         world_start = {
             key: features[key][:, -starts:].reshape(
                 (batch * starts, *features[key].shape[2:])
             )
-            for key in ("global", "deter", "stoch", "logit")
+            for key in ("global", "deter", "belief", "stoch", "logit")
         }
-        belief_start = {
-            key: value[:, -starts:].reshape(
-                (batch * starts * self.num_agents, *value.shape[3:])
-            )
-            for key, value in belief_entries.items()
-        }
-        world_sequence, belief_sequence, action_sequence = self._imagine(
+        world_sequence, action_sequence = self._imagine(
             world_start,
-            belief_start,
             self.config.imag_length,
             training,
         )
         ac_world = jax.tree.map(
             lambda value: sg(value, skip=self.config.ac_grads), world_sequence
         )
-        ac_belief = sg(belief_sequence, skip=self.config.ac_grads)
+        ac_belief = ac_world["belief"]
         team_feature = self.world.team_feature(ac_world)
-        agent_feature = self.world.agent_feature(ac_world)
-        del agent_feature
         reward_vector = self.rew(self.world.agent_feature(ac_world), 3).pred()
         team_reward = reward_vector.mean(-1)
         continuation = self.con(team_feature, 2).prob(1)
@@ -401,54 +367,23 @@ class Agent(embodied.jax.Agent):
         output["batch"] = batch
         return losses, metrics, output
 
-    def _imagine(self, world_start, belief_start, length, training):
+    def _imagine(self, world_start, length, training):
         environments = world_start["global"].shape[0]
 
-        def step(carry, _):
-            world_state, belief_state = carry
-            belief = belief_state["belief"].reshape(
-                (environments, self.num_agents, -1)
-            )
-            policy = self.pol(belief, bdims=2)
+        def step(world_state, _):
+            policy = self.pol(world_state["belief"], bdims=2)
             action = sample(policy)
             reset = jnp.zeros((environments,), bool)
-            next_world = self.world.imagine_step(
-                world_state, action, reset, training
-            )
-            predicted_embedding = self.world.predict_embedding(next_world)
-            flat_embedding = predicted_embedding.reshape(
-                (environments * self.num_agents, self.embedding_dim)
-            )
-            flat_action = {
-                key: value.reshape(
-                    (environments * self.num_agents, *value.shape[2:])
-                )
-                for key, value in action.items()
-            }
-            local_reset = jnp.zeros((environments * self.num_agents,), bool)
-            next_belief_state, next_belief, _ = self.belief.observe(
-                belief_state,
-                flat_embedding,
-                flat_action,
-                local_reset,
-                training,
-                single=True,
-            )
+            next_world = self.world.imagine_step(world_state, action, reset, training)
             output_world = {
-                key: next_world[key] for key in ("global", "deter", "stoch", "logit")
+                key: next_world[key]
+                for key in ("global", "deter", "belief", "stoch", "logit")
             }
-            output_belief = next_belief.reshape(
-                (environments, self.num_agents, -1)
-            )
-            return (next_world, next_belief_state), (
-                output_world,
-                output_belief,
-                action,
-            )
+            return next_world, (output_world, action)
 
-        _, (imagined_world, imagined_belief, actions) = nj.scan(
+        _, (imagined_world, actions) = nj.scan(
             step,
-            (world_start, belief_start),
+            world_start,
             (),
             length,
             axis=1,
@@ -456,29 +391,23 @@ class Agent(embodied.jax.Agent):
         start_world = {
             key: value[:, None]
             for key, value in world_start.items()
-            if key in ("global", "deter", "stoch", "logit")
+            if key in ("global", "deter", "belief", "stoch", "logit")
         }
         world_sequence = {
             key: jnp.concatenate([start_world[key], imagined_world[key]], 1)
             for key in start_world
         }
-        start_belief = belief_start["belief"].reshape(
-            (environments, self.num_agents, -1)
-        )
-        belief_sequence = jnp.concatenate(
-            [start_belief[:, None], imagined_belief], 1
-        )
-        last_policy = self.pol(belief_sequence[:, -1], bdims=2)
-        last_action = {key: value[:, None] for key, value in sample(last_policy).items()}
+        last_policy = self.pol(world_sequence["belief"][:, -1], bdims=2)
+        last_action = {
+            key: value[:, None] for key, value in sample(last_policy).items()
+        }
         action_sequence = {
             key: jnp.concatenate([value, last_action[key]], 1)
             for key, value in actions.items()
         }
-        return world_sequence, belief_sequence, action_sequence
+        return world_sequence, action_sequence
 
-    def _replay_value_loss(
-        self, features, data, target, imagination_output, training
-    ):
+    def _replay_value_loss(self, features, data, target, imagination_output, training):
         starts = imagination_output["starts"]
         batch = imagination_output["batch"]
         boot = imagination_output["ret"][:, 0].reshape((batch, starts))
@@ -586,7 +515,8 @@ class Agent(embodied.jax.Agent):
             pattern = re.compile(wdregex)
             chain.append(
                 optax.add_decayed_weights(
-                    wd, lambda params: {key: bool(pattern.search(key)) for key in params}
+                    wd,
+                    lambda params: {key: bool(pattern.search(key)) for key in params},
                 )
             )
         if schedule == "const":
@@ -594,9 +524,7 @@ class Agent(embodied.jax.Agent):
         elif schedule == "linear":
             learning_rate = optax.linear_schedule(lr, 0.1 * lr, anneal - warmup)
         elif schedule == "cosine":
-            learning_rate = optax.cosine_decay_schedule(
-                lr, anneal - warmup, alpha=0.1
-            )
+            learning_rate = optax.cosine_decay_schedule(lr, anneal - warmup, alpha=0.1)
         else:
             raise NotImplementedError(schedule)
         if warmup:
@@ -649,8 +577,7 @@ def joint_imag_loss(
         for key, distribution in policy.items()
     )
     entropies = {
-        key: distribution.entropy()[:, :-1]
-        for key, distribution in policy.items()
+        key: distribution.entropy()[:, :-1] for key, distribution in policy.items()
     }
     policy_loss = sg(weight[:, :-1, None]) * -(
         log_probability * sg(normalized_advantage[:, :, None])
@@ -662,10 +589,12 @@ def joint_imag_loss(
     padded_target = jnp.concatenate(
         [normalized_target, 0 * normalized_target[:, -1:]], 1
     )
-    value_loss = sg(weight[:, :-1]) * (
-        value.loss(sg(padded_target))
-        + slowreg * value.loss(sg(slowvalue.pred()))
-    )[:, :-1]
+    value_loss = (
+        sg(weight[:, :-1])
+        * (value.loss(sg(padded_target)) + slowreg * value.loss(sg(slowvalue.pred())))[
+            :, :-1
+        ]
+    )
     metrics = {
         "adv": advantage.mean(),
         "adv_std": advantage.std(),
@@ -715,9 +644,10 @@ def replay_value_loss(
     offset, scale = value_norm(returns, update)
     normalized = (returns - offset) / scale
     padded = jnp.concatenate([normalized, 0 * normalized[:, -1:]], 1)
-    loss = f32(~last)[:, :-1] * (
-        value.loss(sg(padded)) + slowreg * value.loss(sg(slowvalue.pred()))
-    )[:, :-1]
+    loss = (
+        f32(~last)[:, :-1]
+        * (value.loss(sg(padded)) + slowreg * value.loss(sg(slowvalue.pred())))[:, :-1]
+    )
     return {"repval": loss}, {"ret": returns}, {}
 
 
@@ -728,7 +658,9 @@ def lambda_return(last, terminal, reward, value, bootstrap, discount, lam):
     trace = (1 - f32(last))[:, 1:] * lam
     interm = reward[:, 1:] + (1 - trace) * live * bootstrap[:, 1:]
     for index in reversed(range(live.shape[1])):
-        returns.append(interm[:, index] + live[:, index] * trace[:, index] * returns[-1])
+        returns.append(
+            interm[:, index] + live[:, index] * trace[:, index] * returns[-1]
+        )
     return jnp.stack(list(reversed(returns))[:-1], 1)
 
 
