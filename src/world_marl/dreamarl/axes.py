@@ -14,7 +14,6 @@ from typing import Any
 
 
 GLOBAL_OBSERVATION_KEYS = frozenset({"is_first", "is_last", "is_terminal"})
-GLOBAL_REPLAY_KEYS = frozenset({"consec", "stepid"})
 
 
 def fold_agent_batch(value: Any, num_agents: int) -> Any:
@@ -65,38 +64,6 @@ def unfold_agent_sequence(value: Any, num_agents: int) -> Any:
     grouped = value.reshape((batch, num_agents, value.shape[1], *value.shape[2:]))
     axes = (0, 2, 1, *range(3, grouped.ndim))
     return grouped.transpose(axes)
-
-
-def select_joint_starts(value: Any, num_agents: int, nlast: int) -> Any:
-    """Select final starts in ``[environment, start, agent]`` order.
-
-    Local dynamics consume folded trajectories in ``[environment * agent,
-    time, ...]`` order. Joint imagination instead requires every agent from a
-    particular environment and start time to be adjacent.
-    """
-
-    if nlast < 1 or nlast > value.shape[1]:
-        raise ValueError((nlast, value.shape))
-    grouped = unfold_agent_sequence(value, num_agents)
-    selected = grouped[:, -nlast:]
-    return selected.reshape(
-        (selected.shape[0] * nlast * num_agents, *selected.shape[3:])
-    )
-
-
-def restore_folded_start_order(value: Any, num_agents: int, nlast: int) -> Any:
-    """Restore ``[environment * start * agent]`` to folded trajectory order."""
-
-    divisor = num_agents * nlast
-    if value.shape[0] % divisor:
-        raise ValueError(
-            f"leading dimension {value.shape[0]} is not divisible by {divisor}"
-        )
-    environments = value.shape[0] // divisor
-    grouped = value.reshape((environments, nlast, num_agents, *value.shape[1:]))
-    axes = (0, 2, 1, *range(3, grouped.ndim))
-    folded = grouped.transpose(axes)
-    return folded.reshape((environments * num_agents, nlast, *value.shape[1:]))
 
 
 def broadcast_global_batch(value: Any, num_agents: int) -> Any:

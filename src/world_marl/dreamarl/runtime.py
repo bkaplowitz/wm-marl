@@ -15,16 +15,15 @@ ALGORITHM_FILES = (
     "axes.py",
     "config.py",
     "configs.yaml",
-    "environments.py",
+    "contracts.py",
     "evaluation.py",
-    "joint_context.py",
+    "joint_model.py",
     "launcher.py",
-    "local_memory.py",
+    "local_belief.py",
     "main.py",
     "meltingpot.py",
-    "rssm.py",
+    "perception.py",
     "train.py",
-    "transformer_rssm.py",
 )
 
 
@@ -32,6 +31,12 @@ def algorithm_root() -> Path:
     """Return the source directory executed by the DreaMARL launcher."""
 
     return Path(__file__).resolve().parent
+
+
+def repository_root() -> Path:
+    """Return the checkout containing the first-party DreaMARL package."""
+
+    return algorithm_root().parents[2]
 
 
 def algorithm_entrypoint() -> Path:

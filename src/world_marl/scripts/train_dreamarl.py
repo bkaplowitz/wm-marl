@@ -19,20 +19,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--num-agents",
         type=int,
-        default=1,
-        help="Extent of the explicit agent tensor axis; does not select a regime.",
+        required=True,
+        help="Number of agents represented by the joint world state.",
     )
-    parser.add_argument(
-        "--local-memory",
-        action="store_true",
-        help="Enable the canonical four-token structured local memory.",
-    )
-    parser.add_argument(
-        "--shared-transition-context",
-        action="store_true",
-        help=("Condition local dynamics on baseline-preserving peer context."),
-    )
-    parser.add_argument("--total-env-steps", type=int, default=250_000)
+    parser.add_argument("--total-env-steps", type=int, default=50_000)
     parser.add_argument("--experiment-dir", type=Path)
     parser.add_argument(
         "--output-root",
@@ -60,8 +50,6 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
         train_steps=args.total_env_steps,
         num_agents=args.num_agents,
-        local_memory=args.local_memory,
-        shared_transition_context=args.shared_transition_context,
         platform=args.platform,
         infrastructure_root=args.infrastructure_root,
         python=args.python,

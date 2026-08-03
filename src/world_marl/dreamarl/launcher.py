@@ -14,8 +14,8 @@ from typing import Any
 from world_marl.baselines.dreamerv3.artifacts import normalize_training_artifacts
 from world_marl.baselines.dreamerv3.config import default_upstream_root as dreamer_root
 from world_marl.dreamarl.config import DreaMARLRunSpec
-from world_marl.dreamarl.parity import verify_single_agent_reduction_contract
-from world_marl.jepa_transformer.foundation import repository_root
+from world_marl.dreamarl.contracts import verify_run_contract
+from world_marl.dreamarl.runtime import repository_root
 
 
 MIN_FREE_DISK_BYTES = 10 * 1024**3
@@ -37,7 +37,7 @@ def run_training(
 ) -> int:
     """Run DreaMARL source directly with pinned Embodied infrastructure."""
 
-    verification = verify_single_agent_reduction_contract(spec)
+    verification = verify_run_contract(spec)
     if spec.logdir.exists() and not resume:
         raise FileExistsError(f"run already exists: {spec.logdir}")
     spec.experiment_dir.mkdir(parents=True, exist_ok=True)

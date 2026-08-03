@@ -1,230 +1,225 @@
 # DreaMARL Architecture
 
-## Purpose
+## Scope
 
-DreaMARL is a first-party, reconstruction-regularized JEPA world-model agent
-for decentralized multi-agent control. Each actor observes only its own local
-history. During centralized training, the world transition additionally sees
-the synchronized states and realized actions of the other controlled agents.
+DreaMARL is a reconstruction-free, stochastic, joint world model for
+cooperative multi-agent reinforcement learning from local visual observations.
+It uses centralized training and decentralized execution (CTDE): the learned
+world and value models can use the complete synchronized team state during
+training, while each deployed actor uses only its own observation and action
+history.
 
-The maintained implementation lives in `world_marl.dreamarl`. The pinned
-Dreamer-CDP checkout supplies only Embodied infrastructure. The registered M3
-foundation and completed parity milestone are recorded in `PROVENANCE.md`;
-the active package contains only DreaMARL source.
+The maintained implementation has one architecture and one training path. It
+does not switch models, objectives, replay schedules, or optimization rules as
+the number of agents changes. A one-agent input is a valid reduction of the
+same tensor program, but single-agent parity is not an organizing constraint.
 
-## Source Map
+## Tensor Contract
 
-- `agent.py`: learner, decentralized actor-critic, losses, and reporting;
-- `transformer_rssm.py`: local recurrent JEPA dynamics and imagination;
-- `local_memory.py`: structured agent-local predictive memory;
-- `joint_context.py`: peer-only context for local transition conditioning;
-- `axes.py`: explicit agent-axis transformations;
-- `meltingpot.py` and `environments.py`: environment tensor contracts;
-- `train.py` and `evaluation.py`: training and fixed-evaluation loops;
-- `config.py`, `launcher.py`, and `runtime.py`: reproducible public execution.
-
-Research alternatives that fail their promotion gate are removed from this
-path rather than retained as dormant configuration switches.
-
-## Tensor And Replay Contract
-
-Policy tensors retain an explicit agent dimension:
+Environment interactions are joint transitions. Replay preserves both time and
+agent axes:
 
 ```text
-[environment, agent, ...]
+local observation     [B, T, A, ...]
+local action          [B, T, A, ...]
+local reward          [B, T, A]
+is_first/is_last      [B, T]
+is_terminal           [B, T]
 ```
 
-Replay retains both time and agent dimensions:
+Here `B` is the environment batch, `T` is time, and `A` is agent count. One
+environment step counts once regardless of `A`. `is_last` prevents replay and
+return sequences from crossing resets; only `is_terminal` disables value
+bootstrapping.
+
+Local neural modules may fold `B` and `A` solely to share parameters. The joint
+world model never folds away the agent axis.
+
+## Local Execution State
+
+Every agent observes a local `64 x 64 x 3` RGB image. One shared convolutional
+encoder maps it to a 4,096-dimensional embedding:
 
 ```text
-[batch, time, agent, ...]
+e_t^i = Encoder(o_t^i)
 ```
 
-Every transition stores local observations, local actions, and per-agent
-rewards. Episode boundaries remain joint:
+A two-layer causal Transformer of width 512 and eight attention heads maintains
+the local policy belief:
 
 ```text
-observation  [B, T, A, ...]
-action       [B, T, A, ...]
-reward       [B, T, A]
-is_first     [B, T]
-is_last      [B, T]
-is_terminal  [B, T]
+l_t^i = LocalBelief(e_t^i, a_{t-1}^i, l_{<t}^i)
 ```
 
-`is_last` ends a replay sequence. Only `is_terminal` disables value
-bootstrapping. Raw observations remain the source of truth; stored recurrent
-entries are replay-context caches rather than authoritative latent targets.
+Its attention cache is bounded to the latest 64 transitions. Parameters are
+shared across agents, but caches and inputs are private. There are no agent
+identifiers, peer observations, peer actions, rewards, values, or joint-world
+features in this path.
 
-Melting Pot training preserves each agent's reward. Benchmark reporting sums
-the mean reward across agents at every environment step, yielding mean
-per-agent episode return. One environment step counts as one joint transition,
-not one transition per agent.
-
-## Local Predictive State
-
-Each agent encodes its own `64 x 64 x 3` image with the M3 convolutional
-encoder. The encoder produces a 4,096-dimensional pre-bottleneck feature. The
-decoder is retained for visual prediction reports and representation
-regularization; decoder gradients do not update the representation.
-
-The local recurrent belief is:
+The decentralized actor is:
 
 ```text
-b_t^i = [h_t^i, flatten(s_t^i)]
+a_t^i ~ pi(a | l_t^i)
 ```
 
-- deterministic state: 8,192 dimensions;
-- stochastic state: 32 categorical variables with 64 classes;
-- causal Transformer width: 512;
-- Transformer layers: 4;
-- attention heads: 8;
-- recurrent KV context: 64 transitions;
-- RMS normalization and SiLU activations.
+It is a three-layer MLP of width 1,024 with a categorical output and 1% uniform
+mixture for Melting Pot. Calling `Agent.policy()` cannot access the joint world
+model or centralized critic.
 
-The local transition consumes the previous stochastic state and the agent's
-own action. The posterior also consumes the current local encoder output. Its
-JEPA predictor regresses the stopped-gradient encoder target with cosine
-distance. The categorical prior/posterior and KL objectives are unchanged from
-the verified M3 reduction.
+## Joint Predictive State
 
-## Structured Local Memory
-
-Each agent also maintains four persistent memory tokens of width 256. Four
-learned queries pool the existing encoder features into local memory targets.
-One shared-parameter block updates memory using:
+The authoritative environment state is one stochastic joint latent, not a set
+of independent local simulators. Its carry contains:
 
 ```text
-m_t^i = U(m_{t-1}^i, encoder_tokens(o_t^i), a_{t-1}^i)
+global token          g_t       [B, 512]
+agent states          d_t       [B, A, 512]
+categorical latents   s_t       [B, A, 32, 32]
 ```
 
-The block contains local self-attention, cross-attention to current local
-observation tokens, previous-action conditioning, and a two-times feed-forward
-expansion. It never receives another agent's observation, state, action,
-reward, or identity.
-
-Real observations produce stopped-gradient memory targets. Imagination uses a
-local memory prior:
+The posterior infers this state from the complete synchronized set of local
+embeddings and local beliefs:
 
 ```text
-memory_prior_t  = P(m_{t-1}, b_{t-1}, a_{t-1})
-memory_target_t = stop_gradient(Q(encoder_tokens(o_t)))
-L_memory        = cosine_distance(memory_prior_t, memory_target_t)
+q(S_t | S_{t-1}, a_{t-1}^{1:A}, e_t^{1:A}, l_t^{1:A})
 ```
 
-The actor, critic, reward head, and continuation head consume the established
-belief plus the structured memory control representation. The same interface
-is used for every agent count.
-
-## Shared Transition Context
-
-The validated local transition remains the complete fallback model. During
-centralized training and synchronous imagination, DreaMARL computes a peer
-context before applying that transition:
+The prior advances it with the complete joint action:
 
 ```text
-context_i          = AgentAttention({z_t^j, a_t^j | j != i})
-conditioned_pair_i = [stoch_t^i, a_t^i] + gate * P_pair(context_i)
-conditioned_state_i = z_t^i + gate * P_state(context_i)
-next_i             = F_local(conditioned_pair_i, conditioned_state_i)
+p(S_{t+1} | S_t, a_t^{1:A})
 ```
 
-The first conditioned input drives the causal temporal Transformer. The second
-drives the structured-memory prior. There is one calibrated local transition
-output: peer context cannot directly add a separate correction to the next
-deterministic state or persistent memory.
+Both use a two-layer, width-512, eight-head set Transformer over one global
+token and `A` agent tokens. Agent positional identifiers are absent, making the
+model permutation equivariant for homogeneous agents. Every next-agent
+prediction is generated from the same sampled world state.
 
-For every focal agent, its local state-action token becomes an attention query.
-Only other valid agents become keys and values. Attention parameters are shared,
-and there are no numerical agent identifiers, so the mechanism is permutation
-equivariant for homogeneous agents.
+The world predicts:
 
-The context block has:
+- every agent's next local encoder embedding;
+- a reward for every agent;
+- one joint continuation probability.
 
-- token width: 256;
-- attention heads: 4;
-- one leave-one-out relational attention block;
-- feed-forward expansion: 2;
-- explicit validity masking;
-- separate projections into the temporal pair and memory-prior belief inputs.
+The principal JEPA target is the stopped-gradient next encoder embedding. The
+world objective combines one-step cosine prediction, categorical dynamics and
+representation KL terms, and open-loop JEPA overshooting at horizons 2, 4, and
+8. Overshooting weights are 0.5, 0.25, and 0.125 and reset-crossing targets are
+masked.
 
-One shared scalar gate uses `tanh` and is initialized to exactly zero. Initial
-transition outputs are therefore numerically identical to the local-memory
-model. The gate learns first; after it moves away from zero, gradients reach
-the attention and projection parameters. With one agent or no valid peer, the
-masked context remains exactly zero even after the gate has learned.
-
-The module cannot become a larger single-agent transition: every conditioning
-term depends on leave-one-out peer context. Its parameter count is fixed and
-does not grow with agent count.
+An observation decoder is retained for visual reports and an auxiliary
+reconstruction loss. It receives stopped-gradient world features, so decoder
+gradients cannot shape the encoder or world state. Control and latent dynamics
+do not require pixel reconstruction.
 
 ## Synchronous Imagination
 
-Each imagined timestep is atomic:
+An imagined transition is atomic:
 
 ```text
-1. Every local actor samples its action from z_t^i.
-2. Actions are assembled into a_t^{1:A}.
-3. One grouped transition predicts every next local state.
-4. Agent i receives only z_{t+1}^i.
+1. Each actor samples from its own local belief.
+2. The actions are assembled into one joint action.
+3. The joint prior advances exactly once.
+4. The world predicts every next local embedding.
+5. Each local belief advances from its own predicted embedding and action.
 ```
 
-No agent is advanced before another agent's current action is known. The actor
-and critic never receive peer states or interaction attention outputs directly.
-Centralized information affects control only through predictions of the focal
-agent's own future local state.
+No agent advances before the current actions of all agents are known. The
+imagination horizon is 15. This lets local actors react to interaction effects
+through their predicted future local observations without giving them
+centralized information at execution time.
 
-## Actor, Critic, And Optimization
+## Centralized Value Learning
 
-- actor: 3 hidden layers of width 1,024;
-- discrete policy: categorical with 1% mixture;
-- continuous policy: bounded Normal with standard deviation in `[0.1, 1.0]`;
-- critic: 3 hidden layers of width 1,024 with 255-bin symlog two-hot output;
+The critic consumes a pooled feature of the complete joint latent state:
+
+```text
+V_t = V(GlobalPool(S_t))
+```
+
+It is a three-layer width-1,024 MLP with a 255-bin symlog two-hot output. The
+team objective is the mean of the predicted per-agent rewards, matching the
+benchmark's mean-per-agent episode return. The same team advantage trains each
+shared local actor with REINFORCE and lambda returns.
+
+Control settings are:
+
 - imagination length: 15;
 - return horizon: 333;
 - lambda: 0.95;
 - entropy coefficient: `3e-4`;
 - slow-value update rate: `0.02`;
-- replay-value loss enabled;
-- encoder learning rate: `6e-6`;
-- dynamics learning rate: `4e-4`;
-- remaining-module learning rate: `4e-5`;
-- adaptive gradient clipping: `0.3`;
-- BF16 compute.
+- replay-value loss: enabled;
+- actor and critic gradients into the world model: disabled.
 
-Melting Pot uses batches of 16 joint sequences, sequence length 64, uniform
-online replay, capacity 5 million joint transitions, and train ratio 256. No
-task-specific reward shaping, checkpoint selection, recent-replay rule, or
-centralized critic is part of the algorithm.
+## Replay And Optimization
 
-## Evaluation And Observability
+The maintained Melting Pot configuration uses:
 
-Training reports mean per-agent episode return. Fixed evaluation uses the
-latest checkpoint, deterministic policy modes, an explicit evaluation seed,
-and an exact number of complete episodes. It writes every episode return and
-every per-agent return to `evaluation_summary.json`.
+- 16 joint sequences per batch;
+- 64 burn-in transitions plus 64 optimized transitions;
+- 50% uniform and 50% recency replay sampling;
+- replay capacity of five million joint transitions;
+- train ratio 256;
+- BF16 compute;
+- adaptive gradient clipping of 0.3.
 
-World-model reports include, at recursive horizons 1, 2, 4, and 8:
+Learning rates are `6e-6` for the visual encoder, `4e-4` for the local belief
+and joint world, and `4e-5` for prediction heads, actor, critic, and decoder.
+Replay context is recomputed from raw observations as learner-side burn-in;
+implementation-specific recurrent caches are not authoritative replay data.
 
-- JEPA latent cosine error;
-- per-agent reward mean absolute error;
-- continuation Brier error.
+The Externality-sized model contains 58,194,186 trainable parameters:
 
-Training also reports the shared-context gate and the RMS magnitude of both
-conditioning vectors. These metrics establish whether a control improvement
-accompanies a real change in joint prediction rather than only additional
-parameter count.
+| Module | Parameters |
+| --- | ---: |
+| Joint world | 20,484,608 |
+| Report decoder | 14,252,803 |
+| Local belief | 8,405,504 |
+| Central critic | 4,461,823 |
+| Visual encoder | 3,492,864 |
+| Decentralized actor | 2,635,784 |
+| Reward head | 2,360,575 |
+| Continuation head | 2,100,225 |
+| **Total** | **58,194,186** |
 
-## Correctness Contract
+Parameters are shared across agents, so model size does not grow with team
+size. Activation and attention compute do grow with `A`.
 
-The maintained tests require:
+## Evaluation
 
-1. exact zero-context containment of the local model;
-2. exact one-agent reduction and finite all-masked behavior;
-3. permutation equivariance;
-4. sensitivity to peer actions;
-5. unchanged local parameter initialization;
-6. grouped synchronous imagination;
-7. explicit per-agent reward preservation;
-8. unchanged optimizer, replay, actor, critic, and training schedules across
-   agent counts.
+Training return is the mean per-agent episode return. Fixed evaluation restores
+the latest checkpoint, uses deterministic actor modes and an explicit seed,
+and records every team and per-agent return. Evaluation episodes are reporting
+only: they neither train the model nor select a checkpoint.
+
+World-model reports expose one-step and 2/4/8-step latent error, per-agent reward
+error, and continuation calibration. These are paired with return curves to
+distinguish model improvement from control improvement.
+
+## Correctness Invariants
+
+Automated contracts require:
+
+1. local-policy isolation from every peer and joint-state tensor;
+2. an explicit agent axis throughout the joint posterior and prior;
+3. permutation equivariance under consistent agent reordering;
+4. cross-agent sensitivity to a changed focal action;
+5. one coherent global state sample for all predicted agents;
+6. atomic synchronous imagination;
+7. vector reward preservation and one joint continuation;
+8. a centralized critic used only during training;
+9. validity at `A=1` without an agent-count-dependent architecture branch;
+10. a 50/50 uniform-recency replay contract.
+
+## Source Map
+
+- `agent.py`: loss composition, joint imagination, actor, and critic;
+- `local_belief.py`: strictly local recurrent execution state;
+- `joint_model.py`: joint posterior, prior, JEPA losses, and overshooting;
+- `perception.py`: local visual encoder and report decoder;
+- `axes.py`: explicit local/joint tensor transformations;
+- `meltingpot.py`: environment and reward-vector contract;
+- `train.py` and `evaluation.py`: training and fixed evaluation;
+- `config.py`, `configs.yaml`, `contracts.py`, `launcher.py`, and `runtime.py`:
+  reproducible public execution and machine-checkable manifests.

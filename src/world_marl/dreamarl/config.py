@@ -17,12 +17,10 @@ class DreaMARLRunSpec:
     """One reproducible invocation of the agent-axis-native algorithm."""
 
     experiment_dir: Path
-    task: str = "dmc_reacher_easy"
+    task: str
+    num_agents: int
     seed: int = 0
-    train_steps: int = 250_000
-    num_agents: int = 1
-    local_memory: bool = False
-    shared_transition_context: bool = False
+    train_steps: int = 50_000
     platform: str = "cuda"
     infrastructure_root: Path = field(default_factory=default_upstream_root)
     python: Path = field(default_factory=default_dreamer_cdp_python)
@@ -44,10 +42,6 @@ class DreaMARLRunSpec:
         object.__setattr__(self, "python", absolute_path(self.python))
         if self.num_agents < 1:
             raise ValueError("num_agents must be positive")
-        if self.shared_transition_context and not self.local_memory:
-            raise ValueError(
-                "shared transition context requires structured local memory"
-            )
         if not self.task:
             raise ValueError("task must be non-empty")
         if self.train_steps < 1:
@@ -63,15 +57,12 @@ class DreaMARLRunSpec:
 
     @property
     def configs(self) -> list[str]:
-        suite = (
-            "meltingpot_vision" if self.task.startswith("meltingpot_") else "dmc_vision"
-        )
-        configs = [suite, "jepa_transformer"]
-        if self.local_memory:
-            configs.append("structured_local_memory")
-        if self.shared_transition_context:
-            configs.append("shared_transition_context")
-        return configs
+        if not self.task.startswith("meltingpot_"):
+            raise ValueError(
+                "DreaMARL is a multi-agent algorithm; maintained launches require "
+                "a Melting Pot task"
+            )
+        return ["meltingpot_vision", "joint_world"]
 
     @property
     def command(self) -> list[str]:
@@ -101,7 +92,7 @@ class DreaMARLRunSpec:
             "--logger.filter",
             (
                 "score|length|fps|ratio|train/loss/|train/rand/|"
-                "train/dyn_ent|train/rep_ent|train/joint_context/|"
+                "train/dyn_ent|train/rep_ent|train/world_model/|"
                 "report/world_model/"
             ),
         ]
@@ -120,17 +111,14 @@ class DreaMARLRunSpec:
             "seed": self.seed,
             "train_env_steps_budget": self.train_steps,
             "num_agents": self.num_agents,
-            "local_memory": self.local_memory,
-            "shared_transition_context": self.shared_transition_context,
             "agent_axis_native": True,
-            "agent_axis_semantics": (
-                "shared architecture and training schedule for every agent count"
-            ),
-            "singleton_context_semantics": "exact zero without valid peers",
-            "algorithm_overrides": self.configs[2:],
+            "execution": "decentralized shared local-belief actor",
+            "training_state": "joint posterior and joint-action-conditioned prior",
+            "critic": "centralized team value over the joint latent state",
+            "algorithm_overrides": [],
             "platform": self.platform,
-            "observation_mode": "vision",
-            "accelerator_memory_preallocation": not self.task.startswith("meltingpot_"),
+            "observation_mode": "local RGB vision",
+            "accelerator_memory_preallocation": False,
             "configs": self.configs,
             "source_fingerprint": runtime_fingerprint(),
             "save_every_seconds": self.save_every_seconds,

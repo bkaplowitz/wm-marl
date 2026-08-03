@@ -10,12 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from world_marl.baselines.dreamerv3.config import absolute_path
-from world_marl.jepa_transformer.foundation import repository_root
-
-
-_CONFIG_MIGRATIONS = {
-    "local_memory_sidecar": "structured_local_memory",
-}
+from world_marl.dreamarl.runtime import repository_root
 
 
 def _timestamp():
@@ -56,13 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     outputs = ["jsonl", "scope"]
     if args.wandb_project:
         outputs.append("wandb")
-    recorded_configs = manifest["configs"]
-    if "local_memory_unified" in recorded_configs:
-        raise ValueError(
-            "unified-memory checkpoints require their recorded source fingerprint; "
-            "the rejected architecture is not part of maintained DreaMARL"
-        )
-    configs = [_CONFIG_MIGRATIONS.get(name, name) for name in recorded_configs]
+    configs = manifest["configs"]
     command = [
         str(python),
         "-m",

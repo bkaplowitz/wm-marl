@@ -1,4 +1,3 @@
-import importlib
 import os
 import pathlib
 from functools import partial as bind
@@ -228,7 +227,7 @@ def make_replay(config, folder, mode="train"):
         )
         recency = 1.0 / np.arange(1, capacity + 1) ** config.replay.recexp
         selectors = embodied.replay.selectors
-        kwargs["selector"] = selectors.Mixture(
+        kwargs["selector"] = _SelectorMixture(
             dict(
                 uniform=selectors.Uniform(),
                 priority=selectors.Prioritized(**config.replay.prio),
@@ -240,51 +239,26 @@ def make_replay(config, folder, mode="train"):
     return embodied.replay.Replay(**kwargs)
 
 
+class _SelectorMixture(embodied.replay.selectors.Mixture):
+    """Mixture selector with the collection-size contract Replay requires."""
+
+    def __len__(self):
+        return len(self.selectors[0]) if self.selectors else 0
+
+
 def make_env(config, index, **overrides):
     suite, task = config.task.split("_", 1)
-    if suite == "meltingpot":
-        from .meltingpot import MeltingPotEnv
+    if suite != "meltingpot":
+        raise ValueError(
+            f"DreaMARL currently supports Melting Pot tasks, got {config.task!r}"
+        )
+    from .meltingpot import MeltingPotEnv
 
-        kwargs = config.env.get(suite, {})
-        kwargs.update(overrides)
-        if kwargs.pop("use_seed", False):
-            kwargs["seed"] = hash((config.seed, index)) % (2**32 - 1)
-        return wrap_env(MeltingPotEnv(task, **kwargs), config)
-    if suite == "memmaze":
-        from embodied.envs import from_gym
-        import memory_maze  # noqa
-    ctor = {
-        "dummy": "embodied.envs.dummy:Dummy",
-        "gym": "embodied.envs.from_gym:FromGym",
-        "dm": "embodied.envs.from_dmenv:FromDM",
-        "crafter": "embodied.envs.crafter:Crafter",
-        "dmc": "embodied.envs.dmc:DMC",
-        "atari": "embodied.envs.atari:Atari",
-        "atari100k": "embodied.envs.atari:Atari",
-        "dmlab": "embodied.envs.dmlab:DMLab",
-        "minecraft": "embodied.envs.minecraft:Minecraft",
-        "loconav": "embodied.envs.loconav:LocoNav",
-        "pinpad": "embodied.envs.pinpad:PinPad",
-        "langroom": "embodied.envs.langroom:LangRoom",
-        "procgen": "embodied.envs.procgen:ProcGen",
-        "bsuite": "embodied.envs.bsuite:BSuite",
-        "memmaze": lambda task, **kw: from_gym.FromGym(f"MemoryMaze-{task}-v0", **kw),
-    }[suite]
-    if isinstance(ctor, str):
-        module, cls = ctor.split(":")
-        module = importlib.import_module(module)
-        ctor = getattr(module, cls)
     kwargs = config.env.get(suite, {})
     kwargs.update(overrides)
     if kwargs.pop("use_seed", False):
         kwargs["seed"] = hash((config.seed, index)) % (2**32 - 1)
-    if kwargs.pop("use_logdir", False):
-        kwargs["logdir"] = elements.Path(config.logdir) / f"env{index}"
-    env = ctor(task, **kwargs)
-    env = wrap_env(env, config)
-    from .environments import SingletonAgentEnv
-
-    return SingletonAgentEnv(env)
+    return wrap_env(MeltingPotEnv(task, **kwargs), config)
 
 
 def wrap_env(env, config):

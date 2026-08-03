@@ -6,12 +6,11 @@ import numpy as np
 import pytest
 import elements
 
-from world_marl.dreamarl.environments import SingletonAgentEnv
 from world_marl.dreamarl.meltingpot import (
     BENCHMARK_SUBSTRATES,
     MeltingPotEnv,
 )
-from world_marl.dreamarl.transformer_rssm import _encoded_action_dim
+from world_marl.dreamarl.joint_model import _encoded_action_dim
 
 
 @dataclass(frozen=True)
@@ -89,43 +88,6 @@ def test_transformer_action_width_matches_dict_concat_encoding() -> None:
         _encoded_action_dim({"action": elements.Space(np.float32, (2,), -1.0, 1.0)})
         == 2
     )
-
-
-class _SingletonEnv:
-    obs_space = {
-        "vector": elements.Space(np.float32, (3,)),
-        "reward": elements.Space(np.float32, ()),
-        "is_first": elements.Space(bool, ()),
-        "is_last": elements.Space(bool, ()),
-        "is_terminal": elements.Space(bool, ()),
-    }
-    act_space = {
-        "action": elements.Space(np.float32, (2,), -1.0, 1.0),
-        "reset": elements.Space(bool, (), 0, 2),
-    }
-
-    def step(self, action):
-        assert action["action"].shape == (2,)
-        return {
-            "vector": np.ones((3,), np.float32),
-            "reward": np.float32(2.5),
-            "is_first": np.bool_(False),
-            "is_last": np.bool_(False),
-            "is_terminal": np.bool_(False),
-        }
-
-    def close(self):
-        pass
-
-
-def test_single_agent_adapter_preserves_reward_with_explicit_agent_axis() -> None:
-    env = SingletonAgentEnv(_SingletonEnv())
-    assert env.obs_space["reward"].shape == (1,)
-    observation = env.step(
-        {"action": np.zeros((1, 2), np.float32), "reset": np.bool_(False)}
-    )
-    np.testing.assert_array_equal(observation["reward"], [2.5])
-    assert observation["is_last"].shape == ()
 
 
 def test_all_registered_meltingpot_benchmarks_reset_and_step() -> None:
