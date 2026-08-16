@@ -4,14 +4,14 @@ import json
 import sys
 from pathlib import Path
 
-from world_marl.baselines.nedreamer.artifacts import normalize_training_artifacts
-from world_marl.baselines.nedreamer.config import (
+from dreamarl.baselines.nedreamer.artifacts import normalize_training_artifacts
+from dreamarl.baselines.nedreamer.config import (
     OFFICIAL_NEDREAMER_COMMIT,
     NEDreamerRunSpec,
     default_upstream_root,
 )
-from world_marl.baselines.nedreamer.environment import resolved_requirements
-from world_marl.baselines.nedreamer.launcher import run_training, verify_upstream
+from dreamarl.baselines.nedreamer.environment import resolved_requirements
+from dreamarl.baselines.nedreamer.launcher import run_training, verify_upstream
 
 
 def test_pinned_nedreamer_checkout_is_clean():

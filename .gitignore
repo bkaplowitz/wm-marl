@@ -1,6 +1,9 @@
 .DS_Store
+._*
 .venv/
 .venv-dreamerv3/
+.venv-dreamer-cdp/
+.venv-nedreamer/
 .runtime/
 __pycache__/
 *.py[cod]
@@ -14,6 +17,8 @@ dist/
 build/
 *.egg-info/
 dreamerv3-environment.json
+dreamer-cdp-environment.json
+nedreamer-environment.json
 .serena/
 .specstory/
 .codex/

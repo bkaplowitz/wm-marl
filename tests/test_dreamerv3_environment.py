@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from world_marl.baselines.dreamerv3.config import default_upstream_root
-from world_marl.baselines.dreamerv3.environment import resolved_requirements
+from dreamarl.baselines.dreamerv3.config import default_upstream_root
+from dreamarl.baselines.dreamerv3.environment import resolved_requirements
 
 
 def test_cpu_requirements_only_adapt_platform_specific_jax_packages():

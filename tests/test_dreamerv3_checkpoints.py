@@ -4,7 +4,7 @@ import pickle
 
 import pytest
 
-from world_marl.baselines.dreamerv3.checkpoints import latest_checkpoint
+from dreamarl.baselines.dreamerv3.checkpoints import latest_checkpoint
 
 
 def test_latest_checkpoint_resolves_pointer_and_step(tmp_path):

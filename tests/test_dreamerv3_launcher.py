@@ -7,18 +7,18 @@ from pathlib import Path
 
 import pytest
 
-from world_marl.baselines.dreamerv3.config import (
+from dreamarl.baselines.dreamerv3.config import (
     OFFICIAL_DMC_VISION_CONFIG,
     OFFICIAL_DREAMERV3_COMMIT,
     DreamerV3RunSpec,
     default_upstream_root,
 )
-from world_marl.baselines.dreamerv3.evaluation import (
+from dreamarl.baselines.dreamerv3.evaluation import (
     DreamerV3EvaluationSpec,
     evaluation_command,
     run_evaluation,
 )
-from world_marl.baselines.dreamerv3.launcher import (
+from dreamarl.baselines.dreamerv3.launcher import (
     run_training,
     verify_upstream,
 )

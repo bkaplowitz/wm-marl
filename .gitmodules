@@ -7,3 +7,6 @@
 [submodule "external/nedreamer"]
 	path = external/nedreamer
 	url = https://github.com/corl-team/nedreamer.git
+[submodule "external/marie"]
+	path = external/marie
+	url = https://github.com/breez3young/MARIE.git

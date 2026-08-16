@@ -3,12 +3,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from world_marl.baselines.nedreamer.config import NEDreamerRunSpec
-from world_marl.baselines.nedreamer.evaluation import (
+from dreamarl.baselines.nedreamer.config import NEDreamerRunSpec
+from dreamarl.baselines.nedreamer.evaluation import (
     NEDreamerEvaluationSpec,
     evaluation_command,
 )
-from world_marl.baselines.nedreamer.launcher import run_training
+from dreamarl.baselines.nedreamer.launcher import run_training
 
 
 def test_evaluation_uses_final_checkpoint_and_fixed_protocol(tmp_path):

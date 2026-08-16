@@ -4,11 +4,11 @@ import os
 
 import pytest
 
-from world_marl.baselines.dreamerv3.config import (
+from dreamarl.baselines.dreamerv3.config import (
     DreamerV3RunSpec,
     default_dreamerv3_python,
 )
-from world_marl.baselines.dreamerv3.launcher import run_training
+from dreamarl.baselines.dreamerv3.launcher import run_training
 
 
 @pytest.mark.dreamerv3_integration

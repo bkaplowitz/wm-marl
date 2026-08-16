@@ -1,42 +1,26 @@
 from __future__ import annotations
 
-import ast
 import json
 from pathlib import Path
 
-import numpy as np
 import ruamel.yaml as yaml
 
-from world_marl.dreamarl.agent import deterministic
-from world_marl.dreamarl.axes import (
-    broadcast_global_batch,
-    broadcast_global_sequence,
-    fold_agent_batch,
-    fold_agent_sequence,
-    unfold_agent_batch,
-    unfold_agent_sequence,
-)
-from world_marl.dreamarl.config import DreaMARLRunSpec
-from world_marl.dreamarl.contracts import verify_run_contract
-from world_marl.dreamarl.launcher import run_training
-from world_marl.dreamarl.runtime import (
-    ALGORITHM_FILES,
-    algorithm_entrypoint,
-    algorithm_root,
-    repository_root,
-)
+from dreamarl.config import DreaMARLRunSpec
+from dreamarl.contracts import verify_run_contract
+from dreamarl.launcher import run_training
+from dreamarl.runtime import algorithm_root
+from dreamarl.scripts.eval_dreamarl import main as eval_main
 
 
 def _spec(tmp_path: Path, **updates) -> DreaMARLRunSpec:
     values = {
         "experiment_dir": tmp_path / "run",
         "task": "meltingpot_externality_mushrooms__dense",
+        "num_agents": 5,
         "seed": 7,
         "train_steps": 50_000,
-        "num_agents": 5,
         "platform": "cpu",
         "python": Path("/usr/bin/python3"),
-        "save_every_seconds": 1_800,
         "wandb_project": "world-marl",
         "wandb_entity": "osaze-obahor",
     }
@@ -44,187 +28,98 @@ def _spec(tmp_path: Path, **updates) -> DreaMARLRunSpec:
     return DreaMARLRunSpec(**values)
 
 
-def test_run_spec_selects_one_joint_world_algorithm(tmp_path: Path) -> None:
+def test_run_spec_exposes_only_the_locked_algorithm(tmp_path: Path) -> None:
     spec = _spec(tmp_path)
-    assert spec.configs == ["meltingpot_vision", "joint_world"]
-    assert spec.to_dict()["algorithm_overrides"] == []
-    assert spec.to_dict()["training_state"].startswith("joint posterior")
-
-
-def test_single_agent_is_valid_without_being_a_parity_contract(tmp_path: Path) -> None:
-    contract = verify_run_contract(_spec(tmp_path, num_agents=1))
-    assert contract["single_agent_status"] == (
-        "valid reduction, not a numerical parity constraint"
+    manifest = spec.to_dict()
+    assert manifest["world_model"] == "parallel_transformer"
+    assert manifest["world_model_objective"] == "embedding"
+    assert manifest["visual_encoder"] == "simple"
+    assert manifest["spatial_mask_topology"] == "fixed_count"
+    assert manifest["spatial_mask_ratio"] == 0.5
+    assert manifest["embedding_target"] == "ema"
+    assert manifest["embedding_loss"] == "cosine"
+    assert manifest["sigreg_scale"] == 0.05
+    assert manifest["train_agent_steps_budget"] == 250_000
+    assert not any(
+        flag in spec.command
+        for flag in (
+            "--agent.dyn.typ",
+            "--agent.enc.typ",
+            "--agent.objective",
+            "--agent.spatial_jepa.topology",
+        )
     )
+    contract = verify_run_contract(spec)
     assert contract["policy_peer_access"] is False
-
-
-def test_multi_agent_contract_is_joint_and_decentralized(tmp_path: Path) -> None:
-    contract = verify_run_contract(_spec(tmp_path, num_agents=7))
-    assert contract["world_state_axis"].startswith("one environment state")
-    assert contract["world_action_conditioning"] == "synchronous joint action"
-    assert contract["critic_information"].startswith("joint latent state")
-    assert contract["policy_peer_access"] is False
-
-
-def test_policy_method_cannot_query_joint_world_state() -> None:
-    source = (algorithm_root() / "agent.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    policy = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "policy"
+    assert contract["imagination_atomicity"] == (
+        "all decentralized actions are sampled before one joint-conditioned step"
     )
-    text = ast.unparse(policy)
-    assert "self.world" not in text
-    assert "joint_model" not in text
-    assert "joint_context" not in text
 
 
-def test_imagination_samples_all_actions_before_joint_advance() -> None:
-    source = (algorithm_root() / "agent.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    imagine = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "_imagine"
-    )
-    step = next(
-        node
-        for node in ast.walk(imagine)
-        if isinstance(node, ast.FunctionDef) and node.name == "step"
-    )
-    statements = [ast.unparse(node) for node in step.body]
-    action_index = next(
-        i for i, value in enumerate(statements) if "action = sample" in value
-    )
-    advance_index = next(
-        i for i, value in enumerate(statements) if "self.world.imagine_step" in value
-    )
-    assert action_index < advance_index
+def test_single_and_multi_agent_runs_share_one_contract(tmp_path: Path) -> None:
+    singleton = verify_run_contract(_spec(tmp_path, num_agents=1))
+    multi = verify_run_contract(_spec(tmp_path, num_agents=7))
+    assert {key: value for key, value in singleton.items() if key != "num_agents"} == {
+        key: value for key, value in multi.items() if key != "num_agents"
+    }
+    assert singleton["marl_architecture"] == "joint-action-conditioned local JEPA"
+    assert singleton["agent_axis_adapter"] == "[B,T,A,...] <-> [B*A,T,...]"
 
 
-def test_imagination_uses_world_predicted_belief_directly() -> None:
-    source = (algorithm_root() / "agent.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    imagine = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "_imagine"
-    )
-    text = ast.unparse(imagine)
-    assert "world_state['belief']" in text
-    assert "self.belief.observe" not in text
-    assert "self.world.predict_embedding" not in text
-
-
-def test_joint_world_configuration_has_no_optional_adapter_flags() -> None:
-    configs = yaml.YAML(typ="safe").load(
+def test_canonical_yaml_matches_the_locked_manifest(tmp_path: Path) -> None:
+    config = yaml.YAML(typ="safe").load(
         (algorithm_root() / "configs.yaml").read_text(encoding="utf-8")
+    )["defaults"]["agent"]
+    manifest = _spec(tmp_path).to_dict()
+    assert config["dyn"]["typ"] == manifest["world_model"]
+    assert config["enc"]["typ"] == manifest["visual_encoder"]
+    assert config["objective"] == manifest["world_model_objective"]
+    assert config["embedding_target"] == manifest["embedding_target"]
+    assert config["embedding_loss"] == manifest["embedding_loss"]
+    assert config["spatial_jepa"]["topology"] == manifest["spatial_mask_topology"]
+
+
+def test_curve_evaluation_is_explicit(tmp_path: Path) -> None:
+    baseline = _spec(tmp_path)
+    measured = _spec(
+        tmp_path,
+        curve_eval_interval=50_000,
+        curve_eval_episodes=20,
+        curve_eval_seed_offset=50_000,
     )
-    assert "joint_world" in configs
-    assert configs["joint_world"]["replay.fracs"] == {
-        "uniform": 0.5,
-        "priority": 0.0,
-        "recency": 0.5,
-    }
-    assert "rec" not in configs["defaults"]["agent"]["loss_scales"]
-    assert "dec" not in configs["defaults"]["agent"]
-    assert configs["defaults"]["agent"]["local_belief"] == {
-        "units": 768,
-        "layers": 2,
-        "heads": 12,
-        "context": 64,
-        "ffup": 4,
-        "act": "silu",
-        "norm": "rms",
-        "winit": "trunc_normal_in",
-    }
-    assert configs["defaults"]["agent"]["joint"]["units"] == 768
-    assert configs["defaults"]["agent"]["joint"]["layers"] == 2
-    assert configs["defaults"]["agent"]["joint"]["heads"] == 12
-    assert configs["defaults"]["agent"]["joint"]["classes"] == 64
-    assert "overshoot" not in configs["defaults"]["agent"]["loss_scales"]
-    shared_lr = configs["defaults"]["agent"]["opt"]["lr"]
-    assert configs["defaults"]["agent"]["belief_lr"] == shared_lr
-    assert configs["defaults"]["agent"]["world_lr"] == shared_lr
-    assert "structured_local_memory" not in configs
-    assert "shared_transition_context" not in configs
-    assert "jepa_transformer" not in configs
+    assert "--run.curve_eval_interval" not in baseline.command
+    index = measured.command.index("--run.curve_eval_interval")
+    assert measured.command[index + 1] == "50000"
 
 
-def test_maintained_agent_is_decoder_free() -> None:
-    source = (algorithm_root() / "agent.py").read_text(encoding="utf-8")
-    assert "self.dec" not in source
-    assert "_decoder_losses" not in source
-
-
-def test_first_party_runtime_contains_only_maintained_algorithm_files() -> None:
-    assert algorithm_entrypoint() == algorithm_root() / "main.py"
-    assert repository_root() / "src" / "world_marl" == algorithm_root().parent
-    assert all((algorithm_root() / name).is_file() for name in ALGORITHM_FILES)
-    assert "joint_model.py" in ALGORITHM_FILES
-    assert "local_belief.py" in ALGORITHM_FILES
-    assert "perception.py" in ALGORITHM_FILES
-    assert "contracts.py" in ALGORITHM_FILES
-    assert "joint_context.py" not in ALGORITHM_FILES
-    assert "local_memory.py" not in ALGORITHM_FILES
-    assert "transformer_rssm.py" not in ALGORITHM_FILES
-    assert not (algorithm_root() / "transformer_rssm.py").exists()
-    assert not (algorithm_root() / "joint_context.py").exists()
-    assert not (algorithm_root() / "local_memory.py").exists()
-    assert not (algorithm_root() / "rssm.py").exists()
-
-
-def test_non_marl_task_is_rejected(tmp_path: Path) -> None:
-    spec = _spec(tmp_path, task="dmc_reacher_easy", num_agents=1)
-    with np.testing.assert_raises_regex(ValueError, "multi-agent algorithm"):
-        _ = spec.configs
-
-
-def test_agent_axis_round_trips() -> None:
-    policy = np.arange(2 * 3 * 5).reshape(2, 3, 5)
-    replay = np.arange(2 * 4 * 3 * 5).reshape(2, 4, 3, 5)
-    np.testing.assert_array_equal(
-        unfold_agent_batch(fold_agent_batch(policy, 3), 3), policy
-    )
-    np.testing.assert_array_equal(
-        unfold_agent_sequence(fold_agent_sequence(replay, 3), 3), replay
-    )
-
-
-def test_global_boundaries_broadcast_without_value_changes() -> None:
-    policy = np.arange(4, dtype=np.float32)
-    replay = np.arange(12, dtype=np.float32).reshape(4, 3)
-    np.testing.assert_array_equal(
-        broadcast_global_batch(policy, 3).reshape(4, 3),
-        np.repeat(policy[:, None], 3, axis=1),
-    )
-    np.testing.assert_array_equal(
-        unfold_agent_sequence(broadcast_global_sequence(replay, 3), 3),
-        np.repeat(replay[:, :, None], 3, axis=2),
-    )
-
-
-def test_dry_run_records_marl_contract(tmp_path: Path) -> None:
+def test_dry_run_records_the_locked_contract(tmp_path: Path) -> None:
     spec = _spec(tmp_path)
     assert run_training(spec, dry_run=True) == 0
     manifest = json.loads(
         (spec.experiment_dir / "launch.json").read_text(encoding="utf-8")
     )
-    assert manifest["implementation"] == "first-party DreaMARL"
-    assert manifest["policy_peer_access"] is False
-    assert manifest["world_action_conditioning"] == "synchronous joint action"
-    assert manifest["imagined_actor_state"] == (
-        "joint prior directly predicts each local belief"
-    )
-    assert manifest["configs"] == ["meltingpot_vision", "joint_world"]
+    assert manifest["implementation"] == "first-party decoder-free DreaMARL"
+    assert manifest["spatial_mask_topology"] == "fixed_count"
+    assert manifest["configs"] == ["meltingpot_vision"]
 
 
-def test_deterministic_policy_uses_distribution_prediction() -> None:
-    class Distribution:
-        def pred(self):
-            return np.asarray([1, 2], np.int32)
+def test_visual_dmc_uses_the_same_singleton_algorithm(tmp_path: Path) -> None:
+    spec = _spec(tmp_path, task="dmc_reacher_easy", num_agents=1)
+    assert spec.configs == ["dmc_vision"]
 
-    result = deterministic({"action": Distribution()})
-    np.testing.assert_array_equal(result["action"], np.asarray([1, 2], np.int32))
+
+def test_fixed_evaluation_rebuilds_the_training_architecture(tmp_path: Path) -> None:
+    spec = _spec(tmp_path)
+    assert run_training(spec, dry_run=True) == 0
+    checkpoint = spec.logdir / "ckpt" / "checkpoint-123"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "done").touch()
+    (checkpoint.parent / "latest").write_text(checkpoint.name, encoding="utf-8")
+
+    assert eval_main([str(spec.experiment_dir), "--dry-run"]) == 0
+    launch_file = next((spec.experiment_dir / "evaluation").glob("*.launch.json"))
+    command = json.loads(launch_file.read_text(encoding="utf-8"))["command"]
+    assert command[command.index("--agent.num_agents") + 1] == "5"
+    assert "--agent.marl.mechanism" not in command
+    assert "--agent.behavior.objective" not in command
+    assert "--replay_context" not in command

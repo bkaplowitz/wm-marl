@@ -4,17 +4,19 @@ import json
 
 import numpy as np
 
-from world_marl.baselines.dreamerv3.artifacts import (
+from dreamarl.baselines.dreamerv3.artifacts import (
     EpisodeScore,
     bin_episode_scores,
+    bin_episode_scores_by_count,
     extract_episode_scores,
+    load_official_binned_reference,
     load_official_reference,
     normalize_evaluation_artifacts,
     normalize_training_artifacts,
     read_jsonl,
     summarize_returns,
 )
-from world_marl.baselines.dreamerv3.config import default_upstream_root
+from dreamarl.baselines.dreamerv3.config import default_upstream_root
 
 
 def _write_scores(path, rows):
@@ -64,6 +66,29 @@ def test_extract_bin_and_summarize_scores():
     assert summary["cvar10"] == 0.0
 
 
+def test_paper_curve_uses_fixed_count_bins():
+    scores = [
+        EpisodeScore(5, 1.0),
+        EpisodeScore(10, 3.0),
+        EpisodeScore(15, 5.0),
+        EpisodeScore(20, 7.0),
+    ]
+    assert bin_episode_scores_by_count(scores, bins=2, max_steps=20) == [
+        {
+            "env_steps": 10,
+            "episode_return_mean": 1.0,
+            "episode_return_std": 0.0,
+            "episodes": 1,
+        },
+        {
+            "env_steps": 20,
+            "episode_return_mean": 5.0,
+            "episode_return_std": np.std([3.0, 5.0, 7.0]),
+            "episodes": 3,
+        },
+    ]
+
+
 def test_official_reacher_reference_is_loaded_from_pinned_upstream():
     reference = load_official_reference(
         default_upstream_root(), task="dmc_reacher_easy"
@@ -72,6 +97,32 @@ def test_official_reacher_reference_is_loaded_from_pinned_upstream():
     assert reference["seeds"] == [0, 1, 2, 3, 4]
     assert reference["env_steps"][-1] == 490_000
     assert np.isclose(reference["mean"][-1], 961.8)
+
+
+def test_official_visual_reference_uses_visual_suite():
+    reference = load_official_reference(
+        default_upstream_root(),
+        task="dmc_reacher_easy",
+        observation_mode="vision",
+    )
+    assert reference is not None
+    assert reference["suite"] == "dmc_vision"
+    assert reference["seeds"] == list(range(10))
+    assert reference["env_steps"][-1] > 900_000
+
+
+def test_official_visual_reference_supports_paper_binning():
+    curve = load_official_binned_reference(
+        default_upstream_root(),
+        task="dmc_reacher_easy",
+        observation_mode="vision",
+        bins=30,
+        max_steps=1_000_000,
+    )
+    assert len(curve) == 30
+    assert curve[0]["env_steps"] == 33_333
+    assert curve[0]["seeds"] == 10
+    assert curve[-1]["env_steps"] == 1_000_000
 
 
 def test_training_normalization_writes_shared_artifacts(tmp_path):
@@ -95,6 +146,7 @@ def test_training_normalization_writes_shared_artifacts(tmp_path):
     assert summary["online_training_episodes"]["mean"] == 200.0
     assert summary["latest_checkpoint_train_env_steps"] is None
     assert (experiment / "normalized" / "training_curve.json").is_file()
+    assert (experiment / "normalized" / "paper_training_curve.json").is_file()
     assert (experiment / "normalized" / "training_curve.png").is_file()
 
 
