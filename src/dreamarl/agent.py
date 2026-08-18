@@ -100,16 +100,51 @@ class Agent(
         self.valnorm = Normalize(**config.valnorm, name="valnorm")
         self.advnorm = Normalize(**config.advnorm, name="advnorm")
 
-        self.modules = [self.dyn, self.enc, self.rew, self.con, self.pol, self.val]
-        if self.actmask is not None:
-            self.modules.append(self.actmask)
-        self.modules.extend(self.additional_modules())
-        self.opt = embodied.jax.Optimizer(
-            self.modules,
-            self._build_optimizer(config),
-            summary_depth=1,
-            name="opt",
-        )
+        if int(config.num_agents) == 1:
+            # Preserve the confirmed competitive single-agent construction and
+            # optimizer path byte-for-byte.
+            self.modules = [
+                self.dyn,
+                self.enc,
+                self.rew,
+                self.con,
+                self.pol,
+                self.val,
+            ]
+            if self.actmask is not None:
+                self.modules.append(self.actmask)
+            self.modules.extend(self.additional_modules())
+            self.opt = embodied.jax.Optimizer(
+                self.modules,
+                self._build_optimizer(config),
+                summary_depth=1,
+                name="opt",
+            )
+        else:
+            additional_modules = self.additional_modules()
+            # Keep the historical differentiation target order and isolate the
+            # MARL change to optimizer ownership and hyperparameters.
+            self.modules = [
+                self.dyn,
+                self.enc,
+                self.rew,
+                self.con,
+                self.pol,
+                self.val,
+            ]
+            if self.actmask is not None:
+                self.modules.append(self.actmask)
+            self.modules.extend(additional_modules)
+            world_modules = [self.dyn, self.enc, self.rew, self.con]
+            if self.actmask is not None:
+                world_modules.append(self.actmask)
+            world_modules.extend(additional_modules)
+            self.opt = self._build_grouped_optimizer(
+                self.modules,
+                world_modules,
+                [self.pol],
+                [self.val],
+            )
         self.scales = config.loss_scales.copy()
         if self.actmask is not None:
             self.scales["action_mask"] = float(

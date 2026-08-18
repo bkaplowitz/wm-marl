@@ -258,6 +258,14 @@ class DreaMARLRunSpec:
             "imagination_starts": self.imagination_starts,
             "actor_entropy": 3e-4,
             "behavior_objective": "reinforce",
+            "optimizer_topology": (
+                "separate world, actor, and critic optimizer state"
+                if self.num_agents > 1
+                else "locked single-agent joint optimizer"
+            ),
+            "world_model_learning_rate": 4e-5,
+            "actor_learning_rate": 3e-4 if self.num_agents > 1 else 4e-5,
+            "critic_learning_rate": 3e-4 if self.num_agents > 1 else 4e-5,
             "wandb_project": self.wandb_project,
             "wandb_entity": self.wandb_entity,
             "command": self.command,
