@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import elements
 
@@ -23,9 +24,14 @@ def utility_probe(make_agent, make_replay, make_stream, args):
     if not len(replay):
         raise RuntimeError(f"no replay data found at {args.probe_source!r}")
 
+    checkpoint_path = Path(str(args.from_checkpoint))
+    if checkpoint_path.is_file():
+        checkpoint_path = checkpoint_path.parent / checkpoint_path.read_text(
+            encoding="utf-8"
+        ).strip()
     checkpoint = elements.Checkpoint()
     checkpoint.agent = agent
-    checkpoint.load(args.from_checkpoint, keys=["agent"])
+    checkpoint.load(str(checkpoint_path), keys=["agent"])
 
     stream = iter(agent.stream(make_stream(replay, "report")))
     carry = agent.init_report(args.batch_size)
@@ -44,7 +50,7 @@ def utility_probe(make_agent, make_replay, make_stream, args):
         for key, value in aggregate.result().items()
     }
     result.update(
-        checkpoint=str(args.from_checkpoint),
+        checkpoint=str(checkpoint_path),
         replay=str(args.probe_source),
         batches=int(args.probe_batches),
     )
