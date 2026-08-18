@@ -14,6 +14,11 @@ def verify_run_contract(spec: "DreaMARLRunSpec") -> dict[str, object]:
     return {
         "contract_version": 38,
         "marl_stage": spec.marl_stage,
+        "marl_stage_status": (
+            "maintained_performance_baseline"
+            if spec.marl_stage == "b0"
+            else "negative_experimental_stage_retained_for_reproduction"
+        ),
         "marl_architecture": spec._marl_architecture,
         "num_agents": spec.num_agents,
         "foundation": ("danijar/dreamerv3@e3f02248693a79dc8b0ebd62c93683888ddaccfe"),

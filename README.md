@@ -12,6 +12,12 @@ history. B1 adds a training-only agent-axis JEPA. B2 retains the observation-loc
 actor and transition model but trains fast and slow centralized critics from the
 focal local state plus an explicit JEPA-derived active-team belief.
 
+The maintained performance baseline is B0. B1 and B2 are retained as
+reproducible negative experimental stages: their representation and information
+paths were validated, but neither improved control on the two-seed Externality
+Mushrooms evaluation, and B2 underperformed B1 and B0. New mechanisms must branch
+from B0 unless new evidence overturns that result.
+
 The current architecture is documented in
 [`docs/dreamarl/ARCHITECTURE.md`](docs/dreamarl/ARCHITECTURE.md). The empirical
 single-agent lock-in is recorded in

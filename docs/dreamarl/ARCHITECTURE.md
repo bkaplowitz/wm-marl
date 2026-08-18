@@ -18,6 +18,14 @@ that execution graph and adds a training-only agent-axis JEPA objective. B2
 retains the local actor and world model and adds a JEPA-derived team belief to
 complete centralized training of the fast and slow critics.
 
+B0 is the maintained performance winner. B1 and B2 are preserved for exact
+reproduction and diagnosis, not presented as successful algorithmic additions.
+On the matched two-seed, 30k-step Externality Mushrooms evaluation, B1-future
+averaged `12.03` and B2 averaged `7.42`; B0 was materially stronger but highly
+variable. B1 demonstrated that the team representation could learn, and B2
+demonstrated that a centralized critic could consume it. Neither result
+translated into improved control, so subsequent mechanisms branch from B0.
+
 ## Team Data Contract
 
 Multi-agent replay preserves environment, time, and agent identity:

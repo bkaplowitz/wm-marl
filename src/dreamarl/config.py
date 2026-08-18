@@ -163,6 +163,11 @@ class DreaMARLRunSpec:
             "num_agents": self.num_agents,
             "agent_axis_native": True,
             "marl_stage": self.marl_stage,
+            "marl_stage_status": (
+                "maintained_performance_baseline"
+                if self.marl_stage == "b0"
+                else "negative_experimental_stage_retained_for_reproduction"
+            ),
             "marl_architecture": self._marl_architecture,
             "team_contract": "explicit [B,T,A] axes with shared local modules",
             "world_model": "parallel_transformer",
