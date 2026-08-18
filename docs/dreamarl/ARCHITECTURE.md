@@ -278,6 +278,13 @@ teammate-policy modelling. The actor, critic, imagination transition, and
 online recurrent carry are the B0 path and never receive team slots or peer
 tensors.
 
+A frozen utility probe can evaluate a trained B1 checkpoint on retained replay
+without updating any parameter. It compares the aligned joint-action future
+loss against cross-batch action shuffling, within-team state/action ownership
+shuffling, and a copy-current-state persistence baseline. Positive loss gaps
+are required evidence that the future representation uses the correct joint
+action rather than merely exploiting temporal persistence.
+
 ## Imagination And Control
 
 At execution, the shared actor consumes only each agent's local world feature:

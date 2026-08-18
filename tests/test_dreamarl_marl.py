@@ -449,6 +449,7 @@ def test_b1_completes_agent_masked_team_jepa_update() -> None:
             "marl.agent_jepa.heads": 4,
             "marl.agent_jepa.ffup": 2,
             "marl.agent_jepa.predictor_hidden": 32,
+            "marl.agent_jepa.utility_probe": True,
         }
     )
     agent = object.__new__(MARLCore)
@@ -477,6 +478,17 @@ def test_b1_completes_agent_masked_team_jepa_update() -> None:
     assert np.isfinite(float(metrics["agent_jepa/future_cosine"]))
     assert any(key.startswith("target_team_encoder/") for key in next_state)
     assert not any(module.name == "target_team_encoder" for module in agent.modules)
+
+    def report_step():
+        return agent.report(agent.init_report(1), data)
+
+    _, (_, report_metrics) = nj.pure(report_step)(next_state, seed=56)
+    for key in (
+        "agent_jepa/probe/future_cross_batch_action_gap",
+        "agent_jepa/probe/future_agent_pairing_gap",
+        "agent_jepa/probe/future_vs_persistence_gap",
+    ):
+        assert np.isfinite(float(report_metrics[key]))
 
 
 def test_b1_masked_agent_target_has_no_hidden_context_leakage() -> None:

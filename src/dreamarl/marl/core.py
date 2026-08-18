@@ -378,6 +378,125 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                     "agent_jepa/future_valid_fraction": future_valid.mean(),
                 }
             )
+            if bool(getattr(cfg, "utility_probe", False)) and not training:
+                # Evaluate the frozen future predictor under interventions on
+                # the same replay batch. Cross-batch rolling preserves the
+                # empirical joint-action distribution while breaking its
+                # alignment with the current team state. Agent rolling keeps
+                # the joint-action multiset fixed but breaks state/action
+                # ownership. Persistence tests whether the future module does
+                # more than copy the current predicted team forward.
+                def intervened_future(intervened_action):
+                    intervened_members = self.team_action_conditioner(
+                        online_members[:, :-1],
+                        intervened_action,
+                        visible[:, :-1],
+                        source_active,
+                    )
+                    intervened_action_slots = self.team_transition_encoder(
+                        intervened_members,
+                        source_active,
+                        source_active,
+                    )
+                    prediction = self.team_transition_predictor(
+                        predicted_slots[:, :-1], intervened_action_slots
+                    )
+                    slot_loss, _ = team_slot_jepa_loss(
+                        prediction,
+                        target_slots[:, 1:],
+                        future_valid,
+                        name="future_intervention",
+                    )
+                    content = self.team_content_predictor(prediction)
+                    set_loss, _ = team_set_matching_loss(
+                        content,
+                        targets[:, 1:],
+                        active[:, 1:],
+                        future_valid,
+                        temperature=float(cfg.matching_temperature),
+                        iterations=int(cfg.sinkhorn_iterations),
+                        name="future_intervention_set",
+                    )
+                    return prediction, slot_loss + float(
+                        cfg.future_set_scale
+                    ) * set_loss
+
+                cross_batch_prediction, cross_batch_loss = intervened_future(
+                    jnp.roll(action, 1, axis=0)
+                )
+                agent_pairing_prediction, agent_pairing_loss = intervened_future(
+                    jnp.roll(action, 1, axis=-2)
+                )
+                persistence_loss, _ = team_slot_jepa_loss(
+                    predicted_slots[:, :-1],
+                    target_slots[:, 1:],
+                    future_valid,
+                    name="future_persistence",
+                )
+                persistence_content = self.team_content_predictor(
+                    predicted_slots[:, :-1]
+                )
+                persistence_set_loss, _ = team_set_matching_loss(
+                    persistence_content,
+                    targets[:, 1:],
+                    active[:, 1:],
+                    future_valid,
+                    temperature=float(cfg.matching_temperature),
+                    iterations=int(cfg.sinkhorn_iterations),
+                    name="future_persistence_set",
+                )
+                persistence_composite = persistence_loss + float(
+                    cfg.future_set_scale
+                ) * persistence_set_loss
+                aligned_composite = future_loss + float(
+                    cfg.future_set_scale
+                ) * future_set_loss
+                valid_count = jnp.maximum(future_valid.sum(), 1)
+
+                def prediction_cosine(other):
+                    cosine = jnp.sum(
+                        future_prediction * other, axis=-1
+                    ) / jnp.maximum(
+                        jnp.linalg.norm(future_prediction, axis=-1)
+                        * jnp.linalg.norm(other, axis=-1),
+                        1e-8,
+                    )
+                    return (
+                        cosine * future_valid[..., None]
+                    ).sum() / (valid_count * cosine.shape[-1])
+
+                metrics.update(
+                    {
+                        "agent_jepa/probe/future_aligned_composite_loss": (
+                            aligned_composite.mean()
+                        ),
+                        "agent_jepa/probe/future_cross_batch_action_loss": (
+                            cross_batch_loss.mean()
+                        ),
+                        "agent_jepa/probe/future_cross_batch_action_gap": (
+                            cross_batch_loss.mean() - aligned_composite.mean()
+                        ),
+                        "agent_jepa/probe/future_cross_batch_prediction_cosine": (
+                            prediction_cosine(cross_batch_prediction)
+                        ),
+                        "agent_jepa/probe/future_agent_pairing_loss": (
+                            agent_pairing_loss.mean()
+                        ),
+                        "agent_jepa/probe/future_agent_pairing_gap": (
+                            agent_pairing_loss.mean() - aligned_composite.mean()
+                        ),
+                        "agent_jepa/probe/future_agent_pairing_prediction_cosine": (
+                            prediction_cosine(agent_pairing_prediction)
+                        ),
+                        "agent_jepa/probe/future_persistence_loss": (
+                            persistence_composite.mean()
+                        ),
+                        "agent_jepa/probe/future_vs_persistence_gap": (
+                            persistence_composite.mean()
+                            - aligned_composite.mean()
+                        ),
+                    }
+                )
         if bool(getattr(cfg, "utility_probe", False)) and not training:
             action_keys = [
                 key for key, space in self.act_space.items() if space.discrete
