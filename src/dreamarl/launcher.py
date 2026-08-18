@@ -8,6 +8,7 @@ import platform
 import subprocess
 import sys
 from datetime import datetime, timezone
+from collections.abc import Callable
 from typing import Any
 
 from dreamarl.baselines.dreamerv3.artifacts import normalize_training_artifacts
@@ -29,10 +30,11 @@ def run_training(
     *,
     resume: bool = False,
     dry_run: bool = False,
+    contract_verifier: Callable[[Any], dict[str, object]] | None = None,
 ) -> int:
     """Run DreaMARL source directly with pinned Embodied infrastructure."""
 
-    verification = verify_run_contract(spec)
+    verification = (contract_verifier or verify_run_contract)(spec)
     if spec.logdir.exists() and not resume:
         raise FileExistsError(f"run already exists: {spec.logdir}")
     spec.experiment_dir.mkdir(parents=True, exist_ok=True)

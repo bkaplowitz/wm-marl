@@ -7,6 +7,8 @@ import jax.numpy as jnp
 import numpy as np
 
 from .marl.axes import MODEL_EXCLUDED_FIELDS
+from .models.heads import MLPHead
+from .models.normalize import Normalize
 from .training.learner import LearnerMixin
 from .training.optimization import OptimizationMixin
 from .training.policy import PolicyMixin
@@ -40,7 +42,7 @@ class Agent(
         self.embedding_loss = "cosine"
         self.posterior_jepa = True
         self.dynamics_jepa = True
-        self.spatial_jepa = True
+        self.spatial_jepa = False
         self.sigreg = True
         self.spatial_predictor = None
         self.dec = None
@@ -53,6 +55,9 @@ class Agent(
         self.enc = self.world_model.encoder("simple")(
             enc_space, **config.enc.simple, name="enc"
         )
+        self.spatial_jepa = bool(config.spatial_jepa.enabled) and bool(
+            self.enc.imgkeys
+        )
         self.enc_output_dim = self.enc.calculate_encoder_output_dim()
         self.target_enc = self.world_model.encoder("simple")(
             enc_space, **config.enc.simple, name="target_enc"
@@ -63,10 +68,18 @@ class Agent(
         self.dyn = self.world_model.dynamics_model("parallel_transformer")(
             self.act_space,
             self.enc_output_dim,
-            team_size=int(config.num_agents),
             **config.dyn.parallel_transformer,
             name="dyn",
         )
+        required_burnin = int(config.dyn.parallel_transformer.context) * int(
+            config.dyn.parallel_transformer.layers
+        )
+        if 0 < int(config.replay_context) < required_burnin:
+            raise ValueError(
+                "Transformer replay_context must be zero or at least "
+                f"context * layers ({required_burnin}), got "
+                f"{config.replay_context}"
+            )
         self.feat2tensor = self.world_model.feature_tensor
         scalar = elements.Space(np.float32, ())
         binary = elements.Space(bool, (), 0, 2)
@@ -76,20 +89,29 @@ class Agent(
             key: config.policy_dist_disc if space.discrete else config.policy_dist_cont
             for key, space in self.act_space.items()
         }
-        self.pol = embodied.jax.MLPHead(
-            self.act_space, outputs, **config.policy, name="pol"
-        )
+        self.pol = MLPHead(self.act_space, outputs, **config.policy, name="pol")
+        self.action_mask_key = self._action_mask_key()
+        if self.action_mask_key is not None:
+            mask_space = self.obs_space["action_mask"]
+            maskhead = getattr(config, "maskhead", config.conhead)
+            self.actmask = embodied.jax.MLPHead(
+                mask_space, **maskhead, name="actmask"
+            )
+        else:
+            self.actmask = None
         self.val = embodied.jax.MLPHead(scalar, **config.value, name="val")
         self.slowval = embodied.jax.SlowModel(
             embodied.jax.MLPHead(scalar, **config.value, name="slowval"),
             source=self.val,
             **config.slowvalue,
         )
-        self.retnorm = embodied.jax.Normalize(**config.retnorm, name="retnorm")
-        self.valnorm = embodied.jax.Normalize(**config.valnorm, name="valnorm")
-        self.advnorm = embodied.jax.Normalize(**config.advnorm, name="advnorm")
+        self.retnorm = Normalize(**config.retnorm, name="retnorm")
+        self.valnorm = Normalize(**config.valnorm, name="valnorm")
+        self.advnorm = Normalize(**config.advnorm, name="advnorm")
 
         self.modules = [self.dyn, self.enc, self.rew, self.con, self.pol, self.val]
+        if self.actmask is not None:
+            self.modules.append(self.actmask)
         self.modules.extend(self.additional_modules())
         self.opt = embodied.jax.Optimizer(
             self.modules,
@@ -98,6 +120,14 @@ class Agent(
             name="opt",
         )
         self.scales = config.loss_scales.copy()
+        if self.actmask is not None:
+            self.scales["action_mask"] = float(
+                getattr(
+                    config,
+                    "action_mask_scale",
+                    self.scales.get("action_mask", 1.0),
+                )
+            )
 
     def additional_modules(self):
         """Return algorithm modules trained by the shared optimizer."""
@@ -150,3 +180,20 @@ class Agent(
         value_head = self.slowval if slow else self.val
         inputs = self.feat2tensor(features) if isinstance(features, dict) else features
         return value_head(inputs, bdims)
+
+    def _action_mask_key(self):
+        if "action_mask" not in self.obs_space:
+            return None
+        discrete = [key for key, space in self.act_space.items() if space.discrete]
+        if len(self.act_space) != 1 or len(discrete) != 1:
+            raise ValueError(
+                "the action_mask contract currently requires exactly one "
+                "discrete action"
+            )
+        key = discrete[0]
+        classes = int(np.asarray(self.act_space[key].classes).reshape(-1)[0])
+        if self.obs_space["action_mask"].shape != (classes,):
+            raise ValueError(
+                "action_mask must have one boolean entry per categorical action"
+            )
+        return key

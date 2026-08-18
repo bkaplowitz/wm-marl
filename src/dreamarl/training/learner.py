@@ -18,10 +18,23 @@ from .representation import (
 )
 
 
-def masked_mean(value, valid):
+def masked_mean(value, valid, *, alignment="tail"):
     """Average a per-transition loss over valid local agent transitions."""
 
-    weight = valid[:, -value.shape[1] :].astype(jnp.float32)
+    if alignment == "tail":
+        weight = valid[:, -value.shape[1] :]
+    elif alignment == "replay_value":
+        start = valid.shape[1] - value.shape[1] - 1
+        weight = valid[:, start : start + value.shape[1]]
+    elif alignment == "exact":
+        if valid.shape != value.shape:
+            raise ValueError(
+                f"validity {valid.shape} does not match loss {value.shape}"
+            )
+        weight = valid
+    else:
+        raise ValueError(f"unknown validity alignment: {alignment!r}")
+    weight = weight.astype(jnp.float32)
     return (value * weight).mean() / jnp.maximum(weight.mean(), 1e-8)
 
 
@@ -56,6 +69,7 @@ class LearnerMixin:
         enc_carry, dyn_carry, dec_carry = model_carry
         enc_entries, dyn_entries, dec_entries = entries
         batch, length = obs["is_first"].shape
+        valid = self.validity(obs)
 
         starts_count = min(self.config.imag_last or length, length)
         horizon = self.config.imag_length
@@ -68,7 +82,8 @@ class LearnerMixin:
         )
 
         def policyfn(feat):
-            return sample(self.pol(self.feat2tensor(feat), 1))
+            tensor = self.feat2tensor(feat)
+            return sample(self.policy_distribution(tensor, 1))
 
         _, imgfeat, imgprevact = self.imagine(
             starts,
@@ -77,7 +92,13 @@ class LearnerMixin:
             training,
             imagination_context,
         )
-        imgfeat = concat([sg(first, skip=self.config.ac_grads), sg(imgfeat)], 1)
+        imgfeat = concat(
+            [
+                sg(first, skip=self.config.ac_grads),
+                sg(imgfeat, skip=self.config.ac_grads),
+            ],
+            1,
+        )
         policyfeat = self.imagination_policy_features(imgfeat)
         metrics.update(self.imagination_interface_metrics(imgfeat, policyfeat))
         lastact = policyfn(jax.tree.map(lambda value: value[:, -1], policyfeat))
@@ -91,13 +112,14 @@ class LearnerMixin:
             imgact,
             self.rew(local_inp, 2).pred(),
             self.con(local_inp, 2).prob(1),
-            self.pol(policy_inp, 2),
+            self.policy_distribution(policy_inp, 2),
             value,
             slowvalue,
             self.retnorm,
             self.valnorm,
             self.advnorm,
             update=training,
+            valid=self.imagination_validity(imagination_context, horizon),
             contdisc=self.config.contdisc,
             horizon=self.config.horizon,
             **self.config.imag_loss,
@@ -135,6 +157,7 @@ class LearnerMixin:
                 slowvalue,
                 self.valnorm,
                 update=training,
+                valid=valid[:, -starts_count:-1],
                 horizon=self.config.horizon,
                 **self.config.repl_loss,
             )
@@ -144,6 +167,7 @@ class LearnerMixin:
         # Initialize and evaluate extension modules only after the locked local
         # model, actor, and critic have consumed their normal RNG sequence.
         extra_losses, extra_metrics = self.additional_world_model_losses(
+            tokens,
             repfeat,
             target_tokens,
             obs,
@@ -153,16 +177,23 @@ class LearnerMixin:
         losses.update(extra_losses)
         metrics.update(extra_metrics)
 
-        valid = jnp.ones_like(obs["is_first"], dtype=jnp.float32)
-        for key in ("agent_present", "agent_alive"):
-            if key in obs:
-                valid *= obs[key].astype(jnp.float32)
-
         metrics.update(
-            {f"loss/{key}": masked_mean(value, valid) for key, value in losses.items()}
+            {
+                f"loss/{key}": masked_mean(
+                    value,
+                    valid,
+                    alignment="replay_value" if key == "repval" else "tail",
+                )
+                for key, value in losses.items()
+            }
         )
         loss = sum(
-            masked_mean(value, valid) * self.scales[key]
+            masked_mean(
+                value,
+                valid,
+                alignment="replay_value" if key == "repval" else "tail",
+            )
+            * self.scales[key]
             for key, value in losses.items()
         )
 
@@ -178,13 +209,14 @@ class LearnerMixin:
 
     def additional_world_model_losses(
         self,
+        tokens,
         repfeat,
         target_tokens,
         obs,
         prevact,
         training,
     ):
-        del repfeat, target_tokens, obs, prevact, training
+        del tokens, repfeat, target_tokens, obs, prevact, training
         return {}, {}
 
     def representation_prediction_branches(self, repfeat, dynamics_aux):
@@ -231,6 +263,18 @@ class LearnerMixin:
         del model_features, policy_features
         return {}
 
+    def imagination_validity(self, context, horizon):
+        del context
+        return None
+
+    @staticmethod
+    def validity(obs):
+        valid = jnp.ones_like(obs["is_first"], dtype=jnp.float32)
+        for key in ("agent_present", "agent_alive"):
+            if key in obs:
+                valid *= obs[key].astype(jnp.float32)
+        return valid
+
     def _world_model_terms(self, carry, obs, prevact, training):
         enc_carry, dyn_carry, dec_carry = carry
         reset = obs["is_first"]
@@ -243,6 +287,7 @@ class LearnerMixin:
         )
         losses.update(dyn_losses)
         metrics.update(dyn_metrics)
+        valid = self.validity(obs)
         if self.sigreg:
             regularizer = sigreg_loss(
                 tokens,
@@ -250,9 +295,16 @@ class LearnerMixin:
                 knots=int(self.config.sigreg.knots),
                 num_proj=int(self.config.sigreg.num_proj),
                 aggregation=str(self.config.sigreg.aggregation),
+                team_size=int(self.config.num_agents),
+                valid=valid,
             )
             losses["sigreg"] = jnp.broadcast_to(regularizer, (batch, length))
             metrics["sigreg/embedding_std"] = embedding_std(tokens)
+        if getattr(self, "actmask", None) is not None:
+            policy_input = self.feat2tensor(repfeat)
+            losses["action_mask"] = self.actmask(policy_input, 2).loss(
+                obs["action_mask"].astype(bool)
+            )
         target_tokens = None
         if self.dec is not None:
             dec_carry, dec_entries, reconstructions = self.dec(
@@ -318,40 +370,46 @@ class LearnerMixin:
                 assert self.target_enc is not None
                 grid_height, grid_width, _ = self.enc.image_grid_shape()
                 topology = str(self.config.spatial_jepa.topology)
-                if topology == "vjepa_multiblock":
+                if topology == "vjepa21_multiblock":
                     from ..ablations.representation import (
-                        vjepa_multiblock_masks,
-                        vjepa_token_loss,
+                        vjepa21_dense_token_loss,
+                        vjepa21_multiblock_masks,
                     )
 
                     assert self.spatial_predictor is not None
-                    spatial_length = min(4, length)
-                    spatial_indices = jnp.rint(
-                        jnp.linspace(0, length - 1, spatial_length)
-                    ).astype(jnp.int32)
+                    spatial_length = min(16, length)
+                    spatial_indices = jnp.arange(
+                        length - spatial_length, length, dtype=jnp.int32
+                    )
                     spatial_obs = jax.tree.map(
                         lambda value: value[:, spatial_indices], obs
                     )
                     spatial_reset = reset[:, spatial_indices]
-                    spatial_target = self.target_enc.spatial_tokens(
-                        target_tokens[:, spatial_indices]
+                    spatial_target = self.target_enc.full_predictor_tokens(
+                        spatial_obs, spatial_reset
                     )
-                    masks = vjepa_multiblock_masks(
+                    contexts, targets = vjepa21_multiblock_masks(
                         nj.seed(), spatial_reset.shape, (grid_height, grid_width)
                     )
                     group_losses = []
                     group_cosines = []
                     group_fractions = []
-                    for mask in masks:
-                        visible = ~mask
+                    for visible, mask in zip(contexts, targets):
                         context_tokens = self.enc.visible_spatial_tokens(
                             spatial_obs, spatial_reset, visible
                         )
-                        prediction = self.spatial_predictor(
+                        prediction, context_prediction = self.spatial_predictor(
                             context_tokens, visible, mask
                         )
-                        group_loss, group_cosine, group_fraction = vjepa_token_loss(
-                            prediction, spatial_target, mask
+                        group_loss, group_cosine, group_fraction = (
+                            vjepa21_dense_token_loss(
+                                prediction,
+                                context_prediction,
+                                spatial_target,
+                                mask,
+                                visible,
+                                context_weight=0.5,
+                            )
                         )
                         group_losses.append(group_loss)
                         group_cosines.append(group_cosine)

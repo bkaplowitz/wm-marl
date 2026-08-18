@@ -250,7 +250,8 @@ _RSSM_BACKEND = WorldModelBackend(
         {
             "simple": visual.Encoder,
             "vit": visual.ViTEncoder,
-            "vjepa": visual.ViTEncoder,
+            "vjepa21": visual.ViTEncoder,
+            "leworldmodel": visual.ViTEncoder,
         }
     ),
     decoders=MappingProxyType({"simple": visual.Decoder}),

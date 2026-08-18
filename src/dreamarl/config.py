@@ -31,6 +31,12 @@ class DreaMARLRunSpec:
     curve_eval_episodes: int = 20
     curve_eval_seed_offset: int = 10_000
     curve_eval_policy_mode: str = "deterministic"
+    imagination_starts: int = 0
+    marl_stage: str = "b0"
+    agent_jepa_local_grad_scale: float = 0.0
+    agent_jepa_k0_scale: float = 0.1
+    agent_jepa_future_scale: float = 1.0
+    agent_jepa_future_set_scale: float = 1.0
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -48,6 +54,18 @@ class DreaMARLRunSpec:
             raise ValueError("train_steps must be positive")
         if self.curve_eval_interval < 0:
             raise ValueError("curve_eval_interval must be non-negative")
+        if self.imagination_starts < 0:
+            raise ValueError("imagination_starts must be non-negative")
+        if self.marl_stage not in {"b0", "b1"}:
+            raise ValueError(f"unsupported MARL stage: {self.marl_stage!r}")
+        for name in (
+            "agent_jepa_local_grad_scale",
+            "agent_jepa_k0_scale",
+            "agent_jepa_future_scale",
+            "agent_jepa_future_set_scale",
+        ):
+            if float(getattr(self, name)) < 0.0:
+                raise ValueError(f"{name} must be non-negative")
 
     @property
     def logdir(self) -> Path:
@@ -80,6 +98,16 @@ class DreaMARLRunSpec:
             str(self.seed),
             "--agent.num_agents",
             str(self.num_agents),
+            "--agent.marl.stage",
+            self.marl_stage,
+            "--agent.marl.agent_jepa.local_grad_scale",
+            str(self.agent_jepa_local_grad_scale),
+            "--agent.marl.agent_jepa.k0_scale",
+            str(self.agent_jepa_k0_scale),
+            "--agent.marl.agent_jepa.future_scale",
+            str(self.agent_jepa_future_scale),
+            "--agent.marl.agent_jepa.future_set_scale",
+            str(self.agent_jepa_future_set_scale),
             "--run.steps",
             str(self.train_steps),
             "--jax.platform",
@@ -89,9 +117,9 @@ class DreaMARLRunSpec:
             "--logger.filter",
             (
                 "score|return|length|fps|ratio|train/loss/|train/rand/|"
-                "train/dyn_ent|train/rep_ent|"
+                "train/dyn_ent|train/rep_ent|train/adv|train/ent/|train/opt/|"
                 "train/posterior_jepa/|train/dynamics_jepa/|"
-                "train/interaction/|"
+                "train/agent_jepa/|report/agent_jepa/|"
                 "report/world_model/|report/openloop/|eval/"
             ),
         ]
@@ -114,6 +142,8 @@ class DreaMARLRunSpec:
                     ),
                 ]
             )
+        if self.imagination_starts:
+            command.extend(["--agent.imag_last", str(self.imagination_starts)])
         return command
 
     def to_dict(self) -> dict[str, object]:
@@ -129,7 +159,8 @@ class DreaMARLRunSpec:
             "train_agent_steps_budget": self.train_steps * self.num_agents,
             "num_agents": self.num_agents,
             "agent_axis_native": True,
-            "marl_architecture": "joint-action-conditioned local JEPA",
+            "marl_stage": self.marl_stage,
+            "marl_architecture": self._marl_architecture,
             "team_contract": "explicit [B,T,A] axes with shared local modules",
             "world_model": "parallel_transformer",
             "world_model_objective": "embedding",
@@ -148,20 +179,61 @@ class DreaMARLRunSpec:
             "sigreg_scale": 0.05,
             "sigreg_knots": 17,
             "sigreg_num_proj": 256,
-            "sigreg_aggregation": "pooled",
+            "sigreg_aggregation": "per_agent",
+            "policy_information": "observation-local latent history",
+            "action_masking": "observed online and learned for imagination",
             "replay_sampling": "uniform",
-            "replay_context": 1,
-            "execution": "shared decentralized local actor",
-            "imagination": "synchronous joint-action-conditioned rollouts",
+            "replay_context": 128,
+            "execution": "strict decentralized parameter-shared actors",
+            "imagination": "synchronized independent local rollouts",
             "executable_state_supervision": "locked local JEPA/latent losses",
             "training_state": self._training_state,
             "posterior_context": "history",
             "visual_encoder": "simple",
             "visual_resolution": 64,
-            "critic": "shared local critic",
+            "critic": "parameter-shared observation-local critic",
+            "agent_jepa_enabled": self.marl_stage == "b1" and self.num_agents > 1,
+            "agent_jepa_horizon": (
+                1
+                if self.marl_stage == "b1"
+                and self.num_agents > 1
+                and self.agent_jepa_future_scale > 0.0
+                else 0
+            ),
+            "agent_jepa_local_grad_scale": self.agent_jepa_local_grad_scale,
+            "agent_jepa_k0_scale": self.agent_jepa_k0_scale,
+            "agent_jepa_future_scale": self.agent_jepa_future_scale,
+            "agent_jepa_future_set_scale": self.agent_jepa_future_set_scale,
+            "team_slots": 8,
+            "team_slot_width": 256,
+            "team_teacher_rate": 0.01,
+            "agent_mask_ratio": [0.25, 0.5],
+            "agent_jepa_matching": (
+                "mean-centered agent-relative balanced stop-gradient Sinkhorn"
+            ),
+            "agent_jepa_matching_temperature": 0.02,
+            "agent_jepa_sinkhorn_iterations": 10,
+            "agent_jepa_predicted_set_scale": 1.0,
+            "agent_jepa_source_set_scale": 1.0,
+            "agent_jepa_hidden_coverage_scale": 1.0,
+            "team_slot_variance_scale": 0.1,
+            "team_slot_decorrelation_scale": 0.1,
             "algorithm_components": self._algorithm_components,
             "platform": self.platform,
             "observation_mode": "local RGB vision",
+            "meltingpot_reward_mode": (
+                "collective" if self.task.startswith("meltingpot_") else "native"
+            ),
+            "environment_seed_mode": (
+                "construction-time Lab2D seed stream; Shimmy reset(seed) is ignored"
+                if self.task.startswith("meltingpot_")
+                else "suite construction seed"
+            ),
+            "environment_reproducibility": (
+                "construction_seed_controlled_not_trajectory_deterministic"
+                if self.task.startswith("meltingpot_")
+                else "suite_seed_semantics"
+            ),
             "accelerator_memory_preallocation": False,
             "configs": self.configs,
             "save_every_seconds": self.save_every_seconds,
@@ -169,6 +241,7 @@ class DreaMARLRunSpec:
             "curve_eval_episodes": self.curve_eval_episodes,
             "curve_eval_seed_offset": self.curve_eval_seed_offset,
             "curve_eval_policy_mode": self.curve_eval_policy_mode,
+            "imagination_starts": self.imagination_starts,
             "actor_entropy": 3e-4,
             "behavior_objective": "reinforce",
             "wandb_project": self.wandb_project,
@@ -187,15 +260,39 @@ class DreaMARLRunSpec:
                 "fixed-count masked-spatial EMA-target cosine prediction"
             ),
             "SIGReg embedding anti-collapse regularization",
-            "1-step recurrent replay context",
+            "128-step loss-excluded Transformer replay burn-in",
             "uniform replay",
             "explicit environment, time, and agent replay axes",
-            "zero-gated normalized peer-set residual in the temporal transition",
             "parameter-shared local world model, actor, and critic",
-            "synchronous joint-action-conditioned imagination",
-            "decentralized execution",
+            "synchronized independent local imagination",
         ]
+        if self.num_agents > 1:
+            components.append("strict decentralized execution with no peer tensors")
+            if self.marl_stage == "b1":
+                if self.agent_jepa_future_scale > 0.0:
+                    components.append(
+                        "training-only whole-agent-masked current and joint-action-"
+                        "conditioned one-step future team EMA-slot JEPA"
+                    )
+                else:
+                    components.append(
+                        "training-only detached whole-agent-masked current team "
+                        "EMA-slot JEPA control"
+                    )
+        else:
+            components.append("locked singleton execution")
         return components
+
+    @property
+    def _marl_architecture(self) -> str:
+        if self.marl_stage == "b1" and self.num_agents > 1:
+            if self.agent_jepa_future_scale > 0.0:
+                return (
+                    "shared local JEPA plus detached current and joint-action-"
+                    "conditioned future team EMA-slot JEPA"
+                )
+            return "shared local JEPA plus detached current team EMA-slot JEPA"
+        return "shared independent local JEPA"
 
     @property
     def _training_state(self) -> str:

@@ -24,7 +24,7 @@ from dreamarl.ablations.rssm import GRURSSMDynamics
 
 
 OBS_SPACE = {"image": elements.Space(np.uint8, (64, 64, 3))}
-VJEPA_OBS_SPACE = {"image": elements.Space(np.uint8, (224, 224, 3))}
+VJEPA_OBS_SPACE = {"image": elements.Space(np.uint8, (256, 256, 3))}
 ACTION_SPACE = {"action": elements.Space(np.int32, (), 0, 4)}
 
 
@@ -89,21 +89,25 @@ def test_compact_vit_preserves_the_cnn_downstream_interface() -> None:
     assert 4_700_000 <= parameter_count <= 5_100_000
 
 
-def test_vjepa_encoder_uses_a_14_by_14_patch_grid() -> None:
+def test_vjepa21_encoder_uses_rope_hierarchy_and_a_16_by_16_grid() -> None:
     encoder = ablation_visual.ViTEncoder(
         VJEPA_OBS_SPACE,
         patch=16,
-        model=256,
-        layers=6,
-        heads=8,
+        model=48,
+        layers=4,
+        heads=3,
         token_dim=64,
+        norm="layer1em6",
+        act="gelu",
+        position="rope3d",
+        hierarchical=(0, 1, 2, 3),
         name="enc",
     )
     images = jax.random.randint(
-        jax.random.key(53), (1, 1, 224, 224, 3), 0, 256, dtype=jnp.uint8
+        jax.random.key(53), (1, 1, 256, 256, 3), 0, 256, dtype=jnp.uint8
     )
     resets = jnp.ones((1, 1), bool)
-    visible = jnp.ones((1, 1, 14, 14), bool).at[..., 4:9, 5:10].set(False)
+    visible = jnp.ones((1, 1, 16, 16), bool).at[..., 4:9, 5:10].set(False)
 
     def encode(obs, first, context):
         output = encoder({}, obs, first, training=False)[2]
@@ -114,36 +118,73 @@ def test_vjepa_encoder_uses_a_14_by_14_patch_grid() -> None:
     _, output = nj.pure(encode)(params, {"image": images}, resets, visible, seed=55)
     full_tokens, visible_tokens = output
 
-    assert encoder.image_grid_shape() == (14, 14, 64)
-    assert encoder.calculate_encoder_output_dim() == 196 * 64
-    assert full_tokens.shape == (1, 1, 196 * 64)
-    assert visible_tokens.shape == (1, 1, 196, 64)
-    hidden = np.asarray(visible_tokens).reshape((1, 1, 14, 14, 64))
+    assert encoder.image_grid_shape() == (16, 16, 64)
+    assert encoder.predictor_token_dim == 4 * 48
+    assert encoder.calculate_encoder_output_dim() == 256 * 64
+    assert full_tokens.shape == (1, 1, 256 * 64)
+    assert visible_tokens.shape == (1, 1, 256, 4 * 48)
+    hidden = np.asarray(visible_tokens).reshape((1, 1, 16, 16, 4 * 48))
     assert (hidden[..., 4:9, 5:10, :] == 0).all()
 
 
 def test_vjepa_predictor_uses_positional_target_queries() -> None:
     predictor = ablation_visual.SpatialTokenPredictor(
+        grid=(16, 16),
         input_dim=8,
         model=24,
         layers=1,
         heads=4,
         name="predictor",
     )
-    context = jax.random.normal(jax.random.key(56), (1, 2, 196, 8))
-    target = jnp.zeros((1, 2, 14, 14), bool).at[..., 3:8, 4:9].set(True)
+    context = jax.random.normal(jax.random.key(56), (1, 2, 256, 8))
+    target = jnp.zeros((1, 2, 16, 16), bool).at[..., 3:8, 4:9].set(True)
     visible = ~target
 
     def predict(tokens, context_mask, target_mask):
         return predictor(tokens, context_mask, target_mask)
 
     params = nj.init(predict)({}, context, visible, target, seed=57)
-    _, prediction = nj.pure(predict)(params, context, visible, target, seed=58)
+    _, (prediction, context_prediction) = nj.pure(predict)(
+        params, context, visible, target, seed=58
+    )
     assert prediction.shape == context.shape
-    output = np.asarray(prediction).reshape((1, 2, 14, 14, 8))
+    assert context_prediction.shape == context.shape
+    output = np.asarray(prediction).reshape((1, 2, 16, 16, 8))
     assert np.isfinite(output).all()
     assert (output[..., :3, :, :] == 0).all()
     assert np.linalg.norm(output[..., 3:8, 4:9, :]) > 0
+
+
+def test_leworldmodel_vit_uses_unmasked_cls_representation() -> None:
+    space = {"image": elements.Space(np.uint8, (224, 224, 3))}
+    encoder = ablation_visual.ViTEncoder(
+        space,
+        patch=14,
+        model=48,
+        layers=2,
+        heads=3,
+        token_dim=48,
+        norm="layer1em6",
+        act="gelu",
+        pool="cls",
+        position="learned",
+        name="enc",
+    )
+    images = jax.random.randint(
+        jax.random.key(59), (1, 2, 224, 224, 3), 0, 256, dtype=jnp.uint8
+    )
+    resets = jnp.zeros((1, 2), bool)
+
+    def encode(obs, first):
+        return encoder({}, obs, first, training=False)[2]
+
+    params = nj.init(encode)({}, {"image": images}, resets, seed=60)
+    _, output = nj.pure(encode)(params, {"image": images}, resets, seed=61)
+    assert output.shape == (1, 2, 48)
+    assert encoder.calculate_encoder_output_dim() == 48
+    assert "enc/cls_token" in params
+    assert "enc/position" in params
+    assert not any("mask_token" in key for key in params)
 
 
 def test_visual_decoder_matches_pinned_reference() -> None:

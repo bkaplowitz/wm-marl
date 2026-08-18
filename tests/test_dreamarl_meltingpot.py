@@ -107,3 +107,43 @@ def test_all_registered_meltingpot_benchmarks_reset_and_step() -> None:
             assert np.isfinite(step["reward"]).all()
         finally:
             env.close()
+
+
+def test_meltingpot_same_seed_trajectory_documents_backend_limit() -> None:
+    pytest.importorskip("meltingpot")
+    envs = [
+        MeltingPotEnv(
+            "externality_mushrooms__dense",
+            size=(16, 16),
+            max_cycles=3,
+            seed=123,
+        )
+        for _ in range(2)
+    ]
+    mismatch = None
+    try:
+        for step in range(3):
+            action = {
+                "reset": step == 0,
+                "action": np.zeros(envs[0].num_agents, np.int32),
+            }
+            observations = [env.step(action) for env in envs]
+            for key in ("image", "reward", "is_first", "is_last", "is_terminal"):
+                if not np.array_equal(observations[0][key], observations[1][key]):
+                    differing = int(
+                        np.count_nonzero(observations[0][key] != observations[1][key])
+                    )
+                    mismatch = f"step={step}, field={key}, differing_values={differing}"
+                    break
+            if mismatch is not None:
+                break
+    finally:
+        for env in envs:
+            env.close()
+
+    if mismatch is not None:
+        pytest.xfail(
+            "Pinned Lab2D does not guarantee identical trajectories for identical "
+            f"construction seeds and actions ({mismatch}); Shimmy reset(seed) is "
+            "documented as ignored."
+        )

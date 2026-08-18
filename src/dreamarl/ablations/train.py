@@ -11,6 +11,7 @@ from dreamarl.baselines.dreamerv3.config import (
     repository_root,
 )
 from dreamarl.ablations.config import AblationRunSpec
+from dreamarl.ablations.contracts import verify_run_contract
 from dreamarl.launcher import run_training, timestamp
 
 
@@ -18,6 +19,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", required=True)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--representation-recipe",
+        choices=("custom", "vjepa21", "leworldmodel"),
+        default="custom",
+    )
     parser.add_argument(
         "--num-agents",
         type=int,
@@ -37,6 +43,12 @@ def main(argv: list[str] | None = None) -> int:
         "--infrastructure-root", type=Path, default=default_upstream_root()
     )
     parser.add_argument("--save-every-seconds", type=int, default=1_800)
+    parser.add_argument(
+        "--final-checkpoint",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Write a final checkpoint in addition to the initial/periodic checkpoint.",
+    )
     parser.add_argument("--wandb-project")
     parser.add_argument("--wandb-entity")
     parser.add_argument(
@@ -83,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--spatial-mask-ratio", type=float, default=0.5)
     parser.add_argument(
         "--spatial-mask-topology",
-        choices=("bernoulli", "fixed_count", "multiblock", "vjepa_multiblock"),
+        choices=("bernoulli", "fixed_count", "multiblock", "vjepa21_multiblock"),
         default="fixed_count",
     )
     parser.add_argument("--spatial-fill-value", type=int, default=128)
@@ -118,13 +130,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--visual-encoder",
-        choices=("simple", "vit", "vjepa"),
+        choices=("simple", "vit", "vjepa21", "leworldmodel"),
         default="simple",
         help=(
-            "Use the DreamerV3 CNN, compact 64px ViT, or faithful 224px "
-            "V-JEPA token-grid encoder."
+            "Use the DreamerV3 CNN, compact 64px ViT, V-JEPA 2.1 ViT-B/16, "
+            "or LeWorldModel's unmasked ViT-Tiny/14."
         ),
     )
+    parser.add_argument("--batch-size", type=int)
     parser.add_argument(
         "--curve-eval-interval",
         type=int,
@@ -151,10 +164,12 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
         train_steps=args.total_env_steps,
         num_agents=args.num_agents,
+        representation_recipe=args.representation_recipe,
         platform=args.platform,
         infrastructure_root=args.infrastructure_root,
         python=args.python,
         save_every_seconds=args.save_every_seconds,
+        final_checkpoint=args.final_checkpoint,
         wandb_project=args.wandb_project,
         wandb_entity=args.wandb_entity,
         temporal_model=args.temporal_model,
@@ -177,13 +192,19 @@ def main(argv: list[str] | None = None) -> int:
         sigreg_aggregation=args.sigreg_aggregation,
         posterior_context=args.posterior_context,
         visual_encoder=args.visual_encoder,
+        batch_size=args.batch_size,
         curve_eval_interval=args.curve_eval_interval,
         curve_eval_episodes=args.curve_eval_episodes,
         curve_eval_seed_offset=args.curve_eval_seed_offset,
         curve_eval_policy_mode=args.curve_eval_policy_mode,
     )
     print(f"Experiment: {spec.experiment_dir}")
-    return run_training(spec, resume=args.resume, dry_run=args.dry_run)
+    return run_training(
+        spec,
+        resume=args.resume,
+        dry_run=args.dry_run,
+        contract_verifier=verify_run_contract,
+    )
 
 
 if __name__ == "__main__":

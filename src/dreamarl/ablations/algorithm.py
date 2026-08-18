@@ -13,6 +13,7 @@ import numpy as np
 from ..marl.core import TeamAxisAdapter
 from ..marl.axes import ENVIRONMENT_FIELDS, MODEL_EXCLUDED_FIELDS, TeamAxis
 from ..marl.spaces import add_agent_axis, remove_agent_axis
+from ..models.normalize import Normalize
 from ..training.learner import LearnerMixin
 from ..training.optimization import OptimizationMixin
 from ..training.policy import PolicyMixin
@@ -97,19 +98,21 @@ class AblationAlgorithm(
         if self.spatial_jepa and not self.enc.imgkeys:
             raise ValueError("spatial JEPA requires at least one image observation")
         self.spatial_predictor = None
-        if str(config.spatial_jepa.topology) == "vjepa_multiblock":
+        if str(config.spatial_jepa.topology) == "vjepa21_multiblock":
             from . import visual as ablation_visual
 
-            if config.enc.typ != "vjepa":
-                raise ValueError("vjepa_multiblock requires the 224px V-JEPA encoder")
+            if config.enc.typ != "vjepa21":
+                raise ValueError(
+                    "vjepa21_multiblock requires the 256px V-JEPA 2.1 encoder"
+                )
             if self.objective != "embedding" or self.embedding_target != "ema":
                 raise ValueError(
-                    "vjepa_multiblock requires decoder-free EMA-target training"
+                    "vjepa21_multiblock requires decoder-free EMA-target training"
                 )
             grid_height, grid_width, token_dim = self.enc.image_grid_shape()
             self.spatial_predictor = ablation_visual.SpatialTokenPredictor(
                 grid=(grid_height, grid_width),
-                input_dim=token_dim,
+                input_dim=self.enc.predictor_token_dim,
                 name="spatial_predictor",
             )
 
@@ -164,9 +167,9 @@ class AblationAlgorithm(
             source=self.val,
             **config.slowvalue,
         )
-        self.retnorm = embodied.jax.Normalize(**config.retnorm, name="retnorm")
-        self.valnorm = embodied.jax.Normalize(**config.valnorm, name="valnorm")
-        self.advnorm = embodied.jax.Normalize(**config.advnorm, name="advnorm")
+        self.retnorm = Normalize(**config.retnorm, name="retnorm")
+        self.valnorm = Normalize(**config.valnorm, name="valnorm")
+        self.advnorm = Normalize(**config.advnorm, name="advnorm")
 
         self.modules = [self.dyn, self.enc, self.rew, self.con, self.pol, self.val]
         if self.dec is not None:

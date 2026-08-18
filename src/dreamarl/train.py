@@ -173,5 +173,6 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
             while next_curve_eval <= int(step):
                 next_curve_eval += int(args.curve_eval_interval)
 
-    checkpoint.save()
+    if bool(args.final_save):
+        checkpoint.save()
     logger.close()

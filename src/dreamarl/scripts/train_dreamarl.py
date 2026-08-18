@@ -19,6 +19,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task", required=True)
     parser.add_argument("--num-agents", type=int, required=True)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--marl-stage", choices=("b0", "b1"), default="b0")
+    parser.add_argument("--agent-jepa-local-grad-scale", type=float, default=0.0)
+    parser.add_argument("--agent-jepa-k0-scale", type=float, default=0.1)
+    parser.add_argument("--agent-jepa-future-scale", type=float, default=1.0)
+    parser.add_argument("--agent-jepa-future-set-scale", type=float, default=1.0)
     parser.add_argument("--total-env-steps", type=int, default=50_000)
     parser.add_argument("--experiment-dir", type=Path)
     parser.add_argument(
@@ -41,6 +46,12 @@ def main(argv: list[str] | None = None) -> int:
         "--curve-eval-policy-mode",
         choices=("deterministic", "stochastic"),
         default="deterministic",
+    )
+    parser.add_argument(
+        "--imagination-starts",
+        type=int,
+        default=0,
+        help="number of final replay states used as imagination starts (0 means all)",
     )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -67,6 +78,12 @@ def main(argv: list[str] | None = None) -> int:
         curve_eval_episodes=args.curve_eval_episodes,
         curve_eval_seed_offset=args.curve_eval_seed_offset,
         curve_eval_policy_mode=args.curve_eval_policy_mode,
+        imagination_starts=args.imagination_starts,
+        marl_stage=args.marl_stage,
+        agent_jepa_local_grad_scale=args.agent_jepa_local_grad_scale,
+        agent_jepa_k0_scale=args.agent_jepa_k0_scale,
+        agent_jepa_future_scale=args.agent_jepa_future_scale,
+        agent_jepa_future_set_scale=args.agent_jepa_future_set_scale,
     )
     print(f"Experiment: {spec.experiment_dir}")
     return run_training(spec, resume=args.resume, dry_run=args.dry_run)

@@ -9,11 +9,12 @@ Its maintained implementation has two layers:
    categorical latent state, causal Transformer world model, JEPA objectives,
    actor, critic, replay learning, and imagination.
 2. `marl/core.py` preserves the explicit agent axis, applies the same local
-   learner with parameters shared across agents, and conditions its single
-   transition model on the synchronized peer latent-action set.
+   learner with parameters shared across agents, and preserves synchronized
+   team trajectory identity without exposing peer tensors to local modules.
 
-There is no architecture switch based on team size. The same algorithm runs
-for every `A >= 1`; `A=1` is exactly the locked single-agent learner.
+`A=1` is exactly the locked single-agent learner. B0 is a shared-independent
+MARL baseline with strict decentralized execution for every `A>1`. B1 keeps
+that execution graph and adds a training-only agent-axis JEPA objective.
 
 ## Team Data Contract
 
@@ -40,13 +41,14 @@ learner:
 
 The same transformation is used for collection state, policy outputs, replay
 state, training batches, and reports. Environment-level boundary fields remain
-shared across agents. Inactive agents are excluded from optimized losses, and
-the optional action mask prevents invalid discrete actions.
+shared across agents. Inactive agents are excluded from optimized losses,
+normalization statistics, and SIGReg. Observed action masks are enforced during
+collection; a supervised availability head supplies masks for imagination.
 
-For `A=1`, the peer set is empty and its context is exactly zero: local outputs,
-gradients, optimizer updates, and recurrent carry match the locked local
-learner. For `A>1`, observations, critics, and actors remain local while the
-world transition is explicitly conditioned on peer latent-action effects.
+For `A=1`, local outputs, gradients, optimizer updates, and recurrent carry
+match the locked local learner. For `A>1`, each actor, critic, and transition
+uses only its focal observation/action history. Peer histories cannot affect a
+focal policy distribution.
 
 ## Local Visual State
 
@@ -91,7 +93,8 @@ KL terms use one free nat.
 | Context | 64 transitions |
 | Deterministic output | 8192 |
 
-Replay sequences are evaluated in parallel under a strict causal mask.
+Replay sequences are evaluated in parallel under a strict causal and
+64-transition sliding-window mask, including when the input cache is nonempty.
 Collection and imagination use the same weights through a bounded recurrent
 key-value cache. Tests cover causal isolation, reset behavior, and agreement
 between parallel and recurrent execution.
@@ -133,7 +136,10 @@ The maintained topology is `fixed_count` with mask ratio `0.5`.
 ### Anti-collapse regularization
 
 SIGReg is applied to online encoder tokens with 17 knots and 256 random
-projections using pooled aggregation.
+projections. Batch and time are pooled independently for each agent, inactive
+samples are removed from the statistic, and the per-agent statistics are
+averaged. This preserves the single-agent objective strength instead of
+multiplying it by the team size.
 
 All predictive terms use normalized cosine distance. The complete model loss
 is:
@@ -143,7 +149,9 @@ L_model =
     2.00 * L_posterior_JEPA
   + 2.00 * L_dynamics_JEPA
   + 1.00 * L_spatial_JEPA
+  + 1.00 * L_agent_JEPA        # B1 only
   + 0.05 * L_SIGReg
+  + 1.00 * L_action_mask
   + 1.00 * L_reward
   + 1.00 * L_continuation
   + 1.00 * L_dynamics_KL
@@ -154,50 +162,135 @@ Reward is predicted with a 255-bin symlog two-hot head and continuation with a
 binary head. The shared heads produce one reward and continuation target per
 agent from that agent's local state.
 
-## Multi-Agent Transition
+## B0 Multi-Agent Transition
 
-The only causal Transformer remains the authoritative transition model. Before
-each temporal step, a shared peer encoder maps every stopped-gradient
-stochastic-state and action pair into model space. A permutation-invariant
-masked mean then forms one context for each focal agent. Self tokens are
-excluded:
+The causal Transformer remains the authoritative local transition model. The
+same parameters are applied independently to every folded agent row:
 
 ```text
 u_t^i = Project_local(z_t^i, a_t^i)
-c_t^i = Mean({Project_peer(stopgrad(z_t^j, a_t^j)) | j != i})
-h_t^i = CausalTransformer(u_t^i + tanh(g) * c_t^i, history_t^i)
+h_t^i = CausalTransformer(u_t^i, history_t^i)
 ```
 
-The local transition projection is unchanged. The peer projection is separately
-normalized, and its learned per-channel gate starts at zero and is bounded by
-`tanh`. Thus training starts from the proven local transition and can adopt
-peer information without changing the local input's scale or meaning. The
-stop-gradient boundary prevents focal-agent losses from moving teammate
-representations through the interaction edge, while the peer encoder, gate,
-and Transformer learn normally. The resulting deterministic state drives the
-posterior, prior, JEPA predictor, reward head, continuation head, actor, and
-critic exactly as before. There is no second world model, centralized
-observation encoder, agent identifier, or centralized critic. Inactive peers
-are masked, and the empty peer set produces an exact zero context.
-
 Replay training, online collection, replay-context reconstruction, open-loop
-reports, and recursive imagination all call this same transition. Thus peer
-actions are observed causes rather than policy-dependent hidden variables.
+reports, and recursive imagination all call this same local transition.
+Inactive agents preserve their recurrent state and are excluded from optimized
+losses. No peer encoder, peer gate, communication state, team teacher, or
+centralized critic is instantiated in B0.
+
+The public `[B,T,A,...]` representation and grouped team imagination are
+retained deliberately. Future B1+ modules can construct training-only targets
+at that boundary without changing what the deployed B0 actor observes.
+
+## B1 Agent-Axis JEPA
+
+B1 is the first controlled addition to B0. At each eligible replay timestep,
+25--50% of complete active agents are removed from the online branch, while at
+least one active agent remains visible and one remains hidden. The online set
+encoder maps the remaining local encoder embeddings into eight slots of width
+256 using two cross-attention/FFN layers and four heads. A separate context
+encoder summarizes only the visible agents' history-conditioned local world
+states. A two-layer slot predictor combines both sources and predicts the
+complete team representation produced by an EMA teacher that sees every active
+agent:
+
+```text
+online content: T_online({E(o_t^j): visible j}) -> K content slots
+online history: T_history({s_t^j: visible j})  -> K history slots
+prediction:     P_team(content slots, history slots) -> K complete-team slots
+target:         T_ema({E_ema(o_t^j): active j})      -> K complete-team slots
+team loss:      mean_k cosine(prediction_k, stop_gradient(target_k))
+```
+
+`T_ema` has the same architecture as `T_online`; its weights follow the online
+set encoder with EMA rate `0.01` and are excluded from the optimizer. It also
+receives the existing EMA local encoder embeddings, and every target is
+stop-gradient. Both set encoders have no agent-position embeddings and are
+permutation invariant over homogeneous team members. Explicit active and
+visible counts prevent the attention mean from erasing roster size. Complete
+members first compete across slots and are then normalized within each slot,
+as in Slot Attention. Learned queries determine that content partition but are
+not carried additively into the returned slots. At the first layer they
+multiplicatively gate attended member content, breaking initial slot symmetry
+while producing exactly zero output in the absence of member content. This
+closes the constant-query shortcut without initializing all slots identically.
+The content gates use learned slot codes normalized competitively across slots
+for every feature, with mean gate one; the codes have no additive path into the
+teacher representation.
+
+Three safeguards make the team target nontrivial. A shared content decoder maps
+each predicted slot and each full-online source slot into the local EMA content
+space. Before matching, the active-agent mean is removed from EMA content and
+the slot mean is removed from decoded content. Balanced stop-gradient Sinkhorn
+matching therefore identifies agent-relative distinctions rather than the
+common scene component; it gives every slot equal mass and every active EMA
+agent equal coverage, so the source of the EMA teacher cannot collapse to one
+aggregate direction. A second soft assignment explicitly
+requires every completely hidden agent to match at least one predicted slot.
+Finally, the full online team slots receive a variance hinge and inter-slot
+decorrelation penalty. Slot standard deviation, effective rank, matching
+cosines, and assignment entropy are reported throughout training. The
+same-time masked objective is:
+
+```text
+L_k0 = L_complete_team_slots
+     + 1.00 * L_predicted_set_matching
+     + 1.00 * L_source_set_matching
+     + 1.00 * L_hidden_agent_coverage
+     + 0.10 * L_slot_variance
+     + 0.10 * L_slot_decorrelation
+```
+
+Set matching uses ten Sinkhorn iterations at temperature `0.02`. The transport
+plan is stop-gradient; gradients update slot content through the matched cosine
+cost without differentiating through the assignment itself.
+
+The future branch keeps every local state paired with its own replay action
+before any permutation-invariant pooling. Hidden current content remains zero,
+but its observed replay action is retained as part of the training-only joint
+action. An action conditioner and a separate set encoder produce action-aware
+source slots. A two-layer transition predictor combines those slots with the
+masked current-team prediction and targets the next complete EMA team state:
+
+```text
+action members: C(where(visible, E(o_t^j), 0), a_t^j, masks)
+action slots:   T_action({action member_t^j: active j})
+future slots:   F_team(prediction_t, action_slots_t)
+future target:  stop_gradient(T_ema({E_ema(o_t+1^j): active j}))
+```
+
+Transitions crossing `is_first` and transitions without an active source or
+target team are excluded. The future slots are supervised both by aligned
+teacher-slot cosine and by balanced matching to all next-step EMA members. The
+complete B1 objective is:
+
+```text
+L_agent_JEPA = 0.10 * L_k0
+             + 1.00 * L_future_team_slots
+             + 1.00 * L_future_set_matching
+```
+
+All B1 inputs from the locked local encoder/world state are stop-gradient. The
+online team modules receive their full auxiliary gradient, but B1 cannot
+reshape the established single-agent representation. B1 remains training-only
+and does not yet add a centralized critic, a local team belief, or explicit
+teammate-policy modelling. The actor, critic, imagination transition, and
+online recurrent carry are the B0 path and never receive team slots or peer
+tensors.
 
 ## Imagination And Control
 
-Each decentralized actor samples from its own local latent state. The complete
-team action is then assembled before the world advances:
+At execution, the shared actor consumes only each agent's local world feature:
 
 ```text
 a_t^i ~ pi(a | s_t^i)
-{s_t+1^i}_{i=1}^A ~ F({s_t^i, a_t^i}_{i=1}^A)
+ s_t+1^i ~ F(s_t^i, a_t^i)
 ```
 
-All actors, critics, reward heads, and continuation heads still consume only
-their corresponding local predicted state. Joint information is confined to
-the learned simulator during centralized training; execution remains
-decentralized.
+The world-model attention cache is carried forward exactly in collection and
+imagination. An intervention test perturbs peer histories while fixing the focal
+observation history and requires its simulator state and action distribution to
+remain exactly unchanged.
 
 | Property | Value |
 | --- | ---: |
@@ -213,7 +306,9 @@ decentralized.
 
 The actor uses the DreamerV3 score-function objective, percentile return-range
 normalization, and entropy regularization. The critic uses lambda returns,
-slow-value regularization, and replay value learning.
+slow-value regularization, and replay value learning. Return normalization is
+updated only by live imagined agents, and replay-value validity is aligned to
+source states `0..T-2`.
 
 ## Optimization And Data
 
@@ -221,7 +316,7 @@ slow-value regularization, and replay value learning.
 | --- | ---: |
 | Batch size | 16 environment sequences |
 | Sequence length | 64 |
-| Replay context | 1 transition |
+| Replay context | 128 loss-excluded transitions |
 | Replay sampling | uniform |
 | Replay capacity | 5 million environment transitions |
 | Training ratio | 256 |
@@ -230,10 +325,17 @@ slow-value regularization, and replay value learning.
 | Adaptive gradient clipping | `0.3` |
 | Compute dtype | BF16 |
 
+The replay prefix spans `context * layers = 64 * 2` transitions. It is scanned
+without loss gradients to reconstruct every retained upper-layer KV entry;
+the absolute Transformer position is stored with replay entries so RoPE state
+is reconstructed exactly under fixed parameters.
+
 The online encoder, causal dynamics, JEPA predictors, reward and continuation
 heads, actor, and critic share one optimizer. The EMA target encoder and slow
 critic are not optimizer members. All learned parameters are shared over the
-agent axis, so parameter count is independent of `A`.
+agent axis. B0 parameter count is independent of `A`; B1 adds the same fixed
+training-only team modules for every multi-agent team size, so its parameter
+count is likewise independent of the specific `A > 1` value.
 
 ## Evaluation And Reporting
 
@@ -246,7 +348,21 @@ transitions. Multi-agent runs report both reward conventions explicitly:
 `score` remains a compatibility alias for `per_agent_return_mean`. Agent
 transitions are tracked separately as `environment_steps * A`. Fixed evaluation
 uses held-out workers, never enters replay, evaluates the latest policy, and
-performs no checkpoint search.
+performs no checkpoint search. Inline evaluation preserves both the action RNG
+counter and pending JAX policy synchronization. Generic `train_eval` and
+`parallel*` runners are rejected for `A>1` because their reporting is not MARL
+reward-aware; first-party `train` plus explicit curve evaluation is supported.
+
+### Environment seed semantics
+
+Each worker receives a derived seed. For Melting Pot, that value is supplied
+when the underlying Lab2D substrate is constructed because Shimmy 2.0.1 ignores
+its `reset(seed)` argument. This controls the Lab2D seed stream, but the pinned
+Lab2D backend does not guarantee trajectory determinism: separately constructed
+environments can return different observations under the same construction seed
+and identical action sequence. Launch manifests describe this as
+`construction_seed_controlled_not_trajectory_deterministic`; a recorded seed is
+not a bitwise replay guarantee.
 
 ## Source Layout
 

@@ -15,7 +15,9 @@ def validate(config) -> None:
         raise ValueError(f"unknown embedding loss: {loss}")
     if target == "online" and spatial:
         raise ValueError("spatial prediction requires an EMA target")
-    if topology not in {"bernoulli", "fixed_count", "multiblock", "vjepa_multiblock"}:
+    if topology not in {"bernoulli", "fixed_count", "multiblock", "vjepa21_multiblock"}:
         raise ValueError(f"unknown mask topology: {topology}")
-    if topology == "vjepa_multiblock" and config.enc.typ != "vjepa":
-        raise ValueError("V-JEPA masking requires the V-JEPA encoder")
+    if topology == "vjepa21_multiblock" and config.enc.typ != "vjepa21":
+        raise ValueError("V-JEPA 2.1 masking requires the V-JEPA 2.1 encoder")
+    if config.enc.typ == "leworldmodel" and spatial:
+        raise ValueError("LeWorldModel uses an unmasked ViT and no spatial loss")

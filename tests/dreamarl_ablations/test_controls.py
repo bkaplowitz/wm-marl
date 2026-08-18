@@ -52,7 +52,7 @@ def test_run_spec_exposes_one_maintained_algorithm(tmp_path: Path) -> None:
             "masked-spatial EMA-target cosine joint-embedding prediction"
         ),
         "SIGReg embedding anti-collapse regularization",
-        "one-step recurrent replay context",
+        "128-step causal Transformer replay burn-in",
         "uniform replay",
     ]
     assert contract["policy_peer_access"] is False
@@ -108,7 +108,19 @@ def test_temporal_control_preserves_official_dreamerv3_configuration() -> None:
     assert maintained_scales.pop("dynamics_jepa") == 2.0
     assert maintained_scales.pop("spatial_jepa") == 1.0
     assert maintained_scales.pop("sigreg") == 0.05
+    assert maintained_scales.pop("action_mask") == 1.0
+    assert maintained_scales.pop("agent_jepa") == 1.0
     maintained["loss_scales"] = maintained_scales
+    assert maintained.pop("marl")["stage"] == "b0"
+    assert maintained.pop("maskhead") == {
+        "layers": 1,
+        "units": 1024,
+        "act": "silu",
+        "norm": "rms",
+        "output": "binary",
+        "outscale": 0.0,
+        "winit": "trunc_normal_in",
+    }
     maintained_dyn = maintained.pop("dyn")
     reference_dyn = reference.pop("dyn")
     maintained_enc = maintained.pop("enc")
@@ -212,26 +224,51 @@ def test_encoder_and_mask_topology_are_explicit_isolated_overrides(
     assert spec.to_dict()["spatial_mask_topology"] == "multiblock"
 
 
-def test_faithful_vjepa_variant_records_grid_and_resolution(tmp_path: Path) -> None:
+def test_vjepa21_recipe_records_exact_grid_architecture_and_resolution(tmp_path: Path) -> None:
     spec = _spec(
         tmp_path,
         task="dmc_reacher_easy",
         num_agents=1,
-        visual_encoder="vjepa",
-        spatial_mask_topology="vjepa_multiblock",
+        representation_recipe="vjepa21",
     )
 
     def values(flag: str) -> list[str]:
         index = spec.command.index(flag)
         return spec.command[index + 1 : index + 3]
 
-    assert values("--env.dmc.size") == ["224", "224"]
-    assert spec.to_dict()["visual_encoder"] == "vjepa"
-    assert spec.to_dict()["visual_resolution"] == 224
+    assert values("--env.dmc.size") == ["256", "256"]
+    assert spec.to_dict()["visual_encoder"] == "vjepa21"
+    assert spec.to_dict()["visual_resolution"] == 256
     recipe = spec.to_dict()["spatial_mask_recipe"]
-    assert recipe["grid"] == [14, 14]
+    assert recipe["grid"] == [16, 16]
+    assert recipe["frames_per_replay_sequence"] == 16
     assert recipe["groups"][0]["blocks"] == 8
     assert recipe["groups"][1]["scale"] == 0.7
+    assert values("--agent.target_encoder.rate")[:1] == ["0.00075"]
+
+
+def test_leworldmodel_recipe_is_unmasked_vit_tiny(tmp_path: Path) -> None:
+    spec = _spec(
+        tmp_path,
+        task="dmc_walker_walk",
+        num_agents=1,
+        representation_recipe="leworldmodel",
+    )
+    manifest = spec.to_dict()
+    assert manifest["visual_encoder"] == "leworldmodel"
+    assert manifest["visual_resolution"] == 224
+    assert manifest["spatial_jepa"] is False
+    assert manifest["embedding_target"] == "online"
+    assert manifest["embedding_loss"] == "mse"
+    assert manifest["sigreg_num_proj"] == 1024
+    assert manifest["sigreg_aggregation"] == "per_timestep"
+
+
+def test_final_checkpoint_can_be_disabled_for_space_bounded_queues(tmp_path: Path) -> None:
+    spec = _spec(tmp_path, final_checkpoint=False)
+    index = spec.command.index("--run.final_save")
+    assert spec.command[index + 1] == "False"
+    assert spec.to_dict()["final_checkpoint"] is False
 
 
 def test_world_model_objective_and_posterior_jepa_are_explicit(
@@ -584,7 +621,14 @@ def test_replay_writeback_keeps_stepid_global_and_state_per_agent() -> None:
 
 def test_dry_run_records_current_contract(tmp_path: Path) -> None:
     spec = _spec(tmp_path)
-    assert run_training(spec, dry_run=True) == 0
+    assert (
+        run_training(
+            spec,
+            dry_run=True,
+            contract_verifier=verify_run_contract,
+        )
+        == 0
+    )
     manifest = json.loads(
         (spec.experiment_dir / "launch.json").read_text(encoding="utf-8")
     )

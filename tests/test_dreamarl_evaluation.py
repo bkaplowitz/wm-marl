@@ -17,6 +17,8 @@ class _Counter:
 class _Agent:
     def __init__(self):
         self.n_actions = _Counter(37)
+        self.policy_lock = threading.Lock()
+        self.pending_sync = {"params": object()}
 
     def init_policy(self, batch_size):
         return [None] * batch_size
@@ -77,6 +79,7 @@ def test_inline_evaluation_preserves_training_policy_rng(monkeypatch) -> None:
     assert summary["team_returns"] == [4.0, 6.0, 4.0, 6.0]
     assert agent.last_mode == "eval"
     assert agent.n_actions.value == 37
+    assert agent.pending_sync is not None
 
 
 def test_inline_evaluation_supports_dreamer_sampled_policy(monkeypatch) -> None:
@@ -94,3 +97,4 @@ def test_inline_evaluation_supports_dreamer_sampled_policy(monkeypatch) -> None:
 
     assert agent.last_mode == "eval_sample"
     assert agent.n_actions.value == 37
+    assert agent.pending_sync is not None

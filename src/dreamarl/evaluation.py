@@ -13,20 +13,34 @@ import numpy as np
 
 
 @contextmanager
-def _preserve_policy_rng(agent):
-    """Keep diagnostic policy calls out of the training RNG stream."""
+def _preserve_policy_state(agent):
+    """Keep diagnostic calls from consuming RNG or pending parameter sync."""
 
     counter = getattr(agent, "n_actions", None)
-    if counter is None:
+    policy_lock = getattr(agent, "policy_lock", None)
+    if counter is None or policy_lock is None:
         yield
         return
-    with counter.lock:
-        saved = counter.value
+    with policy_lock:
+        with counter.lock:
+            saved_counter = counter.value
+        has_pending = hasattr(agent, "pending_sync")
+        saved_pending = agent.pending_sync if has_pending else None
+        if has_pending:
+            agent.pending_sync = None
     try:
         yield
     finally:
-        with counter.lock:
-            counter.value = saved
+        with policy_lock:
+            with counter.lock:
+                counter.value = saved_counter
+            if has_pending:
+                if agent.pending_sync is not None:
+                    raise RuntimeError(
+                        "policy synchronization changed concurrently during inline "
+                        "evaluation"
+                    )
+                agent.pending_sync = saved_pending
 
 
 def evaluate_current_policy(
@@ -74,7 +88,7 @@ def evaluate_current_policy(
         return agent.policy(*values, mode=policy_mode)
 
     try:
-        with _preserve_policy_rng(agent):
+        with _preserve_policy_state(agent):
             driver.reset(agent.init_policy)
             while len(returns) < episodes:
                 driver(policy, steps=10)

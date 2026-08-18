@@ -55,6 +55,90 @@ def test_sigreg_penalizes_collapsed_embeddings_more_than_gaussian_embeddings():
     assert float(embedding_std(gaussian)) > 0.9
 
 
+def test_per_agent_sigreg_is_invariant_to_replicated_team_size() -> None:
+    key = jax.random.key(8)
+    embeddings = jax.random.normal(key, (3, 5, 16))
+    baseline = sigreg_loss(
+        embeddings,
+        key,
+        knots=9,
+        num_proj=32,
+        aggregation="per_agent",
+        team_size=1,
+    )
+
+    for team_size in (2, 5, 8):
+        replicated = jnp.repeat(
+            embeddings[:, None],
+            team_size,
+            axis=1,
+        ).reshape((embeddings.shape[0] * team_size, *embeddings.shape[1:]))
+        candidate = sigreg_loss(
+            replicated,
+            key,
+            knots=9,
+            num_proj=32,
+            aggregation="per_agent",
+            team_size=team_size,
+        )
+        np.testing.assert_allclose(candidate, baseline, rtol=1e-6, atol=1e-6)
+
+
+def test_inactive_embeddings_do_not_change_sigreg() -> None:
+    key = jax.random.key(81)
+    embeddings = jax.random.normal(key, (4, 5, 16))
+    valid = jnp.array(
+        [
+            [True, True, True, False, False],
+            [True, True, False, False, False],
+            [True, True, True, True, False],
+            [True, False, False, False, False],
+        ]
+    )
+    changed = jnp.where(valid[..., None], embeddings, embeddings + 10_000)
+    baseline = sigreg_loss(
+        embeddings,
+        key,
+        knots=9,
+        num_proj=32,
+        aggregation="per_agent",
+        team_size=2,
+        valid=valid,
+    )
+    candidate = sigreg_loss(
+        changed,
+        key,
+        knots=9,
+        num_proj=32,
+        aggregation="per_agent",
+        team_size=2,
+        valid=valid,
+    )
+    np.testing.assert_allclose(candidate, baseline, rtol=1e-6, atol=1e-6)
+
+
+def test_per_timestep_sigreg_matches_leworldmodel_aggregation() -> None:
+    key = jax.random.key(82)
+    embeddings = jax.random.normal(key, (5, 7, 16))
+    actual = sigreg_loss(
+        embeddings,
+        key,
+        knots=9,
+        num_proj=32,
+        aggregation="per_timestep",
+    )
+    from dreamarl.ablations.representation import sigreg_loss as reference
+
+    expected = reference(
+        embeddings,
+        key,
+        knots=9,
+        num_proj=32,
+        aggregation="per_timestep",
+    )
+    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
+
+
 def test_spatial_mask_hides_complete_image_patches() -> None:
     mask = jnp.array([[[[True, False], [False, True]]]])
     image = jnp.arange(1 * 1 * 4 * 6 * 1, dtype=jnp.uint8).reshape((1, 1, 4, 6, 1))

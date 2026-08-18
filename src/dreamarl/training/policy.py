@@ -3,6 +3,7 @@
 import elements
 import jax
 import jax.numpy as jnp
+from ..models.heads import apply_action_mask, apply_predicted_action_mask
 from .common import predict, sample
 
 
@@ -20,7 +21,11 @@ class PolicyMixin:
         else:
             dec_entry = {}
         tensor = self.feat2tensor(feat)
-        policy = self.pol(tensor, bdims=1)
+        policy = self.policy_distribution(
+            tensor,
+            bdims=1,
+            action_mask=obs.get("action_mask"),
+        )
         if mode in {"train", "eval_sample"}:
             act = sample(policy)
         elif mode == "eval":
@@ -45,6 +50,20 @@ class PolicyMixin:
                 entries["dec"] = dec_entry
             out.update(elements.tree.flatdict(entries))
         return carry, act, out
+
+    def policy_distribution(self, tensor, bdims, action_mask=None):
+        policy = self.pol(tensor, bdims=bdims)
+        if getattr(self, "action_mask_key", None) is None:
+            return policy
+        if action_mask is None:
+            output = self.actmask(tensor, bdims=bdims)
+            binary = output.output if hasattr(output, "output") else output
+            return apply_predicted_action_mask(
+                policy,
+                jax.lax.stop_gradient(binary.logit),
+                self.action_mask_key,
+            )
+        return apply_action_mask(policy, action_mask, self.action_mask_key)
 
     def observe_dynamics(self, carry, tokens, action, reset, obs, training, single):
         del obs

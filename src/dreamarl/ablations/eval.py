@@ -147,11 +147,12 @@ def main(argv: list[str] | None = None) -> int:
         "--logger.outputs",
         *outputs,
     ]
-    if manifest.get("visual_encoder") == "vjepa":
+    if manifest.get("visual_encoder") in {"vjepa21", "leworldmodel"}:
         environment = (
             "dmc" if str(manifest["task"]).startswith("dmc_") else "meltingpot"
         )
-        command.extend([f"--env.{environment}.size", "224", "224"])
+        resolution = "256" if manifest["visual_encoder"] == "vjepa21" else "224"
+        command.extend([f"--env.{environment}.size", resolution, resolution])
     evaluation.parent.mkdir(parents=True, exist_ok=True)
     evaluation.with_suffix(".launch.json").write_text(
         json.dumps(

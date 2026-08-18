@@ -45,7 +45,6 @@ class CausalTransformer(nj.Module):
     act: str = "silu"
     norm: str = "rms"
     winit: str = "trunc_normal_in"
-    team_size: int = 1
 
     def __init__(self, pair_dim, **kw):
         self.pair_dim = pair_dim
@@ -67,14 +66,13 @@ class CausalTransformer(nj.Module):
             "position": -jnp.ones((batch_size,), jnp.int32),
         }
 
-    def sequence(self, cache, previous_pairs, resets, active=None):
+    def sequence(self, cache, previous_pairs, resets):
         """Process replay in parallel and retain every imagination-start cache."""
 
         batch, length = previous_pairs.shape[:2]
         projected = self.sub(
             "pair_projection", nn.Linear, self.units, winit=self.winit
         )(nn.cast(previous_pairs))
-        projected += self._peer_residual(previous_pairs, active)
         start = self.value("start_token", nn.init("trunc_normal"), (self.units,), f32)
         start = nn.cast(jnp.broadcast_to(start, projected.shape))
         x = jnp.where(resets[..., None], start, projected)
@@ -90,6 +88,15 @@ class CausalTransformer(nj.Module):
         causal = jnp.arange(length)[None, None, :] <= jnp.arange(length)[None, :, None]
         new_mask = causal & (segments[:, :, None] == segments[:, None, :])
         attention_mask = jnp.concatenate([old_mask, new_mask], axis=-1)
+        old_positions = cache["position"][:, None] - jnp.arange(
+            self.context - 1, -1, -1, dtype=jnp.int32
+        )[None]
+        key_positions = jnp.concatenate([old_positions, positions], axis=1)
+        within_window = (
+            (key_positions[:, None] <= positions[:, :, None])
+            & (key_positions[:, None] > positions[:, :, None] - self.context)
+        )
+        attention_mask &= within_window
 
         snapshot_indices = (
             jnp.arange(length)[:, None] + jnp.arange(self.context)[None, :] + 1
@@ -112,8 +119,8 @@ class CausalTransformer(nj.Module):
                 query, key, value = [
                     item.reshape(shape) for item in (query, key, value)
                 ]
-                query = nn.rope(query, positions)
-                key = nn.rope(key, positions)
+                query = _rope_f32(query, positions)
+                key = _rope_f32(key, positions)
                 key_bank = jnp.concatenate([cache["keys"][:, index], key], axis=1)
                 value_bank = jnp.concatenate([cache["values"][:, index], value], axis=1)
                 logits = jnp.einsum("bthd,bshd->bhts", query, key_bank)
@@ -162,7 +169,7 @@ class CausalTransformer(nj.Module):
         }
         return nn.cast(final), nn.cast(states), nn.cast(snapshots)
 
-    def step(self, cache, previous_pair, reset, active=None):
+    def step(self, cache, previous_pair, reset):
         """Advance one timestep using the same weights as ``sequence``."""
 
         batch = previous_pair.shape[0]
@@ -175,7 +182,6 @@ class CausalTransformer(nj.Module):
         projected = self.sub(
             "pair_projection", nn.Linear, self.units, winit=self.winit
         )(nn.cast(previous_pair))
-        projected += self._peer_residual(previous_pair, active)
         start = self.value("start_token", nn.init("trunc_normal"), (self.units,), f32)
         x = jnp.where(reset[:, None], nn.cast(start), projected)
         valid = jnp.concatenate(
@@ -196,8 +202,8 @@ class CausalTransformer(nj.Module):
                     item.reshape(shape) for item in (query, key, value)
                 ]
                 timestamp = position[:, None]
-                query = nn.rope(query[:, None], timestamp)[:, 0]
-                key = nn.rope(key[:, None], timestamp)[:, 0]
+                query = _rope_f32(query[:, None], timestamp)[:, 0]
+                key = _rope_f32(key[:, None], timestamp)[:, 0]
                 keys = jnp.concatenate(
                     [cache["keys"][:, index, 1:], key[:, None]], axis=1
                 )
@@ -238,57 +244,6 @@ class CausalTransformer(nj.Module):
         }
         return nn.cast(next_cache), nn.cast(state)
 
-    def _peer_context(self, projected, active):
-        if self.team_size == 1:
-            return jnp.zeros_like(projected), jnp.zeros(projected.shape[:-1], bool)
-        if active is None:
-            active = jnp.ones(projected.shape[:-1], bool)
-        sequence = projected.ndim == 3
-        if sequence:
-            batch = projected.shape[0] // self.team_size
-            grouped = projected.reshape(
-                (batch, self.team_size, projected.shape[1], projected.shape[2])
-            ).transpose((0, 2, 1, 3))
-            grouped_active = active.reshape(
-                (batch, self.team_size, active.shape[1])
-            ).transpose((0, 2, 1))
-        else:
-            batch = projected.shape[0] // self.team_size
-            grouped = projected.reshape((batch, self.team_size, projected.shape[1]))
-            grouped_active = active.reshape((batch, self.team_size))
-        weighted = grouped * grouped_active[..., None]
-        peer_sum = weighted.sum(-2, keepdims=True) - weighted
-        peer_count = grouped_active.sum(-1, keepdims=True)[..., None]
-        peer_count = peer_count - grouped_active[..., None]
-        context = peer_sum / jnp.maximum(peer_count, 1)
-        context_active = peer_count[..., 0] > 0
-        if sequence:
-            context = context.transpose((0, 2, 1, 3)).reshape(projected.shape)
-            context_active = context_active.transpose((0, 2, 1)).reshape(active.shape)
-        else:
-            context = context.reshape(projected.shape)
-            context_active = context_active.reshape(active.shape)
-        return context, context_active
-
-    def _peer_residual(self, pair, active):
-        if self.team_size == 1:
-            return jnp.zeros((*pair.shape[:-1], self.units), nn.COMPUTE_DTYPE)
-        peer = self.sub(
-            "peer_projection", nn.Linear, self.units, winit=self.winit
-        )(sg(nn.cast(pair)))
-        peer = nn.act(self.act)(self.sub("peer_norm", nn.Norm, self.norm)(peer))
-        peer, peer_active = self._peer_context(peer, active)
-        gate = nn.cast(self.peer_gate())
-        residual = peer * gate
-        return jnp.where(peer_active[..., None], residual, 0)
-
-    def peer_gate(self):
-        if self.team_size == 1:
-            return jnp.zeros((self.units,), f32)
-        value = self.value("peer_gate", nn.init("zeros"), (self.units,), f32)
-        return jnp.tanh(value)
-
-
 class ParallelTransformerDynamics(CategoricalLatent):
     """Observation-parallel posterior and causal Transformer prior dynamics."""
 
@@ -313,7 +268,6 @@ class ParallelTransformerDynamics(CategoricalLatent):
     context: int = 64
     ffup: int = 4
     posterior_context: str = "history"
-    team_size: int = 1
 
     def __init__(self, act_space, enc_output, **kw):
         super().__init__(act_space, enc_output, **kw)
@@ -333,6 +287,7 @@ class ParallelTransformerDynamics(CategoricalLatent):
             "stoch": elements.Space(np.float32, (self.stoch, self.classes)),
             "pair": elements.Space(np.float32, self.pair_dim),
             "reset": elements.Space(bool),
+            "position": elements.Space(np.int32),
         }
 
     def initial(self, batch_size):
@@ -348,16 +303,23 @@ class ParallelTransformerDynamics(CategoricalLatent):
     def truncate(self, entries, carry=None, active=None):
         del carry
         state = self.initial(entries["pair"].shape[0])
+        if "position" in entries:
+            initial_position = entries["position"][:, 0] - 1
+            initial_position = jnp.where(
+                entries["reset"][:, 0],
+                -jnp.ones_like(initial_position),
+                initial_position,
+            )
+            state = dict(state, position=initial_position)
 
         if active is None:
             active = jnp.ones_like(entries["reset"], bool)
 
         def advance(current, inputs):
             pair, reset, stoch, current_active = inputs
-            cache, deter = self._temporal().step(
-                self._cache(current), pair, reset, active=current_active
-            )
-            current = nn.cast({"deter": deter, "stoch": stoch, **cache})
+            cache, deter = self._temporal().step(self._cache(current), pair, reset)
+            next_state = nn.cast({"deter": deter, "stoch": stoch, **cache})
+            current = _where_active(current_active, next_state, current)
             return current, ()
 
         inputs = (
@@ -433,7 +395,7 @@ class ParallelTransformerDynamics(CategoricalLatent):
         if active is None:
             active = jnp.ones_like(reset, bool)
         cache, deter, snapshots = self._temporal().sequence(
-            self._cache(carry), pair, reset, active=active
+            self._cache(carry), pair, reset
         )
         feat = nn.cast({"deter": deter, "stoch": stoch, "logit": posterior})
         entries = {
@@ -453,13 +415,18 @@ class ParallelTransformerDynamics(CategoricalLatent):
         )
         if active is None:
             active = jnp.ones_like(reset, bool)
-        cache, deter = self._temporal().step(
-            self._cache(carry), pair, reset, active=active
-        )
+        cache, deter = self._temporal().step(self._cache(carry), pair, reset)
         posterior = self._posterior(tokens, deter)
         stoch = nn.cast(self._dist(posterior).sample(seed=nj.seed()))
-        carry = nn.cast({"deter": deter, "stoch": stoch, **cache})
-        feat = nn.cast({"deter": deter, "stoch": stoch, "logit": posterior})
+        next_carry = nn.cast({"deter": deter, "stoch": stoch, **cache})
+        carry = _where_active(active, next_carry, carry)
+        feat = nn.cast(
+            {
+                "deter": carry["deter"],
+                "stoch": carry["stoch"],
+                "logit": posterior,
+            }
+        )
         entry = {
             "deter": f32(deter),
             "stoch": f32(stoch),
@@ -480,9 +447,17 @@ class ParallelTransformerDynamics(CategoricalLatent):
         active=None,
     ):
         if single:
+            previous = carry
             action = policy(sg(carry)) if callable(policy) else policy
             cache, deter = self.advance(carry, action, training, active=active)
             carry, feat = self.complete(cache, deter)
+            if active is not None:
+                carry = _where_active(active, carry, previous)
+                feat = dict(
+                    feat,
+                    deter=carry["deter"],
+                    stoch=carry["stoch"],
+                )
             return carry, (feat, action)
         unroll = length if self.unroll else 1
         if callable(policy):
@@ -526,13 +501,14 @@ class ParallelTransformerDynamics(CategoricalLatent):
         reset = jnp.zeros((pair.shape[0],), bool)
         if active is None:
             active = jnp.ones_like(reset, bool)
-        cache, deter = self._temporal().step(
-            self._cache(carry), pair, reset, active=active
-        )
+        cache, deter = self._temporal().step(self._cache(carry), pair, reset)
+        if active is not None:
+            cache = _where_active(active, cache, self._cache(carry))
+            deter = _where_active(active, deter, carry["deter"])
         return cache, deter
 
     def complete(self, cache, deter, logit=None):
-        """Sample the categorical state from the joint-conditioned prior."""
+        """Sample the categorical state from the local action-conditioned prior."""
 
         logit = self._prior(deter) if logit is None else logit
         stoch = nn.cast(self._dist(logit).sample(seed=nj.seed()))
@@ -577,10 +553,6 @@ class ParallelTransformerDynamics(CategoricalLatent):
         prior = self._prior(feat["deter"])
         losses, latent_metrics = self.latent_losses(feat["logit"], prior)
         metrics.update(latent_metrics)
-        if self.team_size > 1:
-            gate = jnp.abs(f32(self._temporal().peer_gate()))
-            metrics["interaction/gate_mean"] = gate.mean()
-            metrics["interaction/gate_max"] = gate.max()
         return carry, entries, losses, feat, metrics, None
 
     def _posterior(self, tokens, deter=None):
@@ -620,7 +592,6 @@ class ParallelTransformerDynamics(CategoricalLatent):
             act=self.act,
             norm=self.norm,
             winit=self.kw.get("winit", "trunc_normal_in"),
-            team_size=self.team_size,
         )
 
 
@@ -631,6 +602,25 @@ def _episode_positions(resets, initial_position):
 
     _, positions = jax.lax.scan(advance, initial_position, resets.T)
     return positions.T
+
+
+def _rope_f32(x, timestamps, maxlen=4096):
+    """Apply RoPE with FP32 angles and trigonometry, then restore input dtype."""
+
+    if x.shape[-1] % 2:
+        raise ValueError(f"RoPE feature width must be even, got {x.shape[-1]}")
+    timestamps = jnp.asarray(timestamps, f32)
+    frequencies = (2.0 / x.shape[-1]) * jnp.arange(x.shape[-1] // 2, dtype=f32)
+    timescales = jnp.asarray(maxlen, f32) ** frequencies
+    radians = timestamps[..., None] / timescales
+    sine = jnp.sin(radians)[..., None, :]
+    cosine = jnp.cos(radians)[..., None, :]
+    left, right = jnp.split(f32(x), 2, axis=-1)
+    rotated = jnp.concatenate(
+        [left * cosine - right * sine, right * cosine + left * sine],
+        axis=-1,
+    )
+    return rotated.astype(x.dtype)
 
 
 def _action_feature_dim(space):
@@ -648,8 +638,18 @@ def _reset_array(value, reset):
     return jnp.where(reset.reshape(shape), jnp.zeros_like(value), value)
 
 
+def _where_active(active, current, previous):
+    """Select current leaves for active rows and preserve inactive rows exactly."""
+
+    def select(current_value, previous_value):
+        shape = active.shape + (1,) * (current_value.ndim - active.ndim)
+        return jnp.where(active.reshape(shape), current_value, previous_value)
+
+    return jax.tree.map(select, current, previous)
+
+
 def _replay_entries(entries):
-    return {key: entries[key] for key in ("stoch", "pair", "reset")}
+    return {key: entries[key] for key in ("stoch", "pair", "reset", "position")}
 
 
 _PARALLEL_BACKEND = WorldModelBackend(

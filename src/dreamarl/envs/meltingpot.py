@@ -25,6 +25,33 @@ BENCHMARK_SUBSTRATES = (
 )
 
 
+def _build_seeded_substrate(name: str, seed: int, collective_reward: bool):
+    """Build Melting Pot with a controlled seed stream before Shimmy wrapping."""
+
+    from meltingpot import substrate as substrate_api
+    from meltingpot.utils.substrates import builder as lab2d_builder
+    from meltingpot.utils.substrates import substrate as substrate_lib
+    from meltingpot.utils.substrates.wrappers import collective_reward_wrapper
+    from meltingpot.utils.substrates.wrappers import discrete_action_wrapper
+    from meltingpot.utils.substrates.wrappers import multiplayer_wrapper
+    from meltingpot.utils.substrates.wrappers import observables_wrapper
+
+    config = substrate_api.get_config(name)
+    roles = config.default_player_roles
+    settings = config.lab2d_settings_builder(roles=roles, config=config)
+    env = lab2d_builder.builder(settings, env_seed=int(seed))
+    env = observables_wrapper.ObservablesWrapper(env)
+    env = multiplayer_wrapper.Wrapper(
+        env,
+        individual_observation_names=config.individual_observation_names,
+        global_observation_names=config.global_observation_names,
+    )
+    env = discrete_action_wrapper.Wrapper(env, action_table=config.action_set)
+    if collective_reward:
+        env = collective_reward_wrapper.CollectiveRewardWrapper(env)
+    return substrate_lib.Substrate(env)
+
+
 class MeltingPotEnv(embodied.Env):
     """Expose one Melting Pot substrate through the DreaMARL tensor contract."""
 
@@ -35,16 +62,29 @@ class MeltingPotEnv(embodied.Env):
         size: tuple[int, int] = (64, 64),
         max_cycles: int = 1000,
         seed: int | None = None,
+        collective_reward: bool = True,
         parallel_env=None,
     ):
+        injected_parallel_env = parallel_env is not None
         if parallel_env is None:
             from shimmy import MeltingPotCompatibilityV0
 
-            parallel_env = MeltingPotCompatibilityV0(
-                substrate_name=substrate,
-                max_cycles=max_cycles,
-                render_mode=None,
-            )
+            if seed is None:
+                parallel_env = MeltingPotCompatibilityV0(
+                    substrate_name=substrate,
+                    max_cycles=max_cycles,
+                    render_mode=None,
+                )
+            else:
+                parallel_env = MeltingPotCompatibilityV0(
+                    env=_build_seeded_substrate(
+                        substrate,
+                        seed,
+                        collective_reward,
+                    ),
+                    max_cycles=max_cycles,
+                    render_mode=None,
+                )
         self._env = parallel_env
         self._agents = tuple(self._env.possible_agents)
         if not self._agents:
@@ -53,7 +93,7 @@ class MeltingPotEnv(embodied.Env):
         self._size = tuple(int(value) for value in size)
         if len(self._size) != 2 or min(self._size) < 1:
             raise ValueError(f"invalid image size: {size}")
-        self._seed = seed
+        self._reset_seed = seed if injected_parallel_env else None
         self._needs_reset = True
         self._action_dim, self._image_shape = self._validate_spaces()
 
@@ -111,8 +151,8 @@ class MeltingPotEnv(embodied.Env):
         return self._env.close()
 
     def _reset(self):
-        observations, _ = self._env.reset(seed=self._seed)
-        self._seed = None
+        observations, _ = self._env.reset(seed=self._reset_seed)
+        self._reset_seed = None
         self._needs_reset = False
         rewards = {agent: 0.0 for agent in self._agents}
         return self._observation(

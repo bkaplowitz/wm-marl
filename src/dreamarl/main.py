@@ -40,6 +40,17 @@ def _worker_seed(seed: int, index: int) -> int:
     return hash((int(seed), int(index))) % (2**32 - 1)
 
 
+def _validate_script(script: str, num_agents: int) -> None:
+    if num_agents > 1 and (
+        script == "train_eval" or script.startswith("parallel")
+    ):
+        raise ValueError(
+            f"script={script} uses generic single-agent reporting and is not "
+            "supported for MARL runs; use script=train with explicit curve "
+            "evaluation"
+        )
+
+
 def main(argv=None, extra_config_path=None):
     from .marl.core import MARLCore
 
@@ -62,6 +73,7 @@ def main(argv=None, extra_config_path=None):
     logdir = elements.Path(config.logdir)
     print("Logdir:", logdir)
     print("Run script:", config.script)
+    _validate_script(str(config.script), int(config.agent.num_agents))
     if not config.script.endswith(("_env", "_replay")):
         logdir.mkdir()
         config.save(logdir / "config.yaml")
@@ -122,6 +134,19 @@ def main(argv=None, extra_config_path=None):
             bind(make_agent, config),
             bind(make_env, config),
             bind(make_logger, config),
+            args,
+        )
+
+    elif config.script == "utility_probe":
+        from . import diagnostics
+
+        if not config.run.probe_source:
+            raise ValueError("utility_probe requires run.probe_source")
+        replay_config = config.update(logdir=str(config.run.probe_source))
+        diagnostics.utility_probe(
+            bind(make_agent, config),
+            bind(make_replay, replay_config, "replay"),
+            bind(make_stream, config),
             args,
         )
 

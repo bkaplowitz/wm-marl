@@ -21,7 +21,8 @@ def world_model_backend(name: str) -> WorldModelBackend:
             {
                 "simple": canonical_visual.Encoder,
                 "vit": visual.ViTEncoder,
-                "vjepa": visual.ViTEncoder,
+                "vjepa21": visual.ViTEncoder,
+                "leworldmodel": visual.ViTEncoder,
             }
         ),
         decoders=MappingProxyType({"simple": visual.Decoder}),

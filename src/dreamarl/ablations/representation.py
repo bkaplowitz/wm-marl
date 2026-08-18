@@ -157,21 +157,21 @@ def spatial_patch_mask(
     return flattened.reshape((*leading_shape, *grid_shape))
 
 
-def vjepa_multiblock_masks(
+def vjepa21_multiblock_masks(
     key: jax.Array,
     leading_shape: tuple[int, int],
-    grid_shape: tuple[int, int] = (14, 14),
-) -> jax.Array:
-    """Sample the two spatial tube-mask families used by V-JEPA.
+    grid_shape: tuple[int, int] = (16, 16),
+) -> tuple[jax.Array, jax.Array]:
+    """Sample the exact two tube-mask families from V-JEPA 2.1 pretraining.
 
     V-JEPA uses eight small target blocks with spatial scale 0.15 and two
     large target blocks with spatial scale 0.7. Both families use aspect
     ratios in [0.75, 1.5]. A block is constant over the temporal dimension,
     so a sequence observes a spatial tube rather than unrelated frame masks.
 
-    Returns two target masks shaped ``[group, batch, time, height, width]``.
-    The first group is the union of eight small blocks and the second is the
-    union of two large blocks.
+    As in the official collator, target and complement index lists are each
+    truncated to the minimum count in the batch. This preserves static shapes
+    without converting dropped positions into visible context.
     """
 
     if len(leading_shape) != 2:
@@ -179,9 +179,12 @@ def vjepa_multiblock_masks(
             "V-JEPA tube masks require leading_shape=(batch, time), got "
             f"{leading_shape}"
         )
-    if grid_shape != (14, 14):
-        raise ValueError(f"the faithful V-JEPA image grid is 14x14, got {grid_shape}")
     batch, time = leading_shape
+    if time != 16:
+        raise ValueError(
+            f"V-JEPA 2.1 video masking requires exactly 16 frames, got {time}"
+        )
+    duration = time // 2  # Official tubelet size is two frames.
     group_keys = jax.random.split(key, 2)
 
     def group_mask(group_key, blocks, scale):
@@ -215,18 +218,45 @@ def vjepa_multiblock_masks(
         )
         mask = (inside_rows & inside_cols).any(axis=1)
 
-        # Static-shape attention needs at least one context and one target slot.
-        flat = mask.reshape((batch, -1))
-        needs_target = ~flat.any(axis=-1)
-        flat = flat.at[:, 0].set(flat[:, 0] | needs_target)
-        needs_context = flat.all(axis=-1)
-        flat = flat.at[:, -1].set(flat[:, -1] & ~needs_context)
-        mask = flat.reshape((batch, *grid_shape))
-        return jnp.broadcast_to(mask[:, None], (batch, time, *grid_shape))
+        mask = jnp.broadcast_to(
+            mask[:, None], (batch, duration, *grid_shape)
+        )
+        flat_target = mask.reshape((batch, -1))
+        needs_target = ~flat_target.any(axis=-1)
+        flat_target = flat_target.at[:, 0].set(flat_target[:, 0] | needs_target)
+        needs_context = flat_target.all(axis=-1)
+        flat_target = flat_target.at[:, -1].set(
+            flat_target[:, -1] & ~needs_context
+        )
+        flat_context = ~flat_target
 
-    small = group_mask(group_keys[0], blocks=8, scale=0.15)
-    large = group_mask(group_keys[1], blocks=2, scale=0.7)
-    return jnp.stack([small, large], axis=0)
+        min_target = flat_target.sum(axis=-1).min()
+        min_context = flat_context.sum(axis=-1).min()
+        flat_target &= jnp.cumsum(flat_target, axis=-1) <= min_target
+        flat_context &= jnp.cumsum(flat_context, axis=-1) <= min_context
+        target = flat_target.reshape((batch, duration, *grid_shape))
+        context = flat_context.reshape((batch, duration, *grid_shape))
+        target = jnp.repeat(target, 2, axis=1)
+        context = jnp.repeat(context, 2, axis=1)
+        return context, target
+
+    small_context, small_target = group_mask(
+        group_keys[0], blocks=8, scale=0.15
+    )
+    large_context, large_target = group_mask(
+        group_keys[1], blocks=2, scale=0.7
+    )
+    return (
+        jnp.stack([small_context, large_context], axis=0),
+        jnp.stack([small_target, large_target], axis=0),
+    )
+
+
+def vjepa_multiblock_masks(key, leading_shape, grid_shape=(14, 14)):
+    """Compatibility wrapper for the superseded V-JEPA ablation."""
+
+    _, targets = vjepa21_multiblock_masks(key, leading_shape, grid_shape)
+    return targets
 
 
 def mask_image_patches(
@@ -328,3 +358,91 @@ def vjepa_token_loss(
     cosine = (prediction_norm * target_norm).sum(axis=-1)
     mean_cosine = (cosine * flat_mask).sum() / jnp.maximum(flat_mask.sum(), 1.0)
     return loss, mean_cosine, flat_mask.mean()
+
+
+def vjepa21_dense_token_loss(
+    target_prediction: jax.Array,
+    context_prediction: jax.Array,
+    target: jax.Array,
+    target_mask: jax.Array,
+    context_mask: jax.Array,
+    *,
+    context_weight: float = 0.5,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """V-JEPA 2.1 masked plus distance-weighted visible-token L1 loss."""
+
+    if target_prediction.shape != target.shape or context_prediction.shape != target.shape:
+        raise ValueError("V-JEPA 2.1 predictions and targets must have equal shapes")
+    leading = target.shape[:-2]
+    if len(leading) != 2:
+        raise ValueError("V-JEPA 2.1 dense loss expects [batch, time, token, dim]")
+    if target_mask.shape[:-2] != leading or context_mask.shape[:-2] != leading:
+        raise ValueError("V-JEPA 2.1 masks must match target leading dimensions")
+    token_count = target.shape[-2]
+    if math.prod(target_mask.shape[-2:]) != token_count:
+        raise ValueError("V-JEPA 2.1 masks must contain one entry per token")
+
+    target = jax.lax.stop_gradient(target.astype(jnp.float32))
+    target_prediction = target_prediction.astype(jnp.float32)
+    context_prediction = context_prediction.astype(jnp.float32)
+
+    # The official 2.1 target normalizer treats the four hierarchical ViT
+    # outputs independently before concatenating them for prediction.
+    if target.shape[-1] % 4:
+        raise ValueError("V-JEPA 2.1 hierarchical target width must divide by four")
+    chunks = target.reshape((*target.shape[:-1], 4, target.shape[-1] // 4))
+    mean = chunks.mean(axis=-1, keepdims=True)
+    var = jnp.square(chunks - mean).mean(axis=-1, keepdims=True)
+    target = ((chunks - mean) * jax.lax.rsqrt(var + 1e-6)).reshape(target.shape)
+
+    batch, time = leading
+    flat_count = time * token_count
+    target_flat = target_mask.reshape((batch, flat_count)).astype(jnp.float32)
+    context_flat = context_mask.reshape((batch, flat_count)).astype(jnp.float32)
+    flat_target = target.reshape((batch, flat_count, target.shape[-1]))
+    flat_target_prediction = target_prediction.reshape(flat_target.shape)
+    flat_context_prediction = context_prediction.reshape(flat_target.shape)
+    target_l1 = jnp.abs(flat_target_prediction - flat_target).mean(axis=-1)
+    target_loss = (target_l1 * target_flat).sum(axis=-1) / jnp.maximum(
+        target_flat.sum(axis=-1), 1.0
+    )
+
+    grid_height, grid_width = target_mask.shape[-2:]
+    ids = jnp.arange(flat_count)
+    frame = ids // token_count
+    spatial = ids % token_count
+    rows = spatial // grid_width
+    cols = spatial % grid_width
+    coordinates = jnp.stack(
+        [frame // 2, rows, cols], axis=-1
+    ).astype(jnp.float32)
+    euclidean = jnp.sqrt(
+        jnp.square(coordinates[:, None] - coordinates[None, :]).sum(axis=-1)
+    )
+    distances = jnp.where(
+        target_flat[..., None, :] > 0,
+        euclidean,
+        jnp.asarray(jnp.inf, jnp.float32),
+    ).min(axis=-1)
+    # V-JEPA 2.1 intentionally square-roots the Euclidean distance once more.
+    distance_weight = jax.lax.rsqrt(jnp.maximum(distances, 1e-6))
+    context_l1 = jnp.abs(flat_context_prediction - flat_target).mean(axis=-1)
+    context_loss = (context_l1 * distance_weight * context_flat).sum(axis=-1)
+    context_loss /= jnp.maximum(context_flat.sum(axis=-1), 1.0)
+
+    pred_norm = flat_target_prediction / jnp.maximum(
+        jnp.linalg.norm(flat_target_prediction, axis=-1, keepdims=True), 1e-6
+    )
+    target_norm = flat_target / jnp.maximum(
+        jnp.linalg.norm(flat_target, axis=-1, keepdims=True), 1e-6
+    )
+    cosine = (pred_norm * target_norm).sum(axis=-1)
+    mean_cosine = (cosine * target_flat).sum() / jnp.maximum(
+        target_flat.sum(), 1.0
+    )
+    clip_loss = target_loss + context_weight * context_loss
+    return (
+        jnp.broadcast_to(clip_loss[:, None], (batch, time)),
+        mean_cosine,
+        target_flat.mean(),
+    )

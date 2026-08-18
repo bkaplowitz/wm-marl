@@ -17,6 +17,7 @@ def imag_loss(
     valnorm,
     advnorm,
     update,
+    valid=None,
     contdisc=True,
     slowtar=True,
     horizon=333,
@@ -37,9 +38,10 @@ def imag_loss(
     term = 1 - con
     ret = lambda_return(last, term, rew, tarval, tarval, disc, lam)
 
-    roffset, rscale = retnorm(ret, update)
+    norm_valid = None if valid is None else valid[:, : ret.shape[1]]
+    roffset, rscale = retnorm(ret, update, norm_valid)
     adv = (ret - tarval[:, :-1]) / rscale
-    aoffset, ascale = advnorm(adv, update)
+    aoffset, ascale = advnorm(adv, update, norm_valid)
     adv_normed = (adv - aoffset) / ascale
     logpi = sum([dist.logp(sg(act[key]))[:, :-1] for key, dist in policy.items()])
     ents = {key: dist.entropy()[:, :-1] for key, dist in policy.items()}
@@ -48,7 +50,7 @@ def imag_loss(
     )
     losses["policy"] = policy_loss
 
-    voffset, vscale = valnorm(ret, update)
+    voffset, vscale = valnorm(ret, update, norm_valid)
     tar_normed = (ret - voffset) / vscale
     tar_padded = jnp.concatenate([tar_normed, 0 * tar_normed[:, -1:]], 1)
     losses["value"] = (
@@ -106,6 +108,7 @@ def repl_loss(
     slowvalue,
     valnorm,
     update=True,
+    valid=None,
     slowreg=1.0,
     slowtar=True,
     horizon=333,
@@ -121,7 +124,8 @@ def repl_loss(
     weight = f32(~last)
     ret = lambda_return(last, term, rew, tarval, boot, disc, lam)
 
-    voffset, vscale = valnorm(ret, update)
+    norm_valid = None if valid is None else valid[:, : ret.shape[1]]
+    voffset, vscale = valnorm(ret, update, norm_valid)
     ret_normed = (ret - voffset) / vscale
     ret_padded = jnp.concatenate([ret_normed, 0 * ret_normed[:, -1:]], 1)
     losses["repval"] = (

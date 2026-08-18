@@ -5,9 +5,11 @@ learning implementation. Its locked single-agent configuration combines a
 categorical stochastic state, a causal Transformer, EMA-target
 joint-embedding prediction, and DreamerV3 actor-critic semantics. The maintained
 MARL path preserves exact single-agent behavior at `A=1`. For `A>1`, it adds an
-explicit team axis, parameter sharing, synchronous imagination, and a
-zero-gated permutation-invariant peer latent-action residual in the world
-transition. Actors and critics remain local at execution.
+explicit team axis, parameter sharing, and synchronized independent local
+imagination. B0 execution is strictly decentralized: each actor, critic, and
+world-model transition receives only the focal agent's observation/action
+history. The team-axis layout and grouped imagination remain as extension seams
+for training-only B1+ objectives.
 
 The current architecture is documented in
 [`docs/dreamarl/ARCHITECTURE.md`](docs/dreamarl/ARCHITECTURE.md). The empirical
@@ -77,6 +79,23 @@ uv run dreamarl-train-dreamarl \
   --wandb-project dreamarl \
   --wandb-entity YOUR_ENTITY
 ```
+
+Select the first agent-axis JEPA stage with `--marl-stage b1`. This adds the
+whole-agent-masked prediction of the complete EMA team-slot representation at
+the current timestep and predicts the next EMA team representation from the
+masked current team plus the aligned joint replay action. The B1 input is
+stop-gradient, preserving the local single-agent world model. Balanced matching against mean-centered, agent-relative
+EMA content, explicit hidden-agent coverage, and slot anti-collapse regularization anchor the learned team
+coordinates. The EMA team teacher is training-only; B0's decentralized actor
+and local imagination graph are retained.
+
+Melting Pot seeds are supplied when constructing the underlying Lab2D
+substrate. Shimmy 2.0.1 explicitly ignores `reset(seed)`, and the pinned Lab2D
+backend can produce different observations for two environments given the same
+construction seed and identical actions. A seed therefore controls the Lab2D
+seed stream but does not guarantee a bitwise-identical trajectory. Manifests
+record this distinction; reproducible comparisons still require multiple runs
+and retained evaluation artifacts.
 
 Fixed evaluation restores the latest complete checkpoint, performs no
 checkpoint search, and does not add transitions to training replay:
