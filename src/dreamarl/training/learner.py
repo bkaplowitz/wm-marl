@@ -94,6 +94,7 @@ class LearnerMixin:
         enc_entries, dyn_entries, dec_entries = entries
         batch, length = obs["is_first"].shape
         valid = self.validity(obs)
+        world_valid, behavior_valid = self.replay_loss_validity(obs, valid)
 
         starts_count = min(self.config.imag_last or length, length)
         horizon = self.config.imag_length
@@ -145,6 +146,13 @@ class LearnerMixin:
                 context=jnp.zeros_like(critic_context),
             )
         imagination_valid = self.imagination_validity(imagination_context, horizon)
+        behavior_starts = behavior_valid[:, -starts_count:].reshape((-1, 1))
+        if imagination_valid is None:
+            imagination_valid = jnp.broadcast_to(
+                behavior_starts, (behavior_starts.shape[0], horizon)
+            )
+        else:
+            imagination_valid = imagination_valid * behavior_starts
         imagined_losses, imgloss_out, imagined_metrics = imag_loss(
             imgact,
             self.rew(local_inp, 2).pred(),
@@ -211,7 +219,7 @@ class LearnerMixin:
                     slow=False,
                     context=jnp.zeros_like(critic_context),
                 )
-            replay_valid = valid[:, -starts_count:-1]
+            replay_valid = behavior_valid[:, -starts_count:-1]
             replay_losses, replay_out, replay_metrics = repl_loss(
                 last,
                 term,
@@ -253,11 +261,18 @@ class LearnerMixin:
         losses.update(extra_losses)
         metrics.update(extra_metrics)
 
+        def loss_validity(key):
+            return (
+                behavior_valid
+                if key in {"policy", "value", "repval"}
+                else world_valid
+            )
+
         metrics.update(
             {
                 f"loss/{key}": masked_mean(
                     value,
-                    valid,
+                    loss_validity(key),
                     alignment="replay_value" if key == "repval" else "tail",
                 )
                 for key, value in losses.items()
@@ -266,7 +281,7 @@ class LearnerMixin:
         loss = sum(
             masked_mean(
                 value,
-                valid,
+                loss_validity(key),
                 alignment="replay_value" if key == "repval" else "tail",
             )
             * self.scales[key]
@@ -359,6 +374,17 @@ class LearnerMixin:
                 valid *= obs[key].astype(jnp.float32)
         return valid
 
+    @staticmethod
+    def replay_loss_validity(obs, valid):
+        """Route recent rows to the world model and uniform rows to behavior."""
+
+        if "replay_sample_role" not in obs:
+            return valid, valid
+        role = obs["replay_sample_role"]
+        world = ((role == 0) | (role == 1)).astype(jnp.float32)
+        behavior = ((role == 0) | (role == 2)).astype(jnp.float32)
+        return valid * world, valid * behavior
+
     def _world_model_terms(self, carry, obs, prevact, training):
         enc_carry, dyn_carry, dec_carry = carry
         reset = obs["is_first"]
@@ -372,6 +398,7 @@ class LearnerMixin:
         losses.update(dyn_losses)
         metrics.update(dyn_metrics)
         valid = self.validity(obs)
+        world_valid, _ = self.replay_loss_validity(obs, valid)
         if self.sigreg:
             regularizer = sigreg_loss(
                 tokens,
@@ -380,7 +407,7 @@ class LearnerMixin:
                 num_proj=int(self.config.sigreg.num_proj),
                 aggregation=str(self.config.sigreg.aggregation),
                 team_size=int(self.config.num_agents),
-                valid=valid,
+                valid=world_valid,
             )
             losses["sigreg"] = jnp.broadcast_to(regularizer, (batch, length))
             metrics["sigreg/embedding_std"] = embedding_std(tokens)

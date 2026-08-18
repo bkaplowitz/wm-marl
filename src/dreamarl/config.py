@@ -32,6 +32,7 @@ class DreaMARLRunSpec:
     curve_eval_seed_offset: int = 10_000
     curve_eval_policy_mode: str = "deterministic"
     imagination_starts: int = 0
+    replay_sampling: str = "uniform"
     marl_stage: str = "b0"
     agent_jepa_local_grad_scale: float = 0.0
     agent_jepa_k0_scale: float = 0.1
@@ -58,6 +59,11 @@ class DreaMARLRunSpec:
             raise ValueError("imagination_starts must be non-negative")
         if self.marl_stage not in {"b0", "b1", "b2"}:
             raise ValueError(f"unsupported MARL stage: {self.marl_stage!r}")
+        if self.replay_sampling not in {
+            "uniform",
+            "recent_world_uniform_behavior",
+        }:
+            raise ValueError(f"unsupported replay sampling: {self.replay_sampling!r}")
         for name in (
             "agent_jepa_local_grad_scale",
             "agent_jepa_k0_scale",
@@ -108,6 +114,8 @@ class DreaMARLRunSpec:
             str(self.agent_jepa_future_scale),
             "--agent.marl.agent_jepa.future_set_scale",
             str(self.agent_jepa_future_set_scale),
+            "--replay.sampling",
+            self.replay_sampling,
             "--run.steps",
             str(self.train_steps),
             "--jax.platform",
@@ -126,6 +134,15 @@ class DreaMARLRunSpec:
                 "report/world_model/|report/openloop/|eval/"
             ),
         ]
+        if self.replay_sampling == "recent_world_uniform_behavior":
+            command.extend(
+                [
+                    "--replay.size",
+                    "50000",
+                    "--replay.online",
+                    "False",
+                ]
+            )
         if self.save_every_seconds is not None:
             command.extend(["--run.save_every", str(self.save_every_seconds)])
         if self.curve_eval_interval:
@@ -190,7 +207,17 @@ class DreaMARLRunSpec:
             "sigreg_aggregation": "per_agent",
             "policy_information": "observation-local latent history",
             "action_masking": "observed online and learned for imagination",
-            "replay_sampling": "uniform",
+            "replay_sampling": self.replay_sampling,
+            "world_model_recency_decay": (
+                0.9998
+                if self.replay_sampling == "recent_world_uniform_behavior"
+                else None
+            ),
+            "behavior_replay_sampling": (
+                "uniform"
+                if self.replay_sampling == "recent_world_uniform_behavior"
+                else self.replay_sampling
+            ),
             "replay_context": 128,
             "execution": "strict decentralized parameter-shared actors",
             "imagination": "synchronized independent local rollouts",
@@ -283,7 +310,11 @@ class DreaMARLRunSpec:
             ),
             "SIGReg embedding anti-collapse regularization",
             "128-step loss-excluded Transformer replay burn-in",
-            "uniform replay",
+            (
+                "exponentially recent world-model replay with uniform behavior starts"
+                if self.replay_sampling == "recent_world_uniform_behavior"
+                else "uniform replay"
+            ),
             "explicit environment, time, and agent replay axes",
             "parameter-shared local world model and actor",
             "synchronized independent local imagination",

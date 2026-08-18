@@ -8,11 +8,21 @@ from typing import Any
 
 
 ENVIRONMENT_FIELDS = frozenset(
-    {"is_first", "is_last", "is_terminal", "consec", "stepid"}
+    {
+        "is_first",
+        "is_last",
+        "is_terminal",
+        "consec",
+        "stepid",
+        "replay_sample_role",
+    }
 )
 AGENT_METADATA_FIELDS = frozenset({"agent_present", "agent_alive", "action_mask"})
 MODEL_EXCLUDED_FIELDS = (
-    frozenset({"is_first", "is_last", "is_terminal", "reward"}) | AGENT_METADATA_FIELDS
+    frozenset(
+        {"is_first", "is_last", "is_terminal", "reward", "replay_sample_role"}
+    )
+    | AGENT_METADATA_FIELDS
 )
 
 

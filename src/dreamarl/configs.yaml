@@ -34,6 +34,8 @@ defaults:
     size: 5e6
     online: True
     chunksize: 1024
+    sampling: uniform
+    recency_decay: 0.9998
 
   run:
     steps: 5e4

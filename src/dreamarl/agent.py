@@ -170,6 +170,8 @@ class Agent(
             "consec": elements.Space(np.int32),
             "stepid": elements.Space(np.uint8, 20),
         }
+        if str(getattr(self.config, "replay_sampling", "uniform")) != "uniform":
+            spaces["replay_sample_role"] = elements.Space(np.int8)
         if self.config.replay_context:
             spaces.update(
                 elements.tree.flatdict(
