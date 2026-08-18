@@ -1,10 +1,10 @@
-"""Agent-axis runtime for the shared independent DreaMARL learner.
+"""Agent-axis runtime for the maintained DreaMARL learner.
 
-The public data contract retains team identity while local actors, critics, and
-world models remain parameter-shared and observation-local. Team trajectory
-grouping is retained for synchronized imagination and future training-only
-team objectives. No peer tensor reaches the B0 execution path. For ``A=1``, the
-implementation is exactly the locked single-agent learner.
+The public data contract retains team identity while local actors and world
+models remain parameter-shared and observation-local. Team trajectory grouping
+supports synchronized imagination and training-only team objectives. B2 adds a
+centralized value input without exposing peer tensors to the actor. For
+``A=1``, the implementation is exactly the locked single-agent learner.
 """
 
 from __future__ import annotations
@@ -96,20 +96,21 @@ class TeamAxisAdapter:
 
 
 class MARLCore(TeamAxisAdapter, LocalAgent):
-    """B0/B1 learner with a permanently decentralized execution path."""
+    """B0/B1/B2 learner with a permanently decentralized actor path."""
 
     def __init__(self, obs_space, act_space, config):
         marl = config.marl
-        if str(marl.stage) not in {"b0", "b1"}:
+        if str(marl.stage) not in {"b0", "b1", "b2"}:
             raise ValueError(f"unsupported MARL stage: {marl.stage!r}")
         if str(marl.execution) != "strict_decentralized":
             raise ValueError(f"unsupported execution contract: {marl.execution!r}")
         self.team = TeamAxis(int(config.num_agents))
         self.marl_stage = str(marl.stage)
-        self.agent_jepa_enabled = self.marl_stage == "b1" and self.team.size > 1
-        self.agent_jepa_future_enabled = self.agent_jepa_enabled and float(
-            marl.agent_jepa.future_scale
-        ) > 0.0
+        self.agent_jepa_enabled = self.marl_stage in {"b1", "b2"} and self.team.size > 1
+        self.central_critic_enabled = self.marl_stage == "b2" and self.team.size > 1
+        self.agent_jepa_future_enabled = (
+            self.agent_jepa_enabled and float(marl.agent_jepa.future_scale) > 0.0
+        )
         local_obs_space = local_observation_spaces(obs_space, self.team.size)
         local_act_space = local_action_spaces(act_space, self.team.size)
         super().__init__(
@@ -117,6 +118,35 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             local_act_space,
             config,
         )
+
+    def _make_value_models(self, scalar, config):
+        if not self.central_critic_enabled:
+            return super()._make_value_models(scalar, config)
+        value = embodied.jax.MLPHead(scalar, **config.value, name="central_val")
+        slowvalue = embodied.jax.SlowModel(
+            embodied.jax.MLPHead(scalar, **config.value, name="slowcentral_val"),
+            source=value,
+            **config.slowvalue,
+        )
+        return value, slowvalue
+
+    def critic(self, features, bdims, *, slow=False, context=None):
+        if not self.central_critic_enabled:
+            return super().critic(features, bdims, slow=slow, context=context)
+        if context is None:
+            raise ValueError("B2 centralized critic requires a team belief")
+        local_state = (
+            self.feat2tensor(features) if isinstance(features, dict) else features
+        )
+        inputs = jnp.concatenate(
+            [
+                jax.lax.stop_gradient(local_state),
+                jax.lax.stop_gradient(context),
+            ],
+            axis=-1,
+        )
+        value_head = self.slowval if slow else self.val
+        return value_head(inputs, bdims)
 
     def additional_modules(self):
         modules = list(super().additional_modules())
@@ -134,9 +164,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             winit=str(cfg.winit),
         )
         self.team_encoder = TeamSlotEncoder(**kwargs, name="team_encoder")
-        self.target_team_encoder = TeamSlotEncoder(
-            **kwargs, name="target_team_encoder"
-        )
+        self.target_team_encoder = TeamSlotEncoder(**kwargs, name="target_team_encoder")
         self.slowteam = embodied.jax.SlowModel(
             self.target_team_encoder,
             source=self.team_encoder,
@@ -180,9 +208,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             key for key, space in self.act_space.items() if space.discrete
         ]
         if len(self.act_space) != 1 or len(discrete_actions) != 1:
-            raise ValueError(
-                "B1 future team JEPA requires exactly one discrete action"
-            )
+            raise ValueError("B1 future team JEPA requires exactly one discrete action")
         self.team_action_key = discrete_actions[0]
         action_space = self.act_space[self.team_action_key]
         self.team_action_low = int(action_space.low)
@@ -222,6 +248,59 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         if self.agent_jepa_enabled:
             self.slowteam.update()
 
+    def _causal_team_belief(self, features, active):
+        """Build B2's authoritative team belief from executable local states."""
+
+        local_state = jax.lax.stop_gradient(self.feat2tensor(features))
+        predicted_embedding = jax.lax.stop_gradient(
+            self.dyn.predictor(local_state, name="pred")
+        )
+        grouped_state = self.team.unfold_sequence(local_state)
+        grouped_embedding = self.team.unfold_sequence(predicted_embedding)
+        grouped_active = self.team.unfold_sequence(active).astype(bool)
+        content_slots = self.team_encoder(
+            grouped_embedding, grouped_active, grouped_active
+        )
+        history_slots = self.team_history_encoder(grouped_state, grouped_active)
+        belief = self.team_predictor(content_slots, history_slots)
+        return belief, grouped_embedding, grouped_state, grouped_active
+
+    def _central_critic_context(self, features, active):
+        belief, _, _, grouped_active = self._causal_team_belief(features, active)
+        belief = jax.lax.stop_gradient(belief)
+        batch, length = belief.shape[:2]
+        flat = belief.reshape((batch, length, -1))
+        per_agent = jnp.broadcast_to(
+            flat[:, :, None], (batch, length, self.team.size, flat.shape[-1])
+        )
+        context = self.team.fold_sequence(per_agent)
+        valid_team = grouped_active.any(axis=-1).astype(jnp.float32)
+        metrics = {
+            "central_critic/context_norm": jnp.linalg.norm(flat, axis=-1).mean(),
+            "central_critic/context_std": flat.astype(jnp.float32).std(),
+            "central_critic/valid_team_fraction": valid_team.mean(),
+        }
+        return context, metrics
+
+    def imagination_critic_context(self, features, context):
+        if not self.central_critic_enabled:
+            return super().imagination_critic_context(features, context)
+        _, active = context
+        active = jnp.broadcast_to(
+            active[:, None], (active.shape[0], features["deter"].shape[1])
+        )
+        critic_context, metrics = self._central_critic_context(features, active)
+        return critic_context, {f"imag/{key}": value for key, value in metrics.items()}
+
+    def replay_critic_context(self, features, obs, starts_count):
+        if not self.central_critic_enabled:
+            return super().replay_critic_context(features, obs, starts_count)
+        active = self._active(obs)[:, -starts_count:]
+        critic_context, metrics = self._central_critic_context(features, active)
+        return critic_context, {
+            f"replay/{key}": value for key, value in metrics.items()
+        }
+
     def additional_world_model_losses(
         self,
         tokens,
@@ -234,7 +313,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         if not self.agent_jepa_enabled:
             return {}, {}
         if target_tokens is None:
-            raise RuntimeError("B1 agent JEPA requires EMA encoder targets")
+            raise RuntimeError("B1/B2 agent JEPA requires EMA encoder targets")
 
         cfg = self.config.marl.agent_jepa
         local_grad_scale = float(cfg.local_grad_scale)
@@ -288,45 +367,86 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             iterations=int(cfg.sinkhorn_iterations),
             name="source_set",
         )
-        hidden_coverage_loss, hidden_coverage_metrics = (
-            masked_agent_coverage_loss(
-                predicted_content,
-                targets,
-                active,
-                hidden,
-                eligible,
-                temperature=float(cfg.matching_temperature),
-            )
+        hidden_coverage_loss, hidden_coverage_metrics = masked_agent_coverage_loss(
+            predicted_content,
+            targets,
+            active,
+            hidden,
+            eligible,
+            temperature=float(cfg.matching_temperature),
         )
         metrics.update(predicted_set_metrics)
         metrics.update(source_set_metrics)
         metrics.update(hidden_coverage_metrics)
-        variance_loss, covariance_loss, regularizer_metrics = (
-            team_slot_regularization(
-                full_online_slots,
-                regularizer_valid,
-                target_std=float(cfg.slot_target_std),
-            )
+        variance_loss, covariance_loss, regularizer_metrics = team_slot_regularization(
+            full_online_slots,
+            regularizer_valid,
+            target_std=float(cfg.slot_target_std),
         )
         metrics.update(regularizer_metrics)
+
+        # B2's critic belief must be constructible identically from replay and
+        # imagined local states. It therefore uses the posterior JEPA's causal
+        # prediction of each EMA observation embedding, never the raw target.
+        b2_belief_composite = jnp.zeros_like(team_loss)
+        causal_belief = None
+        causal_members = None
+        if self.central_critic_enabled:
+            causal_belief, causal_members, _, _ = self._causal_team_belief(
+                repfeat, self._active(obs)
+            )
+            belief_valid = active.any(axis=-1)
+            belief_loss, belief_metrics = team_slot_jepa_loss(
+                causal_belief, target_slots, belief_valid, name="belief"
+            )
+            belief_content = self.team_content_predictor(causal_belief)
+            belief_set_loss, belief_set_metrics = team_set_matching_loss(
+                belief_content,
+                targets,
+                active,
+                belief_valid,
+                temperature=float(cfg.matching_temperature),
+                iterations=int(cfg.sinkhorn_iterations),
+                name="belief_set",
+            )
+            metrics.update(belief_metrics)
+            metrics.update(belief_set_metrics)
+            b2_belief_composite = (
+                belief_loss + float(cfg.predicted_set_scale) * belief_set_loss
+            )
+            metrics.update(
+                {
+                    "agent_jepa/belief_loss": belief_loss.mean(),
+                    "agent_jepa/belief_set_loss": belief_set_loss.mean(),
+                    "agent_jepa/belief_norm": jnp.linalg.norm(
+                        causal_belief, axis=-1
+                    ).mean(),
+                }
+            )
 
         future_composite = jnp.zeros_like(team_loss)
         if self.agent_jepa_future_enabled:
             # The replay action paired with state t is prevact[t + 1]. Preserve
             # that per-agent pairing before permutation-invariant team pooling.
-            action = self.team.unfold_sequence(
-                prevact[self.team_action_key]
-            )[:, 1:]
+            action = self.team.unfold_sequence(prevact[self.team_action_key])[:, 1:]
             action = jax.nn.one_hot(
                 action.astype(jnp.int32) - self.team_action_low,
                 self.team_action_count,
                 dtype=jnp.float32,
             )
             source_active = active[:, :-1]
+            if self.central_critic_enabled:
+                future_members = causal_members[:, :-1]
+                future_source_slots = causal_belief[:, :-1]
+                future_visible = source_active
+            else:
+                future_members = online_members[:, :-1]
+                future_source_slots = predicted_slots[:, :-1]
+                future_visible = visible[:, :-1]
             conditioned_members = self.team_action_conditioner(
-                online_members[:, :-1],
+                future_members,
                 action,
-                visible[:, :-1],
+                future_visible,
                 source_active,
             )
             action_slots = self.team_transition_encoder(
@@ -335,11 +455,9 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 source_active,
             )
             future_prediction = self.team_transition_predictor(
-                predicted_slots[:, :-1], action_slots
+                future_source_slots, action_slots
             )
-            reset = self.team.unfold_sequence(obs["is_first"]).any(
-                axis=-1
-            )[:, 1:]
+            reset = self.team.unfold_sequence(obs["is_first"]).any(axis=-1)[:, 1:]
             future_valid = (
                 eligible[:, :-1]
                 & source_active.any(axis=-1)
@@ -388,9 +506,9 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 # more than copy the current predicted team forward.
                 def intervened_future(intervened_action):
                     intervened_members = self.team_action_conditioner(
-                        online_members[:, :-1],
+                        future_members,
                         intervened_action,
-                        visible[:, :-1],
+                        future_visible,
                         source_active,
                     )
                     intervened_action_slots = self.team_transition_encoder(
@@ -399,7 +517,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                         source_active,
                     )
                     prediction = self.team_transition_predictor(
-                        predicted_slots[:, :-1], intervened_action_slots
+                        future_source_slots, intervened_action_slots
                     )
                     slot_loss, _ = team_slot_jepa_loss(
                         prediction,
@@ -428,14 +546,12 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                     jnp.roll(action, 1, axis=-2)
                 )
                 persistence_loss, _ = team_slot_jepa_loss(
-                    predicted_slots[:, :-1],
+                    future_source_slots,
                     target_slots[:, 1:],
                     future_valid,
                     name="future_persistence",
                 )
-                persistence_content = self.team_content_predictor(
-                    predicted_slots[:, :-1]
-                )
+                persistence_content = self.team_content_predictor(future_source_slots)
                 persistence_set_loss, _ = team_set_matching_loss(
                     persistence_content,
                     targets[:, 1:],
@@ -445,25 +561,24 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                     iterations=int(cfg.sinkhorn_iterations),
                     name="future_persistence_set",
                 )
-                persistence_composite = persistence_loss + float(
-                    cfg.future_set_scale
-                ) * persistence_set_loss
-                aligned_composite = future_loss + float(
-                    cfg.future_set_scale
-                ) * future_set_loss
+                persistence_composite = (
+                    persistence_loss
+                    + float(cfg.future_set_scale) * persistence_set_loss
+                )
+                aligned_composite = (
+                    future_loss + float(cfg.future_set_scale) * future_set_loss
+                )
                 valid_count = jnp.maximum(future_valid.sum(), 1)
 
                 def prediction_cosine(other):
-                    cosine = jnp.sum(
-                        future_prediction * other, axis=-1
-                    ) / jnp.maximum(
+                    cosine = jnp.sum(future_prediction * other, axis=-1) / jnp.maximum(
                         jnp.linalg.norm(future_prediction, axis=-1)
                         * jnp.linalg.norm(other, axis=-1),
                         1e-8,
                     )
-                    return (
-                        cosine * future_valid[..., None]
-                    ).sum() / (valid_count * cosine.shape[-1])
+                    return (cosine * future_valid[..., None]).sum() / (
+                        valid_count * cosine.shape[-1]
+                    )
 
                 metrics.update(
                     {
@@ -492,8 +607,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                             persistence_composite.mean()
                         ),
                         "agent_jepa/probe/future_vs_persistence_gap": (
-                            persistence_composite.mean()
-                            - aligned_composite.mean()
+                            persistence_composite.mean() - aligned_composite.mean()
                         ),
                     }
                 )
@@ -537,6 +651,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             + float(cfg.source_set_scale) * source_set_loss
             + float(cfg.hidden_coverage_scale) * hidden_coverage_loss
             + weight * regularizer
+            + b2_belief_composite
         )
         composite = (
             float(cfg.k0_scale) * k0_composite

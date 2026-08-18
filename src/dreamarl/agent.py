@@ -55,9 +55,7 @@ class Agent(
         self.enc = self.world_model.encoder("simple")(
             enc_space, **config.enc.simple, name="enc"
         )
-        self.spatial_jepa = bool(config.spatial_jepa.enabled) and bool(
-            self.enc.imgkeys
-        )
+        self.spatial_jepa = bool(config.spatial_jepa.enabled) and bool(self.enc.imgkeys)
         self.enc_output_dim = self.enc.calculate_encoder_output_dim()
         self.target_enc = self.world_model.encoder("simple")(
             enc_space, **config.enc.simple, name="target_enc"
@@ -94,17 +92,10 @@ class Agent(
         if self.action_mask_key is not None:
             mask_space = self.obs_space["action_mask"]
             maskhead = getattr(config, "maskhead", config.conhead)
-            self.actmask = embodied.jax.MLPHead(
-                mask_space, **maskhead, name="actmask"
-            )
+            self.actmask = embodied.jax.MLPHead(mask_space, **maskhead, name="actmask")
         else:
             self.actmask = None
-        self.val = embodied.jax.MLPHead(scalar, **config.value, name="val")
-        self.slowval = embodied.jax.SlowModel(
-            embodied.jax.MLPHead(scalar, **config.value, name="slowval"),
-            source=self.val,
-            **config.slowvalue,
-        )
+        self.val, self.slowval = self._make_value_models(scalar, config)
         self.retnorm = Normalize(**config.retnorm, name="retnorm")
         self.valnorm = Normalize(**config.valnorm, name="valnorm")
         self.advnorm = Normalize(**config.advnorm, name="advnorm")
@@ -175,10 +166,23 @@ class Agent(
     def report_rows(self, batch_size):
         return min(batch_size, 6)
 
-    def critic(self, features, bdims, *, slow=False):
-        """Evaluate the locked local value model."""
+    def _make_value_models(self, scalar, config):
+        """Construct the maintained fast and slow value models."""
+
+        value = embodied.jax.MLPHead(scalar, **config.value, name="val")
+        slowvalue = embodied.jax.SlowModel(
+            embodied.jax.MLPHead(scalar, **config.value, name="slowval"),
+            source=value,
+            **config.slowvalue,
+        )
+        return value, slowvalue
+
+    def critic(self, features, bdims, *, slow=False, context=None):
+        """Evaluate the maintained value model."""
         value_head = self.slowval if slow else self.val
         inputs = self.feat2tensor(features) if isinstance(features, dict) else features
+        if context is not None:
+            inputs = jnp.concatenate([inputs, context], axis=-1)
         return value_head(inputs, bdims)
 
     def _action_mask_key(self):

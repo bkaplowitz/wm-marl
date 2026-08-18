@@ -204,9 +204,11 @@ class AblationAlgorithm(
     def policy_keys(self):
         return "^(enc|dyn|dec|pol)/"
 
-    def critic(self, features, bdims, *, slow=False):
+    def critic(self, features, bdims, *, slow=False, context=None):
         value_head = self.slowval if slow else self.val
         inputs = self.feat2tensor(features) if isinstance(features, dict) else features
+        if context is not None:
+            inputs = jnp.concatenate([inputs, context], axis=-1)
         return value_head(inputs, bdims)
 
     @property

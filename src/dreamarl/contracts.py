@@ -12,7 +12,7 @@ def verify_run_contract(spec: "DreaMARLRunSpec") -> dict[str, object]:
     """Describe the selected first-party temporal backend and shared algorithm."""
 
     return {
-        "contract_version": 37,
+        "contract_version": 38,
         "marl_stage": spec.marl_stage,
         "marl_architecture": spec._marl_architecture,
         "num_agents": spec.num_agents,
@@ -30,7 +30,11 @@ def verify_run_contract(spec: "DreaMARLRunSpec") -> dict[str, object]:
         "policy_information": "one observation-local latent history per agent",
         "policy_peer_access": False,
         "policy_state_supervision": "the shared local latent and JEPA objectives",
-        "critic_information": "one observation-local latent history per agent",
+        "critic_information": (
+            "focal local latent plus a stopped-gradient JEPA-derived active-team belief"
+            if spec.marl_stage == "b2" and spec.num_agents > 1
+            else "one observation-local latent history per agent"
+        ),
         "imagination": "synchronized independent local rollouts",
         "imagination_atomicity": (
             "team starts remain grouped while every transition uses only its own action"
@@ -68,34 +72,46 @@ def verify_run_contract(spec: "DreaMARLRunSpec") -> dict[str, object]:
                 else "detached whole-agent-masked prediction of current complete "
                 "fixed-width EMA team slots"
             )
-            if spec.marl_stage == "b1" and spec.num_agents > 1
+            if spec.marl_stage in {"b1", "b2"} and spec.num_agents > 1
             else "disabled"
         ),
         "agent_jepa_local_model_gradient": (
             "stopped"
-            if spec.marl_stage == "b1" and spec.num_agents > 1
+            if spec.marl_stage in {"b1", "b2"} and spec.num_agents > 1
             else "disabled"
         ),
         "agent_jepa_future_horizon": (
             1
-            if spec.marl_stage == "b1"
+            if spec.marl_stage in {"b1", "b2"}
             and spec.num_agents > 1
             and spec.agent_jepa_future_scale > 0.0
             else 0
         ),
         "agent_jepa_future_action_conditioning": (
             "aligned per-agent joint replay action, training only"
-            if spec.marl_stage == "b1"
+            if spec.marl_stage in {"b1", "b2"}
             and spec.num_agents > 1
             and spec.agent_jepa_future_scale > 0.0
             else "disabled"
         ),
         "team_teacher": (
             "training-only EMA set encoder over all active local EMA embeddings"
-            if spec.marl_stage == "b1" and spec.num_agents > 1
+            if spec.marl_stage in {"b1", "b2"} and spec.num_agents > 1
             else "disabled"
         ),
         "team_teacher_execution_access": False,
+        "central_critic": spec.marl_stage == "b2" and spec.num_agents > 1,
+        "central_critic_team_belief": (
+            "eight 256-wide slots from predicted EMA local embeddings and local "
+            "causal histories; identically reconstructed in replay and imagination"
+            if spec.marl_stage == "b2" and spec.num_agents > 1
+            else "disabled"
+        ),
+        "central_critic_gradient_boundary": (
+            "critic gradients stop at the team belief and local world state"
+            if spec.marl_stage == "b2" and spec.num_agents > 1
+            else "not applicable"
+        ),
         "single_agent_status": "same local outputs, losses, gradients, and updates",
         "environment_seed_mode": (
             "construction-time Lab2D seed stream; Shimmy reset(seed) is ignored"

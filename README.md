@@ -8,8 +8,9 @@ MARL path preserves exact single-agent behavior at `A=1`. For `A>1`, it adds an
 explicit team axis, parameter sharing, and synchronized independent local
 imagination. B0 execution is strictly decentralized: each actor, critic, and
 world-model transition receives only the focal agent's observation/action
-history. The team-axis layout and grouped imagination remain as extension seams
-for training-only B1+ objectives.
+history. B1 adds a training-only agent-axis JEPA. B2 retains the observation-local
+actor and transition model but trains fast and slow centralized critics from the
+focal local state plus an explicit JEPA-derived active-team belief.
 
 The current architecture is documented in
 [`docs/dreamarl/ARCHITECTURE.md`](docs/dreamarl/ARCHITECTURE.md). The empirical
@@ -88,6 +89,15 @@ stop-gradient, preserving the local single-agent world model. Balanced matching 
 EMA content, explicit hidden-agent coverage, and slot anti-collapse regularization anchor the learned team
 coordinates. The EMA team teacher is training-only; B0's decentralized actor
 and local imagination graph are retained.
+
+Select `--marl-stage b2` for strict centralized-training/decentralized-execution
+control. At every replay and imagined state, B2 predicts each active agent's EMA
+observation embedding from its causal local world state, summarizes the complete
+team into eight 256-wide slots, and concatenates the flattened 2048-wide belief
+with the focal 10240-wide state for both value heads. The actor still receives
+only the focal local state. Critic gradients stop at both inputs; the team belief
+is trained directly against the full-team EMA slots and by B1's aligned
+joint-action transition objective.
 
 Melting Pot seeds are supplied when constructing the underlying Lab2D
 substrate. Shimmy 2.0.1 explicitly ignores `reset(seed)`, and the pinned Lab2D

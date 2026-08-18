@@ -14,7 +14,9 @@ Its maintained implementation has two layers:
 
 `A=1` is exactly the locked single-agent learner. B0 is a shared-independent
 MARL baseline with strict decentralized execution for every `A>1`. B1 keeps
-that execution graph and adds a training-only agent-axis JEPA objective.
+that execution graph and adds a training-only agent-axis JEPA objective. B2
+retains the local actor and world model and adds a JEPA-derived team belief to
+complete centralized training of the fast and slow critics.
 
 ## Team Data Contract
 
@@ -46,9 +48,10 @@ normalization statistics, and SIGReg. Observed action masks are enforced during
 collection; a supervised availability head supplies masks for imagination.
 
 For `A=1`, local outputs, gradients, optimizer updates, and recurrent carry
-match the locked local learner. For `A>1`, each actor, critic, and transition
-uses only its focal observation/action history. Peer histories cannot affect a
-focal policy distribution.
+match the locked local learner. For `A>1`, each actor and transition uses only
+its focal observation/action history. Peer histories cannot affect a focal
+policy distribution. B0 and B1 critics are local; the B2 critic additionally
+uses the training-only team belief described below.
 
 ## Local Visual State
 
@@ -285,6 +288,59 @@ shuffling, and a copy-current-state persistence baseline. Positive loss gaps
 are required evidence that the future representation uses the correct joint
 action rather than merely exploiting temporal persistence.
 
+## B2 Causal Team Belief And Centralized Critic
+
+B2 retains every B1 module and loss but gives the learned team information a
+single authoritative control interface. For each active agent, the existing
+posterior JEPA predictor maps its executable causal world state to a predicted
+EMA observation embedding:
+
+```text
+s_t^i       = concat(deter_t^i, flatten(stoch_t^i))       # 10240
+e_hat_t^i   = stop_gradient(P_posterior(s_t^i))           # 4096
+content_t   = T_online({e_hat_t^i: active i})             # 8 x 256
+history_t   = T_history({stop_gradient(s_t^i): active i}) # 8 x 256
+Z_t         = P_team(content_t, history_t)                # 8 x 256
+```
+
+This exact constructor is called on posterior replay states and independently
+at every recursively imagined state. It never consumes an EMA target or raw
+observation embedding during imagination. Inactive agents are masked before
+both set encoders. The resulting belief is directly aligned to the stop-gradient
+full-team EMA slots with slot cosine and balanced set matching. These terms are
+added to B1's current-state composite under the existing `0.10` k0 scale; no new
+loss coefficient is introduced.
+
+In B2, the one-step B1 action branch is also made executable-state consistent:
+
+```text
+action member_t^i = C(e_hat_t^i, a_t^i, active_t^i)
+action slots_t    = T_action({action member_t^i: active i})
+future slots_t+1  = F_team(Z_t, action slots_t)
+```
+
+It retains the aligned EMA target at `t+1`, action-shuffling intervention, and
+persistence comparison. It remains a one-step auxiliary; B2 does not recursively
+roll that predictor through the 15-step control horizon. Instead, `Z_t` is
+recomputed from each newly imagined local world state.
+
+The parameter-shared fast and slow critics both receive:
+
+```text
+critic input for focal i = concat(stop_gradient(s_t^i),
+                                  stop_gradient(flatten(Z_t)))
+                           # 10240 + 2048 = 12288
+```
+
+Both heads remain 3 x 1024 RMS/SiLU symlog two-hot networks. Relative to the
+local critic, the larger first layer adds exactly 2,097,152 trainable weights
+and the slow model carries the same additional state. The centralized value is
+used for imagined values, slow bootstraps, lambda returns, actor advantages,
+replay value learning, and slow-value regularization. Critic gradients update
+only the central value head; they cannot reshape the local world model or team
+belief. The actor remains `pi(a_t^i | s_t^i)` with no peer tensor or runtime
+communication, so B2 is strict CTDE.
+
 ## Imagination And Control
 
 At execution, the shared actor consumes only each agent's local world feature:
@@ -308,7 +364,8 @@ remain exactly unchanged.
 | Actor | 3 x 1024 RMS/SiLU |
 | Continuous policy | bounded Normal, std `[0.1, 1.0]` |
 | Discrete policy | categorical, 1% uniform mixture |
-| Critic | 3 x 1024, symlog two-hot |
+| B0/B1 critic | local state -> 3 x 1024, symlog two-hot |
+| B2 critic | local state + 8 x 256 team slots -> 3 x 1024, symlog two-hot |
 | Slow critic source rate | `0.02` per update |
 
 The actor uses the DreamerV3 score-function objective, percentile return-range
@@ -341,8 +398,10 @@ The online encoder, causal dynamics, JEPA predictors, reward and continuation
 heads, actor, and critic share one optimizer. The EMA target encoder and slow
 critic are not optimizer members. All learned parameters are shared over the
 agent axis. B0 parameter count is independent of `A`; B1 adds the same fixed
-training-only team modules for every multi-agent team size, so its parameter
-count is likewise independent of the specific `A > 1` value.
+training-only team modules for every multi-agent team size. B2 reuses those
+modules for its team belief and replaces the local critic with the fixed-width
+central critic. All stages therefore remain independent of the specific
+`A > 1` value.
 
 ## Evaluation And Reporting
 

@@ -1,9 +1,10 @@
-"""Training-only agent-axis JEPA modules.
+"""Training-only agent-axis JEPA and team-belief modules.
 
-B1 extends the local JEPA along the agent axis. The online branch sees a
+B1 extends the local JEPA along the agent axis. B2 also uses these modules to
+construct a causal team belief for centralized value learning. The online branch sees a
 randomly masked set of complete agents. An EMA teacher sees the complete
 active team and produces aligned fixed-width team slots. Nothing here is part
-of the execution-time policy.
+of the execution-time actor.
 """
 
 import math
@@ -131,9 +132,9 @@ class TeamSlotEncoder(nj.Module):
         queries = self.sub(
             f"cross{index}_query", nn.Linear, self.width, winit=self.winit
         )(slots)
-        keys = self.sub(
-            f"cross{index}_key", nn.Linear, self.width, winit=self.winit
-        )(members)
+        keys = self.sub(f"cross{index}_key", nn.Linear, self.width, winit=self.winit)(
+            members
+        )
         values = self.sub(
             f"cross{index}_value", nn.Linear, self.width, winit=self.winit
         )(members)
@@ -147,9 +148,9 @@ class TeamSlotEncoder(nj.Module):
         ).astype(values.dtype)
         update = jnp.einsum("bthka,btahd->btkhd", weights, values)
         update = update.reshape(batch, length, self.slots, self.width)
-        update = self.sub(
-            f"cross{index}_out", nn.Linear, self.width, winit=self.winit
-        )(update)
+        update = self.sub(f"cross{index}_out", nn.Linear, self.width, winit=self.winit)(
+            update
+        )
         # Learned queries determine attention but never enter the returned
         # representation additively. At the first layer, learned slot codes
         # gate member content multiplicatively, breaking slot symmetry while
@@ -168,6 +169,7 @@ class TeamSlotEncoder(nj.Module):
             gate = jax.nn.softmax(codes, axis=0) * self.slots
             update = update * nn.cast(gate)[None, None]
         return previous + update if residual else update
+
 
 class AgentContextEncoder(nj.Module):
     """Encode visible local world-model histories into fixed-width slots."""
@@ -258,19 +260,17 @@ class TeamActionConditioner(nj.Module):
         active = active.astype(bool)
         content = jnp.where(visible[..., None], members, 0)
         content = self.sub("content_norm", nn.Norm, self.norm)(nn.cast(content))
-        content = self.sub(
-            "content_hidden", nn.Linear, self.hidden, winit=self.winit
-        )(content)
+        content = self.sub("content_hidden", nn.Linear, self.hidden, winit=self.winit)(
+            content
+        )
         flags = jnp.stack([visible, active], axis=-1).astype(actions.dtype)
         condition = jnp.concatenate([actions, flags], axis=-1)
-        condition = self.sub(
-            "action_hidden", nn.Linear, self.hidden, winit=self.winit
-        )(nn.cast(condition))
+        condition = self.sub("action_hidden", nn.Linear, self.hidden, winit=self.winit)(
+            nn.cast(condition)
+        )
         value = content + condition
         value = nn.act(self.act)(value)
-        value = self.sub(
-            "output", nn.Linear, self.output_dim, winit=self.winit
-        )(value)
+        value = self.sub("output", nn.Linear, self.output_dim, winit=self.winit)(value)
         return value * active[..., None].astype(value.dtype)
 
 
@@ -320,27 +320,27 @@ class TeamSlotPredictor(nj.Module):
         head_width = self.width // self.heads
         residual = slots
         value = self.sub(f"attn{index}_norm", nn.Norm, self.norm)(slots)
-        query = self.sub(
-            f"attn{index}_query", nn.Linear, self.width, winit=self.winit
-        )(value)
+        query = self.sub(f"attn{index}_query", nn.Linear, self.width, winit=self.winit)(
+            value
+        )
         key = self.sub(f"attn{index}_key", nn.Linear, self.width, winit=self.winit)(
             value
         )
-        value = self.sub(
-            f"attn{index}_value", nn.Linear, self.width, winit=self.winit
-        )(value)
+        value = self.sub(f"attn{index}_value", nn.Linear, self.width, winit=self.winit)(
+            value
+        )
         query = query.reshape(batch, length, count, self.heads, head_width)
         key = key.reshape(batch, length, count, self.heads, head_width)
         value = value.reshape(batch, length, count, self.heads, head_width)
         logits = jnp.einsum("btkhd,btlhd->bthkl", query, key)
-        weights = jax.nn.softmax(
-            f32(logits) / math.sqrt(head_width), axis=-1
-        ).astype(value.dtype)
+        weights = jax.nn.softmax(f32(logits) / math.sqrt(head_width), axis=-1).astype(
+            value.dtype
+        )
         update = jnp.einsum("bthkl,btlhd->btkhd", weights, value)
         update = update.reshape(batch, length, count, self.width)
-        update = self.sub(
-            f"attn{index}_out", nn.Linear, self.width, winit=self.winit
-        )(update)
+        update = self.sub(f"attn{index}_out", nn.Linear, self.width, winit=self.winit)(
+            update
+        )
         return residual + update
 
 
@@ -399,9 +399,7 @@ def _cosine_loss(prediction, target):
     prediction = prediction / jnp.maximum(
         jnp.linalg.norm(prediction, axis=-1, keepdims=True), 1e-8
     )
-    target = target / jnp.maximum(
-        jnp.linalg.norm(target, axis=-1, keepdims=True), 1e-8
-    )
+    target = target / jnp.maximum(jnp.linalg.norm(target, axis=-1, keepdims=True), 1e-8)
     cosine = (prediction * target).sum(axis=-1)
     return 1.0 - cosine, cosine
 
@@ -471,9 +469,7 @@ def team_set_matching_loss(
     normalized_target = target / jnp.maximum(
         jnp.linalg.norm(target, axis=-1, keepdims=True), 1e-8
     )
-    similarity = jnp.einsum(
-        "btkd,btad->btka", normalized_prediction, normalized_target
-    )
+    similarity = jnp.einsum("btkd,btad->btka", normalized_prediction, normalized_target)
     cost = 1.0 - similarity
 
     # Supply one inert member to numerically define transport at empty padded
@@ -494,15 +490,9 @@ def team_set_matching_loss(
     log_u = jnp.zeros_like(log_row)
     log_v = jnp.where(safe_active, 0.0, -1e30)
     for _ in range(int(iterations)):
-        log_u = log_row - jax.nn.logsumexp(
-            log_kernel + log_v[:, :, None, :], axis=-1
-        )
-        log_v = log_col - jax.nn.logsumexp(
-            log_kernel + log_u[:, :, :, None], axis=-2
-        )
-    plan = jnp.exp(
-        log_u[:, :, :, None] + log_kernel + log_v[:, :, None, :]
-    )
+        log_u = log_row - jax.nn.logsumexp(log_kernel + log_v[:, :, None, :], axis=-1)
+        log_v = log_col - jax.nn.logsumexp(log_kernel + log_u[:, :, :, None], axis=-2)
+    plan = jnp.exp(log_u[:, :, :, None] + log_kernel + log_v[:, :, None, :])
     plan = sg(jnp.where(safe_active[:, :, None, :], plan, 0.0))
 
     weight = valid.astype(f32)
@@ -519,15 +509,11 @@ def team_set_matching_loss(
             (plan * similarity).sum(axis=(-2, -1)) * weight
         ).sum()
         / jnp.maximum(weight.sum(), 1),
-        f"agent_jepa/{name}_target_std": _weighted_member_std(
-            target, active, weight
-        ),
+        f"agent_jepa/{name}_target_std": _weighted_member_std(target, active, weight),
         f"agent_jepa/{name}_prediction_std": _weighted_std(prediction, weight),
         f"agent_jepa/{name}_assignment_entropy": (plan_entropy * weight).sum()
         / jnp.maximum(weight.sum(), 1),
-        f"agent_jepa/{name}_assignment_peak": (
-            assignment_peak * member_weight
-        ).sum()
+        f"agent_jepa/{name}_assignment_peak": (assignment_peak * member_weight).sum()
         / jnp.maximum(member_weight.sum(), 1),
         f"agent_jepa/{name}_slot_similarity_std": (
             similarity_spread * member_weight
@@ -556,9 +542,7 @@ def masked_agent_coverage_loss(
     prediction = prediction / jnp.maximum(
         jnp.linalg.norm(prediction, axis=-1, keepdims=True), 1e-8
     )
-    target = target / jnp.maximum(
-        jnp.linalg.norm(target, axis=-1, keepdims=True), 1e-8
-    )
+    target = target / jnp.maximum(jnp.linalg.norm(target, axis=-1, keepdims=True), 1e-8)
     similarity = jnp.einsum("btkd,btad->btka", prediction, target)
     cost = 1.0 - similarity
     assignment = jax.nn.softmax(-sg(cost) / f32(temperature), axis=-2)
@@ -621,9 +605,9 @@ def team_utility_probe_metrics(
     action_onehot = jax.nn.one_hot(
         actions[:, 1 : usable + 1].astype(jnp.int32), action_count, dtype=f32
     )
-    action_target = (
-        action_onehot * target_hidden[..., None].astype(f32)
-    ).sum(axis=-2) / jnp.maximum(hidden_count[..., None], 1)
+    action_target = (action_onehot * target_hidden[..., None].astype(f32)).sum(
+        axis=-2
+    ) / jnp.maximum(hidden_count[..., None], 1)
 
     active_weight = active.astype(f32)
     team_reward = (rewards * active_weight).sum(axis=-1) / jnp.maximum(
@@ -637,11 +621,7 @@ def team_utility_probe_metrics(
         future_valid &= ~resets[:, offset : offset + usable]
         discount *= 0.99
 
-    valid = (
-        eligible[:, :usable]
-        & (hidden_count > 0)
-        & future_valid
-    ).astype(f32)
+    valid = (eligible[:, :usable] & (hidden_count > 0) & future_valid).astype(f32)
     split = batch // 2
     train_weight = valid.at[split:].set(0).reshape(-1)
     test_weight = valid.at[:split].set(0).reshape(-1)
@@ -674,9 +654,9 @@ def team_utility_probe_metrics(
         )
         metrics[f"agent_jepa/probe/{name}_hidden_action_accuracy"] = (
             _weighted_probe_mean(
-                (
-                    jnp.argmax(action_prediction, axis=-1) == target_class
-                ).astype(f32)[:, None],
+                (jnp.argmax(action_prediction, axis=-1) == target_class).astype(f32)[
+                    :, None
+                ],
                 test_weight,
             )[0]
         )
@@ -699,9 +679,7 @@ def team_slot_regularization(slots, valid, *, target_std=0.1):
     count = jnp.maximum(weight.sum(), 1)
     mean = (slots * weight[..., None, None]).sum(axis=(0, 1)) / count
     centered = slots - mean
-    variance = (jnp.square(centered) * weight[..., None, None]).sum(
-        axis=(0, 1)
-    ) / count
+    variance = (jnp.square(centered) * weight[..., None, None]).sum(axis=(0, 1)) / count
     std = jnp.sqrt(variance + 1e-4)
     variance_loss = jax.nn.relu(f32(target_std) - std).mean()
     normalized = centered / jnp.maximum(
@@ -711,12 +689,8 @@ def team_slot_regularization(slots, valid, *, target_std=0.1):
     count_slots = slots.shape[-2]
     off_diagonal = 1.0 - jnp.eye(count_slots, dtype=gram.dtype)
     covariance_loss = (
-        jnp.square(gram)
-        * off_diagonal[None, None]
-        * weight[..., None, None]
-    ).sum() / jnp.maximum(
-        weight.sum() * count_slots * max(count_slots - 1, 1), 1
-    )
+        jnp.square(gram) * off_diagonal[None, None] * weight[..., None, None]
+    ).sum() / jnp.maximum(weight.sum() * count_slots * max(count_slots - 1, 1), 1)
     metrics = {
         "agent_jepa/online_slot_std": std.mean(),
         "agent_jepa/online_effective_rank": team_slot_effective_rank(slots, weight),
@@ -758,9 +732,9 @@ def _weighted_member_std(values, active, transition_weight):
     weight = active.astype(f32) * transition_weight[..., None]
     count = jnp.maximum(weight.sum(), 1)
     mean = (values * weight[..., None]).sum(axis=(0, 1, 2)) / count
-    variance = (
-        jnp.square(values - mean) * weight[..., None]
-    ).sum(axis=(0, 1, 2)) / count
+    variance = (jnp.square(values - mean) * weight[..., None]).sum(
+        axis=(0, 1, 2)
+    ) / count
     return jnp.sqrt(jnp.maximum(variance, 0)).mean()
 
 
@@ -809,9 +783,7 @@ def _ridge_probe(features, targets, train_weight, *, ridge):
 def _probe_r2(prediction, target, train_weight, test_weight):
     baseline = _weighted_probe_mean(target, train_weight)
     error = _weighted_probe_mean(jnp.square(prediction - target), test_weight).mean()
-    variance = _weighted_probe_mean(
-        jnp.square(target - baseline), test_weight
-    ).mean()
+    variance = _weighted_probe_mean(jnp.square(target - baseline), test_weight).mean()
     return 1.0 - error / jnp.maximum(variance, 1e-8)
 
 

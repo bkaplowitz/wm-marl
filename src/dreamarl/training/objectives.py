@@ -61,6 +61,24 @@ def imag_loss(
     )
 
     ret_normed = (ret - roffset) / rscale
+    value_error = val[:, :-1] - ret
+    metric_weight = (
+        jnp.ones_like(ret) if norm_valid is None else norm_valid.astype(jnp.float32)
+    )
+    metric_count = jnp.maximum(metric_weight.sum(), 1.0)
+    metric_selected = metric_weight.astype(bool)
+    value_error_mean = jnp.where(metric_selected, value_error, 0.0).sum() / metric_count
+    value_target_mean = jnp.where(metric_selected, ret, 0.0).sum() / metric_count
+    value_error_variance = (
+        jnp.where(
+            metric_selected, jnp.square(value_error - value_error_mean), 0.0
+        ).sum()
+        / metric_count
+    )
+    value_target_variance = (
+        jnp.where(metric_selected, jnp.square(ret - value_target_mean), 0.0).sum()
+        / metric_count
+    )
     metrics["adv"] = adv.mean()
     metrics["adv_std"] = adv.std()
     metrics["adv_mag"] = jnp.abs(adv).mean()
@@ -71,6 +89,13 @@ def imag_loss(
     metrics["tar"] = tar_normed.mean()
     metrics["weight"] = weight.mean()
     metrics["slowval"] = slowval.mean()
+    metrics["critic/value_rmse"] = jnp.sqrt(
+        jnp.where(metric_selected, jnp.square(value_error), 0.0).sum() / metric_count
+    )
+    metrics["critic/value_bias"] = value_error_mean
+    metrics["critic/value_explained_variance"] = 1.0 - (
+        value_error_variance / jnp.maximum(value_target_variance, 1e-8)
+    )
     metrics["ret_min"] = ret_normed.min()
     metrics["ret_max"] = ret_normed.max()
     metrics["ret_rate"] = (jnp.abs(ret_normed) >= 1.0).mean()
@@ -134,7 +159,34 @@ def repl_loss(
             :, :-1
         ]
     )
-    return losses, {"ret": ret, "slowval": slowval}, {}
+    value_error = val[:, :-1] - ret
+    metric_weight = (
+        jnp.ones_like(ret) if norm_valid is None else norm_valid.astype(jnp.float32)
+    )
+    metric_count = jnp.maximum(metric_weight.sum(), 1.0)
+    metric_selected = metric_weight.astype(bool)
+    value_error_mean = jnp.where(metric_selected, value_error, 0.0).sum() / metric_count
+    value_target_mean = jnp.where(metric_selected, ret, 0.0).sum() / metric_count
+    value_error_variance = (
+        jnp.where(
+            metric_selected, jnp.square(value_error - value_error_mean), 0.0
+        ).sum()
+        / metric_count
+    )
+    value_target_variance = (
+        jnp.where(metric_selected, jnp.square(ret - value_target_mean), 0.0).sum()
+        / metric_count
+    )
+    metrics = {
+        "critic/value_rmse": jnp.sqrt(
+            jnp.where(metric_selected, jnp.square(value_error), 0.0).sum()
+            / metric_count
+        ),
+        "critic/value_bias": value_error_mean,
+        "critic/value_explained_variance": 1.0
+        - value_error_variance / jnp.maximum(value_target_variance, 1e-8),
+    }
+    return losses, {"ret": ret, "slowval": slowval}, metrics
 
 
 def lambda_return(last, term, rew, val, boot, disc, lam):

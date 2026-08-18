@@ -195,7 +195,7 @@ def test_decentralized_policy_is_invariant_to_peer_histories() -> None:
     team_size = 3
     observations, actions = _team_spaces(team_size)
     agent = object.__new__(MARLCore)
-    MARLCore.__init__(agent, observations, actions, _agent_config(team_size))
+    MARLCore.__init__(agent, observations, actions, _agent_config(team_size, "b2"))
     focal = jax.random.randint(
         jax.random.key(91), (1, 2, 64, 64, 3), 0, 256, dtype=jnp.uint8
     )
@@ -491,6 +491,95 @@ def test_b1_completes_agent_masked_team_jepa_update() -> None:
         assert np.isfinite(float(report_metrics[key]))
 
 
+def test_b2_trains_causal_team_belief_and_both_central_value_paths() -> None:
+    observations, actions = _team_spaces(3)
+    config = _agent_config(3, "b2").update(
+        {
+            "opt.warmup": 0,
+            "marl.agent_jepa.slots": 2,
+            "marl.agent_jepa.width": 32,
+            "marl.agent_jepa.heads": 4,
+            "marl.agent_jepa.ffup": 2,
+            "marl.agent_jepa.predictor_hidden": 32,
+        }
+    )
+    agent = object.__new__(MARLCore)
+    MARLCore.__init__(agent, observations, actions, config)
+    data = _add_team_axis(_local_batch(), 3)
+    data["agent_alive"] = data["agent_alive"].at[:, :, 2].set(False)
+    carry = agent.init_train(1)
+
+    def step():
+        return agent.train(carry, data)
+
+    state = nj.init(step)({}, seed=101)
+    next_state, (_, _, metrics) = nj.pure(step)(state, seed=102)
+    assert "central_val" in [module.name for module in agent.modules]
+    assert "val" not in [module.name for module in agent.modules]
+    assert any(key.startswith("central_val/") for key in next_state)
+    assert any(key.startswith("slowcentral_val/") for key in next_state)
+    for key in (
+        "agent_jepa/belief_loss",
+        "agent_jepa/belief_set_loss",
+        "imag/central_critic/context_norm",
+        "replay/central_critic/context_norm",
+        "critic/value_explained_variance",
+        "reploss/critic/value_explained_variance",
+    ):
+        assert np.isfinite(float(metrics[key]))
+    assert float(metrics["imag/central_critic/valid_team_fraction"]) == 1.0
+
+    dyn = config.dyn.parallel_transformer
+    features = {
+        "deter": jax.random.normal(jax.random.key(103), (3, 2, int(dyn.deter))),
+        "stoch": jax.random.normal(
+            jax.random.key(104),
+            (3, 2, int(dyn.stoch), int(dyn.classes)),
+        ),
+    }
+    active = jnp.ones((3, 2), bool)
+
+    def probe(probe_features):
+        context, _ = agent._central_critic_context(probe_features, active)
+        value = agent.critic(probe_features, 2, context=context).pred()
+        return context[0], value[0]
+
+    peer_mask = (jnp.arange(3) == 1)[:, None]
+    changed_features = {
+        "deter": jnp.where(
+            peer_mask[..., None], features["deter"] + 10.0, features["deter"]
+        ),
+        "stoch": jnp.where(
+            peer_mask[..., None, None],
+            features["stoch"] + 10.0,
+            features["stoch"],
+        ),
+    }
+    _, baseline = nj.pure(probe)(next_state, features, seed=105)
+    _, changed = nj.pure(probe)(next_state, changed_features, seed=105)
+    assert not np.array_equal(np.asarray(baseline[0]), np.asarray(changed[0]))
+    assert not np.array_equal(np.asarray(baseline[1]), np.asarray(changed[1]))
+
+    def focal_value(probe_features):
+        return nj.pure(probe)(next_state, probe_features, seed=105)[1][1].sum()
+
+    feature_grads = jax.grad(focal_value)(features)
+    for gradient in jax.tree.leaves(feature_grads):
+        np.testing.assert_array_equal(gradient, jnp.zeros_like(gradient))
+
+    def report_step():
+        return agent.report(agent.init_report(1), data)
+
+    _, (_, report_metrics) = nj.pure(report_step)(state, seed=106)
+    for key in (
+        "central_critic/local_only_imag_rmse",
+        "central_critic/local_only_imag_explained_variance",
+        "central_critic/local_only_replay_rmse",
+        "central_critic/local_only_replay_explained_variance",
+    ):
+        assert np.isfinite(float(report_metrics[key]))
+
+
 def test_b1_auxiliary_loss_does_not_change_the_b0_local_update() -> None:
     observations, actions = _team_spaces(3)
     shared_updates = {
@@ -567,9 +656,9 @@ def test_b1_masked_agent_target_has_no_hidden_context_leakage() -> None:
     _, baseline = nj.pure(lambda: predict(targets, histories))(state, seed=64)
     hidden_members = targets.at[:, :, 2].add(100.0)
     hidden_histories = histories.at[:, :, 2].add(100.0)
-    _, hidden_prediction = nj.pure(
-        lambda: predict(hidden_members, hidden_histories)
-    )(state, seed=64)
+    _, hidden_prediction = nj.pure(lambda: predict(hidden_members, hidden_histories))(
+        state, seed=64
+    )
     visible_members = targets.at[:, :, 0].add(100.0)
     _, visible_prediction = nj.pure(lambda: predict(visible_members, histories))(
         state, seed=64
@@ -588,9 +677,7 @@ def test_b1_masked_agent_target_has_no_hidden_context_leakage() -> None:
         )(members, active, active)
 
     teacher_state = nj.init(lambda: encode_target(targets))({}, seed=65)
-    _, target_slots = nj.pure(lambda: encode_target(targets))(
-        teacher_state, seed=66
-    )
+    _, target_slots = nj.pure(lambda: encode_target(targets))(teacher_state, seed=66)
     _, changed_slots = nj.pure(lambda: encode_target(hidden_members))(
         teacher_state, seed=66
     )

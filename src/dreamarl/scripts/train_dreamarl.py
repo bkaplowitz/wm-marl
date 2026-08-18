@@ -19,7 +19,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task", required=True)
     parser.add_argument("--num-agents", type=int, required=True)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--marl-stage", choices=("b0", "b1"), default="b0")
+    parser.add_argument("--marl-stage", choices=("b0", "b1", "b2"), default="b0")
     parser.add_argument("--agent-jepa-local-grad-scale", type=float, default=0.0)
     parser.add_argument("--agent-jepa-k0-scale", type=float, default=0.1)
     parser.add_argument("--agent-jepa-future-scale", type=float, default=1.0)

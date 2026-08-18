@@ -56,7 +56,7 @@ class DreaMARLRunSpec:
             raise ValueError("curve_eval_interval must be non-negative")
         if self.imagination_starts < 0:
             raise ValueError("imagination_starts must be non-negative")
-        if self.marl_stage not in {"b0", "b1"}:
+        if self.marl_stage not in {"b0", "b1", "b2"}:
             raise ValueError(f"unsupported MARL stage: {self.marl_stage!r}")
         for name in (
             "agent_jepa_local_grad_scale",
@@ -119,7 +119,10 @@ class DreaMARLRunSpec:
                 "score|return|length|fps|ratio|train/loss/|train/rand/|"
                 "train/dyn_ent|train/rep_ent|train/adv|train/ent/|train/opt/|"
                 "train/posterior_jepa/|train/dynamics_jepa/|"
+                "train/critic/|train/reploss/critic/|"
+                "train/imag/central_critic/|train/replay/central_critic/|"
                 "train/agent_jepa/|report/agent_jepa/|"
+                "report/central_critic/|"
                 "report/world_model/|report/openloop/|eval/"
             ),
         ]
@@ -191,11 +194,17 @@ class DreaMARLRunSpec:
             "posterior_context": "history",
             "visual_encoder": "simple",
             "visual_resolution": 64,
-            "critic": "parameter-shared observation-local critic",
-            "agent_jepa_enabled": self.marl_stage == "b1" and self.num_agents > 1,
+            "critic": (
+                "shared centralized local-state plus JEPA team-belief critic"
+                if self.marl_stage == "b2" and self.num_agents > 1
+                else "parameter-shared observation-local critic"
+            ),
+            "agent_jepa_enabled": (
+                self.marl_stage in {"b1", "b2"} and self.num_agents > 1
+            ),
             "agent_jepa_horizon": (
                 1
-                if self.marl_stage == "b1"
+                if self.marl_stage in {"b1", "b2"}
                 and self.num_agents > 1
                 and self.agent_jepa_future_scale > 0.0
                 else 0
@@ -263,12 +272,14 @@ class DreaMARLRunSpec:
             "128-step loss-excluded Transformer replay burn-in",
             "uniform replay",
             "explicit environment, time, and agent replay axes",
-            "parameter-shared local world model, actor, and critic",
+            "parameter-shared local world model and actor",
             "synchronized independent local imagination",
         ]
         if self.num_agents > 1:
-            components.append("strict decentralized execution with no peer tensors")
-            if self.marl_stage == "b1":
+            components.append(
+                "strict decentralized actor execution with no peer tensors"
+            )
+            if self.marl_stage in {"b1", "b2"}:
                 if self.agent_jepa_future_scale > 0.0:
                     components.append(
                         "training-only whole-agent-masked current and joint-action-"
@@ -279,12 +290,24 @@ class DreaMARLRunSpec:
                         "training-only detached whole-agent-masked current team "
                         "EMA-slot JEPA control"
                     )
+                if self.marl_stage == "b2":
+                    components.append(
+                        "JEPA-derived all-active team belief recomputed at every "
+                        "replay and imagined state for centralized fast/slow critics"
+                    )
+            if self.marl_stage != "b2":
+                components.append("parameter-shared local critic")
         else:
             components.append("locked singleton execution")
         return components
 
     @property
     def _marl_architecture(self) -> str:
+        if self.marl_stage == "b2" and self.num_agents > 1:
+            return (
+                "B1 team EMA-slot JEPA plus a causal JEPA-derived team belief "
+                "and centralized fast/slow critics with a decentralized actor"
+            )
         if self.marl_stage == "b1" and self.num_agents > 1:
             if self.agent_jepa_future_scale > 0.0:
                 return (

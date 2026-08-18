@@ -51,8 +51,16 @@ single-agent learner is not reshaped by either team loss. Balanced permutation-i
 source and predicted slot to mean-centered, agent-relative active local EMA
 embeddings, with an
 additional coverage loss for completely hidden agents and explicit slot
-anti-collapse penalties. These modules are absent for `A=1` and are excluded
-from policy synchronization, online collection, and imagination.
+anti-collapse penalties. These modules are absent for `A=1`. In B1 they are
+excluded from policy synchronization, online collection, and imagination.
+
+B2 is the first controlled CTDE stage. It reuses the posterior JEPA predictor
+to reconstruct active local EMA-content predictions from executable local world
+states, combines them with the grouped causal local histories into eight team
+slots, and supplies the stopped-gradient flattened belief to both centralized
+value heads. Replay and recursive imagination call the same belief constructor.
+The B1 action branch consumes these causal predicted embeddings in B2. No target
+encoder value, team slot, or peer tensor enters the actor or runtime policy.
 
 The pinned Dreamer-CDP checkout remains an isolated historical baseline. It is
 not imported by DreaMARL and none of its split learning rates, large cosine-loss

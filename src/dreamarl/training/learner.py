@@ -38,6 +38,30 @@ def masked_mean(value, valid, *, alignment="tail"):
     return (value * weight).mean() / jnp.maximum(weight.mean(), 1e-8)
 
 
+def value_fit_metrics(prediction, target, valid):
+    """Return live-sample calibration metrics for a value prediction."""
+
+    weight = jnp.ones_like(target) if valid is None else valid.astype(jnp.float32)
+    count = jnp.maximum(weight.sum(), 1.0)
+    error = prediction - target
+    selected = weight.astype(bool)
+    masked_error = jnp.where(selected, error, 0.0)
+    masked_target = jnp.where(selected, target, 0.0)
+    error_mean = masked_error.sum() / count
+    target_mean = masked_target.sum() / count
+    error_variance = (
+        jnp.where(selected, jnp.square(error - error_mean), 0.0).sum() / count
+    )
+    target_variance = (
+        jnp.where(selected, jnp.square(target - target_mean), 0.0).sum() / count
+    )
+    return {
+        "rmse": jnp.sqrt(jnp.where(selected, jnp.square(error), 0.0).sum() / count),
+        "bias": error_mean,
+        "explained_variance": 1.0 - error_variance / jnp.maximum(target_variance, 1e-8),
+    }
+
+
 class LearnerMixin:
     def train(self, carry, data):
         carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
@@ -106,8 +130,21 @@ class LearnerMixin:
         imgact = concat([imgprevact, lastact], 1)
         local_inp = self.feat2tensor(imgfeat)
         policy_inp = self.feat2tensor(policyfeat)
-        value = self.critic(imgfeat, 2, slow=False)
-        slowvalue = self.critic(imgfeat, 2, slow=True)
+        critic_context, critic_metrics = self.imagination_critic_context(
+            imgfeat, imagination_context
+        )
+        metrics.update(critic_metrics)
+        value = self.critic(imgfeat, 2, slow=False, context=critic_context)
+        slowvalue = self.critic(imgfeat, 2, slow=True, context=critic_context)
+        local_only_value = None
+        if critic_context is not None and not training:
+            local_only_value = self.critic(
+                imgfeat,
+                2,
+                slow=False,
+                context=jnp.zeros_like(critic_context),
+            )
+        imagination_valid = self.imagination_validity(imagination_context, horizon)
         imagined_losses, imgloss_out, imagined_metrics = imag_loss(
             imgact,
             self.rew(local_inp, 2).pred(),
@@ -119,11 +156,25 @@ class LearnerMixin:
             self.valnorm,
             self.advnorm,
             update=training,
-            valid=self.imagination_validity(imagination_context, horizon),
+            valid=imagination_valid,
             contdisc=self.config.contdisc,
             horizon=self.config.horizon,
             **self.config.imag_loss,
         )
+        if local_only_value is not None:
+            local_metrics = value_fit_metrics(
+                local_only_value.pred()[:, :-1],
+                imgloss_out["ret"],
+                None
+                if imagination_valid is None
+                else imagination_valid[:, : imgloss_out["ret"].shape[1]],
+            )
+            metrics.update(
+                {
+                    f"central_critic/local_only_imag_{key}": metric
+                    for key, metric in local_metrics.items()
+                }
+            )
         imagined_losses, imgloss_out = self.restore_imagination_results(
             imagined_losses,
             imgloss_out,
@@ -146,9 +197,22 @@ class LearnerMixin:
                 (feat, last, term, rew, boot),
             )
             local_inp = self.feat2tensor(feat)
-            value = self.critic(feat, 2, slow=False)
-            slowvalue = self.critic(feat, 2, slow=True)
-            replay_losses, _, replay_metrics = repl_loss(
+            critic_context, critic_metrics = self.replay_critic_context(
+                feat, obs, starts_count
+            )
+            metrics.update(critic_metrics)
+            value = self.critic(feat, 2, slow=False, context=critic_context)
+            slowvalue = self.critic(feat, 2, slow=True, context=critic_context)
+            local_only_value = None
+            if critic_context is not None and not training:
+                local_only_value = self.critic(
+                    feat,
+                    2,
+                    slow=False,
+                    context=jnp.zeros_like(critic_context),
+                )
+            replay_valid = valid[:, -starts_count:-1]
+            replay_losses, replay_out, replay_metrics = repl_loss(
                 last,
                 term,
                 rew,
@@ -157,12 +221,24 @@ class LearnerMixin:
                 slowvalue,
                 self.valnorm,
                 update=training,
-                valid=valid[:, -starts_count:-1],
+                valid=replay_valid,
                 horizon=self.config.horizon,
                 **self.config.repl_loss,
             )
             losses.update(replay_losses)
             metrics.update(prefix(replay_metrics, "reploss"))
+            if local_only_value is not None:
+                local_metrics = value_fit_metrics(
+                    local_only_value.pred()[:, :-1],
+                    replay_out["ret"],
+                    replay_valid[:, : replay_out["ret"].shape[1]],
+                )
+                metrics.update(
+                    {
+                        f"central_critic/local_only_replay_{key}": metric
+                        for key, metric in local_metrics.items()
+                    }
+                )
 
         # Initialize and evaluate extension modules only after the locked local
         # model, actor, and critic have consumed their normal RNG sequence.
@@ -266,6 +342,14 @@ class LearnerMixin:
     def imagination_validity(self, context, horizon):
         del context
         return None
+
+    def imagination_critic_context(self, features, context):
+        del features, context
+        return None, {}
+
+    def replay_critic_context(self, features, obs, starts_count):
+        del features, obs, starts_count
+        return None, {}
 
     @staticmethod
     def validity(obs):
