@@ -491,6 +491,44 @@ def test_b1_completes_agent_masked_team_jepa_update() -> None:
         assert np.isfinite(float(report_metrics[key]))
 
 
+def test_b1_auxiliary_loss_does_not_change_the_b0_local_update() -> None:
+    observations, actions = _team_spaces(3)
+    shared_updates = {
+        "opt.warmup": 0,
+        "marl.agent_jepa.slots": 2,
+        "marl.agent_jepa.width": 32,
+        "marl.agent_jepa.heads": 4,
+        "marl.agent_jepa.ffup": 2,
+        "marl.agent_jepa.predictor_hidden": 32,
+    }
+    b0 = object.__new__(MARLCore)
+    MARLCore.__init__(
+        b0, observations, actions, _agent_config(3, "b0").update(shared_updates)
+    )
+    b1 = object.__new__(MARLCore)
+    MARLCore.__init__(
+        b1, observations, actions, _agent_config(3, "b1").update(shared_updates)
+    )
+    data = _add_team_axis(_local_batch(), 3)
+    b0_carry = b0.init_train(1)
+    b1_carry = b1.init_train(1)
+
+    def b0_step():
+        return b0.train(b0_carry, data)
+
+    def b1_step():
+        return b1.train(b1_carry, data)
+
+    b0_state = nj.init(b0_step)({}, seed=57)
+    b1_state = nj.init(b1_step)({}, seed=57)
+    _assert_mapping_subset_equal(b1_state, b0_state)
+    b0_next, b0_output = nj.pure(b0_step)(b0_state, seed=58)
+    b1_next, b1_output = nj.pure(b1_step)(b1_state, seed=58)
+    _assert_mapping_subset_equal(b1_next, b0_next)
+    _assert_tree_equal(b1_output[0], b0_output[0])
+    _assert_tree_equal(b1_output[1], b0_output[1])
+
+
 def test_b1_masked_agent_target_has_no_hidden_context_leakage() -> None:
     batch, length, agents = 2, 3, 3
     histories = jax.random.normal(jax.random.key(61), (batch, length, agents, 16))
