@@ -100,7 +100,7 @@ class Agent(
         self.valnorm = Normalize(**config.valnorm, name="valnorm")
         self.advnorm = Normalize(**config.advnorm, name="advnorm")
 
-        if int(config.num_agents) == 1:
+        if int(config.num_agents) == 1 or str(config.behavior_optimizer) == "joint":
             # Preserve the confirmed competitive single-agent construction and
             # optimizer path byte-for-byte.
             self.modules = [
@@ -170,8 +170,6 @@ class Agent(
             "consec": elements.Space(np.int32),
             "stepid": elements.Space(np.uint8, 20),
         }
-        if str(getattr(self.config, "replay_sampling", "uniform")) != "uniform":
-            spaces["replay_sample_role"] = elements.Space(np.int8)
         if self.config.replay_context:
             spaces.update(
                 elements.tree.flatdict(

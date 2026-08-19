@@ -5,7 +5,6 @@ from functools import partial as bind
 
 import elements
 import embodied
-import numpy as np
 import portal
 import ruamel.yaml as yaml
 
@@ -90,17 +89,12 @@ def main(argv=None, extra_config_path=None):
         ipv6=config.ipv6,
     )
 
-    dual_replay = str(config.replay.sampling) == "recent_world_uniform_behavior"
-    run_args = dict(config.run)
-    if dual_replay:
-        run_args["train_ratio"] = 2 * float(run_args["train_ratio"])
     args = elements.Config(
-        **run_args,
+        **config.run,
         replica=config.replica,
         replicas=config.replicas,
         logdir=config.logdir,
-        batch_size=config.batch_size * (2 if dual_replay else 1),
-        replay_ready_size=config.batch_size * config.batch_length,
+        batch_size=config.batch_size,
         batch_length=config.batch_length,
         report_length=config.report_length,
         consec_train=config.consec_train,
@@ -213,7 +207,6 @@ def make_agent(config):
         return embodied.RandomAgent(obs_space, act_space)
     cpdir = elements.Path(config.logdir)
     cpdir = cpdir.parent if config.replicas > 1 else cpdir
-    dual_replay = str(config.replay.sampling) == "recent_world_uniform_behavior"
     return Algorithm(
         obs_space,
         act_space,
@@ -222,13 +215,12 @@ def make_agent(config):
             logdir=config.logdir,
             seed=config.seed,
             jax=config.jax,
-            batch_size=config.batch_size * (2 if dual_replay else 1),
+            batch_size=config.batch_size,
             batch_length=config.batch_length,
             replay_context=config.replay_context,
             report_length=config.report_length,
             replica=config.replica,
             replicas=config.replicas,
-            replay_sampling=config.replay.sampling,
         ),
     )
 
@@ -286,14 +278,12 @@ def make_replay(config, folder, mode="train"):
     )
 
     sampling = str(config.replay.sampling)
-    if mode == "train" and sampling == "recent_world_uniform_behavior":
-        from .replay import RecentWorldUniformBehaviorReplay
+    if mode == "train" and sampling == "recent":
+        from .replay import RecentReplay
 
         if int(capacity) != 50_000:
-            raise ValueError(
-                "recent_world_uniform_behavior requires replay.size=50000"
-            )
-        return RecentWorldUniformBehaviorReplay(
+            raise ValueError("recent replay requires replay.size=50000")
+        return RecentReplay(
             **kwargs,
             recency_decay=float(config.replay.recency_decay),
             seed=int(config.seed),
@@ -338,59 +328,16 @@ def wrap_env(env, config):
 
 
 def make_stream(config, replay, mode):
-    length = config.batch_length if mode == "train" else config.report_length
-    consec = config.consec_train if mode == "train" else config.consec_report
-
-    def make_one(sample_mode, batch_size):
-        source = embodied.streams.Stateless(
-            bind(replay.sample, batch_size, sample_mode)
-        )
-        return embodied.streams.Consec(
-            source,
-            length=length,
-            consec=consec,
-            prefix=config.replay_context,
-            strict=(mode == "train"),
-            contiguous=True,
-        )
-
-    dual = str(config.replay.sampling) == "recent_world_uniform_behavior"
-    if mode == "train" and dual:
-        stream = embodied.streams.Zip(
-            [
-                make_one("train_world", config.batch_size),
-                make_one("train_behavior", config.batch_size),
-            ]
-        )
-
-        def add_roles(data):
-            shape = data["is_first"].shape
-            if shape[0] != 2 * int(config.batch_size):
-                raise ValueError(f"unexpected dual replay batch shape: {shape}")
-            data = dict(data)
-            data["replay_sample_role"] = np.concatenate(
-                [
-                    np.ones((config.batch_size, shape[1]), np.int8),
-                    np.full((config.batch_size, shape[1]), 2, np.int8),
-                ],
-                axis=0,
-            )
-            return data
-
-        return embodied.streams.Map(stream, add_roles)
-
-    batch_size = config.batch_size * (2 if dual else 1)
-    stream = make_one(mode, batch_size)
-    if dual:
-        stream = embodied.streams.Map(
-            stream,
-            lambda data: {
-                **data,
-                "replay_sample_role": np.zeros(
-                    data["is_first"].shape, np.int8
-                ),
-            },
-        )
+    fn = bind(replay.sample, config.batch_size, mode)
+    stream = embodied.streams.Stateless(fn)
+    stream = embodied.streams.Consec(
+        stream,
+        length=(config.batch_length if mode == "train" else config.report_length),
+        consec=(config.consec_train if mode == "train" else config.consec_report),
+        prefix=config.replay_context,
+        strict=(mode == "train"),
+        contiguous=True,
+    )
     return stream
 
 

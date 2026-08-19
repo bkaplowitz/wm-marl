@@ -24,8 +24,6 @@ class ReplayMixin:
         carry = (enc_carry, dyn_carry, dec_carry)
         stepid = data["stepid"]
         obs = {key: data[key] for key in self.obs_space}
-        if "replay_sample_role" in data:
-            obs["replay_sample_role"] = data["replay_sample_role"]
 
         def prepend(initial, sequence):
             return jnp.concatenate([initial[:, None], sequence[:, :-1]], 1)
@@ -53,7 +51,7 @@ class ReplayMixin:
                 else {}
             ),
         )
-        replay_obs = {key: rhs(data[key]) for key in obs}
+        replay_obs = {key: rhs(data[key]) for key in self.obs_space}
         replay_prevact = {key: data[key][:, context - 1 : -1] for key in self.act_space}
         replay_stepid = rhs(stepid)
 

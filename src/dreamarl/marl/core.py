@@ -47,7 +47,7 @@ class TeamAxisAdapter:
         return {
             key: (
                 space
-                if key in {"consec", "stepid", "replay_sample_role"}
+                if key in {"consec", "stepid"}
                 else add_agent_axis(space, self.team.size)
             )
             for key, space in super().ext_space.items()

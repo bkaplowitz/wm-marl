@@ -12,7 +12,7 @@ def verify_run_contract(spec: "DreaMARLRunSpec") -> dict[str, object]:
     """Describe the selected first-party temporal backend and shared algorithm."""
 
     return {
-        "contract_version": 39,
+        "contract_version": 40,
         "marl_stage": spec.marl_stage,
         "marl_stage_status": (
             "maintained_performance_baseline"
@@ -47,8 +47,8 @@ def verify_run_contract(spec: "DreaMARLRunSpec") -> dict[str, object]:
         "actor_imagination_horizon": 15,
         "temporal_context": 64,
         "training_replay_sampling": (
-            "world-model sequences weighted by 0.9998^age; behavior starts uniform"
-            if spec.replay_sampling == "recent_world_uniform_behavior"
+            "all training sequences weighted by 0.9998^age"
+            if spec.replay_sampling == "recent"
             else "uniform sequences"
         ),
         "training_replay_state": (

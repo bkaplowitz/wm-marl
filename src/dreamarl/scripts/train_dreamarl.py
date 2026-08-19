@@ -22,8 +22,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--marl-stage", choices=("b0", "b1", "b2"), default="b0")
     parser.add_argument(
         "--replay-sampling",
-        choices=("uniform", "recent_world_uniform_behavior"),
+        choices=("uniform", "recent"),
         default="uniform",
+    )
+    parser.add_argument(
+        "--behavior-optimizer", choices=("joint", "grouped"), default="joint"
     )
     parser.add_argument("--agent-jepa-local-grad-scale", type=float, default=0.0)
     parser.add_argument("--agent-jepa-k0-scale", type=float, default=0.1)
@@ -85,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         curve_eval_policy_mode=args.curve_eval_policy_mode,
         imagination_starts=args.imagination_starts,
         replay_sampling=args.replay_sampling,
+        behavior_optimizer=args.behavior_optimizer,
         marl_stage=args.marl_stage,
         agent_jepa_local_grad_scale=args.agent_jepa_local_grad_scale,
         agent_jepa_k0_scale=args.agent_jepa_k0_scale,

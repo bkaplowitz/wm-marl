@@ -91,7 +91,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
 
     def trainfn(tran, worker):
         del tran, worker
-        if len(replay) < int(args.replay_ready_size):
+        if len(replay) < args.batch_size * args.batch_length:
             return
         for _ in range(should_train(step)):
             with elements.timer.section("stream_next"):

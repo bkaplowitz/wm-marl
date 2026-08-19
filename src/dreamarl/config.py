@@ -33,6 +33,7 @@ class DreaMARLRunSpec:
     curve_eval_policy_mode: str = "deterministic"
     imagination_starts: int = 0
     replay_sampling: str = "uniform"
+    behavior_optimizer: str = "joint"
     marl_stage: str = "b0"
     agent_jepa_local_grad_scale: float = 0.0
     agent_jepa_k0_scale: float = 0.1
@@ -59,11 +60,12 @@ class DreaMARLRunSpec:
             raise ValueError("imagination_starts must be non-negative")
         if self.marl_stage not in {"b0", "b1", "b2"}:
             raise ValueError(f"unsupported MARL stage: {self.marl_stage!r}")
-        if self.replay_sampling not in {
-            "uniform",
-            "recent_world_uniform_behavior",
-        }:
+        if self.replay_sampling not in {"uniform", "recent"}:
             raise ValueError(f"unsupported replay sampling: {self.replay_sampling!r}")
+        if self.behavior_optimizer not in {"joint", "grouped"}:
+            raise ValueError(
+                f"unsupported behavior optimizer: {self.behavior_optimizer!r}"
+            )
         for name in (
             "agent_jepa_local_grad_scale",
             "agent_jepa_k0_scale",
@@ -116,6 +118,8 @@ class DreaMARLRunSpec:
             str(self.agent_jepa_future_set_scale),
             "--replay.sampling",
             self.replay_sampling,
+            "--agent.behavior_optimizer",
+            self.behavior_optimizer,
             "--run.steps",
             str(self.train_steps),
             "--jax.platform",
@@ -134,7 +138,7 @@ class DreaMARLRunSpec:
                 "report/world_model/|report/openloop/|eval/"
             ),
         ]
-        if self.replay_sampling == "recent_world_uniform_behavior":
+        if self.replay_sampling == "recent":
             command.extend(
                 [
                     "--replay.size",
@@ -210,14 +214,10 @@ class DreaMARLRunSpec:
             "replay_sampling": self.replay_sampling,
             "world_model_recency_decay": (
                 0.9998
-                if self.replay_sampling == "recent_world_uniform_behavior"
+                if self.replay_sampling == "recent"
                 else None
             ),
-            "behavior_replay_sampling": (
-                "uniform"
-                if self.replay_sampling == "recent_world_uniform_behavior"
-                else self.replay_sampling
-            ),
+            "behavior_replay_sampling": self.replay_sampling,
             "replay_context": 128,
             "execution": "strict decentralized parameter-shared actors",
             "imagination": "synchronized independent local rollouts",
@@ -285,14 +285,14 @@ class DreaMARLRunSpec:
             "imagination_starts": self.imagination_starts,
             "actor_entropy": 3e-4,
             "behavior_objective": "reinforce",
-            "optimizer_topology": (
-                "separate world, actor, and critic optimizer state"
-                if self.num_agents > 1
-                else "locked single-agent joint optimizer"
-            ),
+            "optimizer_topology": self.behavior_optimizer,
             "world_model_learning_rate": 4e-5,
-            "actor_learning_rate": 3e-4 if self.num_agents > 1 else 4e-5,
-            "critic_learning_rate": 3e-4 if self.num_agents > 1 else 4e-5,
+            "actor_learning_rate": (
+                3e-4 if self.behavior_optimizer == "grouped" else 4e-5
+            ),
+            "critic_learning_rate": (
+                3e-4 if self.behavior_optimizer == "grouped" else 4e-5
+            ),
             "wandb_project": self.wandb_project,
             "wandb_entity": self.wandb_entity,
             "command": self.command,
@@ -311,8 +311,8 @@ class DreaMARLRunSpec:
             "SIGReg embedding anti-collapse regularization",
             "128-step loss-excluded Transformer replay burn-in",
             (
-                "exponentially recent world-model replay with uniform behavior starts"
-                if self.replay_sampling == "recent_world_uniform_behavior"
+                "single-stream exponentially recent replay for all training losses"
+                if self.replay_sampling == "recent"
                 else "uniform replay"
             ),
             "explicit environment, time, and agent replay axes",

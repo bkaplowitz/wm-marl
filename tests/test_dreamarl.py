@@ -10,6 +10,7 @@ from dreamarl.config import DreaMARLRunSpec
 from dreamarl.contracts import verify_run_contract
 from dreamarl.launcher import run_training
 from dreamarl.main import _validate_script
+from dreamarl.replay import ExponentialRecency, RecentReplay
 from dreamarl.runtime import algorithm_root
 from dreamarl.scripts.eval_dreamarl import main as eval_main
 
@@ -143,6 +144,11 @@ def test_curve_evaluation_is_explicit(tmp_path: Path) -> None:
     assert "--run.curve_eval_interval" not in baseline.command
     index = measured.command.index("--run.curve_eval_interval")
     assert measured.command[index + 1] == "50000"
+
+
+def test_recent_replay_keeps_the_exponential_selector_when_empty() -> None:
+    replay = RecentReplay(length=4, capacity=32, recency_decay=0.9998, seed=7)
+    assert isinstance(replay.sampler, ExponentialRecency)
 
 
 def test_b1_launch_selects_only_training_time_agent_jepa(tmp_path: Path) -> None:

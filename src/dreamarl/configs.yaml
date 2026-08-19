@@ -104,6 +104,7 @@ defaults:
     sigreg: {enabled: True, knots: 17, num_proj: 256, aggregation: per_agent}
     loss_scales: {posterior_jepa: 2.0, dynamics_jepa: 2.0, spatial_jepa: 1.0, agent_jepa: 1.0, sigreg: 0.05, action_mask: 1.0, rew: 1.0, con: 1.0, dyn: 1.0, rep: 0.1, policy: 1.0, value: 1.0, repval: 0.3}
     opt: {lr: 4e-5, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
+    behavior_optimizer: joint
     actor_opt: {lr: 3e-4, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
     critic_opt: {lr: 3e-4, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
     target_encoder: {rate: 0.01, every: 1}
