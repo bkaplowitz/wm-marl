@@ -146,6 +146,13 @@ def test_curve_evaluation_is_explicit(tmp_path: Path) -> None:
     assert measured.command[index + 1] == "50000"
 
 
+def test_training_cadence_is_explicit_and_recorded(tmp_path: Path) -> None:
+    spec = _spec(tmp_path, train_ratio=1024.0)
+    index = spec.command.index("--run.train_ratio")
+    assert spec.command[index + 1] == "1024.0"
+    assert spec.to_dict()["optimizer_updates_per_environment_step"] == 1.0
+
+
 def test_recent_replay_keeps_the_exponential_selector_when_empty() -> None:
     replay = RecentReplay(length=4, capacity=32, recency_decay=0.9998, seed=7)
     assert isinstance(replay.sampler, ExponentialRecency)

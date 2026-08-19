@@ -33,6 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--agent-jepa-future-scale", type=float, default=1.0)
     parser.add_argument("--agent-jepa-future-set-scale", type=float, default=1.0)
     parser.add_argument("--total-env-steps", type=int, default=50_000)
+    parser.add_argument("--train-ratio", type=float, default=256.0)
     parser.add_argument("--experiment-dir", type=Path)
     parser.add_argument(
         "--output-root",
@@ -87,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         curve_eval_seed_offset=args.curve_eval_seed_offset,
         curve_eval_policy_mode=args.curve_eval_policy_mode,
         imagination_starts=args.imagination_starts,
+        train_ratio=args.train_ratio,
         replay_sampling=args.replay_sampling,
         behavior_optimizer=args.behavior_optimizer,
         marl_stage=args.marl_stage,

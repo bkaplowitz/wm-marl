@@ -32,6 +32,7 @@ class DreaMARLRunSpec:
     curve_eval_seed_offset: int = 10_000
     curve_eval_policy_mode: str = "deterministic"
     imagination_starts: int = 0
+    train_ratio: float = 256.0
     replay_sampling: str = "uniform"
     behavior_optimizer: str = "joint"
     marl_stage: str = "b0"
@@ -58,6 +59,8 @@ class DreaMARLRunSpec:
             raise ValueError("curve_eval_interval must be non-negative")
         if self.imagination_starts < 0:
             raise ValueError("imagination_starts must be non-negative")
+        if self.train_ratio <= 0:
+            raise ValueError("train_ratio must be positive")
         if self.marl_stage not in {"b0", "b1", "b2"}:
             raise ValueError(f"unsupported MARL stage: {self.marl_stage!r}")
         if self.replay_sampling not in {"uniform", "recent"}:
@@ -120,6 +123,8 @@ class DreaMARLRunSpec:
             self.replay_sampling,
             "--agent.behavior_optimizer",
             self.behavior_optimizer,
+            "--run.train_ratio",
+            str(self.train_ratio),
             "--run.steps",
             str(self.train_steps),
             "--jax.platform",
@@ -283,6 +288,9 @@ class DreaMARLRunSpec:
             "curve_eval_seed_offset": self.curve_eval_seed_offset,
             "curve_eval_policy_mode": self.curve_eval_policy_mode,
             "imagination_starts": self.imagination_starts,
+            "train_ratio": self.train_ratio,
+            "training_batch_steps": 16 * 64,
+            "optimizer_updates_per_environment_step": self.train_ratio / (16 * 64),
             "actor_entropy": 3e-4,
             "behavior_objective": "reinforce",
             "optimizer_topology": self.behavior_optimizer,
