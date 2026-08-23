@@ -155,23 +155,11 @@ class ViTEncoder(nj.Module):
     act: str = "silu"
     winit: str = "trunc_normal_in"
     symlog: bool = True
-    pool: str = "tokens"
-    position: str = "learned"
-    hierarchical: tuple = ()
-    modality_embedding: bool = False
 
     def __init__(self, obs_space, **kw):
         assert all(len(space.shape) <= 3 for space in obs_space.values()), obs_space
         if self.model % self.heads:
             raise ValueError("ViT model width must be divisible by attention heads")
-        if self.pool not in {"tokens", "cls"}:
-            raise ValueError("ViT pooling must be tokens or cls")
-        if self.position not in {"learned", "rope3d"}:
-            raise ValueError("ViT position must be learned or rope3d")
-        if self.pool == "cls" and self.position != "learned":
-            raise ValueError("CLS pooling requires learned positional embeddings")
-        if any(index < 0 or index >= self.layers for index in self.hierarchical):
-            raise ValueError("hierarchical ViT layers must be valid block indices")
         self.obs_space = obs_space
         self.veckeys = [
             key for key, space in obs_space.items() if len(space.shape) <= 2
@@ -213,50 +201,13 @@ class ViTEncoder(nj.Module):
             outs.append(x)
 
         if self.imgkeys:
-            x = self._encode_image_tokens(obs, bdims=bdims, project=True)
+            x = self._encode_image_tokens(obs, bdims=bdims)
             outs.append(x.reshape((x.shape[0], -1)))
 
         tokens = jnp.concatenate(outs, axis=-1).reshape((*bshape, -1))
         return carry, {}, tokens
 
-    @staticmethod
-    def _rotate_axis(values, positions, start, width):
-        """Apply the adjacent-pair RoPE convention used by V-JEPA 2.1."""
-
-        if not width:
-            return values
-        section = values[..., start : start + width]
-        omega = jnp.arange(width // 2, dtype=jnp.float32) / (width / 2.0)
-        omega = 1.0 / jnp.power(10000.0, omega)
-        angles = positions.astype(jnp.float32)[None, :, None, None] * omega
-        sine = jnp.repeat(jnp.sin(angles), 2, axis=-1).astype(values.dtype)
-        cosine = jnp.repeat(jnp.cos(angles), 2, axis=-1).astype(values.dtype)
-        paired = section.reshape((*section.shape[:-1], width // 2, 2))
-        rotated = jnp.stack((-paired[..., 1], paired[..., 0]), axis=-1)
-        rotated = rotated.reshape(section.shape)
-        section = section * cosine + rotated * sine
-        return jnp.concatenate(
-            [values[..., :start], section, values[..., start + width :]], axis=-1
-        )
-
-    def _rope3d(self, values, grid_height, grid_width):
-        """V-JEPA 2.1 RoPE with zero time and height/width positions."""
-
-        head_dim = values.shape[-1]
-        axis_dim = 2 * ((head_dim // 3) // 2)
-        token_ids = jnp.arange(grid_height * grid_width)
-        positions = (
-            jnp.zeros_like(token_ids),
-            token_ids // grid_width,
-            token_ids % grid_width,
-        )
-        for axis, position in enumerate(positions):
-            values = self._rotate_axis(
-                values, position, axis * axis_dim, axis_dim
-            )
-        return values
-
-    def _encode_image_tokens(self, obs, *, bdims, visible=None, project=True):
+    def _encode_image_tokens(self, obs, *, bdims):
         images = [obs[key] for key in sorted(self.imgkeys)]
         assert all(image.dtype == jnp.uint8 for image in images)
         x = nn.cast(jnp.concatenate(images, axis=-1), force=True) / 255 - 0.5
@@ -270,38 +221,14 @@ class ViTEncoder(nj.Module):
             (batch, token_count, patch * patch * channels)
         )
         x = self.sub("patch_projection", nn.Linear, self.model, winit=self.winit)(x)
-        if self.pool == "cls":
-            cls = self.value(
-                "cls_token", nn.init("trunc_normal"), (1, self.model), jnp.float32
-            )
-            cls = jnp.broadcast_to(nn.cast(cls), (batch, 1, self.model))
-            x = jnp.concatenate([cls, x], axis=1)
-        sequence_count = x.shape[1]
-        if self.position == "learned":
-            position = self.value(
-                "position",
-                nn.init("trunc_normal"),
-                (sequence_count, self.model),
-                jnp.float32,
-            )
-            x = x + nn.cast(position)[None]
-        if self.modality_embedding:
-            modality = self.value(
-                "image_modality",
-                nn.Initializer("normal", "none", 1e-6),
-                (1, self.model),
-                jnp.float32,
-            )
-            x = x + nn.cast(modality)[None]
+        position = self.value(
+            "position",
+            nn.init("trunc_normal"),
+            (token_count, self.model),
+            jnp.float32,
+        )
+        x = x + nn.cast(position)[None]
 
-        valid = None
-        if visible is not None:
-            valid = visible.reshape((batch, token_count)).astype(bool)
-            if self.pool == "cls":
-                valid = jnp.concatenate([jnp.ones((batch, 1), bool), valid], axis=1)
-            x = jnp.where(valid[..., None], x, jnp.zeros_like(x))
-
-        hierarchical = []
         for index in range(self.layers):
             with nj.scope(f"layer{index}"):
                 residual = x
@@ -312,23 +239,18 @@ class ViTEncoder(nj.Module):
                 qkv = qkv.reshape(
                     (
                         batch,
-                        sequence_count,
+                        token_count,
                         3,
                         self.heads,
                         self.model // self.heads,
                     )
                 )
                 query, key, value = [qkv[:, :, part] for part in range(3)]
-                if self.position == "rope3d":
-                    query = self._rope3d(query, grid_height, grid_width)
-                    key = self._rope3d(key, grid_height, grid_width)
                 logits = jnp.einsum("bnhd,bmhd->bhnm", query, key)
                 logits = jnp.float32(logits) / math.sqrt(key.shape[-1])
-                if valid is not None:
-                    logits = jnp.where(valid[:, None, None, :], logits, -1e30)
                 weights = jax.nn.softmax(logits, axis=-1).astype(x.dtype)
                 attended = jnp.einsum("bhnm,bmhd->bnhd", weights, value)
-                attended = attended.reshape((batch, sequence_count, self.model))
+                attended = attended.reshape((batch, token_count, self.model))
                 x = residual + self.sub(
                     "attention_out", nn.Linear, self.model, winit=self.winit
                 )(attended)
@@ -344,59 +266,19 @@ class ViTEncoder(nj.Module):
                 x = nn.act(self.act)(x)
                 x = self.sub("ffn_out", nn.Linear, self.model, winit=self.winit)(x)
                 x = residual + x
-                if valid is not None:
-                    x = jnp.where(valid[..., None], x, jnp.zeros_like(x))
-                if index in self.hierarchical:
-                    hierarchical.append(
-                        self.sub(f"hierarchical_norm{index}", nn.Norm, self.norm)(x)
-                    )
 
-        if hierarchical:
-            x = jnp.concatenate(hierarchical, axis=-1)
-        else:
-            x = self.sub("output_norm", nn.Norm, self.norm)(x)
-        if self.pool == "cls":
-            x = x[:, 0]
-        if project and x.shape[-1] != self.token_dim:
-            x = self.sub("token_projection", nn.Linear, self.token_dim, winit=self.winit)(x)
-        if valid is not None:
-            x = jnp.where(valid[..., None], x, jnp.zeros_like(x))
+        x = self.sub("output_norm", nn.Norm, self.norm)(x)
+        if x.shape[-1] != self.token_dim:
+            x = self.sub(
+                "token_projection", nn.Linear, self.token_dim, winit=self.winit
+            )(x)
         return x
-
-    def visible_spatial_tokens(self, obs, reset, visible, *, single=False):
-        """Encode only visible context tokens while preserving static shapes."""
-
-        bdims = 1 if single else 2
-        expected = (*reset.shape, *self.image_grid_shape()[:2])
-        if visible.shape != expected:
-            raise ValueError(
-                f"visible token mask must have shape {expected}, got {visible.shape}"
-            )
-        if self.pool != "tokens":
-            raise ValueError("visible spatial tokens require token pooling")
-        encoded = self._encode_image_tokens(
-            obs, bdims=bdims, visible=visible, project=not bool(self.hierarchical)
-        )
-        return encoded.reshape((*reset.shape, encoded.shape[-2], encoded.shape[-1]))
-
-    def full_predictor_tokens(self, obs, reset, *, single=False):
-        """Return full hierarchical targets for the V-JEPA 2.1 predictor."""
-
-        if self.pool != "tokens":
-            raise ValueError("predictor tokens require token pooling")
-        bdims = 1 if single else 2
-        encoded = self._encode_image_tokens(obs, bdims=bdims, project=False)
-        return encoded.reshape((*reset.shape, encoded.shape[-2], encoded.shape[-1]))
-
-    @property
-    def predictor_token_dim(self):
-        return self.model * len(self.hierarchical) if self.hierarchical else self.token_dim
 
     def calculate_encoder_output_dim(self):
         total_dim = self.units if self.veckeys else 0
         if self.imgkeys:
             height, width, depth = self.image_grid_shape()
-            total_dim += depth if self.pool == "cls" else height * width * depth
+            total_dim += height * width * depth
         return int(total_dim)
 
     def image_grid_shape(self):
@@ -417,137 +299,11 @@ class ViTEncoder(nj.Module):
         return height // self.patch, width // self.patch, int(self.token_dim)
 
     def spatial_tokens(self, tokens):
-        if self.pool != "tokens":
-            raise ValueError("CLS encoders do not expose flattened spatial tokens")
         height, width, depth = self.image_grid_shape()
         offset = self.units if self.veckeys else 0
         image_width = height * width * depth
         image_values = tokens[..., offset : offset + image_width]
         return image_values.reshape((*tokens.shape[:-1], height * width, depth))
-
-
-class SpatialTokenPredictor(nj.Module):
-    """Predict target tokens from visible context tokens and position queries."""
-
-    grid: tuple = (14, 14)
-    input_dim: int = 64
-    model: int = 384
-    layers: int = 12
-    heads: int = 12
-    ffup: int = 4
-    norm: str = "layer1em6"
-    act: str = "gelu"
-    winit: str = "trunc_normal_in"
-
-    def __init__(self, **kw):
-        if self.model % self.heads:
-            raise ValueError("predictor model width must divide attention heads")
-        self.kw = kw
-
-    def __call__(self, context, visible, target):
-        leading = context.shape[:-2]
-        token_count = math.prod(self.grid)
-        if context.shape[-2:] != (token_count, self.input_dim):
-            raise ValueError(
-                "context token shape must end in "
-                f"{(token_count, self.input_dim)}, got {context.shape}"
-            )
-        expected_mask = (*leading, *self.grid)
-        if visible.shape != expected_mask or target.shape != expected_mask:
-            raise ValueError(
-                "predictor masks must match context leading dimensions and grid"
-            )
-
-        batch = math.prod(leading)
-        context = nn.cast(context.reshape((batch, token_count, self.input_dim)))
-        visible = visible.reshape((batch, token_count)).astype(bool)
-        target = target.reshape((batch, token_count)).astype(bool)
-        context = self.sub(
-            "context_projection", nn.Linear, self.model, winit=self.winit
-        )(context)
-        mask_token = self.value(
-            "mask_token",
-            nn.init("zeros"),
-            (1, self.model),
-            jnp.float32,
-        )
-        context = jnp.where(visible[..., None], context, jnp.zeros_like(context))
-        queries = jnp.where(target[..., None], nn.cast(mask_token)[None], 0.0)
-        x = jnp.concatenate([context, queries], axis=1)
-        valid = jnp.concatenate([visible, target], axis=1)
-
-        for index in range(self.layers):
-            with nj.scope(f"layer{index}"):
-                residual = x
-                normed = self.sub("attention_norm", nn.Norm, self.norm)(x)
-                qkv = self.sub("qkv", nn.Linear, 3 * self.model, winit=self.winit)(
-                    normed
-                )
-                qkv = qkv.reshape(
-                    (
-                        batch,
-                        2 * token_count,
-                        3,
-                        self.heads,
-                        self.model // self.heads,
-                    )
-                )
-                query, key, value = [qkv[:, :, part] for part in range(3)]
-                query = self._rope_queries(query, token_count)
-                key = self._rope_queries(key, token_count)
-                logits = jnp.einsum("bnhd,bmhd->bhnm", query, key)
-                logits = jnp.float32(logits) / math.sqrt(key.shape[-1])
-                logits = jnp.where(valid[:, None, None, :], logits, -1e30)
-                weights = jax.nn.softmax(logits, axis=-1).astype(x.dtype)
-                attended = jnp.einsum("bhnm,bmhd->bnhd", weights, value)
-                attended = attended.reshape((batch, 2 * token_count, self.model))
-                x = residual + self.sub(
-                    "attention_out", nn.Linear, self.model, winit=self.winit
-                )(attended)
-                residual = x
-                x = self.sub("ffn_norm", nn.Norm, self.norm)(x)
-                x = self.sub(
-                    "ffn_in",
-                    nn.Linear,
-                    self.model * self.ffup,
-                    winit=self.winit,
-                )(x)
-                x = nn.act(self.act)(x)
-                x = self.sub("ffn_out", nn.Linear, self.model, winit=self.winit)(x)
-                x = residual + x
-                x = jnp.where(valid[..., None], x, jnp.zeros_like(x))
-
-        context_output = self.sub("output_norm", nn.Norm, self.norm)(x[:, :token_count])
-        query_output = self.sub("output_norm", nn.Norm, self.norm)(x[:, token_count:])
-        prediction = self.sub(
-            "target_projection", nn.Linear, self.input_dim, winit=self.winit
-        )(query_output)
-        context_prediction = self.sub(
-            "target_projection", nn.Linear, self.input_dim, winit=self.winit
-        )(context_output)
-        prediction = jnp.where(
-            target[..., None], prediction, jnp.zeros_like(prediction)
-        )
-        context_prediction = jnp.where(
-            visible[..., None], context_prediction, jnp.zeros_like(context_prediction)
-        )
-        return (
-            prediction.reshape((*leading, token_count, self.input_dim)),
-            context_prediction.reshape((*leading, token_count, self.input_dim)),
-        )
-
-    def _rope_queries(self, values, token_count):
-        """Apply official 3-axis RoPE to context and target token copies."""
-
-        head_dim = values.shape[-1]
-        axis_dim = 2 * ((head_dim // 3) // 2)
-        ids = jnp.tile(jnp.arange(token_count), 2)
-        positions = (jnp.zeros_like(ids), ids // self.grid[1], ids % self.grid[1])
-        for axis, position in enumerate(positions):
-            values = ViTEncoder._rotate_axis(
-                values, position, axis * axis_dim, axis_dim
-            )
-        return values
 
 
 class Decoder(nj.Module):

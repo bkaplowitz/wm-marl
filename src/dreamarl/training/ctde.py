@@ -8,7 +8,7 @@ the final-step losses back on the replay grid.
 
 Keeping this code model agnostic makes the intended gradient boundary explicit:
 the second-step loss trains the joint predictor at the last rollout step only.
-It cannot update the local B0 model or backpropagate through the first joint
+It cannot update the local world model or backpropagate through the first joint
 prediction.
 """
 
@@ -114,9 +114,7 @@ def predicted_controllable_alive(current_alive, present, probability):
             "CTDE liveness tensors must share [...,A], got "
             f"{current_alive.shape}, {present.shape}, and {probability.shape}"
         )
-    return jax.lax.stop_gradient(
-        current_alive & present & (probability >= 0.5)
-    )
+    return jax.lax.stop_gradient(current_alive & present & (probability >= 0.5))
 
 
 def two_step_objective(
@@ -168,8 +166,7 @@ def two_step_objective(
         )
     if destination_valid.ndim != 3:
         raise ValueError(
-            "destination validity must be [B,L,A], got "
-            f"{destination_valid.shape}"
+            f"destination validity must be [B,L,A], got {destination_valid.shape}"
         )
     outer_sample_valid = anchors.valid[:, None]
     outer_sample_valid &= destination_valid[anchors.batch, anchors.time]
@@ -193,9 +190,7 @@ def two_step_objective(
                 f"{value.shape}"
             )
         name = str(name)
-        valid = jnp.asarray(
-            auxiliary_valid.get(name, supervision_valid), bool
-        )
+        valid = jnp.asarray(auxiliary_valid.get(name, supervision_valid), bool)
         if valid.shape != embedding_valid.shape:
             raise ValueError(
                 f"two-step {name} validity must be {embedding_valid.shape}, got "
@@ -205,9 +200,7 @@ def two_step_objective(
         validities[name] = valid & outer_sample_valid
 
     losses = {
-        name: _scatter_normalized(
-            value, anchors, validities[name], destination_valid
-        )
+        name: _scatter_normalized(value, anchors, validities[name], destination_valid)
         for name, value in sampled_losses.items()
     }
     metrics = {

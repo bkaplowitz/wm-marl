@@ -1,128 +1,205 @@
 # DreaMARL
 
-DreaMARL is a first-party, decoder-free visual model-based reinforcement
-learning implementation. Its locked single-agent configuration combines a
-categorical stochastic state, a causal Transformer, EMA-target
-joint-embedding prediction, and DreamerV3 actor-critic semantics. The maintained
-MARL path preserves exact single-agent behavior at `A=1`. For `A>1`, it adds an
-explicit team axis, parameter sharing, and synchronized independent local
-imagination. B0 execution is strictly decentralized: each actor, critic, and
-world-model transition receives only the focal agent's observation/action
-history. B1 adds a training-only agent-axis JEPA. B2 retains the observation-local
-actor and transition model but trains fast and slow centralized critics from the
-focal local state plus an explicit JEPA-derived active-team belief.
+DreaMARL is a decoder-free, joint-embedding predictive world model for
+reinforcement learning. The local model combines a categorical latent state,
+a causal Transformer, EMA-target prediction, and Dreamer-style latent
+imagination. It learns observation representations without reconstructing
+pixels.
 
-The maintained performance baseline is B0. B1 and B2 are retained as
-reproducible negative experimental stages: their representation and information
-paths were validated, but neither improved control on the two-seed Externality
-Mushrooms evaluation, and B2 underperformed B1 and B0. New mechanisms must branch
-from B0 unless new evidence overturns that result.
+The same local model is used in three public configurations:
 
-The current architecture is documented in
-[`docs/dreamarl/ARCHITECTURE.md`](docs/dreamarl/ARCHITECTURE.md). The empirical
-single-agent lock-in is recorded in
-[`docs/dreamarl/VISUAL_LOCKIN.md`](docs/dreamarl/VISUAL_LOCKIN.md).
+- **DreaMARL** is the single-agent algorithm.
+- **Independent DreaMARL** shares the local model and actor across agents while
+  keeping every transition, value, and action observation-local.
+- **DreaMARL-CTDE** adds a training-only joint JEPA simulator and centralized
+  attention critic. The deployed actor remains strictly local.
 
-## Repository Layout
+DreaMARL-CTDE has two controlled predictive objectives. The **one-step** model
+learns factual joint transitions. The **two-step** model retains that objective
+and adds bounded self-fed two-step supervision. These names correspond to
+manifest versions `1.1` and `2`. Older experiment manifests may use the labels
+`B0`, `B1`, or `B2`; those are historical experiment identifiers, not the
+public architecture names.
+
+The implementation and current empirical evidence are documented in:
+
+- [Architecture](docs/architecture.md)
+- [Single-agent visual results](docs/results/single_agent.md)
+- [Provenance and attribution](docs/provenance.md)
+- [SMAC protocol](docs/reproducibility/smac.md)
+- [MARIE reproduction notes](docs/reproducibility/marie.md)
+
+## Architecture at a glance
 
 ```text
-src/dreamarl/             maintained first-party algorithm
-src/dreamarl/marl/        minimal shared-local agent-axis core
-src/dreamarl/ablations/   retained scientific controls
-src/dreamarl/baselines/   launch and evaluation adapters only
-external/dreamerv3/       pinned official DreamerV3 source
-external/dreamer-cdp/     pinned official Dreamer-CDP source
-external/nedreamer/       pinned official NE-Dreamer source
-external/marie/           pinned paper-era official MARIE source
-configs/dreamerv3/        benchmark protocol manifests
-tests/                    maintained algorithm and benchmark tests
+decentralized execution
+
+local observation_i -> local encoder/posterior_i -> shared actor -> action_i
+
+centralized training only
+
+synchronized local states + joint action
+                    |
+                    v
+       joint action-conditioned JEPA
+                    |
+       predicted next local embedding_i
+                    |
+       existing local posterior interface
+                    |
+           next executable state_i
+
+synchronized stopped local states -> attention critic -> value_i
 ```
 
-The external repositories are immutable benchmark references. DreaMARL does
-not import their model implementations. It uses the pinned DreamerV3 checkout
-for Embodied infrastructure and as a numerical reference in parity tests.
-Detailed attribution and source revisions are in
-[`docs/dreamarl/PROVENANCE.md`](docs/dreamarl/PROVENANCE.md).
+The joint simulator predicts the representation of what each agent will
+observe next; it does not manufacture a privileged actor state. During real
+execution, policy synchronization contains only the local encoder, local
+dynamics, and actor. Neither the joint simulator nor centralized critic is
+available to the actor.
 
-## Setup
+## Repository layout
+
+```text
+src/dreamarl/              first-party algorithm
+src/dreamarl/marl/         reversible agent-axis and CTDE integration
+src/dreamarl/models/       local and joint predictive modules
+src/dreamarl/training/     replay, objectives, imagination, and optimization
+src/dreamarl/envs/         DMC and SMAC adapters
+src/dreamarl/ablations/    isolated scientific controls
+src/dreamarl/baselines/    launch and artifact adapters for comparisons
+external/dreamerv3/        pinned DreamerV3 reference and runtime
+external/marie/            pinned MARIE reference implementation
+external/dreamer-cdp/      pinned Dreamer-CDP comparison implementation
+external/nedreamer/        pinned NE-Dreamer comparison implementation
+docs/                      architecture, results, and reproducibility notes
+tests/                     algorithm, environment, and launcher tests
+```
+
+External repositories are pinned comparison sources. DreaMARL does not import
+their learned model implementations. The DreamerV3 checkout supplies the
+Embodied runtime and numerical references used by parity tests.
+
+## Installation
+
+Clone the repository with its pinned references and create the main Python
+environment:
 
 ```bash
 git submodule update --init --recursive
-uv sync --python 3.11 --extra dev --extra meltingpot
+uv sync --python 3.11 --extra dev --extra dmc --extra smac --extra cuda12
+```
+
+Omit `--extra cuda12` for a CPU-only installation smoke test. SMAC experiments
+also require StarCraft II 4.10, with `SC2PATH` pointing to its installation.
+The pinned SMAC source is installed by the `smac` extra. DreamerV3, MARIE,
+Dreamer-CDP, and NE-Dreamer use isolated comparison environments that are only
+created when their runs are needed. For example:
+
+```bash
 uv run dreamarl-setup-dreamerv3 --accelerator cuda12
 ```
 
-Use `--accelerator cpu` for a local installation smoke test. Dreamer-CDP and
-NE-Dreamer use separate environments and are installed only when their
-benchmarks are needed:
+## Single-agent training
 
-```bash
-uv run dreamarl-setup-dreamer-cdp --accelerator cuda12
-uv run dreamarl-setup-nedreamer
-```
-
-## Train And Evaluate
-
-Run the locked model on visual DMC:
+Train the maintained visual model on DMC:
 
 ```bash
 uv run dreamarl-train-dreamarl \
+  --python .venv/bin/python \
   --task dmc_walker_walk \
   --num-agents 1 \
+  --algorithm local \
   --seed 0 \
   --total-env-steps 500000 \
   --wandb-project dreamarl \
   --wandb-entity YOUR_ENTITY
 ```
 
-Run DreaMARL on Melting Pot:
+The maintained visual configuration uses 64 x 64 RGB observations, the compact
+convolutional encoder, two-layer causal Transformer, categorical stochastic
+state, posterior and dynamics JEPA losses, 50% fixed-count spatial masking,
+and SIGReg.
+
+## Independent multi-agent control
+
+The independent control applies the shared local learner independently to each
+agent while preserving synchronized team trajectories:
 
 ```bash
+SC2PATH=/path/to/StarCraftII \
 uv run dreamarl-train-dreamarl \
-  --task meltingpot_externality_mushrooms__dense \
-  --num-agents 5 \
+  --python .venv/bin/python \
+  --task smac_3m \
+  --num-agents 3 \
+  --algorithm local \
   --seed 0 \
-  --total-env-steps 50000 \
-  --wandb-project dreamarl \
-  --wandb-entity YOUR_ENTITY
+  --total-env-steps 100000
 ```
 
-Select the first agent-axis JEPA stage with `--marl-stage b1`. This adds the
-whole-agent-masked prediction of the complete EMA team-slot representation at
-the current timestep and predicts the next EMA team representation from the
-masked current team plus the aligned joint replay action. The B1 input is
-stop-gradient, preserving the local single-agent world model. Balanced matching against mean-centered, agent-relative
-EMA content, explicit hidden-agent coverage, and slot anti-collapse regularization anchor the learned team
-coordinates. The EMA team teacher is training-only; B0's decentralized actor
-and local imagination graph are retained.
+The actor, critic, and local transition receive only the focal agent's history.
+This configuration is the architectural control for DreaMARL-CTDE.
 
-Select `--marl-stage b2` for strict centralized-training/decentralized-execution
-control. At every replay and imagined state, B2 predicts each active agent's EMA
-observation embedding from its causal local world state, summarizes the complete
-team into eight 256-wide slots, and concatenates the flattened 2048-wide belief
-with the focal 10240-wide state for both value heads. The actor still receives
-only the focal local state. Critic gradients stop at both inputs; the team belief
-is trained directly against the full-team EMA slots and by B1's aligned
-joint-action transition objective.
+## DreaMARL-CTDE on SMAC
 
-Melting Pot seeds are supplied when constructing the underlying Lab2D
-substrate. Shimmy 2.0.1 explicitly ignores `reset(seed)`, and the pinned Lab2D
-backend can produce different observations for two environments given the same
-construction seed and identical actions. A seed therefore controls the Lab2D
-seed stream but does not guarantee a bitwise-identical trajectory. Manifests
-record this distinction; reproducible comparisons still require multiple runs
-and retained evaluation artifacts.
+The one-step configuration is selected with `--algorithm ctde-one-step`:
 
-Fixed evaluation restores the latest complete checkpoint, performs no
-checkpoint search, and does not add transitions to training replay:
+```bash
+SC2PATH=/path/to/StarCraftII \
+uv run dreamarl-train-dreamarl \
+  --python .venv/bin/python \
+  --task smac_3m \
+  --num-agents 3 \
+  --algorithm ctde-one-step \
+  --seed 0 \
+  --total-env-steps 100000 \
+  --eval-interval 5000 \
+  --eval-episodes 32 \
+  --eval-envs 1 \
+  --eval-seed-offset 50000
+```
+
+The matched two-step treatment changes only the rollout objective:
+
+```bash
+SC2PATH=/path/to/StarCraftII \
+uv run dreamarl-train-dreamarl \
+  --python .venv/bin/python \
+  --task smac_3m \
+  --num-agents 3 \
+  --algorithm ctde-two-step \
+  --seed 0 \
+  --total-env-steps 100000 \
+  --eval-interval 5000 \
+  --eval-episodes 32 \
+  --eval-envs 1 \
+  --eval-seed-offset 50000
+```
+
+Both variants train from scratch. They share the local execution model,
+centralized critic, optimizer topology, replay protocol, and one-step joint
+loss. The two-step variant self-feeds only a bounded set of valid replay
+anchors and stops gradients across the first predicted transition.
+
+## Evaluation
+
+Fixed evaluation restores the latest complete checkpoint, does not search for
+the best checkpoint, and never writes evaluation experience to training replay:
 
 ```bash
 uv run dreamarl-eval-dreamarl runs/dreamarl/<experiment> \
-  --episodes 20 \
-  --eval-seed 10000
+  --episodes 32 \
+  --envs 1 \
+  --eval-seed 50000 \
+  --policy-mode deterministic
 ```
 
-Generate protocol-matched aggregate plots from completed runs:
+SMAC reports win rate, wins, enemy deaths, ally survival, timeout frequency,
+legacy benchmark reward, and corrected combat diagnostics. Win rate and battle
+outcomes—not predictive cosine alone—determine whether a control change is
+useful.
+
+Generate aggregate single-agent plots from completed artifacts with:
 
 ```bash
 uv run dreamarl-plot-dreamarl-paper \
@@ -130,11 +207,11 @@ uv run dreamarl-plot-dreamarl-paper \
   --output-dir runs/paper_plots
 ```
 
-## Official Baselines
+## Comparison tooling
 
-The benchmark commands execute the pinned upstream implementations as isolated
-processes. Their launch manifests record source revisions, seeds, budgets, and
-normalized artifacts.
+The following commands execute pinned upstream implementations as isolated
+processes and normalize their artifacts; they are not alternate DreaMARL model
+families:
 
 ```bash
 uv run dreamarl-train-dmc-dreamerv3 --help
@@ -143,23 +220,25 @@ uv run dreamarl-train-dmc-nedreamer --help
 MARIE_PYTHON=/path/to/python3.10 uv run dreamarl-train-marie --help
 ```
 
-MARIE uses an isolated legacy environment and StarCraft II 4.10. Its exact
-source, runtime, SMAC protocol, and promotion gate are documented in
-[`docs/dreamarl/MARIE_REPRODUCTION.md`](docs/dreamarl/MARIE_REPRODUCTION.md).
+Exact revisions and license boundaries are listed in
+[provenance.md](docs/provenance.md) and [NOTICE.md](NOTICE.md).
 
 ## Tests
 
-Algorithm tests need the pinned DreamerV3 source because it provides Embodied
-and the numerical reference modules:
+The main test command includes the pinned DreamerV3 source because it supplies
+Embodied and reference modules:
 
 ```bash
 PYTHONPATH=external/dreamerv3:src \
   .venv/bin/python -m pytest -q
 ```
 
-The maintained tests cover public configuration, explicit agent-axis
-transformations, exact `A=1` parity, shared-local multi-agent updates, causal and
-recurrent Transformer equivalence, representation losses, actor-critic
-training, environment semantics, fixed evaluation, artifact normalization, and
-isolated benchmark launchers. One-off diagnostics and removed mechanisms are
-not part of this branch.
+The maintained tests cover single-agent parity, explicit agent-axis layouts,
+strict policy information boundaries, replay burn-in, one-step and two-step
+joint prediction, centralized-critic inputs, action masks and liveness, SMAC
+semantics, fixed evaluation, and isolated comparison launchers.
+
+## License and citation
+
+DreaMARL is released under the MIT License. See [LICENSE](LICENSE),
+[NOTICE.md](NOTICE.md), and [CITATION.cff](CITATION.cff).

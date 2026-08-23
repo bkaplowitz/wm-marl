@@ -60,11 +60,15 @@ class _FakeSMAC:
         self.enemies[0].shield = 0.0
         self.enemies[1].health = 0.0
         self.count += 1
-        return 2.5, True, {
-            "battle_won": True,
-            "dead_allies": 1,
-            "dead_enemies": 1,
-        }
+        return (
+            2.5,
+            True,
+            {
+                "battle_won": True,
+                "dead_allies": 1,
+                "dead_enemies": 1,
+            },
+        )
 
     def close(self):
         pass
@@ -79,9 +83,7 @@ def test_smac_adapter_preserves_team_reward_masks_and_win_metric() -> None:
     np.testing.assert_array_equal(first["agent_alive"], [True, True, True])
     np.testing.assert_array_equal(first["controllable_alive"], [True, True, True])
 
-    final = env.step(
-        {"reset": False, "action": np.array([1, 0, 2], np.int32)}
-    )
+    final = env.step({"reset": False, "action": np.array([1, 0, 2], np.int32)})
     assert backend.actions == [1, 0, 2]
     np.testing.assert_array_equal(final["reward"], [2.5, 2.5, 2.5])
     np.testing.assert_array_equal(final["agent_alive"], [True, True, True])

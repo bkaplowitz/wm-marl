@@ -95,13 +95,13 @@ class CausalTransformer(nj.Module):
         causal = jnp.arange(length)[None, None, :] <= jnp.arange(length)[None, :, None]
         new_mask = causal & (segments[:, :, None] == segments[:, None, :])
         attention_mask = jnp.concatenate([old_mask, new_mask], axis=-1)
-        old_positions = cache["position"][:, None] - jnp.arange(
-            self.context - 1, -1, -1, dtype=jnp.int32
-        )[None]
+        old_positions = (
+            cache["position"][:, None]
+            - jnp.arange(self.context - 1, -1, -1, dtype=jnp.int32)[None]
+        )
         key_positions = jnp.concatenate([old_positions, positions], axis=1)
-        within_window = (
-            (key_positions[:, None] <= positions[:, :, None])
-            & (key_positions[:, None] > positions[:, :, None] - self.context)
+        within_window = (key_positions[:, None] <= positions[:, :, None]) & (
+            key_positions[:, None] > positions[:, :, None] - self.context
         )
         attention_mask &= within_window
 
@@ -265,6 +265,7 @@ class CausalTransformer(nj.Module):
             "position": position,
         }
         return nn.cast(next_cache), nn.cast(state)
+
 
 class ParallelTransformerDynamics(CategoricalLatent):
     """Observation-parallel posterior and causal Transformer prior dynamics."""

@@ -4,12 +4,22 @@ requires = ["setuptools>=69", "wheel"]
 
 [project]
 dependencies = [
+  "chex",
+  "einops",
+  "elements>=3.19.1",
+  "granular>=0.20.3",
+  "jax==0.4.36",
   "matplotlib",
+  "ninjax>=3.5.1",
   "numpy<2",
+  "optax",
+  "portal>=3.5.0",
   "ruamel.yaml",
+  "scope>=0.4.4",
   "wandb>=0.18",
 ]
 description = "Decoder-free JEPA world models for single-agent and multi-agent RL."
+license = "MIT"
 name = "dreamarl"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
@@ -18,25 +28,15 @@ version = "0.1.0"
 [project.optional-dependencies]
 cuda12 = ["jax[cuda12]==0.4.36"]
 dev = [
-  "chex",
-  "einops",
-  "elements>=3.19.1",
-  "granular>=0.20.3",
-  "jax==0.4.36",
   "jaxlib==0.4.36",
-  "ninjax>=3.5.1",
-  "optax",
-  "portal>=3.5.0",
   "pre-commit>=4.6",
   "pytest>=8",
   "ruff==0.15.18",
-  "scope>=0.4.4",
 ]
 dmc = ["dm-control>=1.0"]
-meltingpot = [
-  "dm-meltingpot==2.4.0",
-  "dmlab2d==1.0.0",
-  "shimmy[meltingpot]==2.0.1",
+smac = [
+  "s2clientprotocol==5.0.14.93333.0",
+  "smac @ git+https://github.com/oxwhirl/smac.git@d6aab33f76abc3849c50463a8592a84f59a5ef84",
 ]
 
 [project.scripts]
@@ -66,7 +66,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 markers = [
-  "integration: tests requiring installed Melting Pot/dmlab2d runtime",
+  "integration: tests requiring an external simulator runtime",
   "dreamerv3_integration: tests requiring the isolated DreamerV3 runtime",
 ]
 testpaths = ["tests"]

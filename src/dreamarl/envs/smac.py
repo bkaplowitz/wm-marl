@@ -55,16 +55,12 @@ class SMACEnv(embodied.Env):
     @functools.cached_property
     def obs_space(self):
         return {
-            "observation": elements.Space(
-                np.float32, (self.num_agents, self._obs_dim)
-            ),
+            "observation": elements.Space(np.float32, (self.num_agents, self._obs_dim)),
             "reward": elements.Space(np.float32, (self.num_agents,)),
             "agent_present": elements.Space(bool, (self.num_agents,)),
             "agent_alive": elements.Space(bool, (self.num_agents,)),
             "controllable_alive": elements.Space(bool, (self.num_agents,)),
-            "action_mask": elements.Space(
-                bool, (self.num_agents, self._action_dim)
-            ),
+            "action_mask": elements.Space(bool, (self.num_agents, self._action_dim)),
             "is_first": elements.Space(bool, ()),
             "is_last": elements.Space(bool, ()),
             "is_terminal": elements.Space(bool, ()),
@@ -96,9 +92,7 @@ class SMACEnv(embodied.Env):
     @functools.cached_property
     def act_space(self):
         return {
-            "action": elements.Space(
-                np.int32, (self.num_agents,), 0, self._action_dim
-            ),
+            "action": elements.Space(np.int32, (self.num_agents,), 0, self._action_dim),
             "reset": elements.Space(bool, (), 0, 2),
         }
 
@@ -253,9 +247,10 @@ class SMACEnv(embodied.Env):
             diagnostics["log/ally_survivors"] = ally_stats[5]
 
         corrected = diagnostics["log/enemy_damage"]
-        corrected += float(getattr(self._env, "reward_death_value", 0.0)) * diagnostics[
-            "log/enemy_deaths_step"
-        ]
+        corrected += (
+            float(getattr(self._env, "reward_death_value", 0.0))
+            * diagnostics["log/enemy_deaths_step"]
+        )
         corrected += float(getattr(self._env, "reward_win", 0.0)) * float(
             info.get("battle_won", False)
         )

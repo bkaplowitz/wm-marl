@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 
-from .config import PAPER_GATE_MAPS
+from .config import PAPER_BENCHMARKS
 
 
 def read_official_result(path: str | Path) -> list[dict[str, float | int]]:
@@ -105,7 +105,7 @@ def normalize_training_artifacts(
         "latest_evaluation": latest,
         "best_evaluation": best,
         "normalized_win_rate_auc": _normalized_auc(rows, steps_budget),
-        "paper_four_seed_mean_win_rate": PAPER_GATE_MAPS[map_name]["mean_win_rate"],
+        "paper_four_seed_mean_win_rate": PAPER_BENCHMARKS[map_name]["mean_win_rate"],
         "upstream_result": str(preserved_result),
         "upstream_checkpoint": (
             str(preserved_checkpoint) if preserved_checkpoint else None

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import platform
-import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -26,20 +25,37 @@ def _write_json(path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def _stage_continuation_replay(source, destination) -> None:
-    source = source.resolve()
-    if not source.is_dir():
-        raise FileNotFoundError(f"continuation replay directory is missing: {source}")
-    chunks = sorted(source.glob("*.npz"))
-    if not chunks:
-        raise FileNotFoundError(f"continuation replay has no chunks: {source}")
-    destination.mkdir(parents=True, exist_ok=False)
-    for chunk in chunks:
-        target = destination / chunk.name
-        try:
-            os.link(chunk, target)
-        except OSError:
-            shutil.copy2(chunk, target)
+def runtime_environment(
+    *,
+    task: str,
+    infrastructure_root,
+    artifact_dir,
+    wandb_project: str | None = None,
+    wandb_entity: str | None = None,
+    wandb_name: str | None = None,
+) -> dict[str, str]:
+    """Build the shared training/evaluation subprocess environment."""
+
+    env = os.environ.copy()
+    if task.startswith("smac_"):
+        if not env.get("SC2PATH"):
+            raise RuntimeError("SMAC requires SC2PATH to point to StarCraft II 4.10")
+        env.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+    env.setdefault("MUJOCO_GL", "glfw" if platform.system() == "Darwin" else "egl")
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env.setdefault("WANDB_DIR", str(artifact_dir))
+    if wandb_project:
+        env["WANDB_PROJECT"] = wandb_project
+    if wandb_entity:
+        env["WANDB_ENTITY"] = wandb_entity
+    if wandb_name:
+        env["WANDB_NAME"] = wandb_name
+    pythonpath = [str(infrastructure_root), str(repository_root() / "src")]
+    if env.get("PYTHONPATH"):
+        pythonpath.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath)
+    return env
 
 
 def run_training(
@@ -52,12 +68,14 @@ def run_training(
     """Run DreaMARL source directly with pinned Embodied infrastructure."""
 
     verification = (contract_verifier or verify_run_contract)(spec)
-    if spec.logdir.exists() and not resume:
+    if resume and not spec.logdir.exists():
+        raise FileNotFoundError(f"cannot resume missing run: {spec.logdir}")
+    if not resume and spec.logdir.exists():
         raise FileExistsError(f"run already exists: {spec.logdir}")
     spec.experiment_dir.mkdir(parents=True, exist_ok=True)
     manifest = {
         **spec.to_dict(),
-        **verification,
+        "contract": verification,
         "created_at": timestamp(),
         "host_platform": platform.platform(),
         "resume": resume,
@@ -69,33 +87,14 @@ def run_training(
         return 0
     if not spec.python.exists():
         raise FileNotFoundError(f"DreaMARL Python is missing: {spec.python}")
-    if spec.load_replay:
-        _stage_continuation_replay(
-            spec.replay_source,
-            spec.logdir / "replay",
-        )
-
-    env = os.environ.copy()
-    if spec.task.startswith("smac_"):
-        if not env.get("SC2PATH"):
-            raise RuntimeError("SMAC runs require SC2PATH to point to StarCraft II 4.10")
-        # SMAC-v1's pinned s2clientprotocol ships legacy generated descriptors.
-        # The Python protobuf backend keeps them compatible with the modern
-        # protobuf required by W&B in the shared training runtime.
-        env.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
-    env.setdefault("MUJOCO_GL", "glfw" if platform.system() == "Darwin" else "egl")
-    env["PYTHONUNBUFFERED"] = "1"
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env.setdefault("WANDB_DIR", str(spec.experiment_dir))
-    if spec.wandb_project:
-        env["WANDB_PROJECT"] = spec.wandb_project
-    if spec.wandb_entity:
-        env["WANDB_ENTITY"] = spec.wandb_entity
-    env.setdefault("WANDB_NAME", spec.experiment_dir.name)
-    pythonpath = [str(spec.infrastructure_root), str(repository_root() / "src")]
-    if env.get("PYTHONPATH"):
-        pythonpath.append(env["PYTHONPATH"])
-    env["PYTHONPATH"] = os.pathsep.join(pythonpath)
+    env = runtime_environment(
+        task=spec.task,
+        infrastructure_root=spec.infrastructure_root,
+        artifact_dir=spec.experiment_dir,
+        wandb_project=spec.wandb_project,
+        wandb_entity=spec.wandb_entity,
+        wandb_name=spec.experiment_dir.name,
+    )
     with (spec.experiment_dir / "process.log").open("a", encoding="utf-8") as log:
         process = subprocess.Popen(
             spec.command,

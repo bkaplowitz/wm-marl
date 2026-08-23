@@ -10,7 +10,7 @@ from .config import AblationRunSpec
 def verify_run_contract(spec: AblationRunSpec) -> dict[str, object]:
     values = asdict(spec)
     return {
-        "contract_version": 14,
+        "contract_version": 1,
         "num_agents": spec.num_agents,
         "foundation": ("danijar/dreamerv3@e3f02248693a79dc8b0ebd62c93683888ddaccfe"),
         "world_model_contract": spec._training_state,

@@ -20,11 +20,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task", required=True)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
-        "--representation-recipe",
-        choices=("custom", "vjepa21", "leworldmodel"),
-        default="custom",
-    )
-    parser.add_argument(
         "--num-agents",
         type=int,
         required=True,
@@ -95,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--spatial-mask-ratio", type=float, default=0.5)
     parser.add_argument(
         "--spatial-mask-topology",
-        choices=("bernoulli", "fixed_count", "multiblock", "vjepa21_multiblock"),
+        choices=("bernoulli", "fixed_count", "multiblock"),
         default="fixed_count",
     )
     parser.add_argument("--spatial-fill-value", type=int, default=128)
@@ -114,10 +109,7 @@ def main(argv: list[str] | None = None) -> int:
         "--sigreg-aggregation",
         choices=("pooled", "per_timestep"),
         default="pooled",
-        help=(
-            "Pool batch and time or match LeWorldModel by evaluating each "
-            "timestep across the batch."
-        ),
+        help="Pool batch and time or evaluate each timestep across the batch.",
     )
     parser.add_argument(
         "--posterior-context",
@@ -130,12 +122,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--visual-encoder",
-        choices=("simple", "vit", "vjepa21", "leworldmodel"),
+        choices=("simple", "vit"),
         default="simple",
-        help=(
-            "Use the DreamerV3 CNN, compact 64px ViT, V-JEPA 2.1 ViT-B/16, "
-            "or LeWorldModel's unmasked ViT-Tiny/14."
-        ),
+        help="Use the DreamerV3 CNN or the compact 64px ViT control.",
     )
     parser.add_argument("--batch-size", type=int)
     parser.add_argument(
@@ -164,7 +153,6 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
         train_steps=args.total_env_steps,
         num_agents=args.num_agents,
-        representation_recipe=args.representation_recipe,
         platform=args.platform,
         infrastructure_root=args.infrastructure_root,
         python=args.python,

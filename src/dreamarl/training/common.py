@@ -3,7 +3,6 @@
 import jax
 import jax.numpy as jnp
 import ninjax as nj
-import numpy as np
 
 
 f32 = jnp.float32
@@ -28,7 +27,3 @@ def prefix(xs, name):
 
 def concat(xs, axis):
     return jax.tree.map(lambda *values: jnp.concatenate(values, axis), *xs)
-
-
-def isimage(space):
-    return space.dtype == np.uint8 and len(space.shape) == 3

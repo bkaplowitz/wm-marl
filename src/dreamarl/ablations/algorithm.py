@@ -97,25 +97,6 @@ class AblationAlgorithm(
         self.enc_output_dim = self.enc.calculate_encoder_output_dim()
         if self.spatial_jepa and not self.enc.imgkeys:
             raise ValueError("spatial JEPA requires at least one image observation")
-        self.spatial_predictor = None
-        if str(config.spatial_jepa.topology) == "vjepa21_multiblock":
-            from . import visual as ablation_visual
-
-            if config.enc.typ != "vjepa21":
-                raise ValueError(
-                    "vjepa21_multiblock requires the 256px V-JEPA 2.1 encoder"
-                )
-            if self.objective != "embedding" or self.embedding_target != "ema":
-                raise ValueError(
-                    "vjepa21_multiblock requires decoder-free EMA-target training"
-                )
-            grid_height, grid_width, token_dim = self.enc.image_grid_shape()
-            self.spatial_predictor = ablation_visual.SpatialTokenPredictor(
-                grid=(grid_height, grid_width),
-                input_dim=self.enc.predictor_token_dim,
-                name="spatial_predictor",
-            )
-
         self.dec_space = dec_space
         if self.objective == "reconstruction":
             self.dec = self.world_model.decoder(config.dec.typ)(
@@ -174,8 +155,6 @@ class AblationAlgorithm(
         self.modules = [self.dyn, self.enc, self.rew, self.con, self.pol, self.val]
         if self.dec is not None:
             self.modules.insert(2, self.dec)
-        if self.spatial_predictor is not None:
-            self.modules.insert(2, self.spatial_predictor)
         self.opt = embodied.jax.Optimizer(
             self.modules,
             self._build_optimizer(config),

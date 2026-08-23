@@ -23,9 +23,7 @@ def test_two_step_anchors_respect_resets_without_dropping_death_targets() -> Non
 
     terminal_death = jnp.zeros((1, 7, 2), bool).at[:, 0].set(True)
     death_valid = two_step_anchor_mask(jnp.zeros_like(first), terminal_death)
-    np.testing.assert_array_equal(
-        death_valid, [[True, False, False, False, False]]
-    )
+    np.testing.assert_array_equal(death_valid, [[True, False, False, False, False]])
 
     anchors = sample_two_step_anchors(jax.random.key(1), valid, count=5)
     assert int(anchors.valid.sum()) == 3
@@ -51,11 +49,7 @@ def test_two_step_self_feed_has_last_step_gradient_only() -> None:
         }
         detached = detach_self_feed(first_prediction)
         return jnp.sum(
-            (
-                detached["embedding"]
-                + detached["joint_carry"]["keys"]
-            )
-            * last_weight
+            (detached["embedding"] + detached["joint_carry"]["keys"]) * last_weight
         )
 
     first = jnp.asarray([1.0, -2.0])
@@ -118,15 +112,11 @@ def test_two_step_objective_matches_sample_mean_and_stops_ema_target() -> None:
         reward_loss * supervision_valid.astype(jnp.float32)
     ).sum() / supervision_valid.sum()
     np.testing.assert_allclose(losses(prediction, target)["reward"], expected)
-    np.testing.assert_allclose(
-        losses(prediction, target)["alive"], alive_loss.mean()
-    )
+    np.testing.assert_allclose(losses(prediction, target)["alive"], alive_loss.mean())
 
     def embedding_loss(predicted, ema_target):
         return losses(predicted, ema_target)["embedding"]
 
-    prediction_grad, target_grad = jax.grad(embedding_loss, (0, 1))(
-        prediction, target
-    )
+    prediction_grad, target_grad = jax.grad(embedding_loss, (0, 1))(prediction, target)
     assert float(jnp.linalg.norm(prediction_grad)) > 0.0
     np.testing.assert_array_equal(target_grad, jnp.zeros_like(target))

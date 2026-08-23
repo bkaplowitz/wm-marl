@@ -126,9 +126,7 @@ def test_fp32_rope_preserves_adjacent_positions_at_long_horizons() -> None:
         positions = jnp.array([[left, left + 1]], jnp.int32)
         rotated = _rope_f32(vector, positions)
         assert rotated.dtype == jnp.bfloat16
-        assert not np.array_equal(
-            np.asarray(rotated[:, 0]), np.asarray(rotated[:, 1])
-        )
+        assert not np.array_equal(np.asarray(rotated[:, 0]), np.asarray(rotated[:, 1]))
 
 
 def test_parallel_and_recurrent_paths_match_through_position_1001() -> None:

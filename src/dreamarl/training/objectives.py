@@ -24,7 +24,6 @@ def imag_loss(
     lam=0.95,
     actent=3e-4,
     slowreg=1.0,
-    advantage_transform=None,
 ):
     losses = {}
     metrics = {}
@@ -48,15 +47,14 @@ def imag_loss(
     )
     roffset, rscale = retnorm(ret, update, norm_valid)
     adv = (ret - tarval[:, :-1]) / rscale
-    if advantage_transform is not None:
-        adv, advantage_metrics = advantage_transform(ret, adv, rscale)
-        metrics.update(advantage_metrics)
     aoffset, ascale = advnorm(adv, update, norm_valid)
     adv_normed = (adv - aoffset) / ascale
     logpi = sum([dist.logp(sg(act[key]))[:, :-1] for key, dist in policy.items()])
     ents = {key: dist.entropy()[:, :-1] for key, dist in policy.items()}
-    policy_loss = loss_valid * sg(weight[:, :-1]) * -(
-        logpi * sg(adv_normed) + actent * sum(ents.values())
+    policy_loss = (
+        loss_valid
+        * sg(weight[:, :-1])
+        * -(logpi * sg(adv_normed) + actent * sum(ents.values()))
     )
     losses["policy"] = policy_loss
 

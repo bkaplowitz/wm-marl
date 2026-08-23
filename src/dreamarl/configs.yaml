@@ -3,8 +3,7 @@ defaults:
   logdir: ~/logdir/{timestamp}
   replica: 0
   replicas: 1
-  method: name
-  task: meltingpot_externality_mushrooms__dense
+  task: dmc_reacher_easy
   seed: 0
   script: train
   batch_size: 16
@@ -14,20 +13,17 @@ defaults:
   consec_report: 1
   replay_context: 128
   random_agent: False
-  clock_addr: ''
-  clock_port: ''
   ipv6: False
   errfile: False
 
   logger:
-    outputs: [jsonl, scope, wandb]
-    filter: 'score|return|length|fps|ratio|train/loss/|train/rand/|train/posterior_jepa/|train/dynamics_jepa/|train/ctde/|report/ctde/|train/jecc/|report/jecc/|report/world_model/|report/openloop/|battle_won|win_rate|legacy_|corrected_|enemy_|ally_|timeout|action_|attack_target_|eval/'
+    outputs: [jsonl, scope]
+    filter: 'score|return|length|fps|ratio|train/loss/|train/rand/|train/posterior_jepa/|train/dynamics_jepa/|train/ctde/|report/ctde/|train/critic/|train/reploss/critic/|central_critic/|report/world_model/|report/openloop/|battle_won|win_rate|legacy_|corrected_|enemy_|ally_|timeout|action_|attack_target_|eval/'
     timer: True
     fps: 15
     user: ''
 
   env:
-    meltingpot: {size: [64, 64], max_cycles: 1000, use_seed: True, collective_reward: True}
     dmc: {size: [64, 64], repeat: 1, proprio: False, image: True, camera: -1, use_seed: True}
     smac: {difficulty: '7', continuing_episode: True, use_seed: True}
 
@@ -40,7 +36,6 @@ defaults:
 
   run:
     steps: 5e4
-    duration: 0
     train_ratio: 32.0
     log_every: 120
     report_every: 300
@@ -56,16 +51,7 @@ defaults:
     curve_eval_policy_mode: eval
     report_batches: 1
     from_checkpoint: ''
-    from_checkpoint_regex: '.*'
-    load_replay: False
     episode_timeout: 180
-    probe_source: ''
-    probe_batches: 10
-    probe_output: ''
-    probe_model: ''
-    probe_controller: False
-    probe_episode_limit: 200
-    jecc_pretrain_updates: 5000
     actor_addr: 'localhost:{auto}'
     replay_addr: 'localhost:{auto}'
     logger_addr: 'localhost:{auto}'
@@ -75,7 +61,7 @@ defaults:
     remote_replay: False
     remote_envs: False
     usage: {psutil: True, nvsmi: True, gputil: False, malloc: False, gc: False}
-    debug: True
+    debug: False
 
   jax:
     platform: cuda
@@ -83,71 +69,28 @@ defaults:
     policy_devices: [0]
     train_devices: [0]
     mock_devices: 0
-    prealloc: True
+    prealloc: False
     jit: True
     debug: False
     expect_devices: 0
     enable_policy: True
     precompile: True
-    profiler: True
+    profiler: False
     coordinator_address: ''
 
   agent:
     num_agents: 1
     marl:
-      stage: b0
+      stage: local
       execution: strict_decentralized
-      ctde:
-        rollout_steps: 1
-        multistep: {anchors: 128}
-        joint: {width: 256, heads: 4, agent_layers: 2, temporal_layers: 4, context: 16, ffup: 4, dropout: 0.1, act: silu, norm: rms, winit: trunc_normal_in}
-        head: {layers: 2, units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
-        critic: {width: 256, heads: 4, layers: 2, ffup: 4, dropout: 0.0, value_layers: 2, value_units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
-        opt: {lr: 4e-5, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
-      agent_jepa: {slots: 8, width: 256, heads: 4, layers: 2, predictor_layers: 2, ffup: 4, predictor_hidden: 512, local_grad_scale: 0.0, k0_scale: 0.1, future_scale: 1.0, future_set_scale: 1.0, teacher_rate: 0.01, teacher_every: 1, mask_min: 0.25, mask_max: 0.5, matching_temperature: 0.02, sinkhorn_iterations: 10, predicted_set_scale: 1.0, source_set_scale: 1.0, hidden_coverage_scale: 1.0, variance_scale: 0.1, covariance_scale: 0.1, slot_target_std: 0.1, utility_probe: False, act: silu, norm: rms, winit: trunc_normal_in}
-      jecc:
-        horizons: [5, 15, 32]
-        pretrain_only: False
-        diagnostic_controller: False
-        act: silu
-        norm: rms
-        winit: trunc_normal_in
-        outcome: {width: 128, dim: 128, layers: 2, heads: 4, ffup: 4}
-        predictor: {width: 256, layers: 2, heads: 4, ffup: 4}
-        utility: {layers: 2, units: 256, bins: 255}
-        teacher: {rate: 0.01, every: 1}
-        loss_scales: {outcome: 1.0, utility: 1.0, predicted_utility: 1.0}
-        alpha: {start: 5000, end: 20000}
-        opt: {lr: 4e-5, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
-    objective: embedding
-    embedding_target: ema
-    embedding_loss: cosine
-    posterior_jepa: True
-    dynamics_jepa: True
     spatial_jepa:
-      enabled: True
       mask_ratio: 0.5
-      topology: fixed_count
       fill_value: 128
-    sigreg: {enabled: True, knots: 17, num_proj: 256, aggregation: per_agent}
+    sigreg: {knots: 17, num_proj: 256, aggregation: per_agent}
     loss_scales:
       posterior_jepa: 2.0
       dynamics_jepa: 2.0
       spatial_jepa: 1.0
-      agent_jepa: 1.0
-      jecc: 1.0
-      ctde_embedding: 2.0
-      ctde_interface: 1.0
-      ctde_reward: 1.0
-      ctde_continuation: 1.0
-      ctde_action_mask: 1.0
-      ctde_alive: 1.0
-      ctde_multistep_embedding: 2.0
-      ctde_multistep_interface: 1.0
-      ctde_multistep_reward: 1.0
-      ctde_multistep_continuation: 1.0
-      ctde_multistep_action_mask: 1.0
-      ctde_multistep_alive: 1.0
       sigreg: 0.05
       action_mask: 1.0
       rew: 1.0
@@ -158,19 +101,11 @@ defaults:
       value: 1.0
       repval: 0.3
     opt: {lr: 4e-5, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
-    behavior_optimizer: joint
-    behavior_objective: reinforce
-    ppo: {epochs: 3, clip: 0.2}
-    anchor_batch: ''
-    actor_opt: {lr: 3e-4, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
-    critic_opt: {lr: 3e-4, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
     target_encoder: {rate: 0.01, every: 1}
     ac_grads: False
     dyn:
-      typ: parallel_transformer
       parallel_transformer: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, act: silu, norm: rms, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0, model: 512, layers: 2, heads: 8, context: 64, ffup: 4, posterior_context: history}
     enc:
-      typ: simple
       simple: {depth: 64, mults: [2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: rms, winit: trunc_normal_in, symlog: True, outer: False, kernel: 5, strided: False}
     rewhead: {layers: 1, units: 1024, act: silu, norm: rms, output: symexp_twohot, outscale: 0.0, winit: trunc_normal_in, bins: 255}
     conhead: {layers: 1, units: 1024, act: silu, norm: rms, output: binary, outscale: 1.0, winit: trunc_normal_in}
@@ -191,28 +126,53 @@ defaults:
     advnorm: {impl: none, rate: 0.01, limit: 1e-8}
     reward_grad: True
     repval_loss: True
-    repval_grad: True
     report: True
     report_gradnorms: False
-    report_actor_gradnorm: False
 
-meltingpot_vision:
-  task: meltingpot_externality_mushrooms__dense
-  run: {steps: 5e4, train_ratio: 256, envs: 1}
-  jax.profiler: False
-  jax.prealloc: False
+local:
+  agent:
+    marl: {stage: local, execution: strict_decentralized}
+
+ctde:
+  agent:
+    marl:
+      stage: ctde
+      execution: strict_decentralized
+      ctde:
+        rollout_steps: 1
+        multistep: {anchors: 0}
+        joint: {width: 256, heads: 4, agent_layers: 2, temporal_layers: 4, context: 16, ffup: 4, dropout: 0.1, act: silu, norm: rms, winit: trunc_normal_in}
+        head: {layers: 2, units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
+        critic: {width: 256, heads: 4, layers: 2, ffup: 4, dropout: 0.0, value_layers: 2, value_units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
+        opt: {lr: 4e-5, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
+    loss_scales:
+      ctde_embedding: 2.0
+      ctde_interface: 1.0
+      ctde_reward: 1.0
+      ctde_continuation: 1.0
+      ctde_action_mask: 1.0
+      ctde_alive: 1.0
+      ctde_multistep_embedding: 2.0
+      ctde_multistep_interface: 1.0
+      ctde_multistep_reward: 1.0
+      ctde_multistep_continuation: 1.0
+      ctde_multistep_action_mask: 1.0
+      ctde_multistep_alive: 1.0
+
+ctde_two_step:
+  agent:
+    marl:
+      ctde:
+        rollout_steps: 2
+        multistep: {anchors: 128}
 
 dmc_vision:
   task: dmc_reacher_easy
   run: {steps: 1.1e6, train_ratio: 256, envs: 16}
-  jax.profiler: False
-  jax.prealloc: False
 
 smac_vector:
   task: smac_3m
-  run: {steps: 1e5, train_ratio: 256, envs: 1, eval_envs: 1}
-  jax.profiler: False
-  jax.prealloc: False
+  run: {steps: 1e5, train_ratio: 256, envs: 1, eval_envs: 1, curve_eval_eps: 32, curve_eval_seed_offset: 50000}
 
 debug:
   batch_size: 8
@@ -220,7 +180,7 @@ debug:
   report_length: 5
   jax: {platform: cpu, debug: True, prealloc: False}
   run: {envs: 4, report_every: 10, log_every: 5, save_every: 15, train_ratio: 8, debug: True}
-  replay.size: 1e4
+  replay: {size: 1e4}
   agent:
     .*\.bins: 5
     .*\.layers: 1
@@ -235,6 +195,8 @@ debug:
     .*\.hidden: 3
     .*\.blocks: 4
     .*\.depth: 2
-    marl.ctde.joint: {width: 8, heads: 2, agent_layers: 1, temporal_layers: 1, context: 4, ffup: 2, dropout: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
-    marl.ctde.head: {layers: 1, units: 8, bins: 5, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
-    marl.ctde.critic: {width: 8, heads: 2, layers: 1, ffup: 2, dropout: 0.0, value_layers: 1, value_units: 8, bins: 5, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
+    marl:
+      ctde:
+        joint: {width: 8, heads: 2, agent_layers: 1, temporal_layers: 1, context: 4, ffup: 2, dropout: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
+        head: {layers: 1, units: 8, bins: 5, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
+        critic: {width: 8, heads: 2, layers: 1, ffup: 2, dropout: 0.0, value_layers: 1, value_units: 8, bins: 5, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}

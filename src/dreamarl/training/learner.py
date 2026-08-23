@@ -1,7 +1,6 @@
 """World-model and actor-critic training orchestration."""
 
 import elements
-import embodied.jax.outs as jaxouts
 import jax
 import jax.numpy as jnp
 import ninjax as nj
@@ -65,11 +64,6 @@ def value_fit_metrics(prediction, target, valid):
 
 class LearnerMixin:
     def train(self, carry, data):
-        environment_step = data.pop("_environment_step", None)
-        if environment_step is not None:
-            environment_step = environment_step.reshape((-1,))[0]
-        if getattr(self, "jecc_pretrain_only", False):
-            return self.jecc_pretrain(carry, data)
         carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
         metrics, (carry, entries, outs, mets) = self.opt(
             self.loss,
@@ -77,17 +71,9 @@ class LearnerMixin:
             obs,
             prevact,
             training=True,
-            environment_step=environment_step,
             has_aux=True,
         )
         metrics.update(mets)
-        if self.behavior_objective == "ppo":
-            ppo_batch = outs.pop("ppo_batch")
-            for _ in range(int(self.config.ppo.epochs)):
-                actor_metrics = self.actor_opt(self.ppo_actor_loss, ppo_batch)
-            metrics.update(actor_metrics)
-            metrics.update(self.ppo_actor_metrics(ppo_batch))
-            metrics["ppo/epochs"] = jnp.asarray(self.config.ppo.epochs, jnp.float32)
         self._update_slow_models()
         if self.slowenc is not None:
             self.slowenc.update()
@@ -105,7 +91,7 @@ class LearnerMixin:
         carry = (*carry, {key: data[key][:, -1] for key in self.act_space})
         return carry, outs, metrics
 
-    def loss(self, carry, obs, prevact, training, environment_step=None):
+    def loss(self, carry, obs, prevact, training):
         model_carry, entries, tokens, repfeat, losses, metrics, target_tokens = (
             self._world_model_terms(carry, obs, prevact, training)
         )
@@ -113,8 +99,6 @@ class LearnerMixin:
         enc_entries, dyn_entries, dec_entries = entries
         batch, length = obs["is_first"].shape
         valid = self.validity(obs)
-
-        early_extensions = self.additional_losses_before_imagination()
 
         starts_count = min(self.config.imag_last or length, length)
         horizon = self.config.imag_length
@@ -177,36 +161,9 @@ class LearnerMixin:
             policy_inp,
             imagination_aux,
         )
-        if early_extensions:
-            # Initialize training-only modules only after the complete B0 path
-            # has initialized and sampled its imagination. This preserves B0's
-            # parameter/RNG order while keeping extension parameters outside
-            # the counterfactual map below.
-            extra_losses, extra_metrics = self.additional_world_model_losses(
-                tokens,
-                repfeat,
-                dyn_entries,
-                target_tokens,
-                obs,
-                prevact,
-                training,
-            )
-            losses.update(extra_losses)
-            metrics.update(extra_metrics)
-        advantage_transform = self.actor_advantage_transform(
-            imgfeat,
-            imgact,
-            policy,
-            imagination_context,
-            environment_step,
-            training,
-            starts,
-        )
-        imagined_reward, imagined_continuation = (
-            self.imagination_reward_continuation(
-                local_inp,
-                imagination_aux,
-            )
+        imagined_reward, imagined_continuation = self.imagination_reward_continuation(
+            local_inp,
+            imagination_aux,
         )
         imagined_losses, imgloss_out, imagined_metrics = imag_loss(
             imgact,
@@ -222,7 +179,6 @@ class LearnerMixin:
             valid=imagination_valid,
             contdisc=self.config.contdisc,
             horizon=self.config.horizon,
-            advantage_transform=advantage_transform,
             **self.config.imag_loss,
         )
         if local_only_value is not None:
@@ -239,7 +195,6 @@ class LearnerMixin:
                     for key, metric in local_metrics.items()
                 }
             )
-        ppo_imag_out = imgloss_out
         imagined_losses, imgloss_out = self.restore_imagination_results(
             imagined_losses,
             imgloss_out,
@@ -254,7 +209,7 @@ class LearnerMixin:
         metrics.update(imagined_metrics)
 
         if self.config.repval_loss:
-            feat = sg(repfeat, skip=self.config.repval_grad)
+            feat = repfeat
             last, term, rew = [obs[key] for key in ("is_last", "is_terminal", "reward")]
             boot = imgloss_out["ret"][:, 0].reshape(batch, starts_count)
             feat, last, term, rew, boot = jax.tree.map(
@@ -276,9 +231,7 @@ class LearnerMixin:
                     slow=False,
                     context=jax.tree.map(jnp.zeros_like, critic_context),
                 )
-            replay_valid = self.replay_value_validity(obs)[
-                :, -starts_count:-1
-            ]
+            replay_valid = self.replay_value_validity(obs)[:, -starts_count:-1]
             replay_losses, replay_out, replay_metrics = repl_loss(
                 last,
                 term,
@@ -307,20 +260,17 @@ class LearnerMixin:
                     }
                 )
 
-        # Initialize and evaluate extension modules only after the locked local
-        # model, actor, and critic have consumed their normal RNG sequence.
-        if not early_extensions:
-            extra_losses, extra_metrics = self.additional_world_model_losses(
-                tokens,
-                repfeat,
-                dyn_entries,
-                target_tokens,
-                obs,
-                prevact,
-                training,
-            )
-            losses.update(extra_losses)
-            metrics.update(extra_metrics)
+        extra_losses, extra_metrics = self.additional_world_model_losses(
+            tokens,
+            repfeat,
+            dyn_entries,
+            target_tokens,
+            obs,
+            prevact,
+            training,
+        )
+        losses.update(extra_losses)
+        metrics.update(extra_metrics)
 
         metrics.update(
             {
@@ -345,78 +295,9 @@ class LearnerMixin:
         carry = (enc_carry, dyn_carry, dec_carry)
         entries = (enc_entries, dyn_entries, dec_entries)
         outs = {"tokens": tokens, "repfeat": repfeat, "losses": losses}
-        if self.behavior_objective == "ppo" and training:
-            action_key = self.action_mask_key
-            if action_key is None or len(self.act_space) != 1:
-                raise ValueError("imagined PPO requires one masked categorical action")
-            raw_policy = self.pol(policy_inp, 2)[action_key]
-            old_policy = policy[action_key]
-            valid_actor = (
-                jnp.ones_like(ppo_imag_out["adv_normed"], dtype=jnp.float32)
-                if imagination_valid is None
-                else imagination_valid[:, : ppo_imag_out["adv_normed"].shape[1]]
-            )
-            outs["ppo_batch"] = jax.tree.map(
-                jax.lax.stop_gradient,
-                {
-                    "features": policy_inp[:, :-1],
-                    "actions": imgact[action_key][:, :-1],
-                    "old_logits": old_policy.logits[:, :-1],
-                    "mask_bias": (
-                        old_policy.logits[:, :-1] - raw_policy.logits[:, :-1]
-                    ),
-                    "advantages": ppo_imag_out["adv_normed"],
-                    "weights": ppo_imag_out["weight"],
-                    "valid": valid_actor,
-                },
-            )
         if target_tokens is not None:
             outs["target_tokens"] = target_tokens
         return loss, (carry, entries, outs, metrics)
-
-    def _ppo_distribution(self, batch):
-        action_key = self.action_mask_key
-        raw = self.pol(batch["features"], 2)[action_key]
-        return jaxouts.Categorical(raw.logits + batch["mask_bias"])
-
-    def ppo_actor_loss(self, batch):
-        distribution = self._ppo_distribution(batch)
-        new_logp = distribution.logp(batch["actions"])
-        old = jaxouts.Categorical(batch["old_logits"])
-        old_logp = old.logp(batch["actions"])
-        ratio = jnp.exp(jnp.clip(new_logp - old_logp, -20.0, 20.0))
-        clip = float(self.config.ppo.clip)
-        clipped_ratio = jnp.clip(ratio, 1.0 - clip, 1.0 + clip)
-        advantage = batch["advantages"]
-        surrogate = jnp.minimum(ratio * advantage, clipped_ratio * advantage)
-        entropy = distribution.entropy()
-        per_item = batch["weights"] * -(
-            surrogate + float(self.config.imag_loss.actent) * entropy
-        )
-        valid = batch["valid"].astype(jnp.float32)
-        return (per_item * valid).sum() / jnp.maximum(valid.sum(), 1.0)
-
-    def ppo_actor_metrics(self, batch):
-        distribution = self._ppo_distribution(batch)
-        old = jaxouts.Categorical(batch["old_logits"])
-        new_logp = distribution.logp(batch["actions"])
-        old_logp = old.logp(batch["actions"])
-        ratio = jnp.exp(jnp.clip(new_logp - old_logp, -20.0, 20.0))
-        valid = batch["valid"].astype(jnp.float32)
-        denominator = jnp.maximum(valid.sum(), 1.0)
-
-        def mean(value):
-            return (value * valid).sum() / denominator
-
-        clip = float(self.config.ppo.clip)
-        return {
-            "ppo/kl": mean(old.kl(distribution)),
-            "ppo/approx_kl": mean(old_logp - new_logp),
-            "ppo/clip_fraction": mean(jnp.abs(ratio - 1.0) > clip),
-            "ppo/ratio_mean": mean(ratio),
-            "ppo/selected_probability": mean(jnp.exp(new_logp)),
-            "ppo/entropy": mean(distribution.entropy()),
-        }
 
     def _update_slow_models(self):
         self.slowval.update()
@@ -433,34 +314,6 @@ class LearnerMixin:
     ):
         del tokens, repfeat, dyn_entries, target_tokens, obs, prevact, training
         return {}, {}
-
-    def additional_losses_before_imagination(self):
-        """Whether extension modules must be initialized before actor credit."""
-
-        return False
-
-    def actor_advantage_transform(
-        self,
-        imgfeat,
-        imgact,
-        policy,
-        imagination_context,
-        environment_step,
-        training,
-        dynamics_starts=None,
-    ):
-        """Return an optional transform of B0's normalized actor advantage."""
-
-        del (
-            imgfeat,
-            imgact,
-            policy,
-            imagination_context,
-            environment_step,
-            training,
-            dynamics_starts,
-        )
-        return None
 
     def representation_prediction_branches(self, repfeat, dynamics_aux):
         """Return predictive states that share the maintained JEPA targets."""
@@ -642,107 +495,38 @@ class LearnerMixin:
             if self.spatial_jepa:
                 assert self.target_enc is not None
                 grid_height, grid_width, _ = self.enc.image_grid_shape()
-                topology = str(self.config.spatial_jepa.topology)
-                if topology == "vjepa21_multiblock":
-                    from ..ablations.representation import (
-                        vjepa21_dense_token_loss,
-                        vjepa21_multiblock_masks,
-                    )
-
-                    assert self.spatial_predictor is not None
-                    spatial_length = min(16, length)
-                    spatial_indices = jnp.arange(
-                        length - spatial_length, length, dtype=jnp.int32
-                    )
-                    spatial_obs = jax.tree.map(
-                        lambda value: value[:, spatial_indices], obs
-                    )
-                    spatial_reset = reset[:, spatial_indices]
-                    spatial_target = self.target_enc.full_predictor_tokens(
-                        spatial_obs, spatial_reset
-                    )
-                    contexts, targets = vjepa21_multiblock_masks(
-                        nj.seed(), spatial_reset.shape, (grid_height, grid_width)
-                    )
-                    group_losses = []
-                    group_cosines = []
-                    group_fractions = []
-                    for visible, mask in zip(contexts, targets):
-                        context_tokens = self.enc.visible_spatial_tokens(
-                            spatial_obs, spatial_reset, visible
-                        )
-                        prediction, context_prediction = self.spatial_predictor(
-                            context_tokens, visible, mask
-                        )
-                        group_loss, group_cosine, group_fraction = (
-                            vjepa21_dense_token_loss(
-                                prediction,
-                                context_prediction,
-                                spatial_target,
-                                mask,
-                                visible,
-                                context_weight=0.5,
-                            )
-                        )
-                        group_losses.append(group_loss)
-                        group_cosines.append(group_cosine)
-                        group_fractions.append(group_fraction)
-                    sampled_loss = jnp.stack(group_losses).mean(0)
-                    losses["spatial_jepa"] = jnp.broadcast_to(
-                        sampled_loss.mean(axis=1, keepdims=True),
-                        (batch, length),
-                    )
-                    spatial_cosine = jnp.stack(group_cosines).mean()
-                    mask_fraction = jnp.stack(group_fractions).mean()
-                    metrics["spatial_jepa/frames_per_sequence"] = spatial_length
-                else:
-                    spatial_target = self.target_enc.spatial_tokens(target_tokens)
-                    if topology == "fixed_count":
-                        mask = spatial_patch_mask(
-                            nj.seed(),
-                            reset.shape,
-                            (grid_height, grid_width),
-                            float(self.config.spatial_jepa.mask_ratio),
-                        )
-                    else:
-                        from ..ablations.representation import (
-                            spatial_patch_mask as ablation_mask,
-                        )
-
-                        mask = ablation_mask(
-                            nj.seed(),
-                            reset.shape,
-                            (grid_height, grid_width),
-                            float(self.config.spatial_jepa.mask_ratio),
-                            topology,
-                        )
-                    masked_obs = dict(obs)
-                    for key in self.enc.imgkeys:
-                        masked_obs[key] = mask_image_patches(
-                            obs[key],
-                            mask,
-                            fill_value=int(self.config.spatial_jepa.fill_value),
-                        )
-                    _, _, masked_tokens = self.enc(
-                        self.enc.initial(batch),
-                        masked_obs,
-                        reset,
-                        training,
-                    )
-                    context = jnp.concatenate(
-                        [repfeat["deter"], masked_tokens], axis=-1
-                    )
-                    raw_prediction = self.dyn.predictor(context, name="spatialpred")
-                    prediction = self.enc.spatial_tokens(raw_prediction)
-                    (
-                        losses["spatial_jepa"],
-                        spatial_cosine,
-                        mask_fraction,
-                    ) = masked_spatial_loss(
-                        prediction,
-                        spatial_target,
+                spatial_target = self.target_enc.spatial_tokens(target_tokens)
+                mask = spatial_patch_mask(
+                    nj.seed(),
+                    reset.shape,
+                    (grid_height, grid_width),
+                    float(self.config.spatial_jepa.mask_ratio),
+                )
+                masked_obs = dict(obs)
+                for key in self.enc.imgkeys:
+                    masked_obs[key] = mask_image_patches(
+                        obs[key],
                         mask,
+                        fill_value=int(self.config.spatial_jepa.fill_value),
                     )
+                _, _, masked_tokens = self.enc(
+                    self.enc.initial(batch),
+                    masked_obs,
+                    reset,
+                    training,
+                )
+                context = jnp.concatenate([repfeat["deter"], masked_tokens], axis=-1)
+                raw_prediction = self.dyn.predictor(context, name="spatialpred")
+                prediction = self.enc.spatial_tokens(raw_prediction)
+                (
+                    losses["spatial_jepa"],
+                    spatial_cosine,
+                    mask_fraction,
+                ) = masked_spatial_loss(
+                    prediction,
+                    spatial_target,
+                    mask,
+                )
                 metrics["spatial_jepa/cosine"] = spatial_cosine
                 metrics["spatial_jepa/mask_fraction"] = mask_fraction
                 metrics["spatial_jepa/target_std"] = (

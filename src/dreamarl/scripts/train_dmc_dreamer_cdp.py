@@ -1,4 +1,4 @@
-"""Train pinned official Dreamer-CDP for the Milestone 2 visual-DMC gate."""
+"""Train the pinned official Dreamer-CDP comparison on visual DMC."""
 
 from __future__ import annotations
 

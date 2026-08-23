@@ -4,12 +4,11 @@ import json
 from pathlib import Path
 
 import pytest
-import ruamel.yaml as yaml
 
-from dreamarl.config import DreaMARLRunSpec
+from dreamarl.config import DreaMARLRunSpec, PUBLIC_ALGORITHMS
 from dreamarl.contracts import verify_run_contract
 from dreamarl.launcher import run_training
-from dreamarl.main import _validate_script
+from dreamarl.main import _load_configs, _resolve_config_profiles, _validate_script
 from dreamarl.replay import ExponentialRecency, RecentReplay
 from dreamarl.runtime import algorithm_root
 from dreamarl.scripts.eval_dreamarl import main as eval_main
@@ -17,280 +16,179 @@ from dreamarl.scripts.eval_dreamarl import main as eval_main
 
 def _spec(tmp_path: Path, **updates) -> DreaMARLRunSpec:
     values = {
-        "experiment_dir": tmp_path / "run",
-        "task": "meltingpot_externality_mushrooms__dense",
-        "num_agents": 5,
+        "experiment_dir": tmp_path / "local",
+        "task": "dmc_reacher_easy",
+        "num_agents": 1,
+        "algorithm": "local",
         "seed": 7,
         "train_steps": 50_000,
         "platform": "cpu",
         "python": Path("/usr/bin/python3"),
-        "wandb_project": "world-marl",
-        "wandb_entity": "osaze-obahor",
     }
     values.update(updates)
     return DreaMARLRunSpec(**values)
 
 
-def test_run_spec_exposes_only_the_locked_algorithm(tmp_path: Path) -> None:
-    spec = _spec(tmp_path)
-    manifest = spec.to_dict()
-    assert manifest["world_model"] == "parallel_transformer"
-    assert manifest["world_model_objective"] == "embedding"
-    assert manifest["visual_encoder"] == "simple"
-    assert manifest["spatial_mask_topology"] == "fixed_count"
-    assert manifest["spatial_mask_ratio"] == 0.5
-    assert manifest["embedding_target"] == "ema"
-    assert manifest["embedding_loss"] == "cosine"
-    assert manifest["sigreg_scale"] == 0.05
-    assert manifest["sigreg_aggregation"] == "per_agent"
-    assert manifest["replay_context"] == 128
-    assert manifest["environment_seed_mode"].startswith(
-        "construction-time Lab2D seed stream"
-    )
-    assert manifest["environment_reproducibility"] == (
-        "construction_seed_controlled_not_trajectory_deterministic"
-    )
-    assert manifest["train_agent_steps_budget"] == 250_000
-    assert not any(
-        flag in spec.command
-        for flag in (
-            "--agent.dyn.typ",
-            "--agent.enc.typ",
-            "--agent.objective",
-            "--agent.spatial_jepa.topology",
-        )
-    )
-    contract = verify_run_contract(spec)
-    assert contract["marl_stage"] == "b0"
-    assert contract["policy_peer_access"] is False
-    assert contract["imagination_atomicity"] == (
-        "team starts remain grouped while every transition uses only its own action"
-    )
-    assert contract["environment_reproducibility"] == (
-        "construction_seed_controlled_not_trajectory_deterministic"
-    )
-
-
-def test_single_and_multi_agent_runs_share_one_contract(tmp_path: Path) -> None:
-    singleton = verify_run_contract(_spec(tmp_path, num_agents=1))
-    multi = verify_run_contract(_spec(tmp_path, num_agents=7))
-    differing = {"num_agents"}
-    assert {key: value for key, value in singleton.items() if key not in differing} == {
-        key: value for key, value in multi.items() if key not in differing
-    }
-    assert singleton["policy_information"] == multi["policy_information"]
-    assert singleton["marl_architecture"] == "shared independent local JEPA"
-    assert singleton["agent_axis_adapter"] == "[B,T,A,...] <-> [B*A,T,...]"
-
-
-def test_canonical_yaml_matches_the_locked_manifest(tmp_path: Path) -> None:
-    defaults = yaml.YAML(typ="safe").load(
-        (algorithm_root() / "configs.yaml").read_text(encoding="utf-8")
-    )["defaults"]
-    config = defaults["agent"]
-    manifest = _spec(tmp_path).to_dict()
-    assert config["dyn"]["typ"] == manifest["world_model"]
-    assert config["enc"]["typ"] == manifest["visual_encoder"]
-    assert config["objective"] == manifest["world_model_objective"]
-    assert config["embedding_target"] == manifest["embedding_target"]
-    assert config["embedding_loss"] == manifest["embedding_loss"]
-    assert config["spatial_jepa"]["topology"] == manifest["spatial_mask_topology"]
-    assert config["sigreg"]["aggregation"] == "per_agent"
-    assert config["marl"] == {
-        "stage": "b0",
-        "execution": "strict_decentralized",
-        "ctde": {
-            "rollout_steps": 1,
-            "multistep": {"anchors": 128},
-            "joint": {
-                "width": 256,
-                "heads": 4,
-                "agent_layers": 2,
-                "temporal_layers": 4,
-                "context": 16,
-                "ffup": 4,
-                "dropout": 0.1,
-                "act": "silu",
-                "norm": "rms",
-                "winit": "trunc_normal_in",
-            },
-            "head": {
-                "layers": 2,
-                "units": 256,
-                "bins": 255,
-                "outscale": 0.0,
-                "act": "silu",
-                "norm": "rms",
-                "winit": "trunc_normal_in",
-            },
-            "critic": {
-                "width": 256,
-                "heads": 4,
-                "layers": 2,
-                "ffup": 4,
-                "dropout": 0.0,
-                "value_layers": 2,
-                "value_units": 256,
-                "bins": 255,
-                "outscale": 0.0,
-                "act": "silu",
-                "norm": "rms",
-                "winit": "trunc_normal_in",
-            },
-            "opt": {
-                "lr": 4e-5,
-                "agc": 0.3,
-                "eps": 1e-20,
-                "beta1": 0.9,
-                "beta2": 0.999,
-                "momentum": True,
-                "wd": 0.0,
-                "schedule": "const",
-                "warmup": 1000,
-                "anneal": 0,
-            },
-        },
-        "agent_jepa": {
-            "slots": 8,
-            "width": 256,
-            "heads": 4,
-            "layers": 2,
-            "predictor_layers": 2,
-            "ffup": 4,
-            "predictor_hidden": 512,
-            "local_grad_scale": 0.0,
-            "k0_scale": 0.1,
-            "future_scale": 1.0,
-            "future_set_scale": 1.0,
-            "teacher_rate": 0.01,
-            "teacher_every": 1,
-            "mask_min": 0.25,
-            "mask_max": 0.5,
-            "matching_temperature": 0.02,
-            "sinkhorn_iterations": 10,
-            "predicted_set_scale": 1.0,
-            "source_set_scale": 1.0,
-            "hidden_coverage_scale": 1.0,
-            "variance_scale": 0.1,
-            "covariance_scale": 0.1,
-            "slot_target_std": 0.1,
-            "utility_probe": False,
-            "act": "silu",
-            "norm": "rms",
-            "winit": "trunc_normal_in",
-        },
-        "jecc": {
-            "horizons": [5, 15, 32],
-            "pretrain_only": False,
-            "diagnostic_controller": False,
-            "act": "silu",
-            "norm": "rms",
-            "winit": "trunc_normal_in",
-            "outcome": {
-                "width": 128,
-                "dim": 128,
-                "layers": 2,
-                "heads": 4,
-                "ffup": 4,
-            },
-            "predictor": {"width": 256, "layers": 2, "heads": 4, "ffup": 4},
-            "utility": {"layers": 2, "units": 256, "bins": 255},
-            "teacher": {"rate": 0.01, "every": 1},
-            "loss_scales": {
-                "outcome": 1.0,
-                "utility": 1.0,
-                "predicted_utility": 1.0,
-            },
-            "alpha": {"start": 5000, "end": 20000},
-            "opt": {
-                "lr": 4e-5,
-                "agc": 0.3,
-                "eps": 1e-20,
-                "beta1": 0.9,
-                "beta2": 0.999,
-                "momentum": True,
-                "wd": 0.0,
-                "schedule": "const",
-                "warmup": 1000,
-                "anneal": 0,
-            },
-        },
-    }
-    temporal = config["dyn"]["parallel_transformer"]
-    assert defaults["replay_context"] == temporal["context"] * temporal["layers"]
-
-
-def test_curve_evaluation_is_explicit(tmp_path: Path) -> None:
-    baseline = _spec(tmp_path)
-    measured = _spec(
+@pytest.mark.parametrize(
+    ("algorithm", "profiles", "stage", "rollout_steps", "anchors"),
+    (
+        ("local", ["smac_vector", "local"], "local", None, None),
+        ("ctde-one-step", ["smac_vector", "ctde"], "ctde", 1, 0),
+        (
+            "ctde-two-step",
+            ["smac_vector", "ctde", "ctde_two_step"],
+            "ctde",
+            2,
+            128,
+        ),
+    ),
+)
+def test_public_profiles_resolve_to_complete_configs(
+    tmp_path: Path,
+    algorithm: str,
+    profiles: list[str],
+    stage: str,
+    rollout_steps: int | None,
+    anchors: int | None,
+) -> None:
+    spec = _spec(
         tmp_path,
-        curve_eval_interval=50_000,
-        curve_eval_episodes=20,
-        curve_eval_seed_offset=50_000,
+        experiment_dir=tmp_path / algorithm,
+        task="smac_3m",
+        num_agents=3,
+        algorithm=algorithm,
     )
-    assert "--run.curve_eval_interval" not in baseline.command
-    index = measured.command.index("--run.curve_eval_interval")
-    assert measured.command[index + 1] == "50000"
+    resolved = _resolve_config_profiles(_load_configs(), spec.configs)
+
+    assert spec.configs == profiles
+    assert resolved.agent.marl.stage == stage
+    assert resolved.agent.loss_scales.posterior_jepa == 2.0
+    if rollout_steps is None:
+        assert "agent.marl.ctde.rollout_steps" not in resolved.flat
+        assert spec.ctde_manifest is None
+    else:
+        assert resolved.agent.marl.ctde.rollout_steps == rollout_steps
+        assert resolved.agent.marl.ctde.multistep.anchors == anchors
+        assert resolved.agent.loss_scales.ctde_embedding == 2.0
+        assert spec.ctde_manifest["rollout_steps"] == rollout_steps
+        assert spec.ctde_manifest["two_step_anchors"] == anchors
 
 
-def test_smac_run_uses_vector_protocol_profile(tmp_path: Path) -> None:
+def test_default_config_is_clean_single_agent_dmc() -> None:
+    assert (algorithm_root() / "configs.yaml").is_file()
+    configs = _load_configs()
+    defaults = configs["defaults"]
+
+    assert defaults["task"] == "dmc_reacher_easy"
+    assert defaults["agent"]["num_agents"] == 1
+    assert defaults["agent"]["marl"] == {
+        "stage": "local",
+        "execution": "strict_decentralized",
+    }
+    assert "typ" not in defaults["agent"]["dyn"]
+    assert "typ" not in defaults["agent"]["enc"]
+    for fixed_choice in (
+        "objective",
+        "embedding_target",
+        "embedding_loss",
+        "posterior_jepa",
+        "dynamics_jepa",
+    ):
+        assert fixed_choice not in defaults["agent"]
+    assert "enabled" not in defaults["agent"]["spatial_jepa"]
+    assert "enabled" not in defaults["agent"]["sigreg"]
+    assert set(defaults["env"]) == {"dmc", "smac"}
+    assert set(defaults["agent"]["spatial_jepa"]) == {
+        "mask_ratio",
+        "fill_value",
+    }
+    assert set(configs) == {
+        "defaults",
+        "local",
+        "ctde",
+        "ctde_two_step",
+        "dmc_vision",
+        "smac_vector",
+        "debug",
+    }
+
+
+@pytest.mark.parametrize("algorithm", PUBLIC_ALGORITHMS)
+def test_public_commands_select_profiles_without_internal_stage_overrides(
+    tmp_path: Path, algorithm: str
+) -> None:
     spec = _spec(
         tmp_path,
         task="smac_3m",
         num_agents=3,
-        train_steps=100_000,
-        replay_sampling="recent",
-        curve_eval_interval=500,
-        curve_eval_episodes=10,
+        algorithm=algorithm,
     )
-    manifest = spec.to_dict()
-    assert spec.configs == ["smac_vector"]
-    assert manifest["observation_mode"] == "local vector features"
-    assert manifest["spatial_jepa"] is False
-    assert manifest["smac_protocol"]["difficulty"] == "7"
-    assert manifest["smac_protocol"]["primary_metric"].endswith("battle win rate")
-    assert "--replay.sampling" in spec.command
+    start = spec.command.index("--configs") + 1
+    assert spec.command[start : start + len(spec.configs)] == spec.configs
+    assert "--agent.marl.stage" not in spec.command
+    assert "--agent.marl.ctde.rollout_steps" not in spec.command
+
+
+def test_contract_preserves_the_decentralized_execution_boundary(
+    tmp_path: Path,
+) -> None:
+    local = verify_run_contract(_spec(tmp_path))
+    ctde = verify_run_contract(
+        _spec(
+            tmp_path,
+            task="smac_3m",
+            num_agents=3,
+            algorithm="ctde-two-step",
+        )
+    )
+
+    for contract in (local, ctde):
+        assert contract["execution"]["mode"] == "strict_decentralized"
+        assert contract["execution"]["policy_peer_access"] is False
+        assert contract["execution"]["runtime_communication"] is False
+        assert contract["training"]["actor_objective"] == ("score_function_reinforce")
+    assert local["ctde"] is None
+    assert ctde["ctde"]["training_only"] is True
+    assert ctde["ctde"]["rollout_steps"] == 2
+
+
+def test_environment_and_ctde_boundaries_are_validated(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="singleton visual DMC"):
+        _spec(tmp_path, task="dmc_reacher_easy", num_agents=2)
+    with pytest.raises(ValueError, match="supports SMAC"):
+        _spec(tmp_path, task="unknown_task", num_agents=5)
+    with pytest.raises(ValueError, match="at least two agents"):
+        _spec(tmp_path, algorithm="ctde-one-step")
+
+
+def test_recorded_evaluation_protocol_uses_benchmark_defaults(tmp_path: Path) -> None:
+    dmc = _spec(tmp_path).to_dict()["evaluation_protocol"]
+    smac = _spec(tmp_path, task="smac_3m", num_agents=3).to_dict()[
+        "evaluation_protocol"
+    ]
+
+    assert dmc == {
+        "policy_mode": "deterministic",
+        "interval": 0,
+        "episodes": 20,
+        "envs": 4,
+        "seed_offset": 10_000,
+    }
+    assert smac == {
+        "policy_mode": "deterministic",
+        "interval": 0,
+        "episodes": 32,
+        "envs": 1,
+        "seed_offset": 50_000,
+    }
 
 
 def test_training_cadence_is_explicit_and_recorded(tmp_path: Path) -> None:
     spec = _spec(tmp_path, train_ratio=1024.0)
     index = spec.command.index("--run.train_ratio")
+
     assert spec.command[index + 1] == "1024.0"
     assert spec.to_dict()["optimizer_updates_per_environment_step"] == 1.0
-
-
-def test_smac_ppo_continuation_contract_is_explicit(tmp_path: Path) -> None:
-    checkpoint = tmp_path / "source" / "ckpt"
-    anchor = tmp_path / "anchor.npz"
-    spec = _spec(
-        tmp_path,
-        task="smac_3m",
-        num_agents=3,
-        behavior_optimizer="separated",
-        behavior_objective="ppo",
-        ppo_epochs=3,
-        ppo_clip=0.2,
-        repval_grad=False,
-        anchor_batch=anchor,
-        from_checkpoint=checkpoint,
-        from_checkpoint_regex=r"^(?!opt/)",
-        load_replay=True,
-        replay_source=tmp_path / "source" / "replay",
-    )
-    manifest = spec.to_dict()
-    assert manifest["behavior_objective"] == "ppo"
-    assert manifest["optimizer_topology"] == "separated"
-    assert manifest["ppo_epochs"] == 3
-    assert manifest["ppo_clip"] == 0.2
-    assert manifest["repval_grad"] is False
-    assert manifest["continuation_replay_loaded"] is True
-    assert spec.command[spec.command.index("--agent.ppo.clip") + 1] == "0.2"
-    assert spec.command[spec.command.index("--run.load_replay") + 1] == "True"
-
-
-def test_imagined_ppo_rejects_joint_optimizer_ownership(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="requires separated optimizer"):
-        _spec(tmp_path, behavior_objective="ppo", behavior_optimizer="joint")
 
 
 def test_recent_replay_keeps_the_exponential_selector_when_empty() -> None:
@@ -298,50 +196,45 @@ def test_recent_replay_keeps_the_exponential_selector_when_empty() -> None:
     assert isinstance(replay.sampler, ExponentialRecency)
 
 
-def test_b1_launch_selects_only_training_time_agent_jepa(tmp_path: Path) -> None:
-    spec = _spec(tmp_path, marl_stage="b1")
-    stage = spec.command.index("--agent.marl.stage")
-    contract = verify_run_contract(spec)
-    assert spec.command[stage + 1] == "b1"
-    assert contract["agent_axis_jepa"].startswith("whole-agent-masked prediction")
-    assert contract["team_teacher"].startswith("training-only EMA set encoder")
-    assert contract["team_teacher_execution_access"] is False
-    assert contract["policy_peer_access"] is False
-
-
-def test_bounded_imagination_starts_are_recorded_and_forwarded(tmp_path: Path) -> None:
-    spec = _spec(tmp_path, imagination_starts=16)
-    index = spec.command.index("--agent.imag_last")
-    assert spec.command[index + 1] == "16"
-    assert spec.to_dict()["imagination_starts"] == 16
-
-
 def test_generic_reporting_modes_are_rejected_for_marl() -> None:
     for script in ("train_eval", "parallel", "parallel_env", "parallel_replay"):
         with pytest.raises(ValueError, match="single-agent reporting"):
-            _validate_script(script, 5)
-    _validate_script("train", 5)
+            _validate_script(script, 3)
+    _validate_script("train", 3)
     _validate_script("parallel", 1)
 
 
-def test_dry_run_records_the_locked_contract(tmp_path: Path) -> None:
-    spec = _spec(tmp_path)
+def test_dry_run_records_one_nested_authoritative_contract(tmp_path: Path) -> None:
+    spec = _spec(
+        tmp_path,
+        task="smac_3m",
+        num_agents=3,
+        algorithm="ctde-one-step",
+    )
     assert run_training(spec, dry_run=True) == 0
     manifest = json.loads(
         (spec.experiment_dir / "launch.json").read_text(encoding="utf-8")
     )
-    assert manifest["implementation"] == "first-party decoder-free DreaMARL"
-    assert manifest["spatial_mask_topology"] == "fixed_count"
-    assert manifest["configs"] == ["meltingpot_vision"]
+
+    assert manifest["algorithm"] == "ctde-one-step"
+    assert manifest["configs"] == ["smac_vector", "ctde"]
+    assert manifest["contract"]["algorithm"] == "ctde-one-step"
+    assert manifest["contract"]["ctde"]["training_only"] is True
+    assert manifest["actor_objective"] == "score_function_reinforce"
+    assert manifest["optimizer_topology"] == "separated"
 
 
-def test_visual_dmc_uses_the_same_singleton_algorithm(tmp_path: Path) -> None:
-    spec = _spec(tmp_path, task="dmc_reacher_easy", num_agents=1)
-    assert spec.configs == ["dmc_vision"]
-
-
-def test_fixed_evaluation_rebuilds_the_training_architecture(tmp_path: Path) -> None:
-    spec = _spec(tmp_path)
+@pytest.mark.parametrize("algorithm", PUBLIC_ALGORITHMS)
+def test_fixed_evaluation_reconstructs_the_recorded_algorithm_and_protocol(
+    tmp_path: Path, algorithm: str
+) -> None:
+    spec = _spec(
+        tmp_path,
+        experiment_dir=tmp_path / algorithm,
+        task="smac_3m",
+        num_agents=3,
+        algorithm=algorithm,
+    )
     assert run_training(spec, dry_run=True) == 0
     checkpoint = spec.logdir / "ckpt" / "checkpoint-123"
     checkpoint.mkdir(parents=True)
@@ -350,8 +243,14 @@ def test_fixed_evaluation_rebuilds_the_training_architecture(tmp_path: Path) -> 
 
     assert eval_main([str(spec.experiment_dir), "--dry-run"]) == 0
     launch_file = next((spec.experiment_dir / "evaluation").glob("*.launch.json"))
-    command = json.loads(launch_file.read_text(encoding="utf-8"))["command"]
-    assert command[command.index("--agent.num_agents") + 1] == "5"
-    assert "--agent.marl.mechanism" not in command
-    assert "--agent.behavior.objective" not in command
-    assert "--replay_context" not in command
+    launch = json.loads(launch_file.read_text(encoding="utf-8"))
+    command = launch["command"]
+
+    assert launch["algorithm"] == algorithm
+    assert launch["configs"] == spec.configs
+    assert launch["episodes"] == 32
+    assert launch["envs"] == 1
+    assert launch["eval_seed"] == spec.seed + 50_000
+    assert command[command.index("--agent.num_agents") + 1] == "3"
+    assert command[command.index("--run.eval_eps") + 1] == "32"
+    assert command[command.index("--seed") + 1] == str(spec.seed + 50_000)

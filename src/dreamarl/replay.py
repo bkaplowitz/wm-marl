@@ -38,11 +38,7 @@ class ExponentialRecency:
             else:
                 uniform = self.rng.random()
                 truncated = 1.0 - self.decay**count
-                age = int(
-                    np.floor(
-                        np.log1p(-uniform * truncated) / np.log(self.decay)
-                    )
-                )
+                age = int(np.floor(np.log1p(-uniform * truncated) / np.log(self.decay)))
                 age = min(age, count - 1)
             self.sampled_ages.append(age)
             return self.items[self.step - 1 - age]

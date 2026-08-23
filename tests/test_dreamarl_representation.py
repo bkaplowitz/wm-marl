@@ -117,7 +117,7 @@ def test_inactive_embeddings_do_not_change_sigreg() -> None:
     np.testing.assert_allclose(candidate, baseline, rtol=1e-6, atol=1e-6)
 
 
-def test_per_timestep_sigreg_matches_leworldmodel_aggregation() -> None:
+def test_per_timestep_sigreg_aggregates_each_time_index() -> None:
     key = jax.random.key(82)
     embeddings = jax.random.normal(key, (5, 7, 16))
     actual = sigreg_loss(

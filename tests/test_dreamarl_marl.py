@@ -7,7 +7,7 @@ import ninjax as nj
 import numpy as np
 
 from dreamarl.agent import Agent as LocalAgent
-from dreamarl.main import _load_configs
+from dreamarl.main import _load_configs, _merge_dicts
 from dreamarl.marl.axes import TeamAxis
 from dreamarl.marl.core import MARLCore
 from dreamarl.marl.spaces import add_agent_axis
@@ -15,18 +15,7 @@ from dreamarl.models.heads import MLPHead
 from dreamarl.models.heads import apply_action_mask, apply_predicted_action_mask
 from dreamarl.models.ctde import JointObservationJEPA
 from dreamarl.models.normalize import Normalize
-from dreamarl.models.team import (
-    AgentContextEncoder,
-    TeamContentPredictor,
-    TeamSlotEncoder,
-    TeamSlotPredictor,
-    masked_agent_coverage_loss,
-    scale_gradient,
-    team_set_matching_loss,
-    team_slot_jepa_loss,
-)
 from dreamarl.training.learner import masked_mean
-from dreamarl.training.jecc import build_outcome_windows
 
 
 GLOBAL_KEYS = {"is_first", "is_last", "is_terminal", "consec", "stepid"}
@@ -52,10 +41,12 @@ def _assert_mapping_subset_equal(actual, expected) -> None:
     )
 
 
-def _agent_config(num_agents: int = 1, marl_stage: str = "b0"):
+def _agent_config(num_agents: int = 1, marl_stage: str = "local"):
     configs = _load_configs()
-    resolved = elements.Config(configs["defaults"])
-    resolved = resolved.update(configs["debug"])
+    resolved = _merge_dicts(configs["defaults"], configs["ctde"])
+    if marl_stage == "local":
+        resolved = _merge_dicts(resolved, configs["local"])
+    resolved = elements.Config(resolved).update(configs["debug"])
     resolved = resolved.update(
         {
             "replay_context": 0,
@@ -199,7 +190,7 @@ def test_decentralized_policy_is_invariant_to_peer_histories() -> None:
     team_size = 3
     observations, actions = _team_spaces(team_size)
     agent = object.__new__(MARLCore)
-    MARLCore.__init__(agent, observations, actions, _agent_config(team_size, "b2"))
+    MARLCore.__init__(agent, observations, actions, _agent_config(team_size, "ctde"))
     focal = jax.random.randint(
         jax.random.key(91), (1, 2, 64, 64, 3), 0, 256, dtype=jnp.uint8
     )
@@ -497,9 +488,7 @@ def test_ctde_joint_replay_and_recurrent_history_match() -> None:
     parallel_leaves, parallel_tree = jax.tree.flatten(parallel_output)
     recurrent_leaves, recurrent_tree = jax.tree.flatten(recurrent_output)
     assert recurrent_tree == parallel_tree
-    for recurrent_value, parallel_value in zip(
-        recurrent_leaves, parallel_leaves
-    ):
+    for recurrent_value, parallel_value in zip(recurrent_leaves, parallel_leaves):
         if jnp.issubdtype(recurrent_value.dtype, jnp.inexact):
             np.testing.assert_allclose(
                 np.asarray(recurrent_value, np.float32),
@@ -515,7 +504,6 @@ def test_ctde_trains_joint_imagination_and_central_critic() -> None:
     observations, actions = _team_spaces(3)
     config = _agent_config(3, "ctde").update(
         {
-            "behavior_optimizer": "separated",
             "opt.warmup": 0,
             "marl.ctde.opt.warmup": 0,
         }
@@ -556,7 +544,6 @@ def test_ctde_two_step_self_fed_objective_is_finite() -> None:
     observations, actions = _team_spaces(3)
     config = _agent_config(3, "ctde").update(
         {
-            "behavior_optimizer": "separated",
             "opt.warmup": 0,
             "marl.ctde.opt.warmup": 0,
             "marl.ctde.rollout_steps": 2,
@@ -586,432 +573,3 @@ def test_ctde_two_step_self_fed_objective_is_finite() -> None:
         assert np.isfinite(float(metrics[key]))
     assert float(metrics["ctde/multistep_anchors"]) == 2.0
     assert "loss/ctde_multistep_posterior" not in metrics
-
-
-def test_jecc_trains_factual_models_and_blends_actor_credit() -> None:
-    observations, actions = _team_spaces(3)
-    config = _agent_config(3, "jecc").update(
-        {
-            "behavior_optimizer": "separated",
-            "opt.warmup": 0,
-            "marl.jecc.opt.warmup": 0,
-            "marl.jecc.horizons": [2, 3, 4],
-            "marl.jecc.outcome.width": 16,
-            "marl.jecc.outcome.dim": 16,
-            "marl.jecc.outcome.layers": 1,
-            "marl.jecc.outcome.heads": 4,
-            "marl.jecc.predictor.width": 16,
-            "marl.jecc.predictor.layers": 1,
-            "marl.jecc.predictor.heads": 4,
-            "marl.jecc.utility.units": 16,
-            "marl.jecc.utility.bins": 5,
-        }
-    )
-    agent = object.__new__(MARLCore)
-    MARLCore.__init__(agent, observations, actions, config)
-    data = _add_team_axis(_local_batch(length=6), 3)
-    data["_environment_step"] = jnp.full((1, 6), 10_000, jnp.int32)
-    carry = agent.init_train(1)
-
-    def step():
-        return agent.train(carry, data)
-
-    state = nj.init(step)({}, seed=252)
-    next_state, (_, _, metrics) = nj.pure(step)(state, seed=253)
-    assert [module.name for module in agent.jecc_modules] == [
-        "jecc_outcome_encoder",
-        "jecc_outcome_predictor",
-        "jecc_utility",
-    ]
-    assert not any(
-        module.name == "jecc_target_outcome_encoder" for module in agent.modules
-    )
-    assert any(key.startswith("jecc_target_outcome_encoder/") for key in next_state)
-    for key in (
-        "loss/jecc",
-        "jecc/outcome_cosine",
-        "jecc/credit_advantage_abs",
-        "opt/jecc/grad_norm",
-        "opt/actor/grad_norm",
-    ):
-        assert np.isfinite(float(metrics[key]))
-    np.testing.assert_allclose(float(metrics["jecc/alpha"]), 1.0 / 3.0)
-
-
-def test_jecc_outcome_targets_use_future_team_reward() -> None:
-    rewards = jnp.array([[[0.0, 0.0], [2.0, 0.0], [0.0, 4.0], [8.0, 0.0]]])
-    active = jnp.ones_like(rewards, bool)
-    first = jnp.array([[True, False, False, False]])
-    last = jnp.zeros((1, 4), bool)
-    terminal = jnp.zeros((1, 4), bool)
-    windows = build_outcome_windows(
-        rewards,
-        active,
-        first,
-        last,
-        terminal,
-        horizons=(2,),
-        gamma=1.0,
-    )
-    np.testing.assert_array_equal(windows.valid[0, 0, :, 0], True)
-    np.testing.assert_allclose(windows.returns[0, 0, :, 0], 3.0)
-    focal_rewards = windows.tokens[0][0, 0, :, :, 1]
-    assert not np.array_equal(focal_rewards[0], focal_rewards[1])
-
-    timeout = build_outcome_windows(
-        rewards,
-        active,
-        first,
-        jnp.array([[False, False, True, False]]),
-        terminal,
-        horizons=(4,),
-        gamma=1.0,
-    )
-    np.testing.assert_array_equal(timeout.valid[0, 0, :, 0], True)
-    np.testing.assert_allclose(timeout.returns[0, 0, :, 0], 3.0)
-    np.testing.assert_array_equal(timeout.masks[0][0, 0, 0], [True, True, False, False])
-
-
-def test_imagined_ppo_reuses_snapshot_and_updates_only_actor_optimizer() -> None:
-    observations, actions = _team_spaces(3)
-    config = _agent_config(3).update(
-        {
-            "behavior_optimizer": "separated",
-            "behavior_objective": "ppo",
-            "ppo.epochs": 2,
-            "ppo.clip": 0.2,
-            "opt.warmup": 0,
-        }
-    )
-    agent = object.__new__(MARLCore)
-    MARLCore.__init__(agent, observations, actions, config)
-    data = _add_team_axis(_local_batch(), 3)
-    carry = agent.init_train(1)
-
-    def step():
-        return agent.train(carry, data)
-
-    state = nj.init(step)({}, seed=152)
-    next_state, (_, _, metrics) = nj.pure(step)(state, seed=153)
-    assert agent.scales["policy"] == 0.0
-    assert "actor_opt/grad_norm" in metrics
-    assert "opt/world/grad_norm" in metrics
-    assert "opt/critic/grad_norm" in metrics
-    assert "opt/actor/grad_norm" not in metrics
-    assert float(metrics["ppo/epochs"]) == 2.0
-    assert np.isfinite(float(metrics["ppo/kl"]))
-    assert 0.0 <= float(metrics["ppo/clip_fraction"]) <= 1.0
-    policy_keys = [key for key in state if key.startswith("pol/")]
-    assert policy_keys
-    assert any(
-        not np.array_equal(np.asarray(state[key]), np.asarray(next_state[key]))
-        for key in policy_keys
-    )
-
-
-def test_b1_completes_agent_masked_team_jepa_update() -> None:
-    observations, actions = _team_spaces(3)
-    config = _agent_config(3, "b1").update(
-        {
-            "opt.warmup": 0,
-            "marl.agent_jepa.slots": 2,
-            "marl.agent_jepa.width": 32,
-            "marl.agent_jepa.heads": 4,
-            "marl.agent_jepa.ffup": 2,
-            "marl.agent_jepa.predictor_hidden": 32,
-            "marl.agent_jepa.utility_probe": True,
-        }
-    )
-    agent = object.__new__(MARLCore)
-    MARLCore.__init__(agent, observations, actions, config)
-    data = _add_team_axis(_local_batch(), 3)
-    carry = agent.init_train(1)
-
-    def step():
-        return agent.train(carry, data)
-
-    state = nj.init(step)({}, seed=54)
-    next_state, (_, _, metrics) = nj.pure(step)(state, seed=55)
-    assert [module.name for module in agent.modules[-7:]] == [
-        "team_encoder",
-        "team_history_encoder",
-        "team_predictor",
-        "team_content_predictor",
-        "team_action_conditioner",
-        "team_transition_encoder",
-        "team_transition_predictor",
-    ]
-    assert np.isfinite(float(metrics["loss/agent_jepa"]))
-    assert float(metrics["agent_jepa/eligible_fraction"]) == 1.0
-    assert float(metrics["agent_jepa/team_target_std"]) > 0.0
-    assert float(metrics["agent_jepa/future_valid_fraction"]) > 0.0
-    assert np.isfinite(float(metrics["agent_jepa/future_cosine"]))
-    assert any(key.startswith("target_team_encoder/") for key in next_state)
-    assert not any(module.name == "target_team_encoder" for module in agent.modules)
-
-    def report_step():
-        return agent.report(agent.init_report(1), data)
-
-    _, (_, report_metrics) = nj.pure(report_step)(next_state, seed=56)
-    for key in (
-        "agent_jepa/probe/future_cross_batch_action_gap",
-        "agent_jepa/probe/future_agent_pairing_gap",
-        "agent_jepa/probe/future_vs_persistence_gap",
-    ):
-        assert np.isfinite(float(report_metrics[key]))
-
-
-def test_b2_trains_causal_team_belief_and_both_central_value_paths() -> None:
-    observations, actions = _team_spaces(3)
-    config = _agent_config(3, "b2").update(
-        {
-            "opt.warmup": 0,
-            "marl.agent_jepa.slots": 2,
-            "marl.agent_jepa.width": 32,
-            "marl.agent_jepa.heads": 4,
-            "marl.agent_jepa.ffup": 2,
-            "marl.agent_jepa.predictor_hidden": 32,
-        }
-    )
-    agent = object.__new__(MARLCore)
-    MARLCore.__init__(agent, observations, actions, config)
-    data = _add_team_axis(_local_batch(), 3)
-    data["agent_alive"] = data["agent_alive"].at[:, :, 2].set(False)
-    carry = agent.init_train(1)
-
-    def step():
-        return agent.train(carry, data)
-
-    state = nj.init(step)({}, seed=101)
-    next_state, (_, _, metrics) = nj.pure(step)(state, seed=102)
-    assert "central_val" in [module.name for module in agent.modules]
-    assert "val" not in [module.name for module in agent.modules]
-    assert any(key.startswith("central_val/") for key in next_state)
-    assert any(key.startswith("slowcentral_val/") for key in next_state)
-    for key in (
-        "agent_jepa/belief_loss",
-        "agent_jepa/belief_set_loss",
-        "imag/central_critic/context_norm",
-        "replay/central_critic/context_norm",
-        "critic/value_explained_variance",
-        "reploss/critic/value_explained_variance",
-    ):
-        assert np.isfinite(float(metrics[key]))
-    assert float(metrics["imag/central_critic/valid_team_fraction"]) == 1.0
-
-    dyn = config.dyn.parallel_transformer
-    features = {
-        "deter": jax.random.normal(jax.random.key(103), (3, 2, int(dyn.deter))),
-        "stoch": jax.random.normal(
-            jax.random.key(104),
-            (3, 2, int(dyn.stoch), int(dyn.classes)),
-        ),
-    }
-    active = jnp.ones((3, 2), bool)
-
-    def probe(probe_features):
-        context, _ = agent._central_critic_context(probe_features, active)
-        value = agent.critic(probe_features, 2, context=context).pred()
-        return context[0], value[0]
-
-    peer_mask = (jnp.arange(3) == 1)[:, None]
-    changed_features = {
-        "deter": jnp.where(
-            peer_mask[..., None], features["deter"] + 10.0, features["deter"]
-        ),
-        "stoch": jnp.where(
-            peer_mask[..., None, None],
-            features["stoch"] + 10.0,
-            features["stoch"],
-        ),
-    }
-    _, baseline = nj.pure(probe)(next_state, features, seed=105)
-    _, changed = nj.pure(probe)(next_state, changed_features, seed=105)
-    assert not np.array_equal(np.asarray(baseline[0]), np.asarray(changed[0]))
-    assert not np.array_equal(np.asarray(baseline[1]), np.asarray(changed[1]))
-
-    def focal_value(probe_features):
-        return nj.pure(probe)(next_state, probe_features, seed=105)[1][1].sum()
-
-    feature_grads = jax.grad(focal_value)(features)
-    for gradient in jax.tree.leaves(feature_grads):
-        np.testing.assert_array_equal(gradient, jnp.zeros_like(gradient))
-
-    def report_step():
-        return agent.report(agent.init_report(1), data)
-
-    _, (_, report_metrics) = nj.pure(report_step)(state, seed=106)
-    for key in (
-        "central_critic/local_only_imag_rmse",
-        "central_critic/local_only_imag_explained_variance",
-        "central_critic/local_only_replay_rmse",
-        "central_critic/local_only_replay_explained_variance",
-    ):
-        assert np.isfinite(float(report_metrics[key]))
-
-
-def test_b1_auxiliary_loss_does_not_change_the_b0_local_update() -> None:
-    observations, actions = _team_spaces(3)
-    shared_updates = {
-        "opt.warmup": 0,
-        "marl.agent_jepa.slots": 2,
-        "marl.agent_jepa.width": 32,
-        "marl.agent_jepa.heads": 4,
-        "marl.agent_jepa.ffup": 2,
-        "marl.agent_jepa.predictor_hidden": 32,
-    }
-    b0 = object.__new__(MARLCore)
-    MARLCore.__init__(
-        b0, observations, actions, _agent_config(3, "b0").update(shared_updates)
-    )
-    b1 = object.__new__(MARLCore)
-    MARLCore.__init__(
-        b1, observations, actions, _agent_config(3, "b1").update(shared_updates)
-    )
-    data = _add_team_axis(_local_batch(), 3)
-    b0_carry = b0.init_train(1)
-    b1_carry = b1.init_train(1)
-
-    def b0_step():
-        return b0.train(b0_carry, data)
-
-    def b1_step():
-        return b1.train(b1_carry, data)
-
-    b0_state = nj.init(b0_step)({}, seed=57)
-    b1_state = nj.init(b1_step)({}, seed=57)
-    _assert_mapping_subset_equal(b1_state, b0_state)
-    b0_next, b0_output = nj.pure(b0_step)(b0_state, seed=58)
-    b1_next, b1_output = nj.pure(b1_step)(b1_state, seed=58)
-    _assert_mapping_subset_equal(b1_next, b0_next)
-    _assert_tree_equal(b1_output[0], b0_output[0])
-    _assert_tree_equal(b1_output[1], b0_output[1])
-
-
-def test_b1_masked_agent_target_has_no_hidden_context_leakage() -> None:
-    batch, length, agents = 2, 3, 3
-    histories = jax.random.normal(jax.random.key(61), (batch, length, agents, 16))
-    targets = jax.random.normal(jax.random.key(62), (batch, length, agents, 12))
-    hidden = jax.nn.one_hot(jnp.full((batch, length), 2), agents, dtype=bool)
-    visible = ~hidden
-    eligible = jnp.ones((batch, length), bool)
-
-    active = jnp.ones((batch, length, agents), bool)
-
-    def predict(members, local_histories):
-        content = TeamSlotEncoder(
-            slots=2,
-            width=16,
-            heads=4,
-            layers=2,
-            ffup=2,
-            name="content",
-        )(members, visible, active)
-        context = AgentContextEncoder(
-            slots=2,
-            width=16,
-            heads=4,
-            ffup=2,
-            name="context",
-        )(local_histories, visible)
-        return TeamSlotPredictor(
-            width=16,
-            heads=4,
-            layers=2,
-            ffup=2,
-            name="predictor",
-        )(content, context)
-
-    state = nj.init(lambda: predict(targets, histories))({}, seed=63)
-    _, baseline = nj.pure(lambda: predict(targets, histories))(state, seed=64)
-    hidden_members = targets.at[:, :, 2].add(100.0)
-    hidden_histories = histories.at[:, :, 2].add(100.0)
-    _, hidden_prediction = nj.pure(lambda: predict(hidden_members, hidden_histories))(
-        state, seed=64
-    )
-    visible_members = targets.at[:, :, 0].add(100.0)
-    _, visible_prediction = nj.pure(lambda: predict(visible_members, histories))(
-        state, seed=64
-    )
-    np.testing.assert_array_equal(hidden_prediction, baseline)
-    assert not np.array_equal(np.asarray(visible_prediction), np.asarray(baseline))
-
-    def encode_target(members):
-        return TeamSlotEncoder(
-            slots=2,
-            width=16,
-            heads=4,
-            layers=2,
-            ffup=2,
-            name="teacher",
-        )(members, active, active)
-
-    teacher_state = nj.init(lambda: encode_target(targets))({}, seed=65)
-    _, target_slots = nj.pure(lambda: encode_target(targets))(teacher_state, seed=66)
-    _, changed_slots = nj.pure(lambda: encode_target(hidden_members))(
-        teacher_state, seed=66
-    )
-    assert not np.array_equal(np.asarray(changed_slots), np.asarray(target_slots))
-    team_loss, _ = team_slot_jepa_loss(baseline, target_slots, eligible)
-    assert np.isfinite(np.asarray(team_loss)).all()
-
-    anchor_state = nj.init(
-        lambda: TeamContentPredictor(12, hidden=16, name="anchor")(baseline)
-    )({}, seed=67)
-    _, content_prediction = nj.pure(
-        lambda: TeamContentPredictor(12, hidden=16, name="anchor")(baseline)
-    )(anchor_state, seed=68)
-    set_loss, metrics = team_set_matching_loss(
-        content_prediction,
-        targets,
-        active,
-        eligible,
-        temperature=0.1,
-        iterations=5,
-        name="test_set",
-    )
-    coverage_loss, coverage_metrics = masked_agent_coverage_loss(
-        content_prediction,
-        targets,
-        active,
-        hidden,
-        eligible,
-        temperature=0.1,
-    )
-    assert content_prediction.shape == (batch, length, 2, 12)
-    assert np.isfinite(np.asarray(set_loss)).all()
-    assert np.isfinite(np.asarray(coverage_loss)).all()
-    assert float(metrics["agent_jepa/test_set_target_std"]) > 0.1
-    assert np.isfinite(float(coverage_metrics["agent_jepa/hidden_coverage_cosine"]))
-
-    gradient = jax.grad(lambda value: scale_gradient(value, 0.1).sum())(histories)
-    np.testing.assert_allclose(np.asarray(gradient), 0.1, atol=1e-6)
-
-
-def test_team_set_matching_breaks_near_rank_one_slots() -> None:
-    targets = jax.random.normal(jax.random.key(71), (1, 2, 3, 8))
-    base = jax.random.normal(jax.random.key(72), (1, 2, 1, 8))
-    noise = 1e-2 * jax.random.normal(jax.random.key(73), (1, 2, 4, 8))
-    prediction = base + noise
-    active = jnp.ones((1, 2, 3), bool)
-    valid = jnp.ones((1, 2), bool)
-
-    def objective(value):
-        loss, _ = team_set_matching_loss(
-            value,
-            targets,
-            active,
-            valid,
-            temperature=0.1,
-            iterations=10,
-            name="matching_test",
-        )
-        return loss.mean()
-
-    initial = objective(prediction)
-    first_gradient = jax.grad(objective)(prediction)
-    assert float(first_gradient.std(axis=-2).mean()) > 1e-4
-    for _ in range(100):
-        prediction -= jax.grad(objective)(prediction)
-    assert float(objective(prediction)) < 0.6 * float(initial)
-    assert float(prediction.std(axis=-2).mean()) > 0.1

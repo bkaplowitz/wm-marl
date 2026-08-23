@@ -2,16 +2,25 @@ defaults:
   replay_context: 128
   agent:
     ablation: True
+    objective: embedding
+    embedding_target: ema
+    embedding_loss: cosine
+    posterior_jepa: True
+    dynamics_jepa: True
+    spatial_jepa:
+      enabled: True
+      topology: fixed_count
     sigreg:
+      enabled: True
       aggregation: pooled
     loss_scales:
       rec: 1.0
     dyn:
+      typ: parallel_transformer
       rssm: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, act: silu, norm: rms, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0}
     enc:
+      typ: simple
       vit: {patch: 8, model: 256, layers: 6, heads: 8, ffup: 4, token_dim: 64, units: 1024, act: silu, norm: rms, winit: trunc_normal_in, symlog: True}
-      vjepa21: {patch: 16, model: 768, layers: 12, heads: 12, ffup: 4, token_dim: 64, units: 1024, act: gelu, norm: layer1em6, winit: trunc_normal_in, symlog: True, pool: tokens, position: rope3d, hierarchical: [2, 5, 8, 11], modality_embedding: True}
-      leworldmodel: {patch: 14, model: 192, layers: 12, heads: 3, ffup: 4, token_dim: 192, units: 1024, act: gelu, norm: layer1em6, winit: trunc_normal_in, symlog: True, pool: cls, position: learned, modality_embedding: False}
     dec:
       typ: simple
       simple: {depth: 64, mults: [2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: rms, outscale: 1.0, winit: trunc_normal_in, outer: False, kernel: 5, bspace: 8, strided: False}

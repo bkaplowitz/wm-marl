@@ -1,4 +1,4 @@
-"""Agent-axis support for the locked DreaMARL learner."""
+"""Agent-axis support for DreaMARL."""
 
 from .axes import TeamAxis
 

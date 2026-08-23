@@ -32,14 +32,6 @@ class PolicyMixin:
             act = predict(policy)
         else:
             raise ValueError(f"unknown policy mode: {mode!r}")
-        act, diagnostic = self.policy_action_intervention(
-            feat,
-            policy,
-            act,
-            obs,
-            mode,
-            dyn_carry,
-        )
         out = {
             "finite": elements.tree.flatdict(
                 jax.tree.map(
@@ -48,7 +40,6 @@ class PolicyMixin:
                 )
             )
         }
-        out.update(diagnostic)
         carry = (enc_carry, dyn_carry, dec_carry, act)
         if self.config.replay_context:
             entries = dict(
@@ -59,20 +50,6 @@ class PolicyMixin:
                 entries["dec"] = dec_entry
             out.update(elements.tree.flatdict(entries))
         return carry, act, out
-
-    def policy_action_intervention(
-        self,
-        feat,
-        policy,
-        act,
-        obs,
-        mode,
-        dynamics_carry=None,
-    ):
-        """Optional evaluation-only action intervention hook."""
-
-        del feat, policy, obs, mode, dynamics_carry
-        return act, {}
 
     def policy_distribution(self, tensor, bdims, action_mask=None):
         policy = self.pol(tensor, bdims=bdims)

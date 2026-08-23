@@ -7,7 +7,7 @@ from pathlib import Path
 
 from dreamarl.baselines.dreamerv3.config import repository_root
 from dreamarl.baselines.marie.config import (
-    PAPER_GATE_MAPS,
+    PAPER_BENCHMARKS,
     MARIERunSpec,
     default_marie_python,
     default_upstream_root,
@@ -17,7 +17,7 @@ from dreamarl.baselines.marie.launcher import run_training, timestamp
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--map", choices=sorted(PAPER_GATE_MAPS), default="3m")
+    parser.add_argument("--map", choices=sorted(PAPER_BENCHMARKS), default="3m")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--steps", type=int)
     parser.add_argument("--temperature", type=float)

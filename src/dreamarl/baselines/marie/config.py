@@ -14,8 +14,8 @@ OFFICIAL_MARIE_REPOSITORY = "https://github.com/breez3young/MARIE.git"
 OFFICIAL_MARIE_COMMIT = "5dc114f78e9f35389b843e05f01c455988451d0e"
 OFFICIAL_SMAC_COMMIT = "d6aab33f76abc3849c50463a8592a84f59a5ef84"
 
-# These gates use the released defaults without undocumented source edits.
-PAPER_GATE_MAPS = {
+# Published references use the released defaults without source edits.
+PAPER_BENCHMARKS = {
     "3m": {"steps": 100_000, "temperature": 1.0, "mean_win_rate": 99.5},
     "3s_vs_4z": {"steps": 100_000, "temperature": 1.0, "mean_win_rate": 73.0},
 }
@@ -55,12 +55,12 @@ class MARIERunSpec:
             self, "upstream_root", Path(self.upstream_root).expanduser().resolve()
         )
         object.__setattr__(self, "python", absolute_path(self.python))
-        if self.map_name not in PAPER_GATE_MAPS:
+        if self.map_name not in PAPER_BENCHMARKS:
             raise ValueError(
-                f"unsupported paper gate {self.map_name!r}; "
-                f"choose one of {sorted(PAPER_GATE_MAPS)}"
+                f"unsupported comparison map {self.map_name!r}; "
+                f"choose one of {sorted(PAPER_BENCHMARKS)}"
             )
-        defaults = PAPER_GATE_MAPS[self.map_name]
+        defaults = PAPER_BENCHMARKS[self.map_name]
         object.__setattr__(self, "steps", self.steps or defaults["steps"])
         object.__setattr__(
             self,
@@ -107,7 +107,7 @@ class MARIERunSpec:
         ]
 
     def to_dict(self) -> dict[str, object]:
-        reference = PAPER_GATE_MAPS[self.map_name]
+        reference = PAPER_BENCHMARKS[self.map_name]
         return {
             "implementation": "breez3young/MARIE",
             "upstream_repository": OFFICIAL_MARIE_REPOSITORY,

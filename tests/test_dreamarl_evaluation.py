@@ -4,6 +4,7 @@ import threading
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from dreamarl import evaluation
 
@@ -132,3 +133,15 @@ def test_inline_evaluation_supports_dreamer_sampled_policy(monkeypatch) -> None:
     assert agent.last_mode == "eval_sample"
     assert agent.n_actions.value == 37
     assert agent.pending_sync is not None
+
+
+@pytest.mark.parametrize(("episodes", "envs"), ((0, 1), (1, 0)))
+def test_inline_evaluation_rejects_invalid_protocol(episodes, envs) -> None:
+    with pytest.raises(ValueError, match="positive episode and environment counts"):
+        evaluation.evaluate_current_policy(
+            _Agent(),
+            lambda index: SimpleNamespace(index=index),
+            episodes=episodes,
+            envs=envs,
+            debug=True,
+        )

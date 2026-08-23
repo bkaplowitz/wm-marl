@@ -1,4 +1,4 @@
-"""Pinned official Dreamer-CDP integration used by Milestone 2."""
+"""Pinned official Dreamer-CDP comparison integration."""
 
 from dreamarl.baselines.dreamer_cdp.config import (
     OFFICIAL_DREAMER_CDP_COMMIT,

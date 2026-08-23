@@ -1,5 +1,6 @@
 import os
 import pathlib
+import re
 from copy import deepcopy
 from functools import partial as bind
 
@@ -21,6 +22,45 @@ def _merge_dicts(base, updates):
         else:
             result[key] = deepcopy(value)
     return result
+
+
+def _split_pattern_updates(mapping):
+    """Separate structural values from Elements regex updates."""
+
+    structural = {}
+    patterns = {}
+    for key, value in mapping.items():
+        if re.search(r"[^A-Za-z0-9_.-]", key):
+            patterns[key] = deepcopy(value)
+        elif isinstance(value, dict):
+            child_structural, child_patterns = _split_pattern_updates(value)
+            if child_structural:
+                structural[key] = child_structural
+            if child_patterns:
+                patterns[key] = child_patterns
+        else:
+            structural[key] = deepcopy(value)
+    return structural, patterns
+
+
+def _resolve_config_profiles(configs, names):
+    """Resolve profiles before constructing Config so profiles may add schema."""
+
+    resolved = deepcopy(configs["defaults"])
+    pattern_layers = []
+    for name in names:
+        if name == "defaults":
+            continue
+        if name not in configs:
+            raise KeyError(f"Unknown config profile {name!r}.")
+        structural, patterns = _split_pattern_updates(configs[name])
+        resolved = _merge_dicts(resolved, structural)
+        if patterns:
+            pattern_layers.append(patterns)
+    config = elements.Config(resolved)
+    for patterns in pattern_layers:
+        config = config.update(patterns)
+    return config
 
 
 def _load_configs(extra_config_path=None):
@@ -56,9 +96,7 @@ def main(argv=None, extra_config_path=None):
 
     configs = _load_configs(extra_config_path)
     parsed, other = elements.Flags(configs=["defaults"]).parse_known(argv)
-    config = elements.Config(configs["defaults"])
-    for name in parsed.configs:
-        config = config.update(configs[name])
+    config = _resolve_config_profiles(configs, parsed.configs)
     config = elements.Flags(config).parse(other)
     config = config.update(
         logdir=(config.logdir.format(timestamp=elements.timestamp()))
@@ -113,16 +151,6 @@ def main(argv=None, extra_config_path=None):
             args,
         )
 
-    elif config.script == "jecc_pretrain":
-        from . import jecc_pretrain
-
-        jecc_pretrain.pretrain(
-            bind(make_agent, config),
-            bind(make_replay, config, "replay"),
-            bind(make_stream, config),
-            args,
-        )
-
     elif config.script == "train_eval":
         embodied.run.train_eval(
             bind(make_agent, config),
@@ -142,28 +170,6 @@ def main(argv=None, extra_config_path=None):
             bind(make_agent, config),
             bind(make_env, config),
             bind(make_logger, config),
-            args,
-        )
-
-    elif config.script == "utility_probe":
-        from . import diagnostics
-
-        if not config.run.probe_source:
-            raise ValueError("utility_probe requires run.probe_source")
-        replay_config = config.update(logdir=str(config.run.probe_source))
-        diagnostics.utility_probe(
-            bind(make_agent, config),
-            bind(make_replay, replay_config, "replay"),
-            bind(make_stream, config),
-            args,
-        )
-
-    elif config.script == "smac_probe_collect":
-        from . import evaluation
-
-        evaluation.collect_smac_probe(
-            bind(make_agent, config),
-            bind(make_env, config),
             args,
         )
 
@@ -320,11 +326,7 @@ def make_env(config, index, **overrides):
             if suite == "smac"
             else _worker_seed(config.seed, index)
         )
-    if suite == "meltingpot":
-        from .envs.meltingpot import MeltingPotEnv
-
-        env = MeltingPotEnv(task, **kwargs)
-    elif suite == "dmc":
+    if suite == "dmc":
         from .envs.dmc import make_dmc
         from .envs.single_agent import SingletonAgentEnv
 
@@ -367,11 +369,4 @@ def make_stream(config, replay, mode):
 
 
 if __name__ == "__main__":
-    try:
-        import wandb
-
-        print(f"WandB version: {wandb.__version__}")
-        print(f"WandB init available: {hasattr(wandb, 'init')}")
-    except ImportError as e:
-        print(f"WandB import failed: {e}")
     main()

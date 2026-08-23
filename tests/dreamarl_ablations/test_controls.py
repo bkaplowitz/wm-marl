@@ -13,7 +13,7 @@ from dreamarl.ablations.config import AblationRunSpec
 from dreamarl.ablations.contracts import verify_run_contract
 from dreamarl.envs.single_agent import SingletonAgentEnv
 from dreamarl.launcher import run_training
-from dreamarl.main import _load_configs
+from dreamarl.main import _load_configs, _resolve_config_profiles
 from dreamarl.runtime import algorithm_root, repository_root
 from dreamarl.training.common import predict
 from dreamarl.marl.spaces import remove_agent_axis
@@ -22,10 +22,10 @@ from dreamarl.marl.spaces import remove_agent_axis
 def _spec(tmp_path: Path, **updates) -> AblationRunSpec:
     values = {
         "experiment_dir": tmp_path / "run",
-        "task": "meltingpot_externality_mushrooms__dense",
+        "task": "dmc_walker_walk",
         "seed": 7,
         "train_steps": 50_000,
-        "num_agents": 5,
+        "num_agents": 1,
         "platform": "cpu",
         "python": Path("/usr/bin/python3"),
         "save_every_seconds": 1_800,
@@ -40,7 +40,7 @@ def test_run_spec_exposes_one_maintained_algorithm(tmp_path: Path) -> None:
     spec = _spec(tmp_path)
     manifest = spec.to_dict()
     contract = verify_run_contract(spec)
-    assert spec.configs == ["meltingpot_vision"]
+    assert spec.configs == ["dmc_vision"]
     assert manifest["world_model"] == "parallel_transformer"
     assert manifest["replay_sampling"] == "uniform"
     assert manifest["algorithm_components"] == [
@@ -57,18 +57,6 @@ def test_run_spec_exposes_one_maintained_algorithm(tmp_path: Path) -> None:
     ]
     assert contract["policy_peer_access"] is False
     assert contract["execution"] == "decentralized"
-
-
-def test_single_and_multi_agent_runs_share_one_contract(tmp_path: Path) -> None:
-    singleton = verify_run_contract(_spec(tmp_path, num_agents=1))
-    multi = verify_run_contract(_spec(tmp_path, num_agents=7))
-    ignored = {"num_agents"}
-    assert {key: value for key, value in singleton.items() if key not in ignored} == {
-        key: value for key, value in multi.items() if key not in ignored
-    }
-    assert singleton["single_agent_status"] == (
-        "same architecture and schedule with an identity agent-axis fold"
-    )
 
 
 def test_temporal_control_preserves_official_dreamerv3_configuration() -> None:
@@ -109,9 +97,8 @@ def test_temporal_control_preserves_official_dreamerv3_configuration() -> None:
     assert maintained_scales.pop("spatial_jepa") == 1.0
     assert maintained_scales.pop("sigreg") == 0.05
     assert maintained_scales.pop("action_mask") == 1.0
-    assert maintained_scales.pop("agent_jepa") == 1.0
     maintained["loss_scales"] = maintained_scales
-    assert maintained.pop("marl")["stage"] == "b0"
+    assert maintained.pop("marl")["stage"] == "local"
     assert maintained.pop("maskhead") == {
         "layers": 1,
         "units": 1024,
@@ -125,6 +112,7 @@ def test_temporal_control_preserves_official_dreamerv3_configuration() -> None:
     reference_dyn = reference.pop("dyn")
     maintained_enc = maintained.pop("enc")
     reference_enc = reference.pop("enc")
+    assert reference.pop("repval_grad") is True
     assert maintained == reference
 
     assert maintained_enc["typ"] == reference_enc["typ"] == "simple"
@@ -224,47 +212,9 @@ def test_encoder_and_mask_topology_are_explicit_isolated_overrides(
     assert spec.to_dict()["spatial_mask_topology"] == "multiblock"
 
 
-def test_vjepa21_recipe_records_exact_grid_architecture_and_resolution(tmp_path: Path) -> None:
-    spec = _spec(
-        tmp_path,
-        task="dmc_reacher_easy",
-        num_agents=1,
-        representation_recipe="vjepa21",
-    )
-
-    def values(flag: str) -> list[str]:
-        index = spec.command.index(flag)
-        return spec.command[index + 1 : index + 3]
-
-    assert values("--env.dmc.size") == ["256", "256"]
-    assert spec.to_dict()["visual_encoder"] == "vjepa21"
-    assert spec.to_dict()["visual_resolution"] == 256
-    recipe = spec.to_dict()["spatial_mask_recipe"]
-    assert recipe["grid"] == [16, 16]
-    assert recipe["frames_per_replay_sequence"] == 16
-    assert recipe["groups"][0]["blocks"] == 8
-    assert recipe["groups"][1]["scale"] == 0.7
-    assert values("--agent.target_encoder.rate")[:1] == ["0.00075"]
-
-
-def test_leworldmodel_recipe_is_unmasked_vit_tiny(tmp_path: Path) -> None:
-    spec = _spec(
-        tmp_path,
-        task="dmc_walker_walk",
-        num_agents=1,
-        representation_recipe="leworldmodel",
-    )
-    manifest = spec.to_dict()
-    assert manifest["visual_encoder"] == "leworldmodel"
-    assert manifest["visual_resolution"] == 224
-    assert manifest["spatial_jepa"] is False
-    assert manifest["embedding_target"] == "online"
-    assert manifest["embedding_loss"] == "mse"
-    assert manifest["sigreg_num_proj"] == 1024
-    assert manifest["sigreg_aggregation"] == "per_timestep"
-
-
-def test_final_checkpoint_can_be_disabled_for_space_bounded_queues(tmp_path: Path) -> None:
+def test_final_checkpoint_can_be_disabled_for_space_bounded_queues(
+    tmp_path: Path,
+) -> None:
     spec = _spec(tmp_path, final_checkpoint=False)
     index = spec.command.index("--run.final_save")
     assert spec.command[index + 1] == "False"
@@ -329,7 +279,7 @@ def test_world_model_objective_and_posterior_jepa_are_explicit(
     assert "reconstruction" in verify_run_contract(control)["decoder_role"]
 
 
-def test_leworldmodel_style_recipe_is_explicit_and_decoder_free(
+def test_online_mse_recipe_is_explicit_and_decoder_free(
     tmp_path: Path,
 ) -> None:
     spec = _spec(
@@ -365,8 +315,7 @@ def test_leworldmodel_style_recipe_is_explicit_and_decoder_free(
 
 def test_jepa_agent_does_not_construct_a_decoder() -> None:
     resolved = _load_configs(algorithm_root() / "ablations" / "configs.yaml")
-    config = elements.Config(resolved["defaults"])
-    config = config.update(resolved["debug"])
+    config = _resolve_config_profiles(resolved, ["defaults", "debug"])
     config = config.update({"jax.precompile": False})
 
     obs_space = {
@@ -422,20 +371,20 @@ def test_jepa_agent_does_not_construct_a_decoder() -> None:
     assert embedding.slowenc is not None
     assert all(module is not embedding.target_enc for module in embedding.modules)
 
-    leworldmodel_style = make_agent(
+    online_style = make_agent(
         "embedding",
         dynamics_jepa=True,
         sigreg=True,
         embedding_target="online",
         embedding_loss="mse",
     )
-    assert leworldmodel_style.dec is None
-    assert leworldmodel_style.target_enc is None
-    assert leworldmodel_style.slowenc is None
-    assert "dynamics_jepa" in leworldmodel_style.scales
-    assert "sigreg" in leworldmodel_style.scales
-    assert "posterior_jepa" not in leworldmodel_style.scales
-    assert "spatial_jepa" not in leworldmodel_style.scales
+    assert online_style.dec is None
+    assert online_style.target_enc is None
+    assert online_style.slowenc is None
+    assert "dynamics_jepa" in online_style.scales
+    assert "sigreg" in online_style.scales
+    assert "posterior_jepa" not in online_style.scales
+    assert "spatial_jepa" not in online_style.scales
 
     control = make_agent("reconstruction")
     assert control.dec is not None
@@ -634,4 +583,4 @@ def test_dry_run_records_current_contract(tmp_path: Path) -> None:
     )
     assert manifest["implementation"] == "first-party decoder-free DreaMARL"
     assert manifest["world_model"] == "parallel_transformer"
-    assert manifest["configs"] == ["meltingpot_vision", "ablation_components"]
+    assert manifest["configs"] == ["dmc_vision", "ablation_components"]

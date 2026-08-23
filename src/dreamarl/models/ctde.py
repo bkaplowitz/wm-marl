@@ -99,9 +99,9 @@ class AgentInteraction(nj.Module):
             logits = jnp.einsum(
                 "...qhd,...khd->...hqk", f32(query), f32(key)
             ) / math.sqrt(head_width)
-            weights = _masked_softmax(
-                logits, active[..., None, None, :]
-            ).astype(item.dtype)
+            weights = _masked_softmax(logits, active[..., None, None, :]).astype(
+                item.dtype
+            )
             weights = nn.dropout(weights, self.dropout, training)
             update = jnp.einsum("...hqk,...khd->...qhd", weights, item)
             update = update.reshape((*value.shape[:-2], agents, self.width))
@@ -234,9 +234,9 @@ class JointObservationJEPA(nj.Module):
     def _mix(self, states, actions, present, alive, training):
         present = present.astype(bool)
         alive = alive.astype(bool) & present
-        states = self.sub(
-            "state_projection", nn.Linear, self.width, winit=self.winit
-        )(nn.cast(sg(states)))
+        states = self.sub("state_projection", nn.Linear, self.width, winit=self.winit)(
+            nn.cast(sg(states))
+        )
         dead_state = self.value(
             "dead_state", nn.init("trunc_normal"), (self.width,), f32
         )
@@ -249,9 +249,9 @@ class JointObservationJEPA(nj.Module):
             self.action_count,
             dtype=f32,
         )
-        action = self.sub(
-            "action_projection", nn.Linear, self.width, winit=self.winit
-        )(nn.cast(onehot))
+        action = self.sub("action_projection", nn.Linear, self.width, winit=self.winit)(
+            nn.cast(onehot)
+        )
         tokens = self.sub("input_norm", nn.Norm, self.norm)(
             states + action + alive_token
         )
@@ -328,16 +328,16 @@ class CentralAttentionCritic(nj.Module):
             )
         present = present.astype(bool)
         alive = alive.astype(bool) & present
-        value = self.sub(
-            "state_projection", nn.Linear, self.width, winit=self.winit
-        )(nn.cast(sg(local_states)))
+        value = self.sub("state_projection", nn.Linear, self.width, winit=self.winit)(
+            nn.cast(sg(local_states))
+        )
         dead_state = self.value(
             "dead_state", nn.init("trunc_normal"), (self.width,), f32
         )
         value = jnp.where(alive[..., None], value, nn.cast(dead_state))
-        value += self.sub(
-            "alive_projection", nn.Linear, self.width, winit=self.winit
-        )(nn.cast(alive[..., None].astype(f32)))
+        value += self.sub("alive_projection", nn.Linear, self.width, winit=self.winit)(
+            nn.cast(alive[..., None].astype(f32))
+        )
         value = self.sub(
             "agent_attention",
             AgentInteraction,

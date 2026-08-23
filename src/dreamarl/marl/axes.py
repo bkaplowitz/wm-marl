@@ -14,7 +14,6 @@ ENVIRONMENT_FIELDS = frozenset(
         "is_terminal",
         "consec",
         "stepid",
-        "_environment_step",
     }
 )
 AGENT_METADATA_FIELDS = frozenset(

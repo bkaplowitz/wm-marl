@@ -19,7 +19,6 @@ class AblationRunSpec:
     experiment_dir: Path
     task: str
     num_agents: int
-    representation_recipe: str = "custom"
     seed: int = 0
     train_steps: int = 50_000
     platform: str = "cuda"
@@ -56,41 +55,6 @@ class AblationRunSpec:
     curve_eval_policy_mode: str = "deterministic"
 
     def __post_init__(self) -> None:
-        if self.representation_recipe not in {
-            "custom", "vjepa21", "leworldmodel"
-        }:
-            raise ValueError(
-                "representation_recipe must be custom, vjepa21, or leworldmodel"
-            )
-        if self.representation_recipe == "vjepa21":
-            for key, value in {
-                "visual_encoder": "vjepa21",
-                "world_model_objective": "embedding",
-                "embedding_target": "ema",
-                "embedding_loss": "cosine",
-                "posterior_jepa": True,
-                "dynamics_jepa": True,
-                "spatial_jepa": True,
-                "spatial_mask_topology": "vjepa21_multiblock",
-            }.items():
-                object.__setattr__(self, key, value)
-        elif self.representation_recipe == "leworldmodel":
-            for key, value in {
-                "visual_encoder": "leworldmodel",
-                "world_model_objective": "embedding",
-                "embedding_target": "online",
-                "embedding_loss": "mse",
-                "posterior_jepa": False,
-                "dynamics_jepa": True,
-                "spatial_jepa": False,
-                "spatial_mask_topology": "fixed_count",
-                "sigreg": True,
-                "sigreg_scale": 0.09,
-                "sigreg_knots": 17,
-                "sigreg_num_proj": 1024,
-                "sigreg_aggregation": "per_timestep",
-            }.items():
-                object.__setattr__(self, key, value)
         object.__setattr__(
             self,
             "experiment_dir",
@@ -136,11 +100,9 @@ class AblationRunSpec:
             "bernoulli",
             "fixed_count",
             "multiblock",
-            "vjepa21_multiblock",
         }:
             raise ValueError(
-                "spatial_mask_topology must be bernoulli, fixed_count, or "
-                "multiblock, or vjepa21_multiblock"
+                "spatial_mask_topology must be bernoulli, fixed_count, or multiblock"
             )
         if not 0 <= self.spatial_fill_value <= 255:
             raise ValueError("spatial_fill_value must fit in an uint8 image")
@@ -166,44 +128,8 @@ class AblationRunSpec:
             )
         if self.posterior_context not in {"observation", "history"}:
             raise ValueError("posterior_context must be either observation or history")
-        if self.visual_encoder not in {
-            "simple", "vit", "vjepa21", "leworldmodel"
-        }:
-            raise ValueError(
-                "visual_encoder must be simple, vit, vjepa21, or leworldmodel"
-            )
-        if (self.visual_encoder == "vjepa21") != (
-            self.spatial_mask_topology == "vjepa21_multiblock"
-        ):
-            raise ValueError(
-                "the vjepa21 encoder and vjepa21_multiblock topology must be "
-                "enabled together"
-            )
-        if self.visual_encoder == "vjepa21" and (
-            self.world_model_objective != "embedding"
-            or self.embedding_target != "ema"
-            or not self.spatial_jepa
-        ):
-            raise ValueError(
-                "the V-JEPA 2.1 recipe requires decoder-free embedding "
-                "training, EMA targets, and spatial JEPA"
-            )
-        if self.visual_encoder == "leworldmodel" and (
-            self.world_model_objective != "embedding"
-            or self.embedding_target != "online"
-            or self.embedding_loss != "mse"
-            or self.posterior_jepa
-            or not self.dynamics_jepa
-            or self.spatial_jepa
-            or not self.sigreg
-            or self.sigreg_num_proj != 1024
-            or self.sigreg_aggregation != "per_timestep"
-            or self.sigreg_scale != 0.09
-        ):
-            raise ValueError(
-                "the LeWorldModel recipe requires unmasked online-target MSE "
-                "dynamics prediction and per-timestep SIGReg(1024, weight=0.09)"
-            )
+        if self.visual_encoder not in {"simple", "vit"}:
+            raise ValueError("visual_encoder must be simple or vit")
         if self.batch_size is not None and self.batch_size < 1:
             raise ValueError("batch_size must be positive")
         if self.curve_eval_interval < 0:
@@ -223,16 +149,11 @@ class AblationRunSpec:
 
     @property
     def configs(self) -> list[str]:
-        if self.task.startswith("meltingpot_"):
-            return ["meltingpot_vision"]
         if self.task.startswith("dmc_"):
             if self.num_agents != 1:
                 raise ValueError("visual DMC tasks require num_agents=1")
             return ["dmc_vision"]
-        else:
-            raise ValueError(
-                "maintained launches require a Melting Pot or visual DMC task"
-            )
+        raise ValueError("ablation launches support singleton visual DMC tasks")
 
     @property
     def command(self) -> list[str]:
@@ -312,12 +233,6 @@ class AblationRunSpec:
                     self.posterior_context,
                 ]
             )
-        if self.visual_encoder in {"vjepa21", "leworldmodel"}:
-            environment = "dmc" if self.task.startswith("dmc_") else "meltingpot"
-            resolution = "256" if self.visual_encoder == "vjepa21" else "224"
-            command.extend([f"--env.{environment}.size", resolution, resolution])
-        if self.visual_encoder == "vjepa21":
-            command.extend(["--agent.target_encoder.rate", "0.00075"])
         if self.batch_size is not None:
             command.extend(["--batch_size", str(self.batch_size)])
         if self.save_every_seconds is not None:
@@ -345,18 +260,6 @@ class AblationRunSpec:
     def to_dict(self) -> dict[str, object]:
         return {
             "implementation": "first-party decoder-free DreaMARL",
-            "representation_recipe": self.representation_recipe,
-            "recipe_scope": (
-                "paper visual encoder and representation objective adapted "
-                "inside the unchanged causal DreaMARL controller"
-            ),
-            "causal_adaptation": (
-                "V-JEPA 2.1 spatial masks are constant over 16 causal replay "
-                "frames; the policy encoder remains frame-causal rather than "
-                "using the paper's bidirectional tubelet-2 video encoder"
-                if self.representation_recipe == "vjepa21"
-                else None
-            ),
             "experiment_dir": str(self.experiment_dir),
             "logdir": str(self.logdir),
             "infrastructure_root": str(self.infrastructure_root),
@@ -375,24 +278,6 @@ class AblationRunSpec:
             "spatial_jepa": self.spatial_jepa,
             "spatial_mask_ratio": self.spatial_mask_ratio,
             "spatial_mask_topology": self.spatial_mask_topology,
-            "spatial_mask_recipe": (
-                {
-                    "grid": [16, 16],
-                    "patch": 16,
-                    "frames_per_replay_sequence": 16,
-                    "tube_consistent": True,
-                    "groups": [
-                        {"blocks": 8, "scale": 0.15, "aspect": [0.75, 1.5]},
-                        {"blocks": 2, "scale": 0.7, "aspect": [0.75, 1.5]},
-                    ],
-                    "context": "visible tokens only",
-                    "target": "four normalized hierarchical EMA ViT-B layers",
-                    "predictor": "12-layer 384-wide zero-mask-token RoPE transformer",
-                    "loss": "masked L1 plus 0.5 distance-weighted visible L1",
-                }
-                if self.visual_encoder == "vjepa21"
-                else None
-            ),
             "spatial_fill_value": self.spatial_fill_value,
             "posterior_jepa_scale": self.posterior_jepa_scale,
             "dynamics_jepa_scale": self.dynamics_jepa_scale,
@@ -411,10 +296,7 @@ class AblationRunSpec:
                 else "history"
             ),
             "visual_encoder": self.visual_encoder,
-            "visual_resolution": (
-                256 if self.visual_encoder == "vjepa21" else
-                224 if self.visual_encoder == "leworldmodel" else 64
-            ),
+            "visual_resolution": 64,
             "batch_size": self.batch_size,
             "critic": "DreamerV3 latent value model",
             "algorithm_components": self._algorithm_components,
@@ -447,13 +329,6 @@ class AblationRunSpec:
 
     @property
     def _objective_description(self) -> str:
-        if self.visual_encoder == "vjepa21":
-            return (
-                "decoder-free posterior and action-conditioned EMA-target "
-                "cosine prediction with dense V-JEPA 2.1 masked-token L1"
-            )
-        if self.visual_encoder == "leworldmodel":
-            return "unmasked online-target MSE prediction with LeWorldModel SIGReg"
         objectives = []
         if self.posterior_jepa:
             objectives.append("posterior")
@@ -484,17 +359,9 @@ class AblationRunSpec:
     def _algorithm_components(self) -> list[str]:
         components = [
             (
-                "256px ViT-B/16 with RoPE and four hierarchical outputs"
-                if self.visual_encoder == "vjepa21"
-                else (
-                    "224px unmasked ViT-Tiny/14 with CLS output"
-                    if self.visual_encoder == "leworldmodel"
-                    else (
-                        "compact spatial ViT encoder"
-                        if self.visual_encoder == "vit"
-                        else "DreamerV3 convolutional encoder"
-                    )
-                )
+                "compact spatial ViT encoder"
+                if self.visual_encoder == "vit"
+                else "DreamerV3 convolutional encoder"
             ),
             self._posterior_description,
             self._temporal_description,

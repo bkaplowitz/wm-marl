@@ -14,10 +14,6 @@ from .evaluation import evaluate_current_policy
 def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     agent = make_agent()
     replay = make_replay()
-    if bool(args.load_replay):
-        replay.load()
-        if not len(replay):
-            raise RuntimeError("continuation replay was requested but no items loaded")
     logger = make_logger()
 
     logdir = elements.Path(args.logdir)
@@ -119,11 +115,6 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     checkpoint.step = step
     checkpoint.agent = agent
     checkpoint.replay = replay
-    if args.from_checkpoint:
-        elements.checkpoint.load(
-            args.from_checkpoint,
-            {"agent": bind(agent.load, regex=args.from_checkpoint_regex)},
-        )
     checkpoint.load_or_save()
 
     print("Start training loop")
