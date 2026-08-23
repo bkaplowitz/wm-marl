@@ -13,6 +13,7 @@ from dreamarl.marl.core import MARLCore
 from dreamarl.marl.spaces import add_agent_axis
 from dreamarl.models.heads import MLPHead
 from dreamarl.models.heads import apply_action_mask, apply_predicted_action_mask
+from dreamarl.models.ctde import JointObservationJEPA
 from dreamarl.models.normalize import Normalize
 from dreamarl.models.team import (
     AgentContextEncoder,
@@ -25,6 +26,7 @@ from dreamarl.models.team import (
     team_slot_jepa_loss,
 )
 from dreamarl.training.learner import masked_mean
+from dreamarl.training.jecc import build_outcome_windows
 
 
 GLOBAL_KEYS = {"is_first", "is_last", "is_terminal", "consec", "stepid"}
@@ -89,6 +91,7 @@ def _local_spaces(*, metadata: bool = True):
         observations.update(
             agent_present=elements.Space(bool, ()),
             agent_alive=elements.Space(bool, ()),
+            controllable_alive=elements.Space(bool, ()),
             action_mask=elements.Space(bool, (4,)),
         )
     return observations, {"action": elements.Space(np.int32, (), 0, 4)}
@@ -116,6 +119,7 @@ def _local_batch(batch: int = 1, length: int = 4):
         "reward": jax.random.normal(jax.random.key(2), (batch, length)),
         "agent_present": jnp.ones((batch, length), bool),
         "agent_alive": jnp.ones((batch, length), bool),
+        "controllable_alive": jnp.ones((batch, length), bool),
         "action_mask": jnp.ones((batch, length, 4), bool),
         "is_first": jnp.zeros((batch, length), bool).at[:, 0].set(True),
         "is_last": jnp.zeros((batch, length), bool),
@@ -437,6 +441,272 @@ def test_multi_agent_core_completes_shared_local_update() -> None:
         "actmask",
     ]
     assert "loss/policy" in metrics
+
+
+def test_ctde_joint_replay_and_recurrent_history_match() -> None:
+    model = JointObservationJEPA(
+        action_count=4,
+        action_low=0,
+        target_dim=6,
+        width=8,
+        heads=2,
+        agent_layers=1,
+        temporal_layers=1,
+        context=4,
+        ffup=2,
+        dropout=0.0,
+        name="ctde_joint",
+    )
+    states = jax.random.normal(jax.random.key(691), (2, 7, 3, 5))
+    actions = jax.random.randint(jax.random.key(692), (2, 7, 3), 0, 4)
+    active = jnp.ones((2, 7, 3), bool)
+    reset = jnp.zeros((2, 7), bool).at[:, 0].set(True).at[:, 5].set(True)
+
+    def parallel():
+        carry = model.initial(2, 3)
+        carry, output, _ = model.sequence(
+            carry, states, actions, active, active, reset, training=False
+        )
+        return carry, output
+
+    def recurrent():
+        carry = model.initial(2, 3)
+
+        def transition(current, inputs):
+            state, action, current_active, current_reset = inputs
+            return model.step(
+                current,
+                state,
+                action,
+                current_active,
+                current_active,
+                current_reset,
+                training=False,
+            )
+
+        return nj.scan(
+            transition,
+            carry,
+            (states, actions, active, reset),
+            axis=1,
+        )
+
+    params = nj.init(parallel)({}, seed=693)
+    _, parallel_output = nj.pure(parallel)(params, seed=694)
+    _, recurrent_output = nj.pure(recurrent)(params, seed=694)
+    parallel_leaves, parallel_tree = jax.tree.flatten(parallel_output)
+    recurrent_leaves, recurrent_tree = jax.tree.flatten(recurrent_output)
+    assert recurrent_tree == parallel_tree
+    for recurrent_value, parallel_value in zip(
+        recurrent_leaves, parallel_leaves
+    ):
+        if jnp.issubdtype(recurrent_value.dtype, jnp.inexact):
+            np.testing.assert_allclose(
+                np.asarray(recurrent_value, np.float32),
+                np.asarray(parallel_value, np.float32),
+                atol=6e-2,
+                rtol=3e-2,
+            )
+        else:
+            np.testing.assert_array_equal(recurrent_value, parallel_value)
+
+
+def test_ctde_trains_joint_imagination_and_central_critic() -> None:
+    observations, actions = _team_spaces(3)
+    config = _agent_config(3, "ctde").update(
+        {
+            "behavior_optimizer": "separated",
+            "opt.warmup": 0,
+            "marl.ctde.opt.warmup": 0,
+        }
+    )
+    agent = object.__new__(MARLCore)
+    MARLCore.__init__(agent, observations, actions, config)
+    data = _add_team_axis(_local_batch(length=5), 3)
+    carry = agent.init_train(1)
+
+    def step():
+        return agent.train(carry, data)
+
+    state = nj.init(step)({}, seed=701)
+    _, (_, _, metrics) = nj.pure(step)(state, seed=702)
+    assert [module.name for module in agent.ctde_modules] == [
+        "ctde_joint",
+        "ctde_rew",
+        "ctde_con",
+        "ctde_mask",
+        "ctde_alive",
+    ]
+    assert agent.policy_keys == "^(enc|dyn|pol)/"
+    for key in (
+        "loss/ctde_embedding",
+        "loss/ctde_interface",
+        "loss/ctde_reward",
+        "ctde/embedding_cosine",
+        "opt/local_world/grad_norm",
+        "opt/joint_world/grad_norm",
+        "opt/actor/grad_norm",
+        "opt/critic/grad_norm",
+    ):
+        assert np.isfinite(float(metrics[key]))
+    assert not any("multistep" in key for key in metrics)
+
+
+def test_ctde_two_step_self_fed_objective_is_finite() -> None:
+    observations, actions = _team_spaces(3)
+    config = _agent_config(3, "ctde").update(
+        {
+            "behavior_optimizer": "separated",
+            "opt.warmup": 0,
+            "marl.ctde.opt.warmup": 0,
+            "marl.ctde.rollout_steps": 2,
+            "marl.ctde.multistep.anchors": 2,
+        }
+    )
+    agent = object.__new__(MARLCore)
+    MARLCore.__init__(agent, observations, actions, config)
+    data = _add_team_axis(_local_batch(length=5), 3)
+    carry = agent.init_train(1)
+
+    def step():
+        return agent.train(carry, data)
+
+    state = nj.init(step)({}, seed=711)
+    _, (_, _, metrics) = nj.pure(step)(state, seed=712)
+    for key in (
+        "loss/ctde_multistep_embedding",
+        "loss/ctde_multistep_interface",
+        "loss/ctde_multistep_reward",
+        "loss/ctde_multistep_continuation",
+        "loss/ctde_multistep_action_mask",
+        "loss/ctde_multistep_alive",
+        "ctde/multistep_embedding_cosine",
+        "ctde/multistep_posterior_kl",
+    ):
+        assert np.isfinite(float(metrics[key]))
+    assert float(metrics["ctde/multistep_anchors"]) == 2.0
+    assert "loss/ctde_multistep_posterior" not in metrics
+
+
+def test_jecc_trains_factual_models_and_blends_actor_credit() -> None:
+    observations, actions = _team_spaces(3)
+    config = _agent_config(3, "jecc").update(
+        {
+            "behavior_optimizer": "separated",
+            "opt.warmup": 0,
+            "marl.jecc.opt.warmup": 0,
+            "marl.jecc.horizons": [2, 3, 4],
+            "marl.jecc.outcome.width": 16,
+            "marl.jecc.outcome.dim": 16,
+            "marl.jecc.outcome.layers": 1,
+            "marl.jecc.outcome.heads": 4,
+            "marl.jecc.predictor.width": 16,
+            "marl.jecc.predictor.layers": 1,
+            "marl.jecc.predictor.heads": 4,
+            "marl.jecc.utility.units": 16,
+            "marl.jecc.utility.bins": 5,
+        }
+    )
+    agent = object.__new__(MARLCore)
+    MARLCore.__init__(agent, observations, actions, config)
+    data = _add_team_axis(_local_batch(length=6), 3)
+    data["_environment_step"] = jnp.full((1, 6), 10_000, jnp.int32)
+    carry = agent.init_train(1)
+
+    def step():
+        return agent.train(carry, data)
+
+    state = nj.init(step)({}, seed=252)
+    next_state, (_, _, metrics) = nj.pure(step)(state, seed=253)
+    assert [module.name for module in agent.jecc_modules] == [
+        "jecc_outcome_encoder",
+        "jecc_outcome_predictor",
+        "jecc_utility",
+    ]
+    assert not any(
+        module.name == "jecc_target_outcome_encoder" for module in agent.modules
+    )
+    assert any(key.startswith("jecc_target_outcome_encoder/") for key in next_state)
+    for key in (
+        "loss/jecc",
+        "jecc/outcome_cosine",
+        "jecc/credit_advantage_abs",
+        "opt/jecc/grad_norm",
+        "opt/actor/grad_norm",
+    ):
+        assert np.isfinite(float(metrics[key]))
+    np.testing.assert_allclose(float(metrics["jecc/alpha"]), 1.0 / 3.0)
+
+
+def test_jecc_outcome_targets_use_future_team_reward() -> None:
+    rewards = jnp.array([[[0.0, 0.0], [2.0, 0.0], [0.0, 4.0], [8.0, 0.0]]])
+    active = jnp.ones_like(rewards, bool)
+    first = jnp.array([[True, False, False, False]])
+    last = jnp.zeros((1, 4), bool)
+    terminal = jnp.zeros((1, 4), bool)
+    windows = build_outcome_windows(
+        rewards,
+        active,
+        first,
+        last,
+        terminal,
+        horizons=(2,),
+        gamma=1.0,
+    )
+    np.testing.assert_array_equal(windows.valid[0, 0, :, 0], True)
+    np.testing.assert_allclose(windows.returns[0, 0, :, 0], 3.0)
+    focal_rewards = windows.tokens[0][0, 0, :, :, 1]
+    assert not np.array_equal(focal_rewards[0], focal_rewards[1])
+
+    timeout = build_outcome_windows(
+        rewards,
+        active,
+        first,
+        jnp.array([[False, False, True, False]]),
+        terminal,
+        horizons=(4,),
+        gamma=1.0,
+    )
+    np.testing.assert_array_equal(timeout.valid[0, 0, :, 0], True)
+    np.testing.assert_allclose(timeout.returns[0, 0, :, 0], 3.0)
+    np.testing.assert_array_equal(timeout.masks[0][0, 0, 0], [True, True, False, False])
+
+
+def test_imagined_ppo_reuses_snapshot_and_updates_only_actor_optimizer() -> None:
+    observations, actions = _team_spaces(3)
+    config = _agent_config(3).update(
+        {
+            "behavior_optimizer": "separated",
+            "behavior_objective": "ppo",
+            "ppo.epochs": 2,
+            "ppo.clip": 0.2,
+            "opt.warmup": 0,
+        }
+    )
+    agent = object.__new__(MARLCore)
+    MARLCore.__init__(agent, observations, actions, config)
+    data = _add_team_axis(_local_batch(), 3)
+    carry = agent.init_train(1)
+
+    def step():
+        return agent.train(carry, data)
+
+    state = nj.init(step)({}, seed=152)
+    next_state, (_, _, metrics) = nj.pure(step)(state, seed=153)
+    assert agent.scales["policy"] == 0.0
+    assert "actor_opt/grad_norm" in metrics
+    assert "opt/world/grad_norm" in metrics
+    assert "opt/critic/grad_norm" in metrics
+    assert "opt/actor/grad_norm" not in metrics
+    assert float(metrics["ppo/epochs"]) == 2.0
+    assert np.isfinite(float(metrics["ppo/kl"]))
+    assert 0.0 <= float(metrics["ppo/clip_fraction"]) <= 1.0
+    policy_keys = [key for key in state if key.startswith("pol/")]
+    assert policy_keys
+    assert any(
+        not np.array_equal(np.asarray(state[key]), np.asarray(next_state[key]))
+        for key in policy_keys
+    )
 
 
 def test_b1_completes_agent_masked_team_jepa_update() -> None:

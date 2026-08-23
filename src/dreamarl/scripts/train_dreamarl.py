@@ -19,19 +19,39 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task", required=True)
     parser.add_argument("--num-agents", type=int, required=True)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--marl-stage", choices=("b0", "b1", "b2"), default="b0")
+    parser.add_argument(
+        "--marl-stage", choices=("b0", "b1", "b2", "jecc", "ctde"), default="b0"
+    )
     parser.add_argument(
         "--replay-sampling",
         choices=("uniform", "recent"),
         default="uniform",
     )
     parser.add_argument(
-        "--behavior-optimizer", choices=("joint", "grouped"), default="joint"
+        "--behavior-optimizer",
+        choices=("joint", "separated", "grouped"),
+        default=None,
     )
+    parser.add_argument(
+        "--behavior-objective", choices=("reinforce", "ppo"), default="reinforce"
+    )
+    parser.add_argument("--ppo-epochs", type=int, default=3)
+    parser.add_argument("--ppo-clip", type=float, default=0.2)
+    parser.add_argument(
+        "--repval-grad", action=argparse.BooleanOptionalAction, default=True
+    )
+    parser.add_argument("--anchor-batch", type=Path)
+    parser.add_argument("--from-checkpoint", type=Path)
+    parser.add_argument("--from-checkpoint-regex")
+    parser.add_argument("--load-replay", action="store_true")
+    parser.add_argument("--replay-source", type=Path)
+    parser.add_argument("--report-actor-gradnorm", action="store_true")
     parser.add_argument("--agent-jepa-local-grad-scale", type=float, default=0.0)
     parser.add_argument("--agent-jepa-k0-scale", type=float, default=0.1)
     parser.add_argument("--agent-jepa-future-scale", type=float, default=1.0)
     parser.add_argument("--agent-jepa-future-set-scale", type=float, default=1.0)
+    parser.add_argument("--ctde-rollout-steps", type=int, choices=(1, 2), default=1)
+    parser.add_argument("--ctde-multistep-anchors", type=int, default=128)
     parser.add_argument("--total-env-steps", type=int, default=50_000)
     parser.add_argument("--train-ratio", type=float, default=256.0)
     parser.add_argument("--experiment-dir", type=Path)
@@ -90,12 +110,27 @@ def main(argv: list[str] | None = None) -> int:
         imagination_starts=args.imagination_starts,
         train_ratio=args.train_ratio,
         replay_sampling=args.replay_sampling,
-        behavior_optimizer=args.behavior_optimizer,
+        behavior_optimizer=(
+            args.behavior_optimizer
+            or ("separated" if args.marl_stage in {"jecc", "ctde"} else "joint")
+        ),
+        behavior_objective=args.behavior_objective,
+        ppo_epochs=args.ppo_epochs,
+        ppo_clip=args.ppo_clip,
+        repval_grad=args.repval_grad,
+        anchor_batch=args.anchor_batch,
+        from_checkpoint=args.from_checkpoint,
+        from_checkpoint_regex=args.from_checkpoint_regex,
+        load_replay=args.load_replay,
+        replay_source=args.replay_source,
+        report_actor_gradnorm=args.report_actor_gradnorm,
         marl_stage=args.marl_stage,
         agent_jepa_local_grad_scale=args.agent_jepa_local_grad_scale,
         agent_jepa_k0_scale=args.agent_jepa_k0_scale,
         agent_jepa_future_scale=args.agent_jepa_future_scale,
         agent_jepa_future_set_scale=args.agent_jepa_future_set_scale,
+        ctde_rollout_steps=args.ctde_rollout_steps,
+        ctde_multistep_anchors=args.ctde_multistep_anchors,
     )
     print(f"Experiment: {spec.experiment_dir}")
     return run_training(spec, resume=args.resume, dry_run=args.dry_run)

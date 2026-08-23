@@ -1,6 +1,7 @@
 """World-model and actor-critic training orchestration."""
 
 import elements
+import embodied.jax.outs as jaxouts
 import jax
 import jax.numpy as jnp
 import ninjax as nj
@@ -64,11 +65,29 @@ def value_fit_metrics(prediction, target, valid):
 
 class LearnerMixin:
     def train(self, carry, data):
+        environment_step = data.pop("_environment_step", None)
+        if environment_step is not None:
+            environment_step = environment_step.reshape((-1,))[0]
+        if getattr(self, "jecc_pretrain_only", False):
+            return self.jecc_pretrain(carry, data)
         carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
         metrics, (carry, entries, outs, mets) = self.opt(
-            self.loss, carry, obs, prevact, training=True, has_aux=True
+            self.loss,
+            carry,
+            obs,
+            prevact,
+            training=True,
+            environment_step=environment_step,
+            has_aux=True,
         )
         metrics.update(mets)
+        if self.behavior_objective == "ppo":
+            ppo_batch = outs.pop("ppo_batch")
+            for _ in range(int(self.config.ppo.epochs)):
+                actor_metrics = self.actor_opt(self.ppo_actor_loss, ppo_batch)
+            metrics.update(actor_metrics)
+            metrics.update(self.ppo_actor_metrics(ppo_batch))
+            metrics["ppo/epochs"] = jnp.asarray(self.config.ppo.epochs, jnp.float32)
         self._update_slow_models()
         if self.slowenc is not None:
             self.slowenc.update()
@@ -86,7 +105,7 @@ class LearnerMixin:
         carry = (*carry, {key: data[key][:, -1] for key in self.act_space})
         return carry, outs, metrics
 
-    def loss(self, carry, obs, prevact, training):
+    def loss(self, carry, obs, prevact, training, environment_step=None):
         model_carry, entries, tokens, repfeat, losses, metrics, target_tokens = (
             self._world_model_terms(carry, obs, prevact, training)
         )
@@ -95,6 +114,8 @@ class LearnerMixin:
         batch, length = obs["is_first"].shape
         valid = self.validity(obs)
 
+        early_extensions = self.additional_losses_before_imagination()
+
         starts_count = min(self.config.imag_last or length, length)
         horizon = self.config.imag_length
         starts, first, imagination_context = self.imagination_starts(
@@ -102,6 +123,7 @@ class LearnerMixin:
             dyn_carry,
             repfeat,
             obs,
+            prevact,
             starts_count,
         )
 
@@ -109,7 +131,7 @@ class LearnerMixin:
             tensor = self.feat2tensor(feat)
             return sample(self.policy_distribution(tensor, 1))
 
-        _, imgfeat, imgprevact = self.imagine(
+        _, imgfeat, imgprevact, imagination_aux = self.imagine_with_aux(
             starts,
             policyfn,
             horizon,
@@ -125,13 +147,17 @@ class LearnerMixin:
         )
         policyfeat = self.imagination_policy_features(imgfeat)
         metrics.update(self.imagination_interface_metrics(imgfeat, policyfeat))
-        lastact = policyfn(jax.tree.map(lambda value: value[:, -1], policyfeat))
+        lastact = self.imagination_last_action(
+            policyfeat,
+            imagination_aux,
+            policyfn,
+        )
         lastact = jax.tree.map(lambda value: value[:, None], lastact)
         imgact = concat([imgprevact, lastact], 1)
         local_inp = self.feat2tensor(imgfeat)
         policy_inp = self.feat2tensor(policyfeat)
         critic_context, critic_metrics = self.imagination_critic_context(
-            imgfeat, imagination_context
+            imgfeat, imagination_context, imagination_aux
         )
         metrics.update(critic_metrics)
         value = self.critic(imgfeat, 2, slow=False, context=critic_context)
@@ -142,14 +168,51 @@ class LearnerMixin:
                 imgfeat,
                 2,
                 slow=False,
-                context=jnp.zeros_like(critic_context),
+                context=jax.tree.map(jnp.zeros_like, critic_context),
             )
-        imagination_valid = self.imagination_validity(imagination_context, horizon)
+        imagination_valid = self.imagination_validity(
+            imagination_context, horizon, imagination_aux
+        )
+        policy = self.imagination_policy_distribution(
+            policy_inp,
+            imagination_aux,
+        )
+        if early_extensions:
+            # Initialize training-only modules only after the complete B0 path
+            # has initialized and sampled its imagination. This preserves B0's
+            # parameter/RNG order while keeping extension parameters outside
+            # the counterfactual map below.
+            extra_losses, extra_metrics = self.additional_world_model_losses(
+                tokens,
+                repfeat,
+                dyn_entries,
+                target_tokens,
+                obs,
+                prevact,
+                training,
+            )
+            losses.update(extra_losses)
+            metrics.update(extra_metrics)
+        advantage_transform = self.actor_advantage_transform(
+            imgfeat,
+            imgact,
+            policy,
+            imagination_context,
+            environment_step,
+            training,
+            starts,
+        )
+        imagined_reward, imagined_continuation = (
+            self.imagination_reward_continuation(
+                local_inp,
+                imagination_aux,
+            )
+        )
         imagined_losses, imgloss_out, imagined_metrics = imag_loss(
             imgact,
-            self.rew(local_inp, 2).pred(),
-            self.con(local_inp, 2).prob(1),
-            self.policy_distribution(policy_inp, 2),
+            imagined_reward,
+            imagined_continuation,
+            policy,
             value,
             slowvalue,
             self.retnorm,
@@ -159,6 +222,7 @@ class LearnerMixin:
             valid=imagination_valid,
             contdisc=self.config.contdisc,
             horizon=self.config.horizon,
+            advantage_transform=advantage_transform,
             **self.config.imag_loss,
         )
         if local_only_value is not None:
@@ -175,6 +239,7 @@ class LearnerMixin:
                     for key, metric in local_metrics.items()
                 }
             )
+        ppo_imag_out = imgloss_out
         imagined_losses, imgloss_out = self.restore_imagination_results(
             imagined_losses,
             imgloss_out,
@@ -209,9 +274,11 @@ class LearnerMixin:
                     feat,
                     2,
                     slow=False,
-                    context=jnp.zeros_like(critic_context),
+                    context=jax.tree.map(jnp.zeros_like, critic_context),
                 )
-            replay_valid = valid[:, -starts_count:-1]
+            replay_valid = self.replay_value_validity(obs)[
+                :, -starts_count:-1
+            ]
             replay_losses, replay_out, replay_metrics = repl_loss(
                 last,
                 term,
@@ -242,16 +309,18 @@ class LearnerMixin:
 
         # Initialize and evaluate extension modules only after the locked local
         # model, actor, and critic have consumed their normal RNG sequence.
-        extra_losses, extra_metrics = self.additional_world_model_losses(
-            tokens,
-            repfeat,
-            target_tokens,
-            obs,
-            prevact,
-            training,
-        )
-        losses.update(extra_losses)
-        metrics.update(extra_metrics)
+        if not early_extensions:
+            extra_losses, extra_metrics = self.additional_world_model_losses(
+                tokens,
+                repfeat,
+                dyn_entries,
+                target_tokens,
+                obs,
+                prevact,
+                training,
+            )
+            losses.update(extra_losses)
+            metrics.update(extra_metrics)
 
         metrics.update(
             {
@@ -276,9 +345,78 @@ class LearnerMixin:
         carry = (enc_carry, dyn_carry, dec_carry)
         entries = (enc_entries, dyn_entries, dec_entries)
         outs = {"tokens": tokens, "repfeat": repfeat, "losses": losses}
+        if self.behavior_objective == "ppo" and training:
+            action_key = self.action_mask_key
+            if action_key is None or len(self.act_space) != 1:
+                raise ValueError("imagined PPO requires one masked categorical action")
+            raw_policy = self.pol(policy_inp, 2)[action_key]
+            old_policy = policy[action_key]
+            valid_actor = (
+                jnp.ones_like(ppo_imag_out["adv_normed"], dtype=jnp.float32)
+                if imagination_valid is None
+                else imagination_valid[:, : ppo_imag_out["adv_normed"].shape[1]]
+            )
+            outs["ppo_batch"] = jax.tree.map(
+                jax.lax.stop_gradient,
+                {
+                    "features": policy_inp[:, :-1],
+                    "actions": imgact[action_key][:, :-1],
+                    "old_logits": old_policy.logits[:, :-1],
+                    "mask_bias": (
+                        old_policy.logits[:, :-1] - raw_policy.logits[:, :-1]
+                    ),
+                    "advantages": ppo_imag_out["adv_normed"],
+                    "weights": ppo_imag_out["weight"],
+                    "valid": valid_actor,
+                },
+            )
         if target_tokens is not None:
             outs["target_tokens"] = target_tokens
         return loss, (carry, entries, outs, metrics)
+
+    def _ppo_distribution(self, batch):
+        action_key = self.action_mask_key
+        raw = self.pol(batch["features"], 2)[action_key]
+        return jaxouts.Categorical(raw.logits + batch["mask_bias"])
+
+    def ppo_actor_loss(self, batch):
+        distribution = self._ppo_distribution(batch)
+        new_logp = distribution.logp(batch["actions"])
+        old = jaxouts.Categorical(batch["old_logits"])
+        old_logp = old.logp(batch["actions"])
+        ratio = jnp.exp(jnp.clip(new_logp - old_logp, -20.0, 20.0))
+        clip = float(self.config.ppo.clip)
+        clipped_ratio = jnp.clip(ratio, 1.0 - clip, 1.0 + clip)
+        advantage = batch["advantages"]
+        surrogate = jnp.minimum(ratio * advantage, clipped_ratio * advantage)
+        entropy = distribution.entropy()
+        per_item = batch["weights"] * -(
+            surrogate + float(self.config.imag_loss.actent) * entropy
+        )
+        valid = batch["valid"].astype(jnp.float32)
+        return (per_item * valid).sum() / jnp.maximum(valid.sum(), 1.0)
+
+    def ppo_actor_metrics(self, batch):
+        distribution = self._ppo_distribution(batch)
+        old = jaxouts.Categorical(batch["old_logits"])
+        new_logp = distribution.logp(batch["actions"])
+        old_logp = old.logp(batch["actions"])
+        ratio = jnp.exp(jnp.clip(new_logp - old_logp, -20.0, 20.0))
+        valid = batch["valid"].astype(jnp.float32)
+        denominator = jnp.maximum(valid.sum(), 1.0)
+
+        def mean(value):
+            return (value * valid).sum() / denominator
+
+        clip = float(self.config.ppo.clip)
+        return {
+            "ppo/kl": mean(old.kl(distribution)),
+            "ppo/approx_kl": mean(old_logp - new_logp),
+            "ppo/clip_fraction": mean(jnp.abs(ratio - 1.0) > clip),
+            "ppo/ratio_mean": mean(ratio),
+            "ppo/selected_probability": mean(jnp.exp(new_logp)),
+            "ppo/entropy": mean(distribution.entropy()),
+        }
 
     def _update_slow_models(self):
         self.slowval.update()
@@ -287,13 +425,42 @@ class LearnerMixin:
         self,
         tokens,
         repfeat,
+        dyn_entries,
         target_tokens,
         obs,
         prevact,
         training,
     ):
-        del tokens, repfeat, target_tokens, obs, prevact, training
+        del tokens, repfeat, dyn_entries, target_tokens, obs, prevact, training
         return {}, {}
+
+    def additional_losses_before_imagination(self):
+        """Whether extension modules must be initialized before actor credit."""
+
+        return False
+
+    def actor_advantage_transform(
+        self,
+        imgfeat,
+        imgact,
+        policy,
+        imagination_context,
+        environment_step,
+        training,
+        dynamics_starts=None,
+    ):
+        """Return an optional transform of B0's normalized actor advantage."""
+
+        del (
+            imgfeat,
+            imgact,
+            policy,
+            imagination_context,
+            environment_step,
+            training,
+            dynamics_starts,
+        )
+        return None
 
     def representation_prediction_branches(self, repfeat, dynamics_aux):
         """Return predictive states that share the maintained JEPA targets."""
@@ -311,9 +478,10 @@ class LearnerMixin:
         dyn_carry,
         repfeat,
         obs,
+        prevact,
         starts_count,
     ):
-        del obs
+        del obs, prevact
         batch = dyn_entries["deter"].shape[0]
         starts = self.dyn.starts(dyn_entries, dyn_carry, starts_count)
         first = jax.tree.map(
@@ -328,6 +496,24 @@ class LearnerMixin:
         del context
         return self.dyn.imagine(starts, policy, horizon, training)
 
+    def imagine_with_aux(self, starts, policy, horizon, training, context=None):
+        carry, features, actions = self.imagine(
+            starts, policy, horizon, training, context
+        )
+        return carry, features, actions, None
+
+    def imagination_last_action(self, policy_features, auxiliary, policyfn):
+        del auxiliary
+        return policyfn(jax.tree.map(lambda value: value[:, -1], policy_features))
+
+    def imagination_policy_distribution(self, policy_inputs, auxiliary):
+        del auxiliary
+        return self.policy_distribution(policy_inputs, 2)
+
+    def imagination_reward_continuation(self, local_inputs, auxiliary):
+        del auxiliary
+        return self.rew(local_inputs, 2).pred(), self.con(local_inputs, 2).prob(1)
+
     def restore_imagination_results(self, losses, outputs, context=None):
         del context
         return losses, outputs
@@ -339,12 +525,12 @@ class LearnerMixin:
         del model_features, policy_features
         return {}
 
-    def imagination_validity(self, context, horizon):
-        del context
+    def imagination_validity(self, context, horizon, auxiliary=None):
+        del context, auxiliary
         return None
 
-    def imagination_critic_context(self, features, context):
-        del features, context
+    def imagination_critic_context(self, features, context, auxiliary=None):
+        del features, context, auxiliary
         return None, {}
 
     def replay_critic_context(self, features, obs, starts_count):
@@ -358,6 +544,9 @@ class LearnerMixin:
             if key in obs:
                 valid *= obs[key].astype(jnp.float32)
         return valid
+
+    def replay_value_validity(self, obs):
+        return self.validity(obs)
 
     def _world_model_terms(self, carry, obs, prevact, training):
         enc_carry, dyn_carry, dec_carry = carry

@@ -52,6 +52,27 @@ class _Driver:
                 "is_first": True,
                 "is_last": True,
                 "reward": np.array([worker + 1.0, worker + 3.0], np.float32),
+                "log/battle_won": np.float32(worker == 0),
+                "log/timeout": np.float32(worker == 1),
+                "log/legacy_reward": np.float32(worker + 1.0),
+                "log/corrected_reward": np.float32(worker + 2.0),
+                "log/enemy_damage": np.float32(7.0),
+                "log/enemy_health_damage": np.float32(5.0),
+                "log/enemy_shield_damage": np.float32(2.0),
+                "log/enemy_shield_regen": np.float32(1.0),
+                "log/enemy_deaths_step": np.float32(1.0),
+                "log/ally_deaths_step": np.float32(0.0),
+                "log/dead_allies": np.float32(0.0),
+                "log/dead_enemies": np.float32(1.0),
+                "log/ally_survivors": np.float32(2.0),
+                "log/enemy_survivors": np.float32(1.0),
+                "log/action_noop_count": np.float32(0.0),
+                "log/action_stop_count": np.float32(1.0),
+                "log/action_move_count": np.float32(2.0),
+                "log/action_attack_count": np.float32(1.0),
+                "log/action_target_switch_count": np.float32(worker),
+                "log/attack_target_0_count": np.float32(worker == 0),
+                "log/attack_target_1_count": np.float32(worker == 1),
             }
             for callback in self.callbacks:
                 callback(transition, worker)
@@ -77,6 +98,19 @@ def test_inline_evaluation_preserves_training_policy_rng(monkeypatch) -> None:
     assert summary["per_agent_return_mean"] == 2.5
     assert summary["team_return_mean"] == 5.0
     assert summary["team_returns"] == [4.0, 6.0, 4.0, 6.0]
+    assert summary["win_rate"] == 0.5
+    assert summary["wins"] == 2
+    assert summary["timeout_rate"] == 0.5
+    assert summary["legacy_return_mean"] == 1.5
+    assert summary["corrected_return_mean"] == 2.5
+    assert summary["legacy_corrected_gap_mean"] == -1.0
+    assert summary["enemy_damage_mean"] == 7.0
+    assert summary["enemy_shield_regen_mean"] == 1.0
+    assert summary["enemy_survivors_mean"] == 1.0
+    assert summary["action_attack_fraction"] == 0.25
+    assert summary["action_move_fraction"] == 0.5
+    assert summary["attack_target_0_fraction"] == 0.5
+    assert summary["attack_target_1_fraction"] == 0.5
     assert agent.last_mode == "eval"
     assert agent.n_actions.value == 37
     assert agent.pending_sync is not None

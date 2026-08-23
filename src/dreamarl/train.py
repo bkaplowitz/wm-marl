@@ -5,6 +5,7 @@ from functools import partial as bind
 
 import elements
 import embodied
+import jax
 import numpy as np
 
 from .evaluation import evaluate_current_policy
@@ -13,6 +14,10 @@ from .evaluation import evaluate_current_policy
 def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     agent = make_agent()
     replay = make_replay()
+    if bool(args.load_replay):
+        replay.load()
+        if not len(replay):
+            raise RuntimeError("continuation replay was requested but no items loaded")
     logger = make_logger()
 
     logdir = elements.Path(args.logdir)
@@ -96,6 +101,12 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
         for _ in range(should_train(step)):
             with elements.timer.section("stream_next"):
                 batch = next(stream_train)
+            if "_environment_step" in agent.spaces:
+                reference = batch["is_first"]
+                batch["_environment_step"] = jax.device_put(
+                    np.full(reference.shape, int(step), np.int32),
+                    reference.sharding,
+                )
             carry_train[0], outputs, metrics = agent.train(carry_train[0], batch)
             train_fps.step(batch_steps)
             if "replay" in outputs:
@@ -127,7 +138,14 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
         if should_report(step) and len(replay):
             aggregate = elements.Agg()
             for _ in range(args.consec_report * args.report_batches):
-                carry_report, metrics = agent.report(carry_report, next(stream_report))
+                batch = next(stream_report)
+                if "_environment_step" in agent.spaces:
+                    reference = batch["is_first"]
+                    batch["_environment_step"] = jax.device_put(
+                        np.full(reference.shape, int(step), np.int32),
+                        reference.sharding,
+                    )
+                carry_report, metrics = agent.report(carry_report, batch)
                 aggregate.add(metrics)
             logger.add(aggregate.result(), prefix="report")
 

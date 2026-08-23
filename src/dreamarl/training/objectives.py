@@ -24,6 +24,7 @@ def imag_loss(
     lam=0.95,
     actent=3e-4,
     slowreg=1.0,
+    advantage_transform=None,
 ):
     losses = {}
     metrics = {}
@@ -39,13 +40,22 @@ def imag_loss(
     ret = lambda_return(last, term, rew, tarval, tarval, disc, lam)
 
     norm_valid = None if valid is None else valid[:, : ret.shape[1]]
+    loss_valid = (
+        jnp.ones_like(ret)
+        if norm_valid is None
+        else norm_valid.astype(jnp.float32)
+        / jnp.maximum(norm_valid.astype(jnp.float32).mean(), 1e-8)
+    )
     roffset, rscale = retnorm(ret, update, norm_valid)
     adv = (ret - tarval[:, :-1]) / rscale
+    if advantage_transform is not None:
+        adv, advantage_metrics = advantage_transform(ret, adv, rscale)
+        metrics.update(advantage_metrics)
     aoffset, ascale = advnorm(adv, update, norm_valid)
     adv_normed = (adv - aoffset) / ascale
     logpi = sum([dist.logp(sg(act[key]))[:, :-1] for key, dist in policy.items()])
     ents = {key: dist.entropy()[:, :-1] for key, dist in policy.items()}
-    policy_loss = sg(weight[:, :-1]) * -(
+    policy_loss = loss_valid * sg(weight[:, :-1]) * -(
         logpi * sg(adv_normed) + actent * sum(ents.values())
     )
     losses["policy"] = policy_loss
@@ -54,7 +64,8 @@ def imag_loss(
     tar_normed = (ret - voffset) / vscale
     tar_padded = jnp.concatenate([tar_normed, 0 * tar_normed[:, -1:]], 1)
     losses["value"] = (
-        sg(weight[:, :-1])
+        loss_valid
+        * sg(weight[:, :-1])
         * (value.loss(sg(tar_padded)) + slowreg * value.loss(sg(slowvalue.pred())))[
             :, :-1
         ]
@@ -117,6 +128,7 @@ def imag_loss(
         {
             "ret": ret,
             "adv": adv,
+            "adv_normed": adv_normed,
             "logpi": logpi,
             "weight": weight[:, :-1],
         },
@@ -150,11 +162,18 @@ def repl_loss(
     ret = lambda_return(last, term, rew, tarval, boot, disc, lam)
 
     norm_valid = None if valid is None else valid[:, : ret.shape[1]]
+    loss_valid = (
+        jnp.ones_like(ret)
+        if norm_valid is None
+        else norm_valid.astype(jnp.float32)
+        / jnp.maximum(norm_valid.astype(jnp.float32).mean(), 1e-8)
+    )
     voffset, vscale = valnorm(ret, update, norm_valid)
     ret_normed = (ret - voffset) / vscale
     ret_padded = jnp.concatenate([ret_normed, 0 * ret_normed[:, -1:]], 1)
     losses["repval"] = (
-        weight[:, :-1]
+        loss_valid
+        * weight[:, :-1]
         * (value.loss(sg(ret_padded)) + slowreg * value.loss(sg(slowvalue.pred())))[
             :, :-1
         ]

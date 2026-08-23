@@ -28,6 +28,15 @@ class ReportingMixin:
         )
         metrics.update(loss_metrics)
 
+        if bool(self.config.report_actor_gradnorm):
+            def actor_loss():
+                return self.loss(carry, obs, prevact, training=False)[1][2][
+                    "losses"
+                ]["policy"].mean()
+
+            actor_grad = nj.grad(actor_loss, [self.pol])()[-1]
+            metrics["actor/grad_norm"] = optax.global_norm(actor_grad)
+
         if self.config.report_gradnorms:
             for key in self.scales:
                 try:
@@ -122,8 +131,53 @@ class ReportingMixin:
                         :, horizon - 1
                     ].mean()
 
+        if self.anchor_batch is not None:
+            metrics.update(self._fixed_anchor_metrics())
+
         carry = (*new_carry, {key: data[key][:, -1] for key in self.act_space})
         return carry, metrics
+
+    def _fixed_anchor_metrics(self):
+        data = self.anchor_batch
+        batch = int(data["is_first"].shape[0])
+        carry, obs, prevact, _ = self._apply_replay_context(
+            self._local_initial(batch), data
+        )
+        _, (_, _, outs, source) = self.loss(
+            carry, obs, prevact, training=False
+        )
+        selected = {
+            "posterior_jepa/cosine",
+            "dynamics_jepa/cosine",
+            "loss/rew",
+            "critic/value_explained_variance",
+            "critic/value_rmse",
+            "reploss/critic/value_explained_variance",
+            "reploss/critic/value_rmse",
+        }
+        metrics = {
+            f"anchor/{key}": value for key, value in source.items() if key in selected
+        }
+        features = self.feat2tensor(outs["repfeat"])
+        policy = self.policy_distribution(
+            features,
+            2,
+            action_mask=obs.get("action_mask"),
+        )
+        context = int(self.config.replay_context)
+        for key, distribution in policy.items():
+            actions = data[key][:, context:]
+            metrics[f"anchor/actor/{key}_entropy"] = distribution.entropy().mean()
+            metrics[f"anchor/actor/{key}_selected_probability"] = jnp.exp(
+                distribution.logp(actions)
+            ).mean()
+            if hasattr(distribution, "logits"):
+                probabilities = jax.nn.softmax(distribution.logits, axis=-1).mean(
+                    axis=(0, 1)
+                )
+                for index in range(probabilities.shape[-1]):
+                    metrics[f"anchor/actor/{key}_prob_{index}"] = probabilities[index]
+        return metrics
 
     def report_imagination(self, carry, actions, length, training):
         return self.dyn.imagine(carry, actions, length, training)

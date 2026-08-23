@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -23,6 +24,22 @@ def timestamp() -> str:
 
 def _write_json(path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _stage_continuation_replay(source, destination) -> None:
+    source = source.resolve()
+    if not source.is_dir():
+        raise FileNotFoundError(f"continuation replay directory is missing: {source}")
+    chunks = sorted(source.glob("*.npz"))
+    if not chunks:
+        raise FileNotFoundError(f"continuation replay has no chunks: {source}")
+    destination.mkdir(parents=True, exist_ok=False)
+    for chunk in chunks:
+        target = destination / chunk.name
+        try:
+            os.link(chunk, target)
+        except OSError:
+            shutil.copy2(chunk, target)
 
 
 def run_training(
@@ -52,8 +69,20 @@ def run_training(
         return 0
     if not spec.python.exists():
         raise FileNotFoundError(f"DreaMARL Python is missing: {spec.python}")
+    if spec.load_replay:
+        _stage_continuation_replay(
+            spec.replay_source,
+            spec.logdir / "replay",
+        )
 
     env = os.environ.copy()
+    if spec.task.startswith("smac_"):
+        if not env.get("SC2PATH"):
+            raise RuntimeError("SMAC runs require SC2PATH to point to StarCraft II 4.10")
+        # SMAC-v1's pinned s2clientprotocol ships legacy generated descriptors.
+        # The Python protobuf backend keeps them compatible with the modern
+        # protobuf required by W&B in the shared training runtime.
+        env.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
     env.setdefault("MUJOCO_GL", "glfw" if platform.system() == "Darwin" else "egl")
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONDONTWRITEBYTECODE"] = "1"

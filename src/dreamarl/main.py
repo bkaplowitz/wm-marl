@@ -41,9 +41,7 @@ def _worker_seed(seed: int, index: int) -> int:
 
 
 def _validate_script(script: str, num_agents: int) -> None:
-    if num_agents > 1 and (
-        script == "train_eval" or script.startswith("parallel")
-    ):
+    if num_agents > 1 and (script == "train_eval" or script.startswith("parallel")):
         raise ValueError(
             f"script={script} uses generic single-agent reporting and is not "
             "supported for MARL runs; use script=train with explicit curve "
@@ -115,6 +113,16 @@ def main(argv=None, extra_config_path=None):
             args,
         )
 
+    elif config.script == "jecc_pretrain":
+        from . import jecc_pretrain
+
+        jecc_pretrain.pretrain(
+            bind(make_agent, config),
+            bind(make_replay, config, "replay"),
+            bind(make_stream, config),
+            args,
+        )
+
     elif config.script == "train_eval":
         embodied.run.train_eval(
             bind(make_agent, config),
@@ -147,6 +155,15 @@ def main(argv=None, extra_config_path=None):
             bind(make_agent, config),
             bind(make_replay, replay_config, "replay"),
             bind(make_stream, config),
+            args,
+        )
+
+    elif config.script == "smac_probe_collect":
+        from . import evaluation
+
+        evaluation.collect_smac_probe(
+            bind(make_agent, config),
+            bind(make_env, config),
             args,
         )
 
@@ -298,7 +315,11 @@ def make_env(config, index, **overrides):
     kwargs = config.env.get(suite, {})
     kwargs.update(overrides)
     if kwargs.pop("use_seed", False):
-        kwargs["seed"] = _worker_seed(config.seed, index)
+        kwargs["seed"] = (
+            int(config.seed) + int(index)
+            if suite == "smac"
+            else _worker_seed(config.seed, index)
+        )
     if suite == "meltingpot":
         from .envs.meltingpot import MeltingPotEnv
 
@@ -310,6 +331,10 @@ def make_env(config, index, **overrides):
         if "seed" not in kwargs:
             raise ValueError("DMC requires env.dmc.use_seed=True")
         env = SingletonAgentEnv(make_dmc(task, **kwargs))
+    elif suite == "smac":
+        from .envs.smac import SMACEnv
+
+        env = SMACEnv(task, **kwargs)
     else:
         raise ValueError(f"unsupported DreaMARL task: {config.task!r}")
     return wrap_env(env, config)

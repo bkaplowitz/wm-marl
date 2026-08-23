@@ -66,13 +66,20 @@ class CausalTransformer(nj.Module):
             "position": -jnp.ones((batch_size,), jnp.int32),
         }
 
-    def sequence(self, cache, previous_pairs, resets):
+    def sequence(self, cache, previous_pairs, resets, condition=None):
         """Process replay in parallel and retain every imagination-start cache."""
 
         batch, length = previous_pairs.shape[:2]
         projected = self.sub(
             "pair_projection", nn.Linear, self.units, winit=self.winit
         )(nn.cast(previous_pairs))
+        if condition is not None:
+            condition = nn.cast(condition)
+            if condition.shape[:2] != projected.shape[:2]:
+                raise ValueError(
+                    "causal Transformer condition must share batch/time axes: "
+                    f"{condition.shape} versus {projected.shape}"
+                )
         start = self.value("start_token", nn.init("trunc_normal"), (self.units,), f32)
         start = nn.cast(jnp.broadcast_to(start, projected.shape))
         x = jnp.where(resets[..., None], start, projected)
@@ -109,6 +116,10 @@ class CausalTransformer(nj.Module):
         value_snapshots = []
         for index in range(self.layers):
             with nj.scope(f"layer{index}"):
+                if condition is not None:
+                    x = x + self.sub(
+                        "condition", nn.Linear, self.units, winit=self.winit
+                    )(condition)
                 residual = x
                 normed = self.sub("attention_norm", nn.Norm, self.norm)(x)
                 qkv = self.sub("qkv", nn.Linear, 3 * self.units, winit=self.winit)(
@@ -169,7 +180,7 @@ class CausalTransformer(nj.Module):
         }
         return nn.cast(final), nn.cast(states), nn.cast(snapshots)
 
-    def step(self, cache, previous_pair, reset):
+    def step(self, cache, previous_pair, reset, condition=None):
         """Advance one timestep using the same weights as ``sequence``."""
 
         batch = previous_pair.shape[0]
@@ -182,6 +193,13 @@ class CausalTransformer(nj.Module):
         projected = self.sub(
             "pair_projection", nn.Linear, self.units, winit=self.winit
         )(nn.cast(previous_pair))
+        if condition is not None:
+            condition = nn.cast(condition)
+            if condition.shape[0] != projected.shape[0]:
+                raise ValueError(
+                    "causal Transformer condition must share the batch axis: "
+                    f"{condition.shape} versus {projected.shape}"
+                )
         start = self.value("start_token", nn.init("trunc_normal"), (self.units,), f32)
         x = jnp.where(reset[:, None], nn.cast(start), projected)
         valid = jnp.concatenate(
@@ -191,6 +209,10 @@ class CausalTransformer(nj.Module):
         next_values = []
         for index in range(self.layers):
             with nj.scope(f"layer{index}"):
+                if condition is not None:
+                    x = x + self.sub(
+                        "condition", nn.Linear, self.units, winit=self.winit
+                    )(condition)
                 residual = x
                 normed = self.sub("attention_norm", nn.Norm, self.norm)(x)
                 qkv = self.sub("qkv", nn.Linear, 3 * self.units, winit=self.winit)(
@@ -301,6 +323,12 @@ class ParallelTransformerDynamics(CategoricalLatent):
         )
 
     def truncate(self, entries, carry=None, active=None):
+        state, _ = self.replay_sequence(entries, carry=carry, active=active)
+        return state
+
+    def replay_sequence(self, entries, carry=None, active=None):
+        """Rebuild loss-free replay state and expose its local feature sequence."""
+
         del carry
         state = self.initial(entries["pair"].shape[0])
         if "position" in entries:
@@ -320,7 +348,10 @@ class ParallelTransformerDynamics(CategoricalLatent):
             cache, deter = self._temporal().step(self._cache(current), pair, reset)
             next_state = nn.cast({"deter": deter, "stoch": stoch, **cache})
             current = _where_active(current_active, next_state, current)
-            return current, ()
+            return current, {
+                "deter": current["deter"],
+                "stoch": current["stoch"],
+            }
 
         inputs = (
             entries["pair"],
@@ -329,8 +360,7 @@ class ParallelTransformerDynamics(CategoricalLatent):
             active,
         )
 
-        state, _ = nj.scan(advance, state, inputs, axis=1)
-        return state
+        return nj.scan(advance, state, inputs, axis=1)
 
     def starts(self, entries, carry, nlast):
         del carry
@@ -507,14 +537,31 @@ class ParallelTransformerDynamics(CategoricalLatent):
             deter = _where_active(active, deter, carry["deter"])
         return cache, deter
 
-    def complete(self, cache, deter, logit=None):
-        """Sample the categorical state from the local action-conditioned prior."""
+    def complete(self, cache, deter, logit=None, *, sample=True):
+        """Complete one local transition from its action-conditioned prior."""
 
         logit = self._prior(deter) if logit is None else logit
-        stoch = nn.cast(self._dist(logit).sample(seed=nj.seed()))
+        distribution = self._dist(logit)
+        stoch = distribution.sample(seed=nj.seed()) if sample else distribution.pred()
+        stoch = nn.cast(stoch)
         carry = nn.cast({"deter": deter, "stoch": stoch, **cache})
         feat = nn.cast({"deter": deter, "stoch": stoch, "logit": logit})
         return carry, feat
+
+    def posterior(self, tokens, deter):
+        """Return the executable observation-conditioned posterior logits."""
+
+        return self._posterior(tokens, deter)
+
+    def complete_from_observation(self, cache, deter, tokens, *, sample=True):
+        """Complete a local proposal from a predicted observation embedding."""
+
+        return self.complete(
+            cache,
+            deter,
+            logit=self.posterior(nn.cast(tokens), nn.cast(deter)),
+            sample=sample,
+        )
 
     def prior(self, deter):
         return self._prior(deter)

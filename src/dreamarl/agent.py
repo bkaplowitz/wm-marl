@@ -99,21 +99,83 @@ class Agent(
         self.retnorm = Normalize(**config.retnorm, name="retnorm")
         self.valnorm = Normalize(**config.valnorm, name="valnorm")
         self.advnorm = Normalize(**config.advnorm, name="advnorm")
+        self.behavior_objective = str(config.behavior_objective)
+        self.anchor_batch = self._load_anchor_batch(str(config.anchor_batch))
 
-        if int(config.num_agents) == 1 or str(config.behavior_optimizer) == "joint":
+        additional_modules = self.additional_modules()
+        self.modules = [
+            self.dyn,
+            self.enc,
+            self.rew,
+            self.con,
+            self.pol,
+            self.val,
+        ]
+        if self.actmask is not None:
+            self.modules.append(self.actmask)
+        self.modules.extend(additional_modules)
+        jecc_modules = tuple(getattr(self, "jecc_modules", ()))
+        jecc_module_ids = {id(module) for module in jecc_modules}
+        if not jecc_module_ids.issubset({id(module) for module in additional_modules}):
+            raise ValueError("JECC optimizer modules must be additional modules")
+        ctde_modules = tuple(getattr(self, "ctde_modules", ()))
+        ctde_module_ids = {id(module) for module in ctde_modules}
+        if not ctde_module_ids.issubset({id(module) for module in additional_modules}):
+            raise ValueError("CTDE optimizer modules must be additional modules")
+        if jecc_module_ids & ctde_module_ids:
+            raise ValueError("JECC and CTDE optimizer ownership cannot overlap")
+        world_modules = [self.dyn, self.enc, self.rew, self.con]
+        if self.actmask is not None:
+            world_modules.append(self.actmask)
+        world_modules.extend(
+            module
+            for module in additional_modules
+            if id(module) not in jecc_module_ids | ctde_module_ids
+        )
+
+        if ctde_modules:
+            if self.behavior_objective != "reinforce":
+                raise ValueError("CTDE requires the REINFORCE behavior objective")
+            if str(config.behavior_optimizer) != "separated":
+                raise ValueError("CTDE requires separated optimizer ownership")
+            self.opt = self._build_ctde_optimizer(
+                self.modules,
+                world_modules,
+                list(ctde_modules),
+                [self.pol],
+                [self.val],
+            )
+        elif jecc_modules:
+            if self.behavior_objective != "reinforce":
+                raise ValueError("JECC requires the REINFORCE behavior objective")
+            if str(config.behavior_optimizer) != "separated":
+                raise ValueError("JECC requires separated optimizer ownership")
+            if getattr(self, "jecc_pretrain_only", False):
+                self.opt = embodied.jax.Optimizer(
+                    jecc_modules,
+                    self._make_opt(**self.config.marl.jecc.opt),
+                    summary_depth=1,
+                    name="jecc_opt",
+                )
+            else:
+                self.opt = self._build_jecc_optimizer(
+                    self.modules,
+                    world_modules,
+                    [self.pol],
+                    [self.val],
+                    jecc_modules,
+                )
+        elif self.behavior_objective == "ppo":
+            if str(config.behavior_optimizer) != "separated":
+                raise ValueError("imagined PPO requires behavior_optimizer=separated")
+            self.opt, self.actor_opt = self._build_ppo_optimizers(
+                world_modules,
+                [self.pol],
+                [self.val],
+            )
+        elif int(config.num_agents) == 1 or str(config.behavior_optimizer) == "joint":
             # Preserve the confirmed competitive single-agent construction and
             # optimizer path byte-for-byte.
-            self.modules = [
-                self.dyn,
-                self.enc,
-                self.rew,
-                self.con,
-                self.pol,
-                self.val,
-            ]
-            if self.actmask is not None:
-                self.modules.append(self.actmask)
-            self.modules.extend(self.additional_modules())
             self.opt = embodied.jax.Optimizer(
                 self.modules,
                 self._build_optimizer(config),
@@ -121,31 +183,18 @@ class Agent(
                 name="opt",
             )
         else:
-            additional_modules = self.additional_modules()
             # Keep the historical differentiation target order and isolate the
             # MARL change to optimizer ownership and hyperparameters.
-            self.modules = [
-                self.dyn,
-                self.enc,
-                self.rew,
-                self.con,
-                self.pol,
-                self.val,
-            ]
-            if self.actmask is not None:
-                self.modules.append(self.actmask)
-            self.modules.extend(additional_modules)
-            world_modules = [self.dyn, self.enc, self.rew, self.con]
-            if self.actmask is not None:
-                world_modules.append(self.actmask)
-            world_modules.extend(additional_modules)
             self.opt = self._build_grouped_optimizer(
                 self.modules,
                 world_modules,
                 [self.pol],
                 [self.val],
+                matched=str(config.behavior_optimizer) == "separated",
             )
         self.scales = config.loss_scales.copy()
+        if self.behavior_objective == "ppo":
+            self.scales["policy"] = 0.0
         if self.actmask is not None:
             self.scales["action_mask"] = float(
                 getattr(
@@ -182,6 +231,9 @@ class Agent(
         return spaces
 
     def init_policy(self, batch_size):
+        return self._local_initial(batch_size)
+
+    def _local_initial(self, batch_size):
         def zeros(space):
             return jnp.zeros((batch_size, *space.shape), space.dtype)
 
@@ -191,6 +243,26 @@ class Agent(
             {},
             jax.tree.map(zeros, self.act_space),
         )
+
+    def _load_anchor_batch(self, filename):
+        if not filename:
+            return None
+        with np.load(filename) as archive:
+            batch = {key: np.asarray(archive[key]) for key in archive.files}
+        required = {*self.obs_space, *self.act_space, "consec", "stepid"}
+        missing = required.difference(batch)
+        if missing:
+            raise ValueError(f"anchor batch is missing fields: {sorted(missing)}")
+        configured = int(self.config.batch_size)
+        public_batch = int(batch["is_first"].shape[0])
+        if public_batch < configured or public_batch % configured:
+            raise ValueError(
+                f"anchor batch must contain a positive multiple of {configured} "
+                f"teams, got {public_batch}"
+            )
+        if hasattr(self, "team"):
+            batch = self.team.local_sequence_data(batch)
+        return batch
 
     def init_train(self, batch_size):
         return self.init_policy(batch_size)

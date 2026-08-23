@@ -99,6 +99,57 @@ def test_canonical_yaml_matches_the_locked_manifest(tmp_path: Path) -> None:
     assert config["marl"] == {
         "stage": "b0",
         "execution": "strict_decentralized",
+        "ctde": {
+            "rollout_steps": 1,
+            "multistep": {"anchors": 128},
+            "joint": {
+                "width": 256,
+                "heads": 4,
+                "agent_layers": 2,
+                "temporal_layers": 4,
+                "context": 16,
+                "ffup": 4,
+                "dropout": 0.1,
+                "act": "silu",
+                "norm": "rms",
+                "winit": "trunc_normal_in",
+            },
+            "head": {
+                "layers": 2,
+                "units": 256,
+                "bins": 255,
+                "outscale": 0.0,
+                "act": "silu",
+                "norm": "rms",
+                "winit": "trunc_normal_in",
+            },
+            "critic": {
+                "width": 256,
+                "heads": 4,
+                "layers": 2,
+                "ffup": 4,
+                "dropout": 0.0,
+                "value_layers": 2,
+                "value_units": 256,
+                "bins": 255,
+                "outscale": 0.0,
+                "act": "silu",
+                "norm": "rms",
+                "winit": "trunc_normal_in",
+            },
+            "opt": {
+                "lr": 4e-5,
+                "agc": 0.3,
+                "eps": 1e-20,
+                "beta1": 0.9,
+                "beta2": 0.999,
+                "momentum": True,
+                "wd": 0.0,
+                "schedule": "const",
+                "warmup": 1000,
+                "anneal": 0,
+            },
+        },
         "agent_jepa": {
             "slots": 8,
             "width": 256,
@@ -128,6 +179,42 @@ def test_canonical_yaml_matches_the_locked_manifest(tmp_path: Path) -> None:
             "norm": "rms",
             "winit": "trunc_normal_in",
         },
+        "jecc": {
+            "horizons": [5, 15, 32],
+            "pretrain_only": False,
+            "diagnostic_controller": False,
+            "act": "silu",
+            "norm": "rms",
+            "winit": "trunc_normal_in",
+            "outcome": {
+                "width": 128,
+                "dim": 128,
+                "layers": 2,
+                "heads": 4,
+                "ffup": 4,
+            },
+            "predictor": {"width": 256, "layers": 2, "heads": 4, "ffup": 4},
+            "utility": {"layers": 2, "units": 256, "bins": 255},
+            "teacher": {"rate": 0.01, "every": 1},
+            "loss_scales": {
+                "outcome": 1.0,
+                "utility": 1.0,
+                "predicted_utility": 1.0,
+            },
+            "alpha": {"start": 5000, "end": 20000},
+            "opt": {
+                "lr": 4e-5,
+                "agc": 0.3,
+                "eps": 1e-20,
+                "beta1": 0.9,
+                "beta2": 0.999,
+                "momentum": True,
+                "wd": 0.0,
+                "schedule": "const",
+                "warmup": 1000,
+                "anneal": 0,
+            },
+        },
     }
     temporal = config["dyn"]["parallel_transformer"]
     assert defaults["replay_context"] == temporal["context"] * temporal["layers"]
@@ -146,11 +233,64 @@ def test_curve_evaluation_is_explicit(tmp_path: Path) -> None:
     assert measured.command[index + 1] == "50000"
 
 
+def test_smac_run_uses_vector_protocol_profile(tmp_path: Path) -> None:
+    spec = _spec(
+        tmp_path,
+        task="smac_3m",
+        num_agents=3,
+        train_steps=100_000,
+        replay_sampling="recent",
+        curve_eval_interval=500,
+        curve_eval_episodes=10,
+    )
+    manifest = spec.to_dict()
+    assert spec.configs == ["smac_vector"]
+    assert manifest["observation_mode"] == "local vector features"
+    assert manifest["spatial_jepa"] is False
+    assert manifest["smac_protocol"]["difficulty"] == "7"
+    assert manifest["smac_protocol"]["primary_metric"].endswith("battle win rate")
+    assert "--replay.sampling" in spec.command
+
+
 def test_training_cadence_is_explicit_and_recorded(tmp_path: Path) -> None:
     spec = _spec(tmp_path, train_ratio=1024.0)
     index = spec.command.index("--run.train_ratio")
     assert spec.command[index + 1] == "1024.0"
     assert spec.to_dict()["optimizer_updates_per_environment_step"] == 1.0
+
+
+def test_smac_ppo_continuation_contract_is_explicit(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "source" / "ckpt"
+    anchor = tmp_path / "anchor.npz"
+    spec = _spec(
+        tmp_path,
+        task="smac_3m",
+        num_agents=3,
+        behavior_optimizer="separated",
+        behavior_objective="ppo",
+        ppo_epochs=3,
+        ppo_clip=0.2,
+        repval_grad=False,
+        anchor_batch=anchor,
+        from_checkpoint=checkpoint,
+        from_checkpoint_regex=r"^(?!opt/)",
+        load_replay=True,
+        replay_source=tmp_path / "source" / "replay",
+    )
+    manifest = spec.to_dict()
+    assert manifest["behavior_objective"] == "ppo"
+    assert manifest["optimizer_topology"] == "separated"
+    assert manifest["ppo_epochs"] == 3
+    assert manifest["ppo_clip"] == 0.2
+    assert manifest["repval_grad"] is False
+    assert manifest["continuation_replay_loaded"] is True
+    assert spec.command[spec.command.index("--agent.ppo.clip") + 1] == "0.2"
+    assert spec.command[spec.command.index("--run.load_replay") + 1] == "True"
+
+
+def test_imagined_ppo_rejects_joint_optimizer_ownership(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="requires separated optimizer"):
+        _spec(tmp_path, behavior_objective="ppo", behavior_optimizer="joint")
 
 
 def test_recent_replay_keeps_the_exponential_selector_when_empty() -> None:

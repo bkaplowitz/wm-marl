@@ -61,9 +61,9 @@ class GroupedOptimizer(nj.Module):
                 loss *= sg(self.grad_scale.read())
             return loss, aux
 
-        loss, params, grads, aux = nj.grad(
-            lossfn2, self.modules, has_aux=True
-        )(*args, **kwargs)
+        loss, params, grads, aux = nj.grad(lossfn2, self.modules, has_aux=True)(
+            *args, **kwargs
+        )
         if self.scaling:
             loss *= 1 / self.grad_scale.read()
 
@@ -104,8 +104,7 @@ class GroupedOptimizer(nj.Module):
             self.step[key].write(self.step[key].read() + i32(group_finite))
 
             counts = {
-                name: math.prod(value.shape)
-                for name, value in group_params.items()
+                name: math.prod(value.shape) for name, value in group_params.items()
             }
             prefix = f"{self.name}/{key}"
             metrics.update(
@@ -115,9 +114,7 @@ class GroupedOptimizer(nj.Module):
                     f"{prefix}/grad_rms": nets.rms(group_grads),
                     f"{prefix}/update_rms": nets.rms(updates),
                     f"{prefix}/param_rms": nets.rms(group_params),
-                    f"{prefix}/param_count": jnp.asarray(
-                        sum(counts.values()), f32
-                    ),
+                    f"{prefix}/param_count": jnp.asarray(sum(counts.values()), f32),
                 }
             )
             if nj.creating():
@@ -159,13 +156,94 @@ class OptimizationMixin:
         return self._make_opt(**config.opt)
 
     def _build_grouped_optimizer(
-        self, modules, world_modules, actor_modules, critic_modules
+        self,
+        modules,
+        world_modules,
+        actor_modules,
+        critic_modules,
+        *,
+        matched=False,
     ):
+        actor_config = self.config.opt if matched else self.config.actor_opt
+        critic_config = self.config.opt if matched else self.config.critic_opt
         return GroupedOptimizer(
             {
                 "world": (world_modules, self._make_opt(**self.config.opt)),
-                "actor": (actor_modules, self._make_opt(**self.config.actor_opt)),
-                "critic": (critic_modules, self._make_opt(**self.config.critic_opt)),
+                "actor": (actor_modules, self._make_opt(**actor_config)),
+                "critic": (critic_modules, self._make_opt(**critic_config)),
+            },
+            modules=modules,
+            summary_depth=1,
+            name="opt",
+        )
+
+    def _build_ppo_optimizers(self, world_modules, actor_modules, critic_modules):
+        model_opt = GroupedOptimizer(
+            {
+                "world": (world_modules, self._make_opt(**self.config.opt)),
+                "critic": (critic_modules, self._make_opt(**self.config.opt)),
+            },
+            modules=[*world_modules, *critic_modules],
+            summary_depth=1,
+            name="opt",
+        )
+        actor_opt = embodied.jax.Optimizer(
+            actor_modules,
+            self._make_opt(**self.config.opt),
+            summary_depth=1,
+            name="actor_opt",
+        )
+        return model_opt, actor_opt
+
+    def _build_jecc_optimizer(
+        self,
+        modules,
+        world_modules,
+        actor_modules,
+        critic_modules,
+        jecc_modules,
+    ):
+        """Build the four disjoint optimizer groups used by JECC."""
+
+        return GroupedOptimizer(
+            {
+                "world": (world_modules, self._make_opt(**self.config.opt)),
+                "actor": (actor_modules, self._make_opt(**self.config.opt)),
+                "critic": (critic_modules, self._make_opt(**self.config.opt)),
+                "jecc": (
+                    jecc_modules,
+                    self._make_opt(**self.config.marl.jecc.opt),
+                ),
+            },
+            modules=modules,
+            summary_depth=1,
+            name="opt",
+        )
+
+    def _build_ctde_optimizer(
+        self,
+        modules,
+        local_world_modules,
+        joint_world_modules,
+        actor_modules,
+        critic_modules,
+    ):
+        """Build the four disjoint optimizer groups used by CTDE."""
+
+        matched = self.config.opt
+        joint = self.config.marl.ctde.opt
+        return GroupedOptimizer(
+            {
+                "local_world": (
+                    local_world_modules,
+                    self._make_opt(**matched),
+                ),
+                "joint_world": (
+                    joint_world_modules,
+                    self._make_opt(**joint),
+                ),
+                "actor": (actor_modules, self._make_opt(**matched)),
+                "critic": (critic_modules, self._make_opt(**matched)),
             },
             modules=modules,
             summary_depth=1,

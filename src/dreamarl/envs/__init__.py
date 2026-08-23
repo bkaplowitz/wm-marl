@@ -3,5 +3,6 @@
 from .dmc import make_dmc
 from .meltingpot import MeltingPotEnv
 from .single_agent import SingletonAgentEnv
+from .smac import SMACEnv
 
-__all__ = ["MeltingPotEnv", "SingletonAgentEnv", "make_dmc"]
+__all__ = ["MeltingPotEnv", "SMACEnv", "SingletonAgentEnv", "make_dmc"]
