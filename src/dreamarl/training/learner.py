@@ -176,6 +176,13 @@ class LearnerMixin:
         imagination_valid = self.imagination_validity(
             imagination_context, horizon, imagination_aux
         )
+        metrics.update(
+            self.imagination_behavior_metrics(
+                imgprevact,
+                imagination_valid,
+                imagination_aux,
+            )
+        )
         policy = self.imagination_policy_distribution(
             policy_inp,
             imagination_aux,
@@ -334,7 +341,9 @@ class LearnerMixin:
                     raise ValueError("behavior trust requires stored behavior logits")
                 reference_logits = reference_behavior_logits
             else:
-                raise ValueError(f"unexpected actor trust mode {self.actor_trust_mode!r}")
+                raise ValueError(
+                    f"unexpected actor trust mode {self.actor_trust_mode!r}"
+                )
 
             decision = reference_action_mask.astype(jnp.int32).sum(-1) > 1
             divergence = categorical_forward_kl(reference_logits, current_logits)
@@ -486,6 +495,10 @@ class LearnerMixin:
     def imagination_validity(self, context, horizon, auxiliary=None):
         del context, auxiliary
         return None
+
+    def imagination_behavior_metrics(self, actions, validity, auxiliary=None):
+        del actions, validity, auxiliary
+        return {}
 
     def imagination_critic_context(self, features, context, auxiliary=None):
         del features, context, auxiliary

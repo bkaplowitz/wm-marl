@@ -1751,6 +1751,33 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         _, active = context
         return jnp.broadcast_to(active[:, None], (active.shape[0], horizon))
 
+    def imagination_behavior_metrics(self, actions, validity, auxiliary=None):
+        """Summarize the actions that actually drive CTDE imagination."""
+
+        if not self.ctde_enabled:
+            return super().imagination_behavior_metrics(actions, validity, auxiliary)
+        del auxiliary
+        action = actions[self.ctde_action_key]
+        weight = (
+            jnp.ones_like(action, jnp.float32)
+            if validity is None
+            else validity[:, : action.shape[1]].astype(jnp.float32)
+        )
+        count = jnp.maximum(weight.sum(), 1.0)
+
+        def fraction(selected):
+            return (weight * selected.astype(jnp.float32)).sum() / count
+
+        attack_start = min(6, self.ctde_action_count)
+        return {
+            "imagined_action/noop_fraction": fraction(action == 0),
+            "imagined_action/stop_fraction": fraction(action == 1),
+            "imagined_action/move_fraction": fraction(
+                (action >= 2) & (action < attack_start)
+            ),
+            "imagined_action/attack_fraction": fraction(action >= attack_start),
+        }
+
     def report_imagination(self, carry, actions, length, training):
         return self.dyn.imagine(
             carry,

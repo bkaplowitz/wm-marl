@@ -1,6 +1,7 @@
 """First-party Embodied training loop with a guaranteed final checkpoint."""
 
 import collections
+import time
 from functools import partial as bind
 
 import elements
@@ -9,6 +10,19 @@ import jax
 import numpy as np
 
 from .evaluation import evaluate_current_policy
+
+
+def _save_checkpoint(checkpoint, attempts=4):
+    """Retry transient filesystem failures without hiding a persistent error."""
+
+    for attempt in range(attempts):
+        try:
+            checkpoint.save()
+            return
+        except OSError:
+            if attempt + 1 == attempts:
+                raise
+            time.sleep(5 * (attempt + 1))
 
 
 def _with_policy_reference(primary, reference):
@@ -186,7 +200,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
             logger.write()
 
         if should_save(step):
-            checkpoint.save()
+            _save_checkpoint(checkpoint)
 
         if next_curve_eval is not None and int(step) >= next_curve_eval:
             summary = evaluate_current_policy(
@@ -208,10 +222,10 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
             )
             logger.write()
             if bool(args.checkpoint_at_curve_eval):
-                checkpoint.save()
+                _save_checkpoint(checkpoint)
             while next_curve_eval <= int(step):
                 next_curve_eval += int(args.curve_eval_interval)
 
     if bool(args.final_save):
-        checkpoint.save()
+        _save_checkpoint(checkpoint)
     logger.close()

@@ -94,7 +94,29 @@ def imag_loss(
     metrics["rew"] = rew.mean()
     metrics["con"] = con.mean()
     metrics["ret"] = ret_normed.mean()
+    metrics["ret_raw"] = jnp.where(metric_selected, ret, 0.0).sum() / metric_count
+    root_valid = (
+        jnp.ones_like(ret[:, 0])
+        if norm_valid is None
+        else norm_valid[:, 0].astype(jnp.float32)
+    )
+    metrics["ret_root_raw"] = (ret[:, 0] * root_valid).sum() / jnp.maximum(
+        root_valid.sum(), 1.0
+    )
+    reward_return = (weight * rew).sum(axis=1)
+    metrics["reward_return_raw"] = (reward_return * root_valid).sum() / jnp.maximum(
+        root_valid.sum(), 1.0
+    )
     metrics["val"] = val.mean()
+    metrics["val_raw"] = (
+        jnp.where(metric_selected, val[:, :-1], 0.0).sum() / metric_count
+    )
+    metrics["critic_root_raw"] = (val[:, 0] * root_valid).sum() / jnp.maximum(
+        root_valid.sum(), 1.0
+    )
+    metrics["critic_rollout_raw"] = (
+        jnp.where(metric_selected, val[:, 1:], 0.0).sum() / metric_count
+    )
     metrics["tar"] = tar_normed.mean()
     metrics["weight"] = weight.mean()
     metrics["slowval"] = slowval.mean()
