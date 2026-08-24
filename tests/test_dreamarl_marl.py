@@ -582,7 +582,7 @@ def test_ctde_policy_churn_uses_an_independent_burned_in_reference() -> None:
 
     assert agent.churn_pol not in agent.modules
     assert float(first_metrics["policy_churn/kl"]) >= 0.0
-    assert float(second_metrics["policy_churn/kl"]) >= 0.0
+    assert float(second_metrics["policy_churn/kl"]) > 0.0
     assert np.isfinite(float(second_metrics["policy_churn/penalty"]))
 
 

@@ -26,6 +26,7 @@ def test_policy_churn_stops_the_reference_and_preserves_current_gradient() -> No
 
     assert jnp.array_equal(reference_grad, jnp.zeros_like(reference_grad))
     assert jnp.linalg.norm(current_grad) > 0
+    assert loss(reference, current) >= 0
 
 
 def test_relative_churn_scale_has_the_requested_loss_fraction() -> None:

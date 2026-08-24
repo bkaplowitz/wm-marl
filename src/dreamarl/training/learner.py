@@ -228,6 +228,11 @@ class LearnerMixin:
                     for key, metric in local_metrics.items()
                 }
             )
+            if training:
+                # The loss above reads actor_(n-2). Copy actor_(n-1) now, before
+                # update n is applied, so the next loss sees one full update of
+                # functional policy change rather than a synchronized target.
+                self.churn_teacher.update()
         imagined_losses, imgloss_out = self.restore_imagination_results(
             imagined_losses,
             imgloss_out,
@@ -378,8 +383,6 @@ class LearnerMixin:
 
     def _update_slow_models(self):
         self.slowval.update()
-        if self.churn_teacher is not None:
-            self.churn_teacher.update()
 
     def additional_world_model_losses(
         self,
