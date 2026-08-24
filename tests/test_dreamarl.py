@@ -107,12 +107,38 @@ def test_default_config_is_clean_single_agent_dmc() -> None:
         "local",
         "ctde",
         "ctde_mask",
+        "ctde_mask_mean",
+        "ctde_mask_full",
         "ctde_adaln",
+        "ctde_deep",
+        "ctde_wide",
         "ctde_two_step",
         "dmc_vision",
         "smac_vector",
         "debug",
     }
+
+
+def test_internal_ctde_study_profiles_change_only_the_intended_axis() -> None:
+    configs = _load_configs()
+    mean_mask = _resolve_config_profiles(
+        configs, ["smac_vector", "ctde", "ctde_mask_mean"]
+    )
+    full_mask = _resolve_config_profiles(
+        configs, ["smac_vector", "ctde", "ctde_mask_full"]
+    )
+    deep = _resolve_config_profiles(configs, ["smac_vector", "ctde", "ctde_deep"])
+    wide = _resolve_config_profiles(configs, ["smac_vector", "ctde", "ctde_wide"])
+
+    assert mean_mask.agent.action_mask_reduction == "mean"
+    assert not mean_mask.agent.marl.ctde.mask_calibration.enabled
+    assert full_mask.agent.action_mask_reduction == "mean"
+    assert full_mask.agent.marl.ctde.mask_calibration.enabled
+    assert full_mask.agent.marl.ctde.mask_calibration.soft_liveness
+    assert deep.agent.marl.ctde.joint.temporal_layers == 8
+    assert deep.agent.marl.ctde.joint.width == 256
+    assert wide.agent.marl.ctde.joint.temporal_layers == 4
+    assert wide.agent.marl.ctde.joint.width == 512
 
 
 @pytest.mark.parametrize("algorithm", PUBLIC_ALGORITHMS)

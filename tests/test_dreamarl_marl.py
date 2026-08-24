@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import elements
+import embodied.jax.outs as outs
 import jax
 import jax.numpy as jnp
 import ninjax as nj
@@ -12,8 +13,12 @@ from dreamarl.main import _load_configs, _merge_dicts
 from dreamarl.marl.axes import TeamAxis
 from dreamarl.marl.core import MARLCore
 from dreamarl.marl.spaces import add_agent_axis
-from dreamarl.models.heads import MLPHead
-from dreamarl.models.heads import apply_action_mask, apply_predicted_action_mask
+from dreamarl.models.heads import (
+    MLPHead,
+    apply_action_mask,
+    apply_predicted_action_mask,
+    binary_vector_loss,
+)
 from dreamarl.models.ctde import JointObservationJEPA
 from dreamarl.models.normalize import Normalize
 from dreamarl.training.learner import masked_mean
@@ -369,6 +374,21 @@ def test_predicted_action_mask_keeps_actor_log_probabilities_finite() -> None:
     assert float(np.asarray(logps).min()) > -30.0
 
 
+def test_mean_binary_mask_loss_is_invariant_to_action_count() -> None:
+    short = outs.Agg(outs.Binary(jnp.zeros((2, 4))), 1, jnp.sum)
+    long = outs.Agg(outs.Binary(jnp.zeros((2, 8))), 1, jnp.sum)
+    short_target = jnp.zeros((2, 4), bool)
+    long_target = jnp.zeros((2, 8), bool)
+
+    short_mean = binary_vector_loss(short, short_target, "mean")
+    long_mean = binary_vector_loss(long, long_target, "mean")
+    short_sum = binary_vector_loss(short, short_target, "sum")
+    long_sum = binary_vector_loss(long, long_target, "sum")
+
+    np.testing.assert_allclose(short_mean, long_mean)
+    np.testing.assert_allclose(long_sum, 2.0 * short_sum)
+
+
 def test_singleton_core_matches_local_training_exactly() -> None:
     local_obs_space, local_act_space = _local_spaces(metadata=True)
     team_obs_space, team_act_space = _team_spaces(1)
@@ -543,6 +563,43 @@ def test_ctde_trains_joint_imagination_and_central_critic() -> None:
     ):
         assert np.isfinite(float(metrics[key]))
     assert not any("multistep" in key for key in metrics)
+
+
+def test_ctde_soft_mask_and_liveness_update_is_finite() -> None:
+    observations, actions = _team_spaces(3)
+    config = _agent_config(3, "ctde").update(
+        {
+            "opt.warmup": 0,
+            "marl.ctde.opt.warmup": 0,
+            "action_mask_reduction": "mean",
+            "marl.ctde.mask_calibration.enabled": True,
+            "marl.ctde.mask_calibration.horizons": [1, 2],
+            "marl.ctde.mask_calibration.soft_liveness": True,
+        }
+    )
+    agent = object.__new__(MARLCore)
+    MARLCore.__init__(agent, observations, actions, config)
+    data = _add_team_axis(_local_batch(length=5), 3)
+    carry = agent.init_train(1)
+
+    def step():
+        return agent.train(carry, data)
+
+    state = nj.init(step)({}, seed=711)
+    _, (_, _, metrics) = nj.pure(step)(state, seed=712)
+    for key in (
+        "loss/action_mask",
+        "loss/ctde_action_mask",
+        "loss/ctde_mask_calibration",
+        "loss/ctde_alive_calibration",
+        "ctde/mask_calibration_h2_brier",
+        "ctde/alive_calibration_h2_brier",
+        "opt/local_world/grad_norm",
+        "opt/joint_world/grad_norm",
+        "opt/actor/grad_norm",
+        "opt/critic/grad_norm",
+    ):
+        assert np.isfinite(float(metrics[key]))
 
 
 def test_ctde_two_step_self_fed_objective_is_finite() -> None:

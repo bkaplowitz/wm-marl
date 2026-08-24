@@ -110,6 +110,7 @@ defaults:
     rewhead: {layers: 1, units: 1024, act: silu, norm: rms, output: symexp_twohot, outscale: 0.0, winit: trunc_normal_in, bins: 255}
     conhead: {layers: 1, units: 1024, act: silu, norm: rms, output: binary, outscale: 1.0, winit: trunc_normal_in}
     maskhead: {layers: 1, units: 1024, act: silu, norm: rms, output: binary, outscale: 0.0, winit: trunc_normal_in}
+    action_mask_reduction: sum
     policy: {layers: 3, units: 1024, act: silu, norm: rms, minstd: 0.1, maxstd: 1.0, outscale: 0.01, unimix: 0.01, winit: trunc_normal_in}
     value: {layers: 3, units: 1024, act: silu, norm: rms, output: symexp_twohot, outscale: 0.0, winit: trunc_normal_in, bins: 255}
     policy_dist_disc: categorical
@@ -141,7 +142,7 @@ ctde:
       ctde:
         rollout_steps: 1
         multistep: {anchors: 0}
-        mask_calibration: {enabled: False, horizons: [1, 4, 8, 15]}
+        mask_calibration: {enabled: False, horizons: [1, 4, 8, 15], soft_liveness: False}
         joint: {width: 256, heads: 4, agent_layers: 2, temporal_layers: 4, context: 16, ffup: 4, dropout: 0.1, action_conditioning: add, act: silu, norm: rms, winit: trunc_normal_in}
         head: {layers: 2, units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
         critic: {width: 256, heads: 4, layers: 2, ffup: 4, dropout: 0.0, value_layers: 2, value_units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
@@ -173,7 +174,32 @@ ctde_mask:
   agent:
     marl:
       ctde:
-        mask_calibration: {enabled: True, horizons: [1, 4, 8, 15]}
+        mask_calibration: {enabled: True, horizons: [1, 4, 8, 15], soft_liveness: False}
+
+ctde_mask_mean:
+  agent:
+    action_mask_reduction: mean
+
+ctde_mask_full:
+  agent:
+    action_mask_reduction: mean
+    marl:
+      ctde:
+        mask_calibration: {enabled: True, horizons: [1, 4, 8, 15], soft_liveness: True}
+
+ctde_deep:
+  agent:
+    marl:
+      ctde:
+        joint:
+          temporal_layers: 8
+
+ctde_wide:
+  agent:
+    marl:
+      ctde:
+        joint:
+          width: 512
 
 ctde_adaln:
   agent:

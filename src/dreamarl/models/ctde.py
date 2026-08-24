@@ -246,14 +246,23 @@ class JointObservationJEPA(nj.Module):
 
     def _mix(self, states, actions, present, alive, training):
         present = present.astype(bool)
-        alive = alive.astype(bool) & present
+        probabilistic_alive = not jnp.issubdtype(alive.dtype, jnp.bool_)
+        if probabilistic_alive:
+            alive = jnp.clip(alive.astype(f32), 0.0, 1.0)
+            alive *= present.astype(f32)
+        else:
+            alive = alive.astype(bool) & present
         states = self.sub("state_projection", nn.Linear, self.width, winit=self.winit)(
             nn.cast(sg(states))
         )
         dead_state = self.value(
             "dead_state", nn.init("trunc_normal"), (self.width,), f32
         )
-        states = jnp.where(alive[..., None], states, nn.cast(dead_state))
+        if probabilistic_alive:
+            alive_cast = nn.cast(alive[..., None])
+            states = alive_cast * states + (1.0 - alive_cast) * nn.cast(dead_state)
+        else:
+            states = jnp.where(alive[..., None], states, nn.cast(dead_state))
         alive_token = self.sub(
             "alive_projection", nn.Linear, self.width, winit=self.winit
         )(nn.cast(alive[..., None].astype(f32)))
@@ -342,14 +351,23 @@ class CentralAttentionCritic(nj.Module):
                 f"{alive.shape}"
             )
         present = present.astype(bool)
-        alive = alive.astype(bool) & present
+        probabilistic_alive = not jnp.issubdtype(alive.dtype, jnp.bool_)
+        if probabilistic_alive:
+            alive = jnp.clip(alive.astype(f32), 0.0, 1.0)
+            alive *= present.astype(f32)
+        else:
+            alive = alive.astype(bool) & present
         value = self.sub("state_projection", nn.Linear, self.width, winit=self.winit)(
             nn.cast(sg(local_states))
         )
         dead_state = self.value(
             "dead_state", nn.init("trunc_normal"), (self.width,), f32
         )
-        value = jnp.where(alive[..., None], value, nn.cast(dead_state))
+        if probabilistic_alive:
+            alive_cast = nn.cast(alive[..., None])
+            value = alive_cast * value + (1.0 - alive_cast) * nn.cast(dead_state)
+        else:
+            value = jnp.where(alive[..., None], value, nn.cast(dead_state))
         value += self.sub("alive_projection", nn.Linear, self.width, winit=self.winit)(
             nn.cast(alive[..., None].astype(f32))
         )

@@ -20,7 +20,11 @@ import ninjax as nj
 
 from ..agent import Agent as LocalAgent
 from ..models.ctde import CentralAttentionCritic, JointObservationJEPA
-from ..models.heads import apply_action_mask, apply_predicted_action_mask
+from ..models.heads import (
+    apply_action_mask,
+    apply_predicted_action_mask,
+    binary_vector_loss,
+)
 from ..training.ctde import (
     detach_self_feed,
     gather_anchors,
@@ -115,6 +119,16 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         self.ctde_mask_calibration = bool(
             marl.ctde.mask_calibration.enabled if self.ctde_enabled else False
         )
+        self.ctde_soft_liveness = bool(
+            marl.ctde.mask_calibration.soft_liveness
+            if self.ctde_mask_calibration
+            else False
+        )
+        self.action_mask_reduction = str(
+            getattr(config, "action_mask_reduction", "sum")
+        )
+        if self.action_mask_reduction not in {"sum", "mean"}:
+            raise ValueError("action_mask_reduction must be 'sum' or 'mean'")
         self.ctde_mask_horizons = (
             tuple(int(x) for x in marl.ctde.mask_calibration.horizons)
             if self.ctde_mask_calibration
@@ -185,7 +199,9 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             )
             grouped_state = self.team.unfold_sequence(local_state)
             grouped_present = context["present"].astype(bool)
-            grouped_alive = context["controllable_alive"].astype(bool)
+            grouped_alive = context["controllable_alive"]
+            if not self.ctde_soft_liveness:
+                grouped_alive = grouped_alive.astype(bool)
             if (
                 grouped_present.shape != grouped_state.shape[:3]
                 or grouped_alive.shape != grouped_state.shape[:3]
@@ -407,9 +423,15 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         if self.config.contdisc:
             continuation *= 1.0 - 1.0 / float(self.config.horizon)
         continuation_loss = self.ctde_con(hidden, 3).loss(continuation)
-        mask_loss = self.ctde_mask(hidden, 3).loss(grouped_mask[:, 1:])
+        mask_loss = binary_vector_loss(
+            self.ctde_mask(hidden, 3),
+            grouped_mask[:, 1:],
+            self.action_mask_reduction,
+        )
         alive_loss = self.ctde_alive(hidden, 3).loss(grouped_alive[:, 1:])
-        alive_valid = source_present & ~next_first[..., None]
+        alive_valid = (
+            source_alive if self.ctde_soft_liveness else source_present
+        ) & ~next_first[..., None]
         alive_weight = alive_valid.astype(jnp.float32)
         alive_count = jnp.maximum(alive_weight.sum(), 1.0)
         normalized_alive_weight = alive_weight / jnp.maximum(alive_weight.mean(), 1e-8)
@@ -533,11 +555,14 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
 
         root_present = present[:, 0]
         root_alive = controllable_alive[:, 0]
+        rollout_alive = (
+            root_alive.astype(jnp.float32) if self.ctde_soft_liveness else root_alive
+        )
         initial = (
             nn.cast(self.dyn.start_at(dyn_entries, 0)),
             dyn_entries["ctde_joint_carry"],
             root_present,
-            root_alive,
+            rollout_alive,
             is_first[:, 0],
             jnp.ones((batch,), bool),
         )
@@ -612,9 +637,14 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             alive_logits = alive_binary.logit
             alive_probability = jax.nn.sigmoid(alive_logits)
             next_present = current_present
-            next_alive = jax.lax.stop_gradient(
-                current_alive & next_present & (alive_probability >= 0.5)
-            )
+            if self.ctde_soft_liveness:
+                next_alive = jax.lax.stop_gradient(
+                    current_alive * next_present.astype(jnp.float32) * alive_probability
+                )
+            else:
+                next_alive = jax.lax.stop_gradient(
+                    current_alive & next_present & (alive_probability >= 0.5)
+                )
             within_episode &= ~next_first
             next_state = (
                 jax.lax.stop_gradient(next_carry),
@@ -628,6 +658,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 availability_logits,
                 alive_logits,
                 alive_probability,
+                next_alive,
                 within_episode,
             )
 
@@ -644,8 +675,12 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             availability_logits,
             alive_logits,
             alive_probability,
+            rollout_alive,
             within_episode,
         ) = rollout
+        predicted_alive = (
+            rollout_alive if self.ctde_soft_liveness else alive_probability
+        )
         mask_terms = []
         alive_terms = []
         metrics = {}
@@ -660,28 +695,58 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             target_alive = controllable_alive[:, horizon].astype(jnp.float32)
             mask_logit = availability_logits[:, index].astype(jnp.float32)
             alive_logit = alive_logits[:, index].astype(jnp.float32)
-            mask_loss = (jax.nn.softplus(mask_logit) - target_mask * mask_logit).sum(
-                axis=-1
-            )
+            mask_loss = jax.nn.softplus(mask_logit) - target_mask * mask_logit
+            if self.action_mask_reduction == "mean":
+                mask_loss = mask_loss.mean(axis=-1)
+            else:
+                mask_loss = mask_loss.sum(axis=-1)
             alive_loss = jax.nn.softplus(alive_logit) - target_alive * alive_logit
             mask_valid = (
                 root_alive & present[:, horizon] & within_episode[:, index, None]
             )
+            alive_source = (
+                controllable_alive[:, horizon - 1]
+                if self.ctde_soft_liveness
+                else root_present
+            )
             alive_valid = (
-                root_present & present[:, horizon] & within_episode[:, index, None]
+                alive_source & present[:, horizon] & within_episode[:, index, None]
             )
             mask_terms.append(normalized(mask_loss, mask_valid))
             alive_terms.append(normalized(alive_loss, alive_valid))
 
             mask_probability = jax.nn.sigmoid(mask_logit)
             mask_brier = jnp.square(mask_probability - target_mask).mean(axis=-1)
-            alive_brier = jnp.square(alive_probability[:, index] - target_alive)
+            alive_brier = jnp.square(predicted_alive[:, index] - target_alive)
             metrics[f"ctde/mask_calibration_h{horizon}_brier"] = normalized(
                 mask_brier, mask_valid
             ).mean()
             metrics[f"ctde/alive_calibration_h{horizon}_brier"] = normalized(
                 alive_brier, alive_valid
             ).mean()
+            attack_start = min(6, mask_probability.shape[-1])
+            attack_probability = mask_probability[..., attack_start:]
+            attack_target = target_mask[..., attack_start:].astype(bool)
+            attack_valid = mask_valid[..., None]
+            attack_prediction = attack_probability >= 0.5
+            positive = attack_valid & attack_target
+            negative = attack_valid & ~attack_target
+            metrics[f"ctde/mask_calibration_h{horizon}_attack_recall"] = (
+                attack_prediction & positive
+            ).sum() / jnp.maximum(positive.sum(), 1)
+            metrics[f"ctde/mask_calibration_h{horizon}_attack_fpr"] = (
+                attack_prediction & negative
+            ).sum() / jnp.maximum(negative.sum(), 1)
+            valid_probability = mask_probability * mask_valid[..., None]
+            metrics[f"ctde/mask_calibration_h{horizon}_illegal_mass"] = (
+                valid_probability * (1.0 - target_mask)
+            ).sum() / jnp.maximum(valid_probability.sum(), 1e-8)
+            metrics[f"ctde/alive_calibration_h{horizon}_predicted_count"] = (
+                (predicted_alive[:, index] * present[:, horizon]).sum(axis=-1).mean()
+            )
+            metrics[f"ctde/alive_calibration_h{horizon}_target_count"] = (
+                (target_alive * present[:, horizon]).sum(axis=-1).mean()
+            )
 
         def source_grid(terms):
             value = jnp.stack(terms).mean(axis=0)
@@ -822,8 +887,10 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         if self.config.contdisc:
             continuation *= 1.0 - 1.0 / float(self.config.horizon)
         continuation_loss = self.ctde_con(hidden, 2).loss(continuation)
-        mask_loss = self.ctde_mask(hidden, 2).loss(
-            gather_anchors(action_mask, anchors, offset=2)
+        mask_loss = binary_vector_loss(
+            self.ctde_mask(hidden, 2),
+            gather_anchors(action_mask, anchors, offset=2),
+            self.action_mask_reduction,
         )
         alive_loss = self.ctde_alive(hidden, 2).loss(
             gather_anchors(controllable_alive, anchors, offset=2)
@@ -1344,19 +1411,40 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             )
             availability_logits = availability_binary.logit
         availability_logits = jax.lax.stop_gradient(availability_logits)
-        distribution = apply_predicted_action_mask(
-            base_distribution,
-            availability_logits,
-            self.ctde_action_key,
-        )
-        noop = jnp.zeros((*alive.shape, self.ctde_action_count), bool)
-        noop = noop.at[..., 0].set(True)
-        alive_support = jnp.where(alive[..., None], jnp.ones_like(noop), noop)
-        distribution = apply_action_mask(
-            distribution,
-            alive_support,
-            self.ctde_action_key,
-        )
+        if self.ctde_soft_liveness:
+            alive_probability = jnp.clip(alive.astype(jnp.float32), 0.0, 1.0)
+            availability = jax.nn.sigmoid(availability_logits)
+            availability *= alive_probability[..., None]
+            noop_availability = (
+                1.0
+                - alive_probability
+                + alive_probability * jax.nn.sigmoid(availability_logits[..., 0])
+            )
+            availability = availability.at[..., 0].set(noop_availability)
+            base_action = base_distribution[self.ctde_action_key]
+            soft_action = jaxouts.Categorical(
+                base_action.logits + jnp.log(jnp.clip(availability, 1e-6, 1.0))
+            )
+            for name in ("minent", "maxent"):
+                if hasattr(base_action, name):
+                    setattr(soft_action, name, getattr(base_action, name))
+            distribution = dict(
+                base_distribution, **{self.ctde_action_key: soft_action}
+            )
+        else:
+            distribution = apply_predicted_action_mask(
+                base_distribution,
+                availability_logits,
+                self.ctde_action_key,
+            )
+            noop = jnp.zeros((*alive.shape, self.ctde_action_count), bool)
+            noop = noop.at[..., 0].set(True)
+            alive_support = jnp.where(alive[..., None], jnp.ones_like(noop), noop)
+            distribution = apply_action_mask(
+                distribution,
+                alive_support,
+                self.ctde_action_key,
+            )
         if exact_mask is None:
             return distribution, availability_logits
         if exact_rows is None or exact_rows.shape != alive.shape:
@@ -1386,6 +1474,8 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         grouped_carry = nn.cast(self.team.unfold_tree_batch(starts))
         present = context["present"].astype(bool)
         alive = context["controllable_alive"].astype(bool)
+        if self.ctde_soft_liveness:
+            alive = alive.astype(jnp.float32)
         action_mask = context["action_mask"].astype(bool)
         teams, agents = present.shape
         central_carry = context["joint_carry"]
@@ -1454,12 +1544,18 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             continuation = self.ctde_con(hidden, 2).prob(1)
             alive_probability = self.ctde_alive(hidden, 2).prob(1)
             next_present = current_present
-            next_alive = jax.lax.stop_gradient(
-                current_alive & next_present & (alive_probability >= 0.5)
-            )
+            if self.ctde_soft_liveness:
+                next_alive = jax.lax.stop_gradient(
+                    current_alive * next_present.astype(jnp.float32) * alive_probability
+                )
+            else:
+                next_alive = jax.lax.stop_gradient(
+                    current_alive & next_present & (alive_probability >= 0.5)
+                )
             noop = jnp.zeros_like(current_mask).at[..., 0].set(True)
             next_mask = jnp.ones_like(current_mask)
-            next_mask = jnp.where(next_alive[..., None], next_mask, noop)
+            if not self.ctde_soft_liveness:
+                next_mask = jnp.where(next_alive[..., None], next_mask, noop)
 
             next_state = (
                 next_carry,
@@ -1611,7 +1707,12 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             if auxiliary is None:
                 raise ValueError("CTDE imagination requires predicted activity")
             present = auxiliary["present"]
-            folded = self.team.fold_sequence(present)
+            validity = present
+            if self.ctde_soft_liveness:
+                validity = validity.astype(jnp.float32) * auxiliary[
+                    "controllable_alive"
+                ].astype(jnp.float32)
+            folded = self.team.fold_sequence(validity)
             return folded[:, :horizon]
         _, active = context
         return jnp.broadcast_to(active[:, None], (active.shape[0], horizon))

@@ -135,4 +135,39 @@ def apply_predicted_action_mask(
     return dict(distributions, **{action_key: masked})
 
 
-__all__ = ["MLPHead", "apply_action_mask", "apply_predicted_action_mask"]
+def binary_vector_loss(output, target, reduction="sum"):
+    """Binary cross entropy over the final event axis.
+
+    Dreamer treats vector-valued binary spaces as one joint event and therefore
+    sums their negative log likelihood. Action availability is different: its
+    dimensionality changes with the SMAC map. The ``mean`` reduction keeps this
+    auxiliary objective invariant to the number of available action slots.
+    """
+
+    binary = output.output if isinstance(output, outs.Agg) else output
+    if not isinstance(binary, outs.Binary):
+        raise TypeError("binary vector loss requires a binary output head")
+    target = jnp.asarray(target, jnp.float32)
+    logits = binary.logit.astype(jnp.float32)
+    if target.shape != logits.shape:
+        raise ValueError(
+            f"binary target shape {target.shape} does not match logits {logits.shape}"
+        )
+    if reduction == "sum":
+        # Preserve the locked Dreamer objective and its exact numerics.
+        return (
+            output.loss(target)
+            if isinstance(output, outs.Agg)
+            else binary.loss(target).sum(axis=-1)
+        )
+    if reduction == "mean":
+        return binary.loss(target).mean(axis=-1)
+    raise ValueError(f"unknown binary vector reduction: {reduction!r}")
+
+
+__all__ = [
+    "MLPHead",
+    "apply_action_mask",
+    "apply_predicted_action_mask",
+    "binary_vector_loss",
+]

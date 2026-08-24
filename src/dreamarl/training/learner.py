@@ -6,6 +6,7 @@ import jax.numpy as jnp
 import ninjax as nj
 import numpy as np
 
+from ..models.heads import binary_vector_loss
 from .common import concat, f32, prefix, sample, sg
 from .objectives import imag_loss, repl_loss
 from .representation import (
@@ -428,8 +429,10 @@ class LearnerMixin:
             metrics["sigreg/embedding_std"] = embedding_std(tokens)
         if getattr(self, "actmask", None) is not None:
             policy_input = self.feat2tensor(repfeat)
-            losses["action_mask"] = self.actmask(policy_input, 2).loss(
-                obs["action_mask"].astype(bool)
+            losses["action_mask"] = binary_vector_loss(
+                self.actmask(policy_input, 2),
+                obs["action_mask"],
+                str(getattr(self.config, "action_mask_reduction", "sum")),
             )
         target_tokens = None
         if self.dec is not None:
