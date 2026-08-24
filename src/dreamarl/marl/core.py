@@ -20,6 +20,7 @@ import ninjax as nj
 
 from ..agent import Agent as LocalAgent
 from ..models.ctde import CentralAttentionCritic, JointObservationJEPA
+from ..models.heads import apply_action_mask, apply_predicted_action_mask
 from ..training.ctde import (
     detach_self_feed,
     gather_anchors,
@@ -111,6 +112,22 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         )
         if self.ctde_rollout_steps not in {1, 2}:
             raise ValueError("CTDE rollout_steps must be 1 or 2")
+        self.ctde_mask_calibration = bool(
+            marl.ctde.mask_calibration.enabled if self.ctde_enabled else False
+        )
+        self.ctde_mask_horizons = (
+            tuple(int(x) for x in marl.ctde.mask_calibration.horizons)
+            if self.ctde_mask_calibration
+            else ()
+        )
+        if self.ctde_mask_calibration and (
+            not self.ctde_mask_horizons
+            or min(self.ctde_mask_horizons) < 1
+            or tuple(sorted(set(self.ctde_mask_horizons))) != self.ctde_mask_horizons
+        ):
+            raise ValueError(
+                "CTDE mask calibration horizons must be sorted unique positives"
+            )
         local_obs_space = local_observation_spaces(obs_space, self.team.size)
         local_act_space = local_action_spaces(act_space, self.team.size)
         super().__init__(
@@ -220,6 +237,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 context=int(cfg.joint.context),
                 ffup=int(cfg.joint.ffup),
                 dropout=float(cfg.joint.dropout),
+                action_conditioning=str(cfg.joint.action_conditioning),
                 **common,
                 name="ctde_joint",
             )
@@ -453,6 +471,19 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             "ctde_action_mask": folded(mask_loss),
             "ctde_alive": folded_alive(alive_loss),
         }
+        if self.ctde_mask_calibration:
+            calibration_losses, calibration_metrics = (
+                self._ctde_mask_calibration_losses(
+                    dyn_entries,
+                    grouped_present,
+                    grouped_alive,
+                    grouped_first,
+                    grouped_mask,
+                    grouped_action,
+                )
+            )
+            losses.update(calibration_losses)
+            metrics.update(calibration_metrics)
         if self.ctde_rollout_steps == 2:
             multistep_losses, multistep_metrics = self._ctde_multistep_losses(
                 prediction,
@@ -473,6 +504,198 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             losses.update(multistep_losses)
             metrics.update(multistep_metrics)
         return losses, metrics
+
+    def _ctde_mask_calibration_losses(
+        self,
+        dyn_entries,
+        present,
+        controllable_alive,
+        is_first,
+        action_mask,
+        actions,
+    ):
+        """Calibrate availability and liveness on closed-loop CTDE states.
+
+        The replay suffix root is already burn-in conditioned and therefore gives
+        one unbiased synchronized root per sampled sequence. The rollout feeds its
+        own predicted local posterior back for up to 15 steps under replay actions.
+        Every model state is stopped before either calibrated head sees it, so the
+        added gradients reach only ``actmask`` and ``ctde_alive``.
+        """
+
+        batch, length, agents = present.shape
+        max_horizon = max(self.ctde_mask_horizons)
+        if length <= max_horizon:
+            raise ValueError(
+                "CTDE mask calibration needs replay length greater than "
+                f"{max_horizon}, got {length}"
+            )
+
+        root_present = present[:, 0]
+        root_alive = controllable_alive[:, 0]
+        initial = (
+            nn.cast(self.dyn.start_at(dyn_entries, 0)),
+            dyn_entries["ctde_joint_carry"],
+            root_present,
+            root_alive,
+            is_first[:, 0],
+            jnp.ones((batch,), bool),
+        )
+
+        def transition(state, inputs):
+            (
+                local_carry,
+                joint_carry,
+                current_present,
+                current_alive,
+                current_reset,
+                within_episode,
+            ) = state
+            grouped_action, next_first = inputs
+            folded_action = {self.ctde_action_key: self.team.fold_batch(grouped_action)}
+            folded_present = self.team.fold_batch(current_present)
+            local_features = {
+                "deter": local_carry["deter"],
+                "stoch": local_carry["stoch"],
+            }
+            grouped_state = self.team.unfold_batch(self.feat2tensor(local_features))
+            local_cache, deter = self.dyn.advance(
+                local_carry,
+                folded_action,
+                training=False,
+                active=folded_present,
+            )
+            joint_carry, prediction = self.ctde_joint.step(
+                joint_carry,
+                grouped_state,
+                grouped_action,
+                current_present,
+                current_alive,
+                current_reset,
+                training=False,
+            )
+            next_carry, _ = self.dyn.complete_from_observation(
+                local_cache,
+                deter,
+                self.team.fold_batch(prediction["embedding"]),
+                sample=False,
+            )
+
+            def preserve_absent(next_value, current_value):
+                mask = folded_present.reshape(
+                    (folded_present.shape[0],) + (1,) * (next_value.ndim - 1)
+                )
+                return jnp.where(mask, next_value, current_value)
+
+            next_carry = jax.tree.map(preserve_absent, next_carry, local_carry)
+            stopped_local = jax.lax.stop_gradient(
+                self.feat2tensor(
+                    {
+                        "deter": next_carry["deter"],
+                        "stoch": next_carry["stoch"],
+                    }
+                )
+            )
+            availability_output = self.actmask(stopped_local, 1)
+            availability_binary = (
+                availability_output.output
+                if hasattr(availability_output, "output")
+                else availability_output
+            )
+            availability_logits = availability_binary.logit
+            availability_logits = self.team.unfold_batch(availability_logits)
+            hidden = jax.lax.stop_gradient(prediction["hidden"])
+            alive_output = self.ctde_alive(hidden, 2)
+            alive_binary = (
+                alive_output.output if hasattr(alive_output, "output") else alive_output
+            )
+            alive_logits = alive_binary.logit
+            alive_probability = jax.nn.sigmoid(alive_logits)
+            next_present = current_present
+            next_alive = jax.lax.stop_gradient(
+                current_alive & next_present & (alive_probability >= 0.5)
+            )
+            within_episode &= ~next_first
+            next_state = (
+                jax.lax.stop_gradient(next_carry),
+                jax.lax.stop_gradient(joint_carry),
+                next_present,
+                next_alive,
+                jnp.zeros_like(current_reset),
+                within_episode,
+            )
+            return next_state, (
+                availability_logits,
+                alive_logits,
+                alive_probability,
+                within_episode,
+            )
+
+        _, rollout = nj.scan(
+            transition,
+            initial,
+            (
+                actions[:, 1 : max_horizon + 1],
+                is_first[:, 1 : max_horizon + 1],
+            ),
+            axis=1,
+        )
+        (
+            availability_logits,
+            alive_logits,
+            alive_probability,
+            within_episode,
+        ) = rollout
+        mask_terms = []
+        alive_terms = []
+        metrics = {}
+
+        def normalized(value, valid):
+            valid = valid.astype(jnp.float32)
+            return value.astype(jnp.float32) * valid / jnp.maximum(valid.mean(), 1e-8)
+
+        for horizon in self.ctde_mask_horizons:
+            index = horizon - 1
+            target_mask = action_mask[:, horizon].astype(jnp.float32)
+            target_alive = controllable_alive[:, horizon].astype(jnp.float32)
+            mask_logit = availability_logits[:, index].astype(jnp.float32)
+            alive_logit = alive_logits[:, index].astype(jnp.float32)
+            mask_loss = (jax.nn.softplus(mask_logit) - target_mask * mask_logit).sum(
+                axis=-1
+            )
+            alive_loss = jax.nn.softplus(alive_logit) - target_alive * alive_logit
+            mask_valid = (
+                root_alive & present[:, horizon] & within_episode[:, index, None]
+            )
+            alive_valid = (
+                root_present & present[:, horizon] & within_episode[:, index, None]
+            )
+            mask_terms.append(normalized(mask_loss, mask_valid))
+            alive_terms.append(normalized(alive_loss, alive_valid))
+
+            mask_probability = jax.nn.sigmoid(mask_logit)
+            mask_brier = jnp.square(mask_probability - target_mask).mean(axis=-1)
+            alive_brier = jnp.square(alive_probability[:, index] - target_alive)
+            metrics[f"ctde/mask_calibration_h{horizon}_brier"] = normalized(
+                mask_brier, mask_valid
+            ).mean()
+            metrics[f"ctde/alive_calibration_h{horizon}_brier"] = normalized(
+                alive_brier, alive_valid
+            ).mean()
+
+        def source_grid(terms):
+            value = jnp.stack(terms).mean(axis=0)
+            grid = jnp.zeros((batch, length, agents), jnp.float32)
+            grid = grid.at[:, 0].set(value * length)
+            return self.team.fold_sequence(grid)
+
+        metrics["ctde/mask_calibration_horizons"] = jnp.asarray(
+            len(self.ctde_mask_horizons), jnp.float32
+        )
+        return {
+            "ctde_mask_calibration": source_grid(mask_terms),
+            "ctde_alive_calibration": source_grid(alive_terms),
+        }, metrics
 
     def _ctde_multistep_losses(
         self,
@@ -953,6 +1176,10 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
     def imagine_with_aux(self, starts, policy, horizon, training, context=None):
         if not self.ctde_enabled:
             return super().imagine_with_aux(starts, policy, horizon, training, context)
+        if self.ctde_mask_calibration:
+            return self._imagine_with_calibrated_mask(
+                starts, horizon, training, context
+            )
         del policy
         grouped_carry = nn.cast(self.team.unfold_tree_batch(starts))
         present = context["present"].astype(bool)
@@ -1095,11 +1322,242 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         }
         return local_carry, features, actions, auxiliary
 
+    def _ctde_probabilistic_policy(
+        self,
+        tensor,
+        bdims,
+        alive,
+        *,
+        availability_logits=None,
+        exact_mask=None,
+        exact_rows=None,
+    ):
+        """Apply local probabilistic availability, retaining exact root support."""
+
+        base_distribution = self.pol(tensor, bdims=bdims)
+        if availability_logits is None:
+            availability_output = self.actmask(tensor, bdims=bdims)
+            availability_binary = (
+                availability_output.output
+                if hasattr(availability_output, "output")
+                else availability_output
+            )
+            availability_logits = availability_binary.logit
+        availability_logits = jax.lax.stop_gradient(availability_logits)
+        distribution = apply_predicted_action_mask(
+            base_distribution,
+            availability_logits,
+            self.ctde_action_key,
+        )
+        noop = jnp.zeros((*alive.shape, self.ctde_action_count), bool)
+        noop = noop.at[..., 0].set(True)
+        alive_support = jnp.where(alive[..., None], jnp.ones_like(noop), noop)
+        distribution = apply_action_mask(
+            distribution,
+            alive_support,
+            self.ctde_action_key,
+        )
+        if exact_mask is None:
+            return distribution, availability_logits
+        if exact_rows is None or exact_rows.shape != alive.shape:
+            raise ValueError("exact CTDE root rows must match folded liveness")
+        exact = apply_action_mask(
+            base_distribution,
+            exact_mask,
+            self.ctde_action_key,
+        )
+        soft_action = distribution[self.ctde_action_key]
+        exact_action = exact[self.ctde_action_key]
+        logits = jnp.where(
+            exact_rows[..., None], exact_action.logits, soft_action.logits
+        )
+        selected = jaxouts.Categorical(logits)
+        for name in ("minent", "maxent"):
+            if hasattr(soft_action, name):
+                setattr(selected, name, getattr(soft_action, name))
+        return (
+            dict(distribution, **{self.ctde_action_key: selected}),
+            availability_logits,
+        )
+
+    def _imagine_with_calibrated_mask(self, starts, horizon, training, context):
+        """CTDE imagination with exact roots and local probabilistic availability."""
+
+        grouped_carry = nn.cast(self.team.unfold_tree_batch(starts))
+        present = context["present"].astype(bool)
+        alive = context["controllable_alive"].astype(bool)
+        action_mask = context["action_mask"].astype(bool)
+        teams, agents = present.shape
+        central_carry = context["joint_carry"]
+        reset = context["reset"].astype(bool)
+
+        def transition(state, _):
+            (
+                local_carry,
+                joint_carry,
+                current_present,
+                current_alive,
+                current_mask,
+                current_reset,
+                exact_root,
+            ) = state
+            local_features = {
+                "deter": local_carry["deter"],
+                "stoch": local_carry["stoch"],
+            }
+            folded_features = self.team.fold_tree_batch(local_features)
+            folded_mask = self.team.fold_batch(current_mask)
+            folded_alive = self.team.fold_batch(current_alive)
+            exact_rows = self.team.fold_batch(
+                jnp.broadcast_to(exact_root[:, None], current_alive.shape)
+            )
+            distribution, availability_logits = self._ctde_probabilistic_policy(
+                self.feat2tensor(folded_features),
+                1,
+                folded_alive,
+                exact_mask=folded_mask,
+                exact_rows=exact_rows,
+            )
+            folded_action = sample(distribution)
+            grouped_action = self.team.unfold_batch(folded_action[self.ctde_action_key])
+
+            folded_carry = self.team.fold_tree_batch(local_carry)
+            folded_present = self.team.fold_batch(current_present)
+            local_cache, deter = self.dyn.advance(
+                folded_carry,
+                folded_action,
+                training,
+                active=folded_present,
+            )
+            grouped_state = self.team.unfold_batch(self.feat2tensor(folded_features))
+            joint_carry, prediction = self.ctde_joint.step(
+                joint_carry,
+                grouped_state,
+                grouped_action,
+                current_present,
+                current_alive,
+                current_reset,
+                training=False,
+            )
+            predicted_embedding = self.team.fold_batch(prediction["embedding"])
+            folded_next, folded_next_features = self.dyn.complete_from_observation(
+                local_cache,
+                deter,
+                predicted_embedding,
+                sample=True,
+            )
+            next_carry = self.team.unfold_tree_batch(folded_next)
+            next_features = self.team.unfold_tree_batch(folded_next_features)
+
+            hidden = prediction["hidden"]
+            reward = self.ctde_rew(hidden, 2).pred()
+            continuation = self.ctde_con(hidden, 2).prob(1)
+            alive_probability = self.ctde_alive(hidden, 2).prob(1)
+            next_present = current_present
+            next_alive = jax.lax.stop_gradient(
+                current_alive & next_present & (alive_probability >= 0.5)
+            )
+            noop = jnp.zeros_like(current_mask).at[..., 0].set(True)
+            next_mask = jnp.ones_like(current_mask)
+            next_mask = jnp.where(next_alive[..., None], next_mask, noop)
+
+            next_state = (
+                next_carry,
+                joint_carry,
+                next_present,
+                next_alive,
+                next_mask,
+                jnp.zeros_like(current_reset),
+                jnp.zeros_like(exact_root),
+            )
+            outputs = (
+                next_features,
+                self.team.unfold_tree_batch(folded_action),
+                reward,
+                continuation,
+                next_mask,
+                next_present,
+                next_alive,
+                self.team.unfold_batch(availability_logits),
+            )
+            return next_state, outputs
+
+        state = (
+            grouped_carry,
+            central_carry,
+            present,
+            alive,
+            action_mask,
+            reset,
+            jnp.ones((teams,), bool),
+        )
+        state, outputs = nj.scan(transition, state, (), horizon, axis=1)
+        (
+            next_features,
+            actions,
+            rewards,
+            continuations,
+            masks,
+            present_sequence,
+            alive_sequence,
+            availability_sequence,
+        ) = outputs
+        local_carry = self.team.fold_tree_batch(state[0])
+        features = jax.tree.map(self.team.fold_sequence, next_features)
+        actions = jax.tree.map(self.team.fold_sequence, actions)
+        final_features = {
+            "deter": state[0]["deter"],
+            "stoch": state[0]["stoch"],
+        }
+        final_availability_output = self.actmask(
+            self.feat2tensor(self.team.fold_tree_batch(final_features)), 1
+        )
+        final_availability_binary = (
+            final_availability_output.output
+            if hasattr(final_availability_output, "output")
+            else final_availability_output
+        )
+        final_availability = final_availability_binary.logit
+        final_availability = self.team.unfold_batch(
+            jax.lax.stop_gradient(final_availability)
+        )
+        discount = 1.0 - 1.0 / float(self.config.horizon)
+        root_reward = jnp.zeros((teams, 1, agents), jnp.float32)
+        root_continuation = jnp.full(
+            (teams, 1, agents),
+            discount if self.config.contdisc else 1.0,
+            jnp.float32,
+        )
+        auxiliary = {
+            "reward": jnp.concatenate([root_reward, rewards], axis=1),
+            "continuation": jnp.concatenate([root_continuation, continuations], axis=1),
+            "action_mask": jnp.concatenate([action_mask[:, None], masks], axis=1),
+            "availability_logits": jnp.concatenate(
+                [availability_sequence, final_availability[:, None]], axis=1
+            ),
+            "present": jnp.concatenate([present[:, None], present_sequence], axis=1),
+            "controllable_alive": jnp.concatenate(
+                [alive[:, None], alive_sequence], axis=1
+            ),
+        }
+        return local_carry, features, actions, auxiliary
+
     def imagination_last_action(self, policy_features, auxiliary, policyfn):
         if not self.ctde_enabled:
             return super().imagination_last_action(policy_features, auxiliary, policyfn)
         del policyfn
         last_features = jax.tree.map(lambda value: value[:, -1], policy_features)
+        if self.ctde_mask_calibration:
+            last_alive = self.team.fold_batch(auxiliary["controllable_alive"][:, -1])
+            distribution, _ = self._ctde_probabilistic_policy(
+                self.feat2tensor(last_features),
+                1,
+                last_alive,
+                availability_logits=self.team.fold_batch(
+                    auxiliary["availability_logits"][:, -1]
+                ),
+            )
+            return sample(distribution)
         last_mask = self.team.fold_batch(auxiliary["action_mask"][:, -1])
         distribution = self.policy_distribution(
             self.feat2tensor(last_features),
@@ -1112,6 +1570,22 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         if not self.ctde_enabled:
             return super().imagination_policy_distribution(policy_inputs, auxiliary)
         action_mask = self.team.fold_sequence(auxiliary["action_mask"])
+        if self.ctde_mask_calibration:
+            grouped_alive = auxiliary["controllable_alive"]
+            folded_alive = self.team.fold_sequence(grouped_alive)
+            root_rows = jnp.zeros_like(grouped_alive)
+            root_rows = root_rows.at[:, 0].set(True)
+            distribution, _ = self._ctde_probabilistic_policy(
+                policy_inputs,
+                2,
+                folded_alive,
+                availability_logits=self.team.fold_sequence(
+                    auxiliary["availability_logits"]
+                ),
+                exact_mask=action_mask,
+                exact_rows=self.team.fold_sequence(root_rows),
+            )
+            return distribution
         return self.policy_distribution(policy_inputs, 2, action_mask=action_mask)
 
     def imagination_reward_continuation(self, local_inputs, auxiliary):

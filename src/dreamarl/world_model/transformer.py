@@ -45,10 +45,15 @@ class CausalTransformer(nj.Module):
     act: str = "silu"
     norm: str = "rms"
     winit: str = "trunc_normal_in"
+    condition_mode: str = "add"
 
     def __init__(self, pair_dim, **kw):
         self.pair_dim = pair_dim
         self.kw = kw
+        if self.condition_mode not in {"add", "adaln"}:
+            raise ValueError(
+                "causal Transformer condition_mode must be 'add' or 'adaln'"
+            )
 
     def initial(self, batch_size):
         head_dim = self.units // self.heads
@@ -116,12 +121,25 @@ class CausalTransformer(nj.Module):
         value_snapshots = []
         for index in range(self.layers):
             with nj.scope(f"layer{index}"):
-                if condition is not None:
+                modulation = None
+                if condition is not None and self.condition_mode == "add":
                     x = x + self.sub(
                         "condition", nn.Linear, self.units, winit=self.winit
                     )(condition)
+                elif condition is not None:
+                    modulation = self.sub(
+                        "condition_adaln",
+                        nn.Linear,
+                        6 * self.units,
+                        winit=self.winit,
+                        outscale=0.0,
+                    )(nn.act(self.act)(condition))
+                    modulation = jnp.split(modulation, 6, axis=-1)
                 residual = x
                 normed = self.sub("attention_norm", nn.Norm, self.norm)(x)
+                if modulation is not None:
+                    shift, scale, attention_gate = modulation[:3]
+                    normed = normed * (1 + scale) + shift
                 qkv = self.sub("qkv", nn.Linear, 3 * self.units, winit=self.winit)(
                     normed
                 )
@@ -143,15 +161,22 @@ class CausalTransformer(nj.Module):
                 attended = self.sub(
                     "attention_out", nn.Linear, self.units, winit=self.winit
                 )(attended)
+                if modulation is not None:
+                    attended = attention_gate * attended
                 x = residual + attended
 
                 residual = x
                 x = self.sub("ffn_norm", nn.Norm, self.norm)(x)
+                if modulation is not None:
+                    shift, scale, ffn_gate = modulation[3:]
+                    x = x * (1 + scale) + shift
                 x = self.sub(
                     "ffn_in", nn.Linear, self.units * self.ffup, winit=self.winit
                 )(x)
                 x = nn.act(self.act)(x)
                 x = self.sub("ffn_out", nn.Linear, self.units, winit=self.winit)(x)
+                if modulation is not None:
+                    x = ffn_gate * x
                 x = residual + x
 
                 key_window = key_bank[:, snapshot_indices]
@@ -209,12 +234,25 @@ class CausalTransformer(nj.Module):
         next_values = []
         for index in range(self.layers):
             with nj.scope(f"layer{index}"):
-                if condition is not None:
+                modulation = None
+                if condition is not None and self.condition_mode == "add":
                     x = x + self.sub(
                         "condition", nn.Linear, self.units, winit=self.winit
                     )(condition)
+                elif condition is not None:
+                    modulation = self.sub(
+                        "condition_adaln",
+                        nn.Linear,
+                        6 * self.units,
+                        winit=self.winit,
+                        outscale=0.0,
+                    )(nn.act(self.act)(condition))
+                    modulation = jnp.split(modulation, 6, axis=-1)
                 residual = x
                 normed = self.sub("attention_norm", nn.Norm, self.norm)(x)
+                if modulation is not None:
+                    shift, scale, attention_gate = modulation[:3]
+                    normed = normed * (1 + scale) + shift
                 qkv = self.sub("qkv", nn.Linear, 3 * self.units, winit=self.winit)(
                     normed
                 )
@@ -241,15 +279,22 @@ class CausalTransformer(nj.Module):
                 attended = self.sub(
                     "attention_out", nn.Linear, self.units, winit=self.winit
                 )(attended)
+                if modulation is not None:
+                    attended = attention_gate * attended
                 x = residual + attended
 
                 residual = x
                 x = self.sub("ffn_norm", nn.Norm, self.norm)(x)
+                if modulation is not None:
+                    shift, scale, ffn_gate = modulation[3:]
+                    x = x * (1 + scale) + shift
                 x = self.sub(
                     "ffn_in", nn.Linear, self.units * self.ffup, winit=self.winit
                 )(x)
                 x = nn.act(self.act)(x)
                 x = self.sub("ffn_out", nn.Linear, self.units, winit=self.winit)(x)
+                if modulation is not None:
+                    x = ffn_gate * x
                 x = residual + x
                 next_keys.append(keys)
                 next_values.append(values)

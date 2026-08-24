@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 import ninjax as nj
 import numpy as np
+import pytest
 
 from dreamarl.agent import Agent as LocalAgent
 from dreamarl.main import _load_configs, _merge_dicts
@@ -434,7 +435,10 @@ def test_multi_agent_core_completes_shared_local_update() -> None:
     assert "loss/policy" in metrics
 
 
-def test_ctde_joint_replay_and_recurrent_history_match() -> None:
+@pytest.mark.parametrize("action_conditioning", ("add", "adaln"))
+def test_ctde_joint_replay_and_recurrent_history_match(
+    action_conditioning: str,
+) -> None:
     model = JointObservationJEPA(
         action_count=4,
         action_low=0,
@@ -446,6 +450,7 @@ def test_ctde_joint_replay_and_recurrent_history_match() -> None:
         context=4,
         ffup=2,
         dropout=0.0,
+        action_conditioning=action_conditioning,
         name="ctde_joint",
     )
     states = jax.random.normal(jax.random.key(691), (2, 7, 3, 5))

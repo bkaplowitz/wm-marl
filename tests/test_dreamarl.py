@@ -106,6 +106,8 @@ def test_default_config_is_clean_single_agent_dmc() -> None:
         "defaults",
         "local",
         "ctde",
+        "ctde_mask",
+        "ctde_adaln",
         "ctde_two_step",
         "dmc_vision",
         "smac_vector",

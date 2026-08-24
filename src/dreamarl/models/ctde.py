@@ -143,6 +143,7 @@ class JointObservationJEPA(nj.Module):
     act: str = "silu"
     norm: str = "rms"
     winit: str = "trunc_normal_in"
+    action_conditioning: str = "add"
 
     def __init__(self, action_count, action_low, target_dim, **kwargs):
         self.action_count = int(action_count)
@@ -154,6 +155,8 @@ class JointObservationJEPA(nj.Module):
             raise ValueError(
                 f"CTDE width {self.width} must be divisible by {self.heads} heads"
             )
+        if self.action_conditioning not in {"add", "adaln"}:
+            raise ValueError("CTDE action_conditioning must be either 'add' or 'adaln'")
         del kwargs
 
     def initial(self, teams, agents, previous_position=None):
@@ -188,8 +191,13 @@ class JointObservationJEPA(nj.Module):
         ):
             raise ValueError("CTDE replay masks do not match state/action axes")
         agents = states.shape[2]
-        mixed = self._mix(states, actions, present, alive, training)
+        mixed, action_condition = self._mix(states, actions, present, alive, training)
         folded = _fold_agent_sequence(mixed)
+        condition = (
+            folded
+            if self.action_conditioning == "add"
+            else _fold_agent_sequence(action_condition)
+        )
         folded_reset = _fold_agent_sequence(
             jnp.broadcast_to(reset[:, :, None], reset.shape + (agents,))
         )
@@ -197,7 +205,7 @@ class JointObservationJEPA(nj.Module):
             cache,
             folded,
             folded_reset,
-            condition=folded,
+            condition=condition,
         )
         hidden = _unfold_agent_sequence(hidden, agents)
         hidden = hidden * present[..., None].astype(hidden.dtype)
@@ -218,14 +226,19 @@ class JointObservationJEPA(nj.Module):
         ):
             raise ValueError("CTDE step masks do not match state/action axes")
         teams, agents = actions.shape
-        mixed = self._mix(states, actions, present, alive, training)
+        mixed, action_condition = self._mix(states, actions, present, alive, training)
         folded = mixed.reshape((teams * agents, self.width))
+        condition = (
+            folded
+            if self.action_conditioning == "add"
+            else action_condition.reshape((teams * agents, self.width))
+        )
         folded_reset = jnp.broadcast_to(reset[:, None], (teams, agents)).reshape(-1)
         cache, hidden = self._temporal().step(
             cache,
             folded,
             folded_reset,
-            condition=folded,
+            condition=condition,
         )
         hidden = hidden.reshape((teams, agents, self.width))
         hidden = hidden * present[..., None].astype(hidden.dtype)
@@ -256,7 +269,7 @@ class JointObservationJEPA(nj.Module):
             states + action + alive_token
         )
         tokens = nn.dropout(tokens, self.dropout, training)
-        return self.sub(
+        tokens = self.sub(
             "agent_interaction",
             AgentInteraction,
             width=self.width,
@@ -268,6 +281,7 @@ class JointObservationJEPA(nj.Module):
             norm=self.norm,
             winit=self.winit,
         )(tokens, present, training)
+        return tokens, action
 
     def _outputs(self, hidden):
         prediction = self.sub(
@@ -292,6 +306,7 @@ class JointObservationJEPA(nj.Module):
             act=self.act,
             norm=self.norm,
             winit=self.winit,
+            condition_mode=self.action_conditioning,
         )
 
 

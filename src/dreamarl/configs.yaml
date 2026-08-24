@@ -141,7 +141,8 @@ ctde:
       ctde:
         rollout_steps: 1
         multistep: {anchors: 0}
-        joint: {width: 256, heads: 4, agent_layers: 2, temporal_layers: 4, context: 16, ffup: 4, dropout: 0.1, act: silu, norm: rms, winit: trunc_normal_in}
+        mask_calibration: {enabled: False, horizons: [1, 4, 8, 15]}
+        joint: {width: 256, heads: 4, agent_layers: 2, temporal_layers: 4, context: 16, ffup: 4, dropout: 0.1, action_conditioning: add, act: silu, norm: rms, winit: trunc_normal_in}
         head: {layers: 2, units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
         critic: {width: 256, heads: 4, layers: 2, ffup: 4, dropout: 0.0, value_layers: 2, value_units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
         opt: {lr: 4e-5, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
@@ -152,6 +153,8 @@ ctde:
       ctde_continuation: 1.0
       ctde_action_mask: 1.0
       ctde_alive: 1.0
+      ctde_mask_calibration: 1.0
+      ctde_alive_calibration: 1.0
       ctde_multistep_embedding: 2.0
       ctde_multistep_interface: 1.0
       ctde_multistep_reward: 1.0
@@ -165,6 +168,19 @@ ctde_two_step:
       ctde:
         rollout_steps: 2
         multistep: {anchors: 128}
+
+ctde_mask:
+  agent:
+    marl:
+      ctde:
+        mask_calibration: {enabled: True, horizons: [1, 4, 8, 15]}
+
+ctde_adaln:
+  agent:
+    marl:
+      ctde:
+        joint:
+          action_conditioning: adaln
 
 dmc_vision:
   task: dmc_reacher_easy
