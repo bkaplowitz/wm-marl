@@ -82,8 +82,10 @@ class DreaMARLRunSpec:
             raise ValueError("curve_eval_interval must be non-negative")
         if self.train_ratio <= 0:
             raise ValueError("train_ratio must be positive")
-        if self.replay_sampling not in {"uniform", "recent"}:
+        if self.replay_sampling not in {"uniform", "recent", "elite_recent"}:
             raise ValueError(f"unsupported replay sampling: {self.replay_sampling!r}")
+        if self.replay_sampling == "elite_recent" and self.algorithm != "ctde-one-step":
+            raise ValueError("elite_recent replay is the CTDE v1.2 profile")
         if self.platform not in {"cpu", "cuda", "tpu"}:
             raise ValueError(f"unsupported platform: {self.platform!r}")
 
@@ -141,7 +143,7 @@ class DreaMARLRunSpec:
     @property
     def ctde_version(self) -> str | None:
         if self.algorithm == "ctde-one-step":
-            return "1.1"
+            return "1.2" if self.replay_sampling == "elite_recent" else "1.1"
         if self.algorithm == "ctde-two-step":
             return "2"
         return None
@@ -187,7 +189,7 @@ class DreaMARLRunSpec:
                 "attack_target_|eval/"
             ),
         ]
-        if self.replay_sampling == "recent":
+        if self.replay_sampling in {"recent", "elite_recent"}:
             command.extend(["--replay.size", "50000", "--replay.online", "False"])
         if self.save_every_seconds is not None:
             command.extend(["--run.save_every", str(self.save_every_seconds)])
@@ -212,7 +214,7 @@ class DreaMARLRunSpec:
     def ctde_manifest(self) -> dict[str, object] | None:
         if self.algorithm == "local":
             return None
-        return {
+        manifest = {
             "version": self.ctde_version,
             "rollout_steps": self.ctde_rollout_steps,
             "two_step_anchors": 128 if self.algorithm == "ctde-two-step" else 0,
@@ -233,6 +235,17 @@ class DreaMARLRunSpec:
             "optimizer_groups": ["local_world", "joint_world", "actor", "critic"],
             "learning_rate": 4e-5,
         }
+        if self.replay_sampling == "elite_recent":
+            manifest["stability_replay"] = {
+                "recent_sequences_per_batch": 13,
+                "elite_sequences_per_batch": 3,
+                "elite_fraction": 0.1875,
+                "elite_capacity": 12_500,
+                "selection": "complete episodes above monotonic rolling p75 team return",
+                "return_window_episodes": 256,
+                "bootstrap_episodes": 32,
+            }
+        return manifest
 
     def to_dict(self) -> dict[str, object]:
         """Return the single authoritative launch manifest payload."""
@@ -274,7 +287,14 @@ class DreaMARLRunSpec:
             "sigreg_aggregation": "per_agent",
             "replay_context": 128,
             "replay_sampling": self.replay_sampling,
-            "recency_decay": 0.9998 if self.replay_sampling == "recent" else None,
+            "recency_decay": (
+                0.9998 if self.replay_sampling in {"recent", "elite_recent"} else None
+            ),
+            "elite_replay": (
+                self.ctde_manifest["stability_replay"]
+                if self.replay_sampling == "elite_recent"
+                else None
+            ),
             "actor_objective": "score_function_reinforce",
             "optimizer_topology": self.optimizer_topology,
             "train_ratio": self.train_ratio,

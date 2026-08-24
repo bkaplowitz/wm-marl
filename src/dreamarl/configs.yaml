@@ -33,6 +33,11 @@ defaults:
     chunksize: 1024
     sampling: uniform
     recency_decay: 0.9998
+    elite_fraction: 0.1875
+    elite_capacity: 12500
+    elite_quantile: 0.75
+    elite_min_episodes: 32
+    elite_return_window: 256
 
   run:
     steps: 5e4

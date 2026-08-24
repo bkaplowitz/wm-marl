@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from dreamarl.config import DreaMARLRunSpec, PUBLIC_ALGORITHMS
 from dreamarl.contracts import verify_run_contract
 from dreamarl.launcher import run_training
 from dreamarl.main import _load_configs, _resolve_config_profiles, _validate_script
-from dreamarl.replay import ExponentialRecency, RecentReplay
+from dreamarl.replay import EliteRecentReplay, ExponentialRecency, RecentReplay
 from dreamarl.runtime import algorithm_root
 from dreamarl.scripts.eval_dreamarl import main as eval_main
 
@@ -194,6 +195,92 @@ def test_training_cadence_is_explicit_and_recorded(tmp_path: Path) -> None:
 def test_recent_replay_keeps_the_exponential_selector_when_empty() -> None:
     replay = RecentReplay(length=4, capacity=32, recency_decay=0.9998, seed=7)
     assert isinstance(replay.sampler, ExponentialRecency)
+
+
+def test_elite_recent_replay_uses_exact_three_of_sixteen_mixture() -> None:
+    class Source:
+        def __init__(self, value: int):
+            self.value = value
+
+        def __len__(self) -> int:
+            return 1
+
+        def sample(self, batch: int, mode: str) -> dict[str, object]:
+            assert mode == "train"
+            return {"source": np.full((batch, 2), self.value, np.int32)}
+
+    replay = EliteRecentReplay(length=2, capacity=32, elite_capacity=8, seed=7)
+    replay.recent = Source(0)
+    replay.elite = Source(1)
+    batch = replay.sample(16, "train")
+
+    assert batch["source"].shape == (16, 2)
+    assert int(batch["source"][:, 0].sum()) == 3
+
+
+def test_elite_return_threshold_does_not_fall_after_poor_episodes() -> None:
+    replay = EliteRecentReplay(
+        length=2,
+        capacity=32,
+        elite_capacity=8,
+        elite_min_episodes=2,
+        elite_return_window=4,
+        seed=7,
+    )
+
+    def add_episode(score: float) -> None:
+        for index, reward in enumerate((0.0, score)):
+            replay.add(
+                {
+                    "is_first": np.asarray(index == 0),
+                    "is_last": np.asarray(index == 1),
+                    "reward": np.asarray([reward, reward], np.float32),
+                }
+            )
+
+    add_episode(10.0)
+    add_episode(20.0)
+    threshold = replay.threshold
+    add_episode(5.0)
+
+    assert replay.completed_episodes == 3
+    assert replay.elite_episodes == 2
+    assert replay.threshold >= threshold
+
+
+def test_ctde_v1_2_manifest_records_elite_retention(tmp_path: Path) -> None:
+    spec = _spec(
+        tmp_path,
+        task="smac_3s_vs_4z",
+        num_agents=3,
+        algorithm="ctde-one-step",
+        replay_sampling="elite_recent",
+    )
+
+    assert spec.ctde_version == "1.2"
+    assert spec.ctde_manifest["stability_replay"] == {
+        "recent_sequences_per_batch": 13,
+        "elite_sequences_per_batch": 3,
+        "elite_fraction": 0.1875,
+        "elite_capacity": 12_500,
+        "selection": "complete episodes above monotonic rolling p75 team return",
+        "return_window_episodes": 256,
+        "bootstrap_episodes": 32,
+    }
+    assert spec.command[spec.command.index("--replay.size") + 1] == "50000"
+    assert spec.to_dict()["elite_replay"] == spec.ctde_manifest["stability_replay"]
+
+
+def test_elite_recent_replay_is_only_available_for_ctde_v1_2(tmp_path: Path) -> None:
+    for algorithm in ("local", "ctde-two-step"):
+        with pytest.raises(ValueError, match="CTDE v1.2"):
+            _spec(
+                tmp_path,
+                task="smac_3m",
+                num_agents=3,
+                algorithm=algorithm,
+                replay_sampling="elite_recent",
+            )
 
 
 def test_generic_reporting_modes_are_rejected_for_marl() -> None:

@@ -22,7 +22,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--total-env-steps", type=int, default=50_000)
     parser.add_argument(
-        "--replay-sampling", choices=("uniform", "recent"), default="uniform"
+        "--replay-sampling",
+        choices=("uniform", "recent", "elite_recent"),
+        default="uniform",
     )
     parser.add_argument("--train-ratio", type=float, default=256.0)
     parser.add_argument("--experiment-dir", type=Path)

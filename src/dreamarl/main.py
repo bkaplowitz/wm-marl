@@ -301,11 +301,22 @@ def make_replay(config, folder, mode="train"):
     )
 
     sampling = str(config.replay.sampling)
-    if mode == "train" and sampling == "recent":
-        from .replay import RecentReplay
+    if mode == "train" and sampling in {"recent", "elite_recent"}:
+        from .replay import EliteRecentReplay, RecentReplay
 
         if int(capacity) != 50_000:
-            raise ValueError("recent replay requires replay.size=50000")
+            raise ValueError(f"{sampling} replay requires replay.size=50000")
+        if sampling == "elite_recent":
+            return EliteRecentReplay(
+                **kwargs,
+                recency_decay=float(config.replay.recency_decay),
+                elite_fraction=float(config.replay.elite_fraction),
+                elite_capacity=int(config.replay.elite_capacity),
+                elite_quantile=float(config.replay.elite_quantile),
+                elite_min_episodes=int(config.replay.elite_min_episodes),
+                elite_return_window=int(config.replay.elite_return_window),
+                seed=int(config.seed),
+            )
         return RecentReplay(
             **kwargs,
             recency_decay=float(config.replay.recency_decay),
