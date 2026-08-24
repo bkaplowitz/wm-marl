@@ -6,6 +6,8 @@ import jax.numpy as jnp
 import ninjax as nj
 import numpy as np
 
+from ..models.heads import apply_action_mask
+from .churn import categorical_forward_kl, relative_churn_scale
 from .common import concat, f32, prefix, sample, sg
 from .objectives import imag_loss, repl_loss
 from .representation import (
@@ -63,13 +65,36 @@ def value_fit_metrics(prediction, target, valid):
 
 
 class LearnerMixin:
-    def train(self, carry, data):
+    def train(self, carry, data, reference_data=None):
+        reference_state = None
+        reference_action_mask = None
+        if self.actor_churn_enabled:
+            if reference_data is None:
+                raise ValueError("policy churn requires an independent replay batch")
+            context = int(self.config.replay_context)
+            if context < 1:
+                raise ValueError("policy churn requires replay_context for burn-in")
+            reference_action_mask = sg(reference_data["action_mask"][:, context - 1])
+            reference_carry = self._local_initial(reference_data["is_first"].shape[0])
+            reference_carry, _, _, _ = self._apply_replay_context(
+                reference_carry,
+                reference_data,
+            )
+            reference_dyn = reference_carry[1]
+            reference_state = sg(
+                {
+                    "deter": reference_dyn["deter"],
+                    "stoch": reference_dyn["stoch"],
+                }
+            )
         carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
         metrics, (carry, entries, outs, mets) = self.opt(
             self.loss,
             carry,
             obs,
             prevact,
+            reference_state=reference_state,
+            reference_action_mask=reference_action_mask,
             training=True,
             has_aux=True,
         )
@@ -91,7 +116,15 @@ class LearnerMixin:
         carry = (*carry, {key: data[key][:, -1] for key in self.act_space})
         return carry, outs, metrics
 
-    def loss(self, carry, obs, prevact, training):
+    def loss(
+        self,
+        carry,
+        obs,
+        prevact,
+        training,
+        reference_state=None,
+        reference_action_mask=None,
+    ):
         model_carry, entries, tokens, repfeat, losses, metrics, target_tokens = (
             self._world_model_terms(carry, obs, prevact, training)
         )
@@ -272,6 +305,49 @@ class LearnerMixin:
         losses.update(extra_losses)
         metrics.update(extra_metrics)
 
+        churn_penalty = jnp.asarray(0.0, jnp.float32)
+        if reference_state is not None:
+            if not self.actor_churn_enabled or reference_action_mask is None:
+                raise ValueError("incomplete policy-churn reference inputs")
+            reference_tensor = sg(self.feat2tensor(reference_state))
+            current_policy = self.policy_distribution(
+                reference_tensor,
+                bdims=1,
+                action_mask=reference_action_mask,
+            )
+            old_policy = self.churn_teacher(reference_tensor, bdims=1)
+            old_policy = apply_action_mask(
+                old_policy,
+                reference_action_mask,
+                self.action_mask_key,
+            )
+            churn_kl = categorical_forward_kl(
+                old_policy,
+                current_policy,
+                self.action_mask_key,
+            ).mean()
+            policy_magnitude = masked_mean(jnp.abs(losses["policy"]), valid)
+            churn_config = self.config.actor_churn
+            churn_scale = relative_churn_scale(
+                policy_magnitude,
+                churn_kl,
+                beta=float(churn_config.beta),
+                maximum=float(churn_config.max_scale),
+                epsilon=float(churn_config.epsilon),
+            )
+            churn_penalty = churn_scale * churn_kl
+            metrics.update(
+                {
+                    "policy_churn/kl": churn_kl,
+                    "policy_churn/scale": churn_scale,
+                    "policy_churn/penalty": churn_penalty,
+                    "policy_churn/policy_magnitude": policy_magnitude,
+                    "policy_churn/reference_entropy": old_policy[self.action_mask_key]
+                    .entropy()
+                    .mean(),
+                }
+            )
+
         metrics.update(
             {
                 f"loss/{key}": masked_mean(
@@ -291,6 +367,7 @@ class LearnerMixin:
             * self.scales[key]
             for key, value in losses.items()
         )
+        loss += churn_penalty
 
         carry = (enc_carry, dyn_carry, dec_carry)
         entries = (enc_entries, dyn_entries, dec_entries)
@@ -301,6 +378,8 @@ class LearnerMixin:
 
     def _update_slow_models(self):
         self.slowval.update()
+        if self.churn_teacher is not None:
+            self.churn_teacher.update()
 
     def additional_world_model_losses(
         self,

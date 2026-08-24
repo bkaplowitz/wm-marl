@@ -540,6 +540,52 @@ def test_ctde_trains_joint_imagination_and_central_critic() -> None:
     assert not any("multistep" in key for key in metrics)
 
 
+def test_ctde_policy_churn_uses_an_independent_burned_in_reference() -> None:
+    observations, actions = _team_spaces(3)
+    config = _agent_config(3, "ctde").update(
+        {
+            "replay_context": 16,
+            "opt.warmup": 0,
+            "marl.ctde.opt.warmup": 0,
+            "actor_churn.enabled": True,
+            "actor_churn.beta": 0.02,
+            "actor_churn.max_scale": 1000.0,
+            "actor_churn.epsilon": 1e-6,
+        }
+    )
+    agent = object.__new__(MARLCore)
+    MARLCore.__init__(agent, observations, actions, config)
+    spaces = {**observations, **actions, **agent.ext_space}
+    length = 16 + 5
+    data = {
+        key: jnp.zeros((1, length, *space.shape), space.dtype)
+        for key, space in spaces.items()
+    }
+    for key in data:
+        if key.endswith(("agent_present", "agent_alive")):
+            data[key] = jnp.ones_like(data[key], bool)
+        elif key.endswith(("controllable_alive", "action_mask", "dyn/active")):
+            data[key] = jnp.ones_like(data[key], bool)
+        elif key.endswith(("is_first", "dyn/reset")):
+            data[key] = data[key].at[:, 0].set(True)
+    carry = agent.init_train(1)
+
+    def step(current_carry):
+        return agent.train(current_carry, data)
+
+    state = nj.init(lambda: step(carry))({}, seed=711)
+    state, (carry, _, first_metrics) = nj.pure(lambda: step(carry))(
+        state,
+        seed=712,
+    )
+    _, (_, _, second_metrics) = nj.pure(lambda: step(carry))(state, seed=713)
+
+    assert agent.churn_pol not in agent.modules
+    assert float(first_metrics["policy_churn/kl"]) >= 0.0
+    assert float(second_metrics["policy_churn/kl"]) >= 0.0
+    assert np.isfinite(float(second_metrics["policy_churn/penalty"]))
+
+
 def test_ctde_two_step_self_fed_objective_is_finite() -> None:
     observations, actions = _team_spaces(3)
     config = _agent_config(3, "ctde").update(

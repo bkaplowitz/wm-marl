@@ -86,6 +86,24 @@ class Agent(
             for key, space in self.act_space.items()
         }
         self.pol = MLPHead(self.act_space, outputs, **config.policy, name="pol")
+        churn = getattr(config, "actor_churn", None)
+        self.actor_churn_enabled = bool(getattr(churn, "enabled", False))
+        if self.actor_churn_enabled:
+            self.churn_pol = MLPHead(
+                self.act_space,
+                outputs,
+                **config.policy,
+                name="churn_pol",
+            )
+            self.churn_teacher = embodied.jax.SlowModel(
+                self.churn_pol,
+                source=self.pol,
+                rate=1.0,
+                every=1,
+            )
+        else:
+            self.churn_pol = None
+            self.churn_teacher = None
         self.action_mask_key = self._action_mask_key()
         if self.action_mask_key is not None:
             mask_space = self.obs_space["action_mask"]

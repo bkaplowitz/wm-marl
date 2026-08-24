@@ -38,6 +38,11 @@ def verify_run_contract(spec: "DreaMARLRunSpec") -> dict[str, object]:
             "actor_objective": "score_function_reinforce",
             "replay_sampling": spec.replay_sampling,
             "train_ratio": spec.train_ratio,
+            "policy_churn": (
+                spec.ctde_manifest.get("actor_stability")
+                if spec.algorithm == "ctde-pcr"
+                else None
+            ),
         },
         "ctde": (
             {

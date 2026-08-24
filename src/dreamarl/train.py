@@ -11,6 +11,18 @@ import numpy as np
 from .evaluation import evaluate_current_policy
 
 
+def _with_policy_reference(primary, reference):
+    """Attach an independently sampled replay batch for actor churn."""
+
+    reference = iter(reference)
+    for batch in primary:
+        other = next(reference)
+        yield {
+            **batch,
+            **{f"_policy_reference/{key}": value for key, value in other.items()},
+        }
+
+
 def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     agent = make_agent()
     replay = make_replay()
@@ -85,8 +97,20 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     driver.on_step(replay.add)
     driver.on_step(logfn)
 
-    stream_train = iter(agent.stream(make_stream(replay, "train")))
-    stream_report = iter(agent.stream(make_stream(replay, "report")))
+    policy_reference = any(key.startswith("_policy_reference/") for key in agent.spaces)
+    train_source = make_stream(replay, "train")
+    report_source = make_stream(replay, "report")
+    if policy_reference:
+        train_source = _with_policy_reference(
+            train_source,
+            make_stream(replay, "train"),
+        )
+        report_source = _with_policy_reference(
+            report_source,
+            make_stream(replay, "report"),
+        )
+    stream_train = iter(agent.stream(train_source))
+    stream_report = iter(agent.stream(report_source))
     carry_train = [agent.init_train(args.batch_size)]
     carry_report = agent.init_report(args.batch_size)
 

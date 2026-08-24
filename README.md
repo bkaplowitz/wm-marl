@@ -181,6 +181,11 @@ centralized critic, optimizer topology, replay protocol, and one-step joint
 loss. The two-step variant self-feeds only a bounded set of valid replay
 anchors and stops gradients across the first predicted transition.
 
+The actor-stability treatment is selected with `--algorithm ctde-pcr`. It is
+the one-step CTDE model with recent replay and a one-update-delayed functional
+policy KL on an independent replay reference batch. The reference latents and
+legality mask are stopped, so this term updates only the decentralized actor.
+
 ## Evaluation
 
 Fixed evaluation restores the latest complete checkpoint, does not search for

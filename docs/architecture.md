@@ -181,6 +181,23 @@ adds:
 
 The actor and executable local state are unchanged.
 
+### Policy-churn regularization
+
+The optional `ctde-pcr` profile leaves the joint simulator, critic, replay
+objective, and executable policy inputs unchanged. Each actor update also
+samples an independent replay batch, reconstructs its local states after the
+standard burn-in, and minimizes
+
+```text
+KL(stop_gradient(pi_previous) || pi_current)
+```
+
+under the same stopped environment action mask. `pi_previous` is an exact
+one-optimizer-update-delayed copy of the actor. The KL coefficient is scaled to
+2% of the current score-function objective magnitude. Reference states,
+world-model parameters, the joint simulator, and the critic receive no gradient
+from this term.
+
 ### Joint JEPA simulator
 
 For each synchronized team state and factual joint action, the joint simulator

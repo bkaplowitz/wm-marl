@@ -77,6 +77,10 @@ Replace `smac_3m` with `smac_3s_vs_4z` for the hard map. Replace
 `ctde-one-step` with `ctde-two-step` for the bounded self-fed treatment. All
 other launch arguments must remain matched in a controlled comparison.
 
+Use `ctde-pcr` with `--replay-sampling recent` for the actor-only functional
+policy-churn treatment. Its manifest records the delayed-reference policy,
+relative loss scale, exact legality masking, and stopped gradient boundary.
+
 Use `--algorithm local` with the same three-agent SMAC task for the independent
 local-model control.
 

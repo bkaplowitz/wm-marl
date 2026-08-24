@@ -116,6 +116,7 @@ defaults:
     conhead: {layers: 1, units: 1024, act: silu, norm: rms, output: binary, outscale: 1.0, winit: trunc_normal_in}
     maskhead: {layers: 1, units: 1024, act: silu, norm: rms, output: binary, outscale: 0.0, winit: trunc_normal_in}
     policy: {layers: 3, units: 1024, act: silu, norm: rms, minstd: 0.1, maxstd: 1.0, outscale: 0.01, unimix: 0.01, winit: trunc_normal_in}
+    actor_churn: {enabled: False, beta: 0.02, max_scale: 1000.0, epsilon: 1e-6}
     value: {layers: 3, units: 1024, act: silu, norm: rms, output: symexp_twohot, outscale: 0.0, winit: trunc_normal_in, bins: 255}
     policy_dist_disc: categorical
     policy_dist_cont: bounded_normal
@@ -170,6 +171,10 @@ ctde_two_step:
       ctde:
         rollout_steps: 2
         multistep: {anchors: 128}
+
+ctde_pcr:
+  agent:
+    actor_churn: {enabled: True, beta: 0.02, max_scale: 1000.0, epsilon: 1e-6}
 
 dmc_vision:
   task: dmc_reacher_easy

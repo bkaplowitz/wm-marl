@@ -42,6 +42,13 @@ def _spec(tmp_path: Path, **updates) -> DreaMARLRunSpec:
             2,
             128,
         ),
+        (
+            "ctde-pcr",
+            ["smac_vector", "ctde", "ctde_pcr"],
+            "ctde",
+            1,
+            0,
+        ),
     ),
 )
 def test_public_profiles_resolve_to_complete_configs(
@@ -108,6 +115,7 @@ def test_default_config_is_clean_single_agent_dmc() -> None:
         "local",
         "ctde",
         "ctde_two_step",
+        "ctde_pcr",
         "dmc_vision",
         "smac_vector",
         "debug",
@@ -281,6 +289,26 @@ def test_elite_recent_replay_is_only_available_for_ctde_v1_2(tmp_path: Path) -> 
                 algorithm=algorithm,
                 replay_sampling="elite_recent",
             )
+
+
+def test_ctde_pcr_records_actor_only_reference_regularization(tmp_path: Path) -> None:
+    spec = _spec(
+        tmp_path,
+        task="smac_3m",
+        num_agents=3,
+        algorithm="ctde-pcr",
+        replay_sampling="recent",
+    )
+    resolved = _resolve_config_profiles(_load_configs(), spec.configs)
+    stability = spec.ctde_manifest["actor_stability"]
+
+    assert spec.ctde_version == "1.2-PCR"
+    assert resolved.agent.actor_churn.enabled is True
+    assert resolved.agent.actor_churn.beta == 0.02
+    assert stability["reference_policy"] == "one_optimizer_update_delayed"
+    assert stability["world_model_gradients"] is False
+    assert stability["critic_gradients"] is False
+    assert spec.to_dict()["policy_churn"] == stability
 
 
 def test_generic_reporting_modes_are_rejected_for_marl() -> None:

@@ -12,7 +12,12 @@ from dreamarl.baselines.dreamerv3.config import (
 )
 
 
-PUBLIC_ALGORITHMS = ("local", "ctde-one-step", "ctde-two-step")
+PUBLIC_ALGORITHMS = (
+    "local",
+    "ctde-one-step",
+    "ctde-two-step",
+    "ctde-pcr",
+)
 
 
 def algorithm_config_profiles(algorithm: str) -> list[str]:
@@ -24,6 +29,8 @@ def algorithm_config_profiles(algorithm: str) -> list[str]:
         return ["ctde"]
     if algorithm == "ctde-two-step":
         return ["ctde", "ctde_two_step"]
+    if algorithm == "ctde-pcr":
+        return ["ctde", "ctde_pcr"]
     raise ValueError(f"unsupported algorithm: {algorithm!r}")
 
 
@@ -134,7 +141,7 @@ class DreaMARLRunSpec:
 
     @property
     def ctde_rollout_steps(self) -> int | None:
-        if self.algorithm == "ctde-one-step":
+        if self.algorithm in {"ctde-one-step", "ctde-pcr"}:
             return 1
         if self.algorithm == "ctde-two-step":
             return 2
@@ -144,6 +151,8 @@ class DreaMARLRunSpec:
     def ctde_version(self) -> str | None:
         if self.algorithm == "ctde-one-step":
             return "1.2" if self.replay_sampling == "elite_recent" else "1.1"
+        if self.algorithm == "ctde-pcr":
+            return "1.2-PCR"
         if self.algorithm == "ctde-two-step":
             return "2"
         return None
@@ -182,6 +191,7 @@ class DreaMARLRunSpec:
                 "score|return|length|fps|ratio|train/loss/|train/rand/|"
                 "train/dyn_ent|train/rep_ent|train/adv|train/ent/|train/opt/|"
                 "train/posterior_jepa/|train/dynamics_jepa/|"
+                "train/policy_churn/|"
                 "train/ctde/|report/ctde/|train/critic/|"
                 "train/reploss/critic/|central_critic/|"
                 "report/world_model/|report/openloop/|battle_won|win_rate|"
@@ -245,6 +255,18 @@ class DreaMARLRunSpec:
                 "return_window_episodes": 256,
                 "bootstrap_episodes": 32,
             }
+        if self.algorithm == "ctde-pcr":
+            manifest["actor_stability"] = {
+                "method": "functional_policy_churn_regularization",
+                "reference_policy": "one_optimizer_update_delayed",
+                "reference_states": "independent replay batch after burn-in",
+                "legality": "same stopped exact environment action mask",
+                "divergence": "forward_kl(reference||current)",
+                "relative_scale_beta": 0.02,
+                "maximum_scale": 1000.0,
+                "world_model_gradients": False,
+                "critic_gradients": False,
+            }
         return manifest
 
     def to_dict(self) -> dict[str, object]:
@@ -293,6 +315,11 @@ class DreaMARLRunSpec:
             "elite_replay": (
                 self.ctde_manifest["stability_replay"]
                 if self.replay_sampling == "elite_recent"
+                else None
+            ),
+            "policy_churn": (
+                self.ctde_manifest.get("actor_stability")
+                if self.algorithm == "ctde-pcr"
                 else None
             ),
             "actor_objective": "score_function_reinforce",
