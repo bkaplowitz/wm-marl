@@ -14,6 +14,7 @@ from .training.optimization import OptimizationMixin
 from .training.policy import PolicyMixin
 from .training.replay import ReplayMixin
 from .training.reporting import ReportingMixin
+from .training.trust import AdaptiveKLCoefficient
 from .world_model import world_model_backend
 
 
@@ -86,7 +87,45 @@ class Agent(
             for key, space in self.act_space.items()
         }
         self.pol = MLPHead(self.act_space, outputs, **config.policy, name="pol")
+        trust = config.actor_trust
+        self.actor_trust_mode = str(trust.mode)
+        if self.actor_trust_mode not in {"none", "delayed", "behavior"}:
+            raise ValueError(f"unsupported actor trust mode: {self.actor_trust_mode!r}")
+        self.actor_trust_enabled = self.actor_trust_mode != "none"
+        if self.actor_trust_mode == "delayed":
+            if int(trust.refresh_every) < 1:
+                raise ValueError("actor trust refresh interval must be positive")
+            self.trust_pol = MLPHead(
+                self.act_space,
+                outputs,
+                **config.policy,
+                name="trust_pol",
+            )
+            self.trust_teacher = embodied.jax.SlowModel(
+                self.trust_pol,
+                source=self.pol,
+                rate=1.0,
+                every=int(trust.refresh_every),
+            )
+        else:
+            self.trust_pol = None
+            self.trust_teacher = None
+        self.actor_trust = (
+            AdaptiveKLCoefficient(
+                target=float(trust.target),
+                rate=float(trust.dual_rate),
+                initial=float(trust.beta_init),
+                minimum=float(trust.beta_min),
+                maximum=float(trust.beta_max),
+                ema_rate=float(trust.ema_rate),
+                name="actor_trust",
+            )
+            if self.actor_trust_enabled
+            else None
+        )
         self.action_mask_key = self._action_mask_key()
+        if self.actor_trust_enabled and self.action_mask_key is None:
+            raise ValueError("actor trust currently requires a masked discrete actor")
         if self.action_mask_key is not None:
             mask_space = self.obs_space["action_mask"]
             maskhead = getattr(config, "maskhead", config.conhead)
@@ -172,6 +211,11 @@ class Agent(
                     }
                 )
             )
+        if self.actor_trust_mode == "behavior":
+            classes = int(
+                np.asarray(self.act_space[self.action_mask_key].classes).reshape(-1)[0]
+            )
+            spaces["behavior_logits"] = elements.Space(np.float32, (classes,))
         return spaces
 
     def init_policy(self, batch_size):

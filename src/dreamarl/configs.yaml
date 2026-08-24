@@ -49,6 +49,7 @@ defaults:
     curve_eval_eps: 20
     curve_eval_seed_offset: 10000
     curve_eval_policy_mode: eval
+    checkpoint_at_curve_eval: False
     report_batches: 1
     from_checkpoint: ''
     episode_timeout: 180
@@ -112,6 +113,7 @@ defaults:
     maskhead: {layers: 1, units: 1024, act: silu, norm: rms, output: binary, outscale: 0.0, winit: trunc_normal_in}
     action_mask_reduction: sum
     policy: {layers: 3, units: 1024, act: silu, norm: rms, minstd: 0.1, maxstd: 1.0, outscale: 0.01, unimix: 0.01, winit: trunc_normal_in}
+    actor_trust: {mode: none, target: 0.005, refresh_every: 64, dual_rate: 0.01, beta_init: 1.0, beta_min: 1e-4, beta_max: 1000.0, ema_rate: 0.05}
     value: {layers: 3, units: 1024, act: silu, norm: rms, output: symexp_twohot, outscale: 0.0, winit: trunc_normal_in, bins: 255}
     policy_dist_disc: categorical
     policy_dist_cont: bounded_normal
@@ -207,6 +209,18 @@ ctde_adaln:
       ctde:
         joint:
           action_conditioning: adaln
+
+ctde_trust_delayed_005:
+  agent:
+    actor_trust: {mode: delayed, target: 0.005}
+
+ctde_trust_delayed_010:
+  agent:
+    actor_trust: {mode: delayed, target: 0.01}
+
+ctde_trust_behavior_005:
+  agent:
+    actor_trust: {mode: behavior, target: 0.005}
 
 dmc_vision:
   task: dmc_reacher_easy

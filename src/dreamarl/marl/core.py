@@ -48,7 +48,7 @@ class TeamAxisAdapter:
 
     @property
     def ext_space(self):
-        return {
+        spaces = {
             key: (
                 space
                 if key in {"consec", "stepid"}
@@ -56,6 +56,16 @@ class TeamAxisAdapter:
             )
             for key, space in super().ext_space.items()
         }
+        if self.actor_trust_enabled:
+            reference = {
+                **self.public_obs_space,
+                **self.public_act_space,
+                **spaces,
+            }
+            spaces.update(
+                {f"_policy_reference/{key}": space for key, space in reference.items()}
+            )
+        return spaces
 
     def init_policy(self, batch_size):
         return self.team.unfold_tree_batch(
@@ -82,9 +92,26 @@ class TeamAxisAdapter:
         )
 
     def train(self, carry, data):
+        reference = {
+            key.removeprefix("_policy_reference/"): value
+            for key, value in data.items()
+            if key.startswith("_policy_reference/")
+        }
+        data = {
+            key: value
+            for key, value in data.items()
+            if not key.startswith("_policy_reference/")
+        }
         local_carry = self.team.fold_tree_batch(carry)
         local_data = self.team.local_sequence_data(data)
-        local_carry, output, metrics = super().train(local_carry, local_data)
+        local_reference = (
+            self.team.local_sequence_data(reference) if reference else None
+        )
+        local_carry, output, metrics = super().train(
+            local_carry,
+            local_data,
+            local_reference,
+        )
         if "replay" in output:
             output = dict(
                 output,
@@ -93,6 +120,11 @@ class TeamAxisAdapter:
         return self.team.unfold_tree_batch(local_carry), output, metrics
 
     def report(self, carry, data):
+        data = {
+            key: value
+            for key, value in data.items()
+            if not key.startswith("_policy_reference/")
+        }
         local_carry = self.team.fold_tree_batch(carry)
         local_data = self.team.local_sequence_data(data)
         local_carry, metrics = super().report(local_carry, local_data)
@@ -109,6 +141,8 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         if str(marl.execution) != "strict_decentralized":
             raise ValueError(f"unsupported execution contract: {marl.execution!r}")
         self.team = TeamAxis(int(config.num_agents))
+        self.public_obs_space = dict(obs_space)
+        self.public_act_space = dict(act_space)
         self.marl_stage = str(marl.stage)
         self.ctde_enabled = self.marl_stage == "ctde" and self.team.size > 1
         self.ctde_rollout_steps = (

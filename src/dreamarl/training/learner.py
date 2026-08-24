@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import ninjax as nj
 import numpy as np
 
-from ..models.heads import binary_vector_loss
+from ..models.heads import apply_action_mask, binary_vector_loss
 from .common import concat, f32, prefix, sample, sg
 from .objectives import imag_loss, repl_loss
 from .representation import (
@@ -17,6 +17,7 @@ from .representation import (
     sigreg_loss,
     spatial_patch_mask,
 )
+from .trust import categorical_forward_kl, masked_average
 
 
 def masked_mean(value, valid, *, alignment="tail"):
@@ -64,17 +65,27 @@ def value_fit_metrics(prediction, target, valid):
 
 
 class LearnerMixin:
-    def train(self, carry, data):
+    def train(self, carry, data, reference_data=None):
+        if self.actor_trust_enabled:
+            if reference_data is None:
+                raise ValueError("actor trust requires an independent replay batch")
+            if int(self.config.replay_context) < 1:
+                raise ValueError("actor trust requires replay_context for burn-in")
+        elif reference_data is not None:
+            raise ValueError("actor-trust reference supplied while trust is disabled")
         carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
         metrics, (carry, entries, outs, mets) = self.opt(
             self.loss,
             carry,
             obs,
             prevact,
+            reference_data=reference_data,
             training=True,
             has_aux=True,
         )
         metrics.update(mets)
+        if self.actor_trust_enabled:
+            self.actor_trust.update(mets["actor_trust/kl"])
         self._update_slow_models()
         if self.slowenc is not None:
             self.slowenc.update()
@@ -92,7 +103,14 @@ class LearnerMixin:
         carry = (*carry, {key: data[key][:, -1] for key in self.act_space})
         return carry, outs, metrics
 
-    def loss(self, carry, obs, prevact, training):
+    def loss(
+        self,
+        carry,
+        obs,
+        prevact,
+        training,
+        reference_data=None,
+    ):
         model_carry, entries, tokens, repfeat, losses, metrics, target_tokens = (
             self._world_model_terms(carry, obs, prevact, training)
         )
@@ -273,6 +291,89 @@ class LearnerMixin:
         losses.update(extra_losses)
         metrics.update(extra_metrics)
 
+        trust_penalty = jnp.asarray(0.0, jnp.float32)
+        if reference_data is not None:
+            if not self.actor_trust_enabled:
+                raise ValueError("unexpected actor-trust reference inputs")
+            context = int(self.config.replay_context)
+            reference_action_mask = sg(reference_data["action_mask"][:, context - 1])
+            reference_behavior_logits = (
+                sg(reference_data["behavior_logits"][:, context - 1])
+                if self.actor_trust_mode == "behavior"
+                else None
+            )
+            reference_carry = self._local_initial(reference_data["is_first"].shape[0])
+            reference_carry, _, _, _ = self._apply_replay_context(
+                reference_carry,
+                reference_data,
+            )
+            reference_dyn = reference_carry[1]
+            reference_state = sg(
+                {
+                    "deter": reference_dyn["deter"],
+                    "stoch": reference_dyn["stoch"],
+                }
+            )
+            reference_tensor = sg(self.feat2tensor(reference_state))
+            current_policy = self.policy_distribution(
+                reference_tensor,
+                bdims=1,
+                action_mask=reference_action_mask,
+            )
+            current_logits = current_policy[self.action_mask_key].logits
+            if self.actor_trust_mode == "delayed":
+                reference_policy = self.trust_teacher(reference_tensor, bdims=1)
+                reference_policy = apply_action_mask(
+                    reference_policy,
+                    reference_action_mask,
+                    self.action_mask_key,
+                )
+                reference_logits = reference_policy[self.action_mask_key].logits
+            elif self.actor_trust_mode == "behavior":
+                if reference_behavior_logits is None:
+                    raise ValueError("behavior trust requires stored behavior logits")
+                reference_logits = reference_behavior_logits
+            else:
+                raise ValueError(f"unexpected actor trust mode {self.actor_trust_mode!r}")
+
+            decision = reference_action_mask.astype(jnp.int32).sum(-1) > 1
+            divergence = categorical_forward_kl(reference_logits, current_logits)
+            trust_kl = masked_average(divergence, decision)
+            beta = sg(self.actor_trust.value())
+            trust_penalty = beta * trust_kl
+            reference_logprob = jax.nn.log_softmax(
+                sg(reference_logits).astype(jnp.float32), axis=-1
+            )
+            current_logprob = jax.nn.log_softmax(
+                current_logits.astype(jnp.float32), axis=-1
+            )
+            reference_entropy = -jnp.sum(
+                jnp.exp(reference_logprob) * reference_logprob, axis=-1
+            )
+            current_entropy = -jnp.sum(
+                jnp.exp(current_logprob) * current_logprob, axis=-1
+            )
+            metrics.update(
+                {
+                    "actor_trust/kl": trust_kl,
+                    "actor_trust/kl_ema": self.actor_trust.average(),
+                    "actor_trust/target": jnp.asarray(
+                        self.config.actor_trust.target, jnp.float32
+                    ),
+                    "actor_trust/beta": beta,
+                    "actor_trust/penalty": trust_penalty,
+                    "actor_trust/reference_entropy": masked_average(
+                        reference_entropy, decision
+                    ),
+                    "actor_trust/current_entropy": masked_average(
+                        current_entropy, decision
+                    ),
+                    "actor_trust/decision_fraction": decision.astype(
+                        jnp.float32
+                    ).mean(),
+                }
+            )
+
         metrics.update(
             {
                 f"loss/{key}": masked_mean(
@@ -292,6 +393,7 @@ class LearnerMixin:
             * self.scales[key]
             for key, value in losses.items()
         )
+        loss += trust_penalty
 
         carry = (enc_carry, dyn_carry, dec_carry)
         entries = (enc_entries, dyn_entries, dec_entries)
@@ -302,6 +404,8 @@ class LearnerMixin:
 
     def _update_slow_models(self):
         self.slowval.update()
+        if self.trust_teacher is not None:
+            self.trust_teacher.update()
 
     def additional_world_model_losses(
         self,

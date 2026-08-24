@@ -40,6 +40,10 @@ class PolicyMixin:
                 )
             )
         }
+        if self.actor_trust_mode == "behavior":
+            out["behavior_logits"] = policy[self.action_mask_key].logits.astype(
+                jnp.float32
+            )
         carry = (enc_carry, dyn_carry, dec_carry, act)
         if self.config.replay_context:
             entries = dict(
