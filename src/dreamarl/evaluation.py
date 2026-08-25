@@ -124,6 +124,7 @@ def _evaluation_summary(
     episodes,
     *,
     policy_mode=None,
+    episode_metadata=None,
 ):
     returns_array = np.asarray(returns[:episodes], np.float32)
     team_returns_array = np.asarray(team_returns[:episodes], np.float32)
@@ -149,6 +150,9 @@ def _evaluation_summary(
         "returns": returns_array.tolist(),
         "team_returns": team_returns_array.tolist(),
         "per_agent_returns": agent_array.tolist(),
+        "battle_wins": [float(value) for value in battle_wins[:episodes]],
+        "outcomes": outcomes[:episodes],
+        "episode_metadata": (episode_metadata or [])[:episodes],
     }
     if policy_mode is not None:
         summary["policy_mode"] = str(policy_mode)
@@ -210,6 +214,7 @@ def evaluate_current_policy(
     agent_returns = []
     battle_wins = []
     outcomes = []
+    episode_metadata = []
     accumulators = defaultdict(elements.Agg)
     environments = min(envs, episodes)
     quotas = np.full(environments, episodes // environments, np.int32)
@@ -227,6 +232,7 @@ def evaluate_current_policy(
         episode.add("agent_scores", rewards, agg="sum")
         _add_outcome_diagnostics(episode, transition)
         if transition["is_last"]:
+            worker_episode = int(completed[worker])
             completed[worker] += 1
             result = episode.result()
             returns.append(float(result["score"]))
@@ -237,6 +243,13 @@ def evaluate_current_policy(
             outcome = _episode_outcome(result, transition)
             if outcome:
                 outcomes.append(outcome)
+            episode_metadata.append(
+                {
+                    "worker": int(worker),
+                    "worker_index": int(worker_offset + worker),
+                    "worker_episode": worker_episode,
+                }
+            )
 
     functions = [bind(make_env, worker_offset + index) for index in range(environments)]
     driver = embodied.Driver(functions, parallel=not debug)
@@ -253,7 +266,14 @@ def evaluate_current_policy(
     finally:
         driver.close()
     return _evaluation_summary(
-        returns, team_returns, agent_returns, battle_wins, outcomes, episodes
+        returns,
+        team_returns,
+        agent_returns,
+        battle_wins,
+        outcomes,
+        episodes,
+        policy_mode=policy_mode,
+        episode_metadata=episode_metadata,
     )
 
 

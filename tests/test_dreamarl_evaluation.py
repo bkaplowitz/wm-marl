@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import threading
+import json
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from dreamarl import evaluation
+from dreamarl import train
 
 
 class _Counter:
@@ -101,6 +103,15 @@ def test_inline_evaluation_preserves_training_policy_rng(monkeypatch) -> None:
     assert summary["team_returns"] == [4.0, 6.0, 4.0, 6.0]
     assert summary["win_rate"] == 0.5
     assert summary["wins"] == 2
+    assert summary["battle_wins"] == [1.0, 0.0, 1.0, 0.0]
+    assert len(summary["outcomes"]) == 4
+    assert summary["episode_metadata"] == [
+        {"worker": 0, "worker_index": 10_000, "worker_episode": 0},
+        {"worker": 1, "worker_index": 10_001, "worker_episode": 0},
+        {"worker": 0, "worker_index": 10_000, "worker_episode": 1},
+        {"worker": 1, "worker_index": 10_001, "worker_episode": 1},
+    ]
+    assert summary["policy_mode"] == "eval"
     assert summary["timeout_rate"] == 0.5
     assert summary["legacy_return_mean"] == 1.5
     assert summary["corrected_return_mean"] == 2.5
@@ -115,6 +126,32 @@ def test_inline_evaluation_preserves_training_policy_rng(monkeypatch) -> None:
     assert agent.last_mode == "eval"
     assert agent.n_actions.value == 37
     assert agent.pending_sync is not None
+
+
+def test_evaluation_episode_records_are_lossless(tmp_path) -> None:
+    summary = {
+        "episodes": 2,
+        "returns": [1.0, 2.0],
+        "team_returns": [8.0, 16.0],
+        "per_agent_returns": [[1.0] * 8, [2.0] * 8],
+        "battle_wins": [0.0, 1.0],
+        "outcomes": [{"enemy_deaths": 3.0}, {"enemy_deaths": 8.0}],
+        "episode_metadata": [
+            {"worker_index": 50_000},
+            {"worker_index": 50_001},
+        ],
+    }
+
+    train._write_evaluation_episodes(tmp_path, 12_000, summary)
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "evaluation_episodes.jsonl").read_text().splitlines()
+    ]
+
+    assert [record["environment_steps"] for record in records] == [12_000, 12_000]
+    assert [record["battle_won"] for record in records] == [0.0, 1.0]
+    assert records[1]["outcome"] == {"enemy_deaths": 8.0}
+    assert records[1]["metadata"] == {"worker_index": 50_001}
 
 
 def test_inline_evaluation_supports_dreamer_sampled_policy(monkeypatch) -> None:

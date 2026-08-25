@@ -1,6 +1,7 @@
 """First-party Embodied training loop with a guaranteed final checkpoint."""
 
 import collections
+import json
 import time
 from functools import partial as bind
 
@@ -10,6 +11,48 @@ import jax
 import numpy as np
 
 from .evaluation import evaluate_current_policy
+
+
+_RAW_EVALUATION_KEYS = {
+    "returns",
+    "team_returns",
+    "per_agent_returns",
+    "battle_wins",
+    "outcomes",
+    "episode_metadata",
+}
+
+
+def _write_evaluation_episodes(logdir, step, summary):
+    """Append lossless per-episode evaluation data for publication plots."""
+
+    returns = summary.get("returns", ())
+    team_returns = summary.get("team_returns", ())
+    per_agent_returns = summary.get("per_agent_returns", ())
+    battle_wins = summary.get("battle_wins", ())
+    outcomes = summary.get("outcomes", ())
+    metadata = summary.get("episode_metadata", ())
+    count = int(summary["episodes"])
+    if not (len(returns) == len(team_returns) == len(per_agent_returns) == count):
+        raise ValueError("evaluation episode arrays do not match the episode quota")
+
+    path = logdir / "evaluation_episodes.jsonl"
+    with path.open("a") as stream:
+        for index in range(count):
+            record = {
+                "schema_version": 1,
+                "environment_steps": int(step),
+                "episode": index,
+                "return": float(returns[index]),
+                "team_return": float(team_returns[index]),
+                "per_agent_returns": per_agent_returns[index],
+                "battle_won": (
+                    float(battle_wins[index]) if index < len(battle_wins) else None
+                ),
+                "outcome": outcomes[index] if index < len(outcomes) else {},
+                "metadata": metadata[index] if index < len(metadata) else {},
+            }
+            stream.write(json.dumps(record, sort_keys=True) + "\n")
 
 
 def _save_checkpoint(checkpoint, attempts=4):
@@ -212,11 +255,12 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
                 worker_offset=int(args.curve_eval_seed_offset),
                 policy_mode=str(args.curve_eval_policy_mode),
             )
+            _write_evaluation_episodes(logdir, step, summary)
             logger.add(
                 {
                     key: value
                     for key, value in summary.items()
-                    if key not in {"returns", "team_returns", "per_agent_returns"}
+                    if key not in _RAW_EVALUATION_KEYS
                 },
                 prefix="eval",
             )
