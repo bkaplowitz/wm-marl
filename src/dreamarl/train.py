@@ -23,7 +23,12 @@ _RAW_EVALUATION_KEYS = {
 }
 
 
-def _write_evaluation_episodes(logdir, step, summary):
+def _write_evaluation_episodes(
+    logdir,
+    step,
+    summary,
+    filename="evaluation_episodes.jsonl",
+):
     """Append lossless per-episode evaluation data for publication plots."""
 
     returns = summary.get("returns", ())
@@ -36,7 +41,7 @@ def _write_evaluation_episodes(logdir, step, summary):
     if not (len(returns) == len(team_returns) == len(per_agent_returns) == count):
         raise ValueError("evaluation episode arrays do not match the episode quota")
 
-    path = logdir / "evaluation_episodes.jsonl"
+    path = logdir / filename
     with path.open("a") as stream:
         for index in range(count):
             record = {
@@ -269,6 +274,32 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
                 _save_checkpoint(checkpoint)
             while next_curve_eval <= int(step):
                 next_curve_eval += int(args.curve_eval_interval)
+
+    if int(args.final_eval_eps):
+        summary = evaluate_current_policy(
+            agent,
+            make_env,
+            episodes=int(args.final_eval_eps),
+            envs=int(args.final_eval_envs),
+            debug=bool(args.debug),
+            worker_offset=int(args.final_eval_seed_offset),
+            policy_mode=str(args.final_eval_policy_mode),
+        )
+        _write_evaluation_episodes(
+            logdir,
+            step,
+            summary,
+            filename="final_evaluation_episodes.jsonl",
+        )
+        logger.add(
+            {
+                key: value
+                for key, value in summary.items()
+                if key not in _RAW_EVALUATION_KEYS
+            },
+            prefix="final_eval",
+        )
+        logger.write()
 
     if bool(args.final_save):
         _save_checkpoint(checkpoint)

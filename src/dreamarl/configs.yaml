@@ -50,6 +50,10 @@ defaults:
     curve_eval_seed_offset: 10000
     curve_eval_policy_mode: eval
     checkpoint_at_curve_eval: False
+    final_eval_eps: 0
+    final_eval_envs: 1
+    final_eval_seed_offset: 100000
+    final_eval_policy_mode: eval
     report_batches: 1
     from_checkpoint: ''
     episode_timeout: 180

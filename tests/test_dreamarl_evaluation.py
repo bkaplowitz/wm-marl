@@ -142,10 +142,17 @@ def test_evaluation_episode_records_are_lossless(tmp_path) -> None:
         ],
     }
 
-    train._write_evaluation_episodes(tmp_path, 12_000, summary)
+    train._write_evaluation_episodes(
+        tmp_path,
+        12_000,
+        summary,
+        filename="final_evaluation_episodes.jsonl",
+    )
     records = [
         json.loads(line)
-        for line in (tmp_path / "evaluation_episodes.jsonl").read_text().splitlines()
+        for line in (tmp_path / "final_evaluation_episodes.jsonl")
+        .read_text()
+        .splitlines()
     ]
 
     assert [record["environment_steps"] for record in records] == [12_000, 12_000]
