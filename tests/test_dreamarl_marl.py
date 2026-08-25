@@ -22,9 +22,30 @@ from dreamarl.models.heads import (
 from dreamarl.models.ctde import JointObservationJEPA
 from dreamarl.models.normalize import Normalize
 from dreamarl.training.learner import masked_mean
+from dreamarl.training.optimization import OptimizationMixin
 
 
 GLOBAL_KEYS = {"is_first", "is_last", "is_terminal", "consec", "stepid"}
+
+
+def test_actor_optimizer_can_use_an_independent_update_timescale() -> None:
+    class Factory(OptimizationMixin):
+        pass
+
+    optimizer = Factory()._make_opt(
+        lr=1e-3,
+        agc=0.0,
+        momentum=False,
+        warmup=0,
+        update_every=2,
+    )
+    params = {"actor/kernel": jnp.ones((2,), jnp.float32)}
+    grads = {"actor/kernel": jnp.ones((2,), jnp.float32)}
+    state = optimizer.init(params)
+    first, state = optimizer.update(grads, state, params)
+    second, _ = optimizer.update(grads, state, params)
+    np.testing.assert_array_equal(first["actor/kernel"], jnp.zeros((2,)))
+    assert np.linalg.norm(np.asarray(second["actor/kernel"])) > 0
 
 
 def _assert_tree_equal(actual, expected) -> None:

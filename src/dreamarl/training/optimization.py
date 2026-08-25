@@ -167,6 +167,9 @@ class OptimizationMixin:
 
         matched = self.config.opt
         joint = self.config.marl.ctde.opt
+        actor = dict(matched)
+        actor["lr"] = float(self.config.marl.ctde.actor_lr)
+        actor["update_every"] = int(self.config.marl.ctde.actor_update_every)
         return GroupedOptimizer(
             {
                 "local_world": (
@@ -177,7 +180,7 @@ class OptimizationMixin:
                     joint_world_modules,
                     self._make_opt(**joint),
                 ),
-                "actor": (actor_modules, self._make_opt(**matched)),
+                "actor": (actor_modules, self._make_opt(**actor)),
                 "critic": (critic_modules, self._make_opt(**matched)),
             },
             modules=modules,
@@ -199,7 +202,10 @@ class OptimizationMixin:
         schedule: str = "const",
         warmup: int = 1000,
         anneal: int = 0,
+        update_every: int = 1,
     ):
+        if update_every < 1:
+            raise ValueError("optimizer update interval must be positive")
         chain = [
             embodied.jax.opt.clip_by_agc(agc),
             embodied.jax.opt.scale_by_rms(beta2, eps),
@@ -227,4 +233,11 @@ class OptimizationMixin:
             ramp = optax.linear_schedule(0.0, lr, warmup)
             sched = optax.join_schedules([ramp, sched], [warmup])
         chain.append(optax.scale_by_learning_rate(sched))
-        return optax.chain(*chain)
+        optimizer = optax.chain(*chain)
+        if update_every > 1:
+            optimizer = optax.MultiSteps(
+                optimizer,
+                every_k_schedule=update_every,
+                use_grad_mean=True,
+            )
+        return optimizer
