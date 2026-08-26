@@ -241,6 +241,7 @@ def make_agent(config):
             batch_size=config.batch_size,
             batch_length=config.batch_length,
             replay_context=config.replay_context,
+            replay_sampling=str(config.replay.sampling),
             report_length=config.report_length,
             replica=config.replica,
             replicas=config.replicas,
@@ -311,6 +312,15 @@ def make_replay(config, folder, mode="train"):
             recency_decay=float(config.replay.recency_decay),
             seed=int(config.seed),
         )
+    if mode == "train" and sampling == "recent_world_uniform_behavior":
+        from .replay import DualViewReplay
+
+        return DualViewReplay(
+            **kwargs,
+            optimized_length=int(consec * batlen),
+            recency_decay=float(config.replay.recency_decay),
+            seed=int(config.seed),
+        )
     if sampling != "uniform" and mode == "train":
         raise ValueError(f"unsupported replay sampling: {sampling!r}")
     return embodied.replay.Replay(**kwargs)
@@ -355,14 +365,15 @@ def wrap_env(env, config):
 
 
 def make_stream(config, replay, mode):
+    train_mode = mode in {"train", "train_world", "train_behavior"}
     fn = bind(replay.sample, config.batch_size, mode)
     stream = embodied.streams.Stateless(fn)
     stream = embodied.streams.Consec(
         stream,
-        length=(config.batch_length if mode == "train" else config.report_length),
-        consec=(config.consec_train if mode == "train" else config.consec_report),
+        length=(config.batch_length if train_mode else config.report_length),
+        consec=(config.consec_train if train_mode else config.consec_report),
         prefix=config.replay_context,
-        strict=(mode == "train"),
+        strict=train_mode,
         contiguous=True,
     )
     return stream

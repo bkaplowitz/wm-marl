@@ -25,16 +25,33 @@ def _save_checkpoint(checkpoint, attempts=4):
             time.sleep(5 * (attempt + 1))
 
 
+def _with_prefixed_batch(primary, secondary, prefix):
+    """Pair independent batches without merging their batch or time axes."""
+
+    if not prefix or not prefix.endswith("/"):
+        raise ValueError(f"reserved replay prefix must end in '/': {prefix!r}")
+    secondary = iter(secondary)
+    for batch in primary:
+        other = next(secondary)
+        if batch["is_first"].shape != other["is_first"].shape:
+            raise ValueError(
+                "paired replay views must have identical BxT shapes, got "
+                f"{batch['is_first'].shape} and {other['is_first'].shape}"
+            )
+        attached = {f"{prefix}{key}": value for key, value in other.items()}
+        overlap = batch.keys() & attached.keys()
+        if overlap:
+            raise ValueError(f"reserved replay prefix collision: {sorted(overlap)}")
+        yield {
+            **batch,
+            **attached,
+        }
+
+
 def _with_policy_reference(primary, reference):
     """Attach an independently sampled replay batch for actor trust."""
 
-    reference = iter(reference)
-    for batch in primary:
-        other = next(reference)
-        yield {
-            **batch,
-            **{f"_policy_reference/{key}": value for key, value in other.items()},
-        }
+    return _with_prefixed_batch(primary, reference, "_policy_reference/")
 
 
 def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
@@ -112,12 +129,34 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     driver.on_step(logfn)
 
     policy_reference = any(key.startswith("_policy_reference/") for key in agent.spaces)
-    train_source = make_stream(replay, "train")
+    behavior_replay = any(key.startswith("_behavior_replay/") for key in agent.spaces)
+    dual_view = bool(getattr(replay, "dual_view", False))
+    if behavior_replay != dual_view:
+        raise ValueError(
+            "dual-view replay and learner behavior-batch spaces must be enabled "
+            "together"
+        )
+
+    train_source = make_stream(replay, "train_world" if dual_view else "train")
     report_source = make_stream(replay, "report")
+    if dual_view:
+        train_source = _with_prefixed_batch(
+            train_source,
+            make_stream(replay, "train_behavior"),
+            "_behavior_replay/",
+        )
+        # JAX requires every advertised input space for report compilation as
+        # well. TeamAxisAdapter.report strips this transport-only copy, so the
+        # primary report batch and metrics retain their prior semantics.
+        report_source = _with_prefixed_batch(
+            report_source,
+            make_stream(replay, "report"),
+            "_behavior_replay/",
+        )
     if policy_reference:
         train_source = _with_policy_reference(
             train_source,
-            make_stream(replay, "train"),
+            make_stream(replay, "train_behavior" if dual_view else "train"),
         )
         report_source = _with_policy_reference(
             report_source,
@@ -142,7 +181,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
                     reference.sharding,
                 )
             carry_train[0], outputs, metrics = agent.train(carry_train[0], batch)
-            train_fps.step(batch_steps)
+            train_fps.step(batch_steps * (2 if dual_view else 1))
             if "replay" in outputs:
                 replay.update(outputs["replay"])
             train_agg.add(metrics, prefix="train")

@@ -22,6 +22,25 @@ AGENT_METADATA_FIELDS = frozenset(
 MODEL_EXCLUDED_FIELDS = (
     frozenset({"is_first", "is_last", "is_terminal", "reward"}) | AGENT_METADATA_FIELDS
 )
+BEHAVIOR_REPLAY_PREFIX = "_behavior_replay/"
+
+
+def split_prefixed_data(
+    data: Mapping[str, Any], prefix: str = BEHAVIOR_REPLAY_PREFIX
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Split an explicitly prefixed replay view without changing either batch."""
+
+    primary = {}
+    branch = {}
+    for key, value in data.items():
+        if key.startswith(prefix):
+            name = key.removeprefix(prefix)
+            if not name:
+                raise ValueError(f"empty replay field after prefix {prefix!r}")
+            branch[name] = value
+        else:
+            primary[key] = value
+    return primary, branch
 
 
 @dataclass(frozen=True, slots=True)

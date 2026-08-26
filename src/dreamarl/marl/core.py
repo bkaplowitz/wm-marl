@@ -34,7 +34,7 @@ from ..training.ctde import (
     two_step_objective,
 )
 from ..training.common import sample
-from .axes import TeamAxis
+from .axes import BEHAVIOR_REPLAY_PREFIX, TeamAxis, split_prefixed_data
 from .spaces import (
     add_agent_axis,
     local_action_spaces,
@@ -48,7 +48,7 @@ class TeamAxisAdapter:
 
     @property
     def ext_space(self):
-        spaces = {
+        local_spaces = {
             key: (
                 space
                 if key in {"consec", "stepid"}
@@ -56,14 +56,25 @@ class TeamAxisAdapter:
             )
             for key, space in super().ext_space.items()
         }
-        if self.actor_trust_enabled:
-            reference = {
-                **self.public_obs_space,
-                **self.public_act_space,
-                **spaces,
-            }
+        spaces = dict(local_spaces)
+        replay_view = {
+            **self.public_obs_space,
+            **self.public_act_space,
+            **local_spaces,
+        }
+        if self.two_branch_replay:
             spaces.update(
-                {f"_policy_reference/{key}": space for key, space in reference.items()}
+                {
+                    f"{BEHAVIOR_REPLAY_PREFIX}{key}": space
+                    for key, space in replay_view.items()
+                }
+            )
+        if self.actor_trust_enabled:
+            spaces.update(
+                {
+                    f"_policy_reference/{key}": space
+                    for key, space in replay_view.items()
+                }
             )
         return spaces
 
@@ -92,6 +103,17 @@ class TeamAxisAdapter:
         )
 
     def train(self, carry, data):
+        data, behavior = split_prefixed_data(data)
+        if self.two_branch_replay and not behavior:
+            raise ValueError(
+                "recent_world_uniform_behavior requires an independent "
+                f"{BEHAVIOR_REPLAY_PREFIX} batch"
+            )
+        if behavior and not self.two_branch_replay:
+            raise ValueError(
+                f"unexpected {BEHAVIOR_REPLAY_PREFIX} batch for replay mode "
+                f"{self.replay_sampling!r}"
+            )
         reference = {
             key.removeprefix("_policy_reference/"): value
             for key, value in data.items()
@@ -107,10 +129,12 @@ class TeamAxisAdapter:
         local_reference = (
             self.team.local_sequence_data(reference) if reference else None
         )
+        local_behavior = self.team.local_sequence_data(behavior) if behavior else None
         local_carry, output, metrics = super().train(
             local_carry,
             local_data,
-            local_reference,
+            reference_data=local_reference,
+            behavior_data=local_behavior,
         )
         if "replay" in output:
             output = dict(
@@ -120,6 +144,7 @@ class TeamAxisAdapter:
         return self.team.unfold_tree_batch(local_carry), output, metrics
 
     def report(self, carry, data):
+        data, _ = split_prefixed_data(data)
         data = {
             key: value
             for key, value in data.items()
@@ -183,6 +208,25 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             local_act_space,
             config,
         )
+        if self.two_branch_replay:
+            if not self.ctde_enabled:
+                raise ValueError(
+                    "recent_world_uniform_behavior requires multi-agent CTDE"
+                )
+            if self.ctde_rollout_steps != 1 or self.ctde_mask_calibration:
+                raise ValueError(
+                    "recent_world_uniform_behavior supports only one-step factual "
+                    "CTDE without mask calibration"
+                )
+            joint_burnin = int(marl.ctde.joint.context) * int(
+                marl.ctde.joint.temporal_layers
+            )
+            if int(config.replay_context) < joint_burnin:
+                raise ValueError(
+                    "recent_world_uniform_behavior replay_context must cover the "
+                    "joint Transformer's full temporal receptive field "
+                    f"({joint_burnin}), got {config.replay_context}"
+                )
 
     def _make_value_models(self, scalar, config):
         if self.ctde_enabled:
@@ -1063,6 +1107,44 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         }
         selected_obs = dict(selected_obs, _ctde_burnin=burnin)
         return selected_carry, selected_obs, selected_prevact, selected_stepid
+
+    def behavior_replay_burnin_observation(
+        self,
+        suffix_obs,
+        prefix_features,
+        prefix_dyn_entries,
+        prefix_obs,
+        prefix_prevact,
+        prefix_action,
+    ):
+        suffix_obs = super().behavior_replay_burnin_observation(
+            suffix_obs,
+            prefix_features,
+            prefix_dyn_entries,
+            prefix_obs,
+            prefix_prevact,
+            prefix_action,
+        )
+        if not self.ctde_enabled:
+            return suffix_obs
+        burnin = {
+            "state": jax.lax.stop_gradient(self.feat2tensor(prefix_features)),
+            "action": prefix_action[self.ctde_action_key].astype(jnp.int32),
+            "present": self._present(prefix_obs).astype(bool),
+            "controllable_alive": self._controllable(prefix_obs).astype(bool),
+            "is_first": prefix_obs["is_first"].astype(bool),
+            "position": prefix_dyn_entries["position"].astype(jnp.int32),
+        }
+        return dict(suffix_obs, _ctde_burnin=burnin)
+
+    def behavior_dynamics_entries(self, entries, obs):
+        entries = super().behavior_dynamics_entries(entries, obs)
+        if not self.ctde_enabled:
+            return entries
+        return dict(
+            entries,
+            ctde_joint_carry=self._ctde_joint_burnin(entries, obs),
+        )
 
     def observe_dynamics(self, carry, tokens, action, reset, obs, training, single):
         return self.dyn.observe(

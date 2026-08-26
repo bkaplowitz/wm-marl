@@ -167,6 +167,36 @@ ctde:
       ctde_multistep_action_mask: 1.0
       ctde_multistep_alive: 1.0
 
+ctde_generalist:
+  replay_context: 192
+  run:
+    train_ratio: 256
+  replay:
+    size: 250000
+    online: False
+    sampling: recent_world_uniform_behavior
+    recency_decay: 0.9998
+  agent:
+    imag_length: 15
+    action_mask_reduction: sum
+    actor_trust: {mode: none}
+    opt: {lr: 4e-5}
+    marl:
+      stage: ctde
+      execution: strict_decentralized
+      ctde:
+        rollout_steps: 1
+        multistep: {anchors: 0}
+        mask_calibration: {enabled: False, horizons: [1, 4, 8, 15], soft_liveness: False}
+        joint: {width: 256, temporal_layers: 12}
+        opt: {lr: 4e-5}
+        actor_lr: 1e-5
+        actor_update_every: 1
+
+ctde_generalist_mask_mean:
+  agent:
+    action_mask_reduction: mean
+
 ctde_two_step:
   agent:
     marl:

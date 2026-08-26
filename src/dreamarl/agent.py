@@ -37,6 +37,8 @@ class Agent(
         self.obs_space = obs_space
         self.act_space = act_space
         self.config = config
+        self.replay_sampling = str(getattr(config, "replay_sampling", "uniform"))
+        self.two_branch_replay = self.replay_sampling == "recent_world_uniform_behavior"
         self.world_model = world_model_backend()
         self.objective = "embedding"
         self.embedding_target = "ema"
@@ -92,6 +94,11 @@ class Agent(
         if self.actor_trust_mode not in {"none", "delayed", "behavior"}:
             raise ValueError(f"unsupported actor trust mode: {self.actor_trust_mode!r}")
         self.actor_trust_enabled = self.actor_trust_mode != "none"
+        if self.two_branch_replay and self.actor_trust_enabled:
+            raise ValueError(
+                "recent_world_uniform_behavior is a direct REINFORCE experiment "
+                "and does not support actor trust"
+            )
         if self.actor_trust_mode == "delayed":
             if int(trust.refresh_every) < 1:
                 raise ValueError("actor trust refresh interval must be positive")
