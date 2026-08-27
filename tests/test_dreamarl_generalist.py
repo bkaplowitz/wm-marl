@@ -628,22 +628,28 @@ def test_teammate_belief_v2_dual_learner_keeps_updates_isolated(
     control_initial = nj.init(lambda: control_step(paired(world_a, behavior_a)))(
         {}, seed=10
     )
+
+    def assert_common_state_equal(left, right, *, optimizer):
+        keys = sorted(set(left).intersection(right))
+        keys = [
+            key
+            for key in keys
+            if key.startswith("opt/") == optimizer
+            and "ctde_teammate_" not in key
+            and np.shape(left[key]) == np.shape(right[key])
+        ]
+        assert keys
+        for key in keys:
+            np.testing.assert_array_equal(
+                np.asarray(left[key]), np.asarray(right[key]), err_msg=key
+            )
+
+    assert_common_state_equal(initial, control_initial, optimizer=False)
     control_state, control_result = nj.pure(
         lambda: control_step(paired(world_a, behavior_a))
     )(control_initial, seed=11)
-    common_keys = sorted(set(state_aa).intersection(control_state))
-    common_keys = [
-        key
-        for key in common_keys
-        if not key.startswith(("opt/", "ctde_teammate_belief/", "ctde_teammate_actor/"))
-    ]
-    assert common_keys
-    for key in common_keys:
-        np.testing.assert_array_equal(
-            np.asarray(state_aa[key]),
-            np.asarray(control_state[key]),
-            err_msg=key,
-        )
+    assert_common_state_equal(state_aa, control_state, optimizer=False)
+    assert_common_state_equal(state_aa, control_state, optimizer=True)
     control_metrics = control_result[2]
     for key in (
         "loss/policy",
