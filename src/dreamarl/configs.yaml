@@ -197,6 +197,10 @@ ctde_generalist_mask_mean:
   agent:
     action_mask_reduction: mean
 
+ctde_generalist_mask_balanced:
+  agent:
+    action_mask_reduction: balanced
+
 ctde_two_step:
   agent:
     marl:

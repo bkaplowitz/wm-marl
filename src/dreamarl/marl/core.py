@@ -23,6 +23,7 @@ from ..models.ctde import CentralAttentionCritic, JointObservationJEPA
 from ..models.heads import (
     apply_action_mask,
     apply_predicted_action_mask,
+    balanced_binary_event_loss,
     binary_vector_loss,
 )
 from ..training.ctde import (
@@ -186,8 +187,10 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         self.action_mask_reduction = str(
             getattr(config, "action_mask_reduction", "sum")
         )
-        if self.action_mask_reduction not in {"sum", "mean"}:
-            raise ValueError("action_mask_reduction must be 'sum' or 'mean'")
+        if self.action_mask_reduction not in {"sum", "mean", "balanced"}:
+            raise ValueError(
+                "action_mask_reduction must be 'sum', 'mean', or 'balanced'"
+            )
         self.ctde_mask_horizons = (
             tuple(int(x) for x in marl.ctde.mask_calibration.horizons)
             if self.ctde_mask_calibration
@@ -501,11 +504,41 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         if self.config.contdisc:
             continuation *= 1.0 - 1.0 / float(self.config.horizon)
         continuation_loss = self.ctde_con(hidden, 3).loss(continuation)
+        mask_target = grouped_mask[:, 1:]
+        mask_output = self.ctde_mask(hidden, 3)
         mask_loss = binary_vector_loss(
-            self.ctde_mask(hidden, 3),
-            grouped_mask[:, 1:],
+            mask_output,
+            mask_target,
             self.action_mask_reduction,
         )
+        mask_binary = (
+            mask_output.output if isinstance(mask_output, jaxouts.Agg) else mask_output
+        )
+        mask_prediction = mask_binary.logit >= 0.0
+        mask_event_weight = weight[..., None]
+        positive_weight = mask_event_weight * mask_target.astype(jnp.float32)
+        negative_weight = mask_event_weight * (~mask_target).astype(jnp.float32)
+        attack_selector = (
+            jnp.arange(mask_target.shape[-1], dtype=jnp.int32) >= 6
+        ).astype(jnp.float32)
+        attack_positive_weight = positive_weight * attack_selector
+
+        def event_rate(matches, event_weight):
+            return (matches.astype(jnp.float32) * event_weight).sum() / jnp.maximum(
+                event_weight.sum(), 1.0
+            )
+
+        mask_positive_recall = event_rate(mask_prediction, positive_weight)
+        mask_negative_specificity = event_rate(~mask_prediction, negative_weight)
+        attack_mask_positive_recall = event_rate(
+            mask_prediction, attack_positive_weight
+        )
+        attack_mask_target_rate = attack_positive_weight.sum() / jnp.maximum(
+            (mask_event_weight * attack_selector).sum(), 1.0
+        )
+        attack_mask_prediction_rate = (
+            mask_prediction.astype(jnp.float32) * mask_event_weight * attack_selector
+        ).sum() / jnp.maximum((mask_event_weight * attack_selector).sum(), 1.0)
         alive_loss = self.ctde_alive(hidden, 3).loss(grouped_alive[:, 1:])
         alive_valid = (
             source_alive if self.ctde_soft_liveness else source_present
@@ -544,6 +577,11 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             "ctde/reward_loss": masked_metric(reward_loss),
             "ctde/continuation_loss": masked_metric(continuation_loss),
             "ctde/action_mask_loss": masked_metric(mask_loss),
+            "ctde/action_mask_positive_recall": mask_positive_recall,
+            "ctde/action_mask_negative_specificity": mask_negative_specificity,
+            "ctde/attack_mask_positive_recall": attack_mask_positive_recall,
+            "ctde/attack_mask_target_rate": attack_mask_target_rate,
+            "ctde/attack_mask_prediction_rate": attack_mask_prediction_rate,
             "ctde/alive_loss": (alive_loss.astype(jnp.float32) * alive_weight).sum()
             / alive_count,
             "ctde/posterior_kl": masked_metric(posterior_kl),
@@ -776,6 +814,8 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             mask_loss = jax.nn.softplus(mask_logit) - target_mask * mask_logit
             if self.action_mask_reduction == "mean":
                 mask_loss = mask_loss.mean(axis=-1)
+            elif self.action_mask_reduction == "balanced":
+                mask_loss = balanced_binary_event_loss(mask_loss, target_mask)
             else:
                 mask_loss = mask_loss.sum(axis=-1)
             alive_loss = jax.nn.softplus(alive_logit) - target_alive * alive_logit

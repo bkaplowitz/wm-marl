@@ -107,6 +107,7 @@ def test_default_config_is_clean_single_agent_dmc() -> None:
         "local",
         "ctde",
         "ctde_generalist",
+        "ctde_generalist_mask_balanced",
         "ctde_generalist_mask_mean",
         "ctde_mask",
         "ctde_mask_mean",

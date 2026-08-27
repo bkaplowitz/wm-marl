@@ -410,6 +410,32 @@ def test_mean_binary_mask_loss_is_invariant_to_action_count() -> None:
     np.testing.assert_allclose(long_sum, 2.0 * short_sum)
 
 
+def test_balanced_binary_mask_loss_equalizes_classes_and_action_count() -> None:
+    short_logits = jnp.array([[2.0, -1.0, -2.0, 1.0]], jnp.float32)
+    short_target = jnp.array([[1, 1, 0, 0]], bool)
+    long_logits = jnp.concatenate([short_logits, short_logits], axis=-1)
+    long_target = jnp.concatenate([short_target, short_target], axis=-1)
+    short = outs.Agg(outs.Binary(short_logits), 1, jnp.sum)
+    long = outs.Agg(outs.Binary(long_logits), 1, jnp.sum)
+
+    short_loss = binary_vector_loss(short, short_target, "balanced")
+    long_loss = binary_vector_loss(long, long_target, "balanced")
+    per_event = outs.Binary(short_logits).loss(short_target)
+    expected = 0.5 * (per_event[0, :2].mean() + per_event[0, 2:].mean())
+
+    np.testing.assert_allclose(short_loss[0], expected)
+    np.testing.assert_allclose(long_loss, short_loss)
+
+
+def test_balanced_binary_mask_loss_handles_single_class_rows() -> None:
+    logits = jnp.zeros((2, 4), jnp.float32)
+    output = outs.Agg(outs.Binary(logits), 1, jnp.sum)
+    target = jnp.array([[1, 1, 1, 1], [0, 0, 0, 0]], bool)
+    loss = binary_vector_loss(output, target, "balanced")
+
+    np.testing.assert_allclose(loss, jnp.log(2.0))
+
+
 def test_singleton_core_matches_local_training_exactly() -> None:
     local_obs_space, local_act_space = _local_spaces(metadata=True)
     team_obs_space, team_act_space = _team_spaces(1)
@@ -577,6 +603,11 @@ def test_ctde_trains_joint_imagination_and_central_critic() -> None:
         "loss/ctde_interface",
         "loss/ctde_reward",
         "ctde/embedding_cosine",
+        "ctde/action_mask_positive_recall",
+        "ctde/action_mask_negative_specificity",
+        "ctde/attack_mask_positive_recall",
+        "ctde/attack_mask_target_rate",
+        "ctde/attack_mask_prediction_rate",
         "opt/local_world/grad_norm",
         "opt/joint_world/grad_norm",
         "opt/actor/grad_norm",

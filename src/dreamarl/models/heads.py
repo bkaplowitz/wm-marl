@@ -160,14 +160,50 @@ def binary_vector_loss(output, target, reduction="sum"):
             if isinstance(output, outs.Agg)
             else binary.loss(target).sum(axis=-1)
         )
+    per_event = binary.loss(target)
     if reduction == "mean":
-        return binary.loss(target).mean(axis=-1)
+        return per_event.mean(axis=-1)
+    if reduction == "balanced":
+        return balanced_binary_event_loss(per_event, target)
     raise ValueError(f"unknown binary vector reduction: {reduction!r}")
+
+
+def balanced_binary_event_loss(per_event, target):
+    """Average positive and negative binary events with equal class weight.
+
+    Action-mask dimensionality and class balance both change across SMAC maps.
+    This reduction assigns half of the loss mass to factual legal actions and
+    half to factual illegal actions. If a row contains only one class, that
+    class receives the full loss mass instead of producing an empty mean.
+    """
+
+    per_event = jnp.asarray(per_event, jnp.float32)
+    target = jnp.asarray(target, jnp.float32)
+    if per_event.shape != target.shape:
+        raise ValueError(
+            f"binary loss shape {per_event.shape} does not match target "
+            f"shape {target.shape}"
+        )
+    positive = target
+    negative = 1.0 - target
+    positive_count = positive.sum(axis=-1)
+    negative_count = negative.sum(axis=-1)
+    positive_loss = (per_event * positive).sum(axis=-1) / jnp.maximum(
+        positive_count, 1.0
+    )
+    negative_loss = (per_event * negative).sum(axis=-1) / jnp.maximum(
+        negative_count, 1.0
+    )
+    has_positive = (positive_count > 0).astype(jnp.float32)
+    has_negative = (negative_count > 0).astype(jnp.float32)
+    class_count = jnp.maximum(has_positive + has_negative, 1.0)
+    return (positive_loss * has_positive + negative_loss * has_negative) / class_count
 
 
 __all__ = [
     "MLPHead",
     "apply_action_mask",
     "apply_predicted_action_mask",
+    "balanced_binary_event_loss",
     "binary_vector_loss",
 ]

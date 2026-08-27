@@ -104,6 +104,19 @@ def test_mask_mean_treatment_changes_only_per_action_bce_reduction() -> None:
     assert differences == {"agent.action_mask_reduction": ("sum", "mean")}
 
 
+def test_mask_balanced_treatment_changes_only_bce_reduction() -> None:
+    control = _resolved("ctde_generalist")
+    treatment = _resolved("ctde_generalist", "ctde_generalist_mask_balanced")
+    keys = set(control.flat) | set(treatment.flat)
+    differences = {
+        key: (control.flat.get(key), treatment.flat.get(key))
+        for key in keys
+        if control.flat.get(key) != treatment.flat.get(key)
+    }
+
+    assert differences == {"agent.action_mask_reduction": ("sum", "balanced")}
+
+
 def test_generalist_replay_factory_selects_the_dual_view_transport(tmp_path) -> None:
     config = _resolved("ctde_generalist").update(logdir=str(tmp_path / "run"))
     replay = make_replay(config, "replay")
