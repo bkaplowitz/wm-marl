@@ -117,6 +117,30 @@ class GroupedOptimizer(nj.Module):
                     f"{prefix}/param_count": jnp.asarray(sum(counts.values()), f32),
                 }
             )
+            if len(modules) > 1:
+                for module in (
+                    module
+                    for module in modules
+                    if module.name.startswith("ctde_teammate_")
+                ):
+                    module_prefix = f"{module.path}/"
+                    module_grads = {
+                        name: value
+                        for name, value in group_grads.items()
+                        if name.startswith(module_prefix)
+                    }
+                    module_updates = {
+                        name: value
+                        for name, value in updates.items()
+                        if name.startswith(module_prefix)
+                    }
+                    if module_grads:
+                        metrics[f"{prefix}/{module.name}_grad_norm"] = (
+                            optax.global_norm(module_grads)
+                        )
+                        metrics[f"{prefix}/{module.name}_update_norm"] = (
+                            optax.global_norm(module_updates)
+                        )
             if nj.creating():
                 print(self._summarize_group(key, counts))
 

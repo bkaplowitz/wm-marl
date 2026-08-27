@@ -19,7 +19,11 @@ from dreamarl.models.heads import (
     apply_predicted_action_mask,
     binary_vector_loss,
 )
-from dreamarl.models.ctde import JointObservationJEPA
+from dreamarl.models.ctde import (
+    JointObservationJEPA,
+    TeammateActionBelief,
+    TeammateBeliefActorAdapter,
+)
 from dreamarl.models.normalize import Normalize
 from dreamarl.training.learner import masked_mean
 from dreamarl.training.optimization import OptimizationMixin
@@ -187,6 +191,8 @@ def test_categorical_policy_head_applies_configured_unimix() -> None:
     plain = nj.pure(lambda: distribution(0.0))(params, seed=81)[1]
     probabilities = jax.nn.softmax(mixed.logits, axis=-1)
 
+    np.testing.assert_array_equal(mixed.raw_logits, plain.raw_logits)
+    assert mixed.unimix == 0.5
     assert float(probabilities.min()) >= 0.5 / 4 - 1e-6
     assert not np.allclose(np.asarray(mixed.logits), np.asarray(plain.logits))
 
@@ -298,6 +304,621 @@ def test_decentralized_policy_is_invariant_to_peer_histories() -> None:
     )
     np.testing.assert_array_equal(changed_logits, baseline_logits)
     np.testing.assert_array_equal(changed_world, baseline_world)
+
+
+def _teammate_belief_v2_agent(team_size=3, action_count=4, *, enabled=True):
+    local_observations = {
+        "vector": elements.Space(np.float32, (3,)),
+        "reward": elements.Space(np.float32, ()),
+        "agent_present": elements.Space(bool, ()),
+        "agent_alive": elements.Space(bool, ()),
+        "controllable_alive": elements.Space(bool, ()),
+        "action_mask": elements.Space(bool, (action_count,)),
+        "is_first": elements.Space(bool, ()),
+        "is_last": elements.Space(bool, ()),
+        "is_terminal": elements.Space(bool, ()),
+    }
+    observations = {
+        key: (
+            space
+            if key in {"is_first", "is_last", "is_terminal"}
+            else add_agent_axis(space, team_size)
+        )
+        for key, space in local_observations.items()
+    }
+    actions = {
+        "action": add_agent_axis(
+            elements.Space(np.int32, (), 0, action_count), team_size
+        )
+    }
+    config = _agent_config(team_size, "ctde").update(
+        {
+            "marl.ctde.teammate_belief.enabled": enabled,
+            "marl.ctde.teammate_belief.layers": 1,
+            "marl.ctde.teammate_belief.units": 8,
+            "marl.ctde.teammate_belief.outscale": 1.0,
+            "marl.ctde.teammate_belief.adapter_layers": 1,
+            "marl.ctde.teammate_belief.adapter_units": 8,
+            "policy.layers": 1,
+            "policy.units": 8,
+            "marl.ctde.critic.width": 8,
+            "marl.ctde.critic.heads": 1,
+            "marl.ctde.critic.layers": 1,
+            "marl.ctde.critic.value_layers": 1,
+            "marl.ctde.critic.value_units": 8,
+        }
+    )
+    agent = object.__new__(MARLCore)
+    MARLCore.__init__(agent, observations, actions, config)
+    return agent
+
+
+def test_teammate_belief_v2_initial_policy_and_pol_params_equal_control() -> None:
+    control = _teammate_belief_v2_agent(enabled=False)
+    treatment = _teammate_belief_v2_agent(enabled=True)
+    local_state = jax.random.normal(jax.random.key(1001), (3, 6))
+    action_mask = jnp.asarray(
+        [[True, True, False, True], [True, False, True, True], [True] * 4]
+    )
+
+    def initialize(agent):
+        def forward():
+            policy = agent.policy_distribution(local_state, 1, action_mask)
+            return policy["action"].logits
+
+        params = nj.init(forward)({}, seed=1002)
+        output = nj.pure(forward)(params, seed=1003)[1]
+        return params, output
+
+    control_params, control_logits = initialize(control)
+    treatment_params, treatment_logits = initialize(treatment)
+    np.testing.assert_array_equal(treatment_logits, control_logits)
+    for key, value in control_params.items():
+        if key.startswith("pol/"):
+            np.testing.assert_array_equal(treatment_params[key], value)
+    residual = treatment_params["ctde_teammate_actor/residual/kernel"]
+    np.testing.assert_array_equal(residual, jnp.zeros_like(residual))
+    assert treatment.policy_keys == (
+        "^(enc|dyn|pol|ctde_teammate_belief|ctde_teammate_actor)/"
+    )
+
+
+def test_teammate_belief_v2_creation_preserves_base_rng_and_sampling() -> None:
+    control = _teammate_belief_v2_agent(enabled=False)
+    treatment = _teammate_belief_v2_agent(enabled=True)
+    local_state = jax.random.normal(jax.random.key(1004), (3, 6))
+    action_mask = jnp.ones((3, 4), bool)
+
+    def initialize(agent, seed):
+        def forward():
+            policy = agent.policy_distribution(local_state, 1, action_mask)
+            action = policy["action"].sample(nj.seed())
+            sentinel = nj.seed()
+            return policy["action"].logits, action, sentinel
+
+        return nj.pure(forward)({}, create=True, modify=True, ignore=False, seed=seed)
+
+    control_state, control_output = initialize(control, 1005)
+    treatment_state, treatment_output = initialize(treatment, 1005)
+    repeated_state, repeated_output = initialize(treatment, 1005)
+    different_state, _ = initialize(treatment, 1006)
+    _assert_tree_equal(treatment_output, control_output)
+    _assert_tree_equal(repeated_output, treatment_output)
+    _assert_tree_equal(repeated_state, treatment_state)
+    for key, value in control_state.items():
+        np.testing.assert_array_equal(treatment_state[key], value, err_msg=key)
+
+    predictor_key = "ctde_teammate_belief/layer0/kernel"
+    adapter_key = "ctde_teammate_actor/own_projection/kernel"
+    for key in (predictor_key, adapter_key):
+        assert float(jnp.linalg.norm(treatment_state[key])) > 0.0
+        assert not np.array_equal(
+            np.asarray(treatment_state[key]), np.asarray(different_state[key])
+        )
+
+
+def test_teammate_belief_v2_zero_adapter_preserves_categorical_semantics() -> None:
+    control = _teammate_belief_v2_agent(enabled=False)
+    treatment = _teammate_belief_v2_agent(enabled=True)
+    local_state = jax.random.normal(jax.random.key(1004), (3, 2, 6))
+    action_mask = jnp.asarray(
+        [
+            [[True, True, False, True], [True, False, True, True]],
+            [[True, True, True, False], [True, True, False, True]],
+            [[True, False, True, True], [True, True, True, False]],
+        ]
+    )
+    availability_logits = jnp.linspace(-2.0, 2.0, 4)[None, None]
+    availability_logits = jnp.broadcast_to(availability_logits, action_mask.shape)
+    exact_rows = jnp.zeros(action_mask.shape[:-1], bool).at[:, 0].set(True)
+
+    def summarize(distribution, seed):
+        action = distribution["action"]
+        event = jnp.zeros(action.logits.shape[:-1], jnp.int32)
+        return {
+            "logits": action.logits,
+            "probability": jax.nn.softmax(action.logits, axis=-1),
+            "logp": action.logp(event),
+            "entropy": action.entropy(),
+            "pred": action.pred(),
+            "sample": action.sample(jax.random.key(seed)),
+        }
+
+    def initialize(agent):
+        def forward():
+            exact = agent.policy_distribution(local_state, 2, action_mask)
+            locally_predicted = agent.policy_distribution(local_state, 2, None)
+            imagined = agent.imagination_policy_distribution(
+                local_state,
+                {
+                    "action_mask": agent.team.unfold_sequence(action_mask),
+                    "present": jnp.ones((1, 2, 3), bool),
+                    "controllable_alive": jnp.ones((1, 2, 3), bool),
+                },
+            )
+            calibrated, _ = agent._ctde_probabilistic_policy(
+                local_state,
+                2,
+                jnp.ones(action_mask.shape[:-1], bool),
+                availability_logits=availability_logits,
+                exact_mask=action_mask,
+                exact_rows=exact_rows,
+            )
+            return {
+                "exact": summarize(exact, 1005),
+                "locally_predicted": summarize(locally_predicted, 1006),
+                "imagined": summarize(imagined, 1007),
+                "calibrated": summarize(calibrated, 1008),
+            }
+
+        params = nj.init(forward)({}, seed=1009)
+        outputs = nj.pure(forward)(params, seed=1010)[1]
+        return params, outputs
+
+    control_params, control_outputs = initialize(control)
+    treatment_params, treatment_outputs = initialize(treatment)
+    _assert_tree_equal(treatment_outputs, control_outputs)
+    for key, value in control_params.items():
+        if key.startswith("pol/"):
+            np.testing.assert_array_equal(treatment_params[key], value)
+
+
+def test_teammate_belief_v2_nonzero_residual_preserves_unimix_then_masks() -> None:
+    agent = _teammate_belief_v2_agent(enabled=True)
+    local_state = jax.random.normal(jax.random.key(1011), (3, 6))
+    belief_context = jnp.linspace(-1.0, 1.0, 3 * 2 * 4).reshape(3, 2, 4)
+    action_mask = jnp.asarray(
+        [[True, True, False, True], [True, False, True, True], [True] * 4]
+    )
+    availability_logits = jnp.asarray(
+        [[-2.0, -1.0, 1.0, 2.0], [2.0, 1.0, -1.0, -2.0], [0.0] * 4]
+    )
+
+    def forward():
+        base = agent.pol(local_state, bdims=1)
+        treated, residual = agent._teammate_policy_before_mask(
+            local_state, 1, belief_context=belief_context
+        )
+        exact = apply_action_mask(treated, action_mask, "action")
+        predicted = apply_predicted_action_mask(treated, availability_logits, "action")
+        return {
+            "raw": base["action"].raw_logits,
+            "residual": residual,
+            "treated": treated["action"].logits,
+            "exact": exact["action"].logits,
+            "predicted": predicted["action"].logits,
+        }
+
+    params = nj.init(forward)({}, seed=1012)
+    params = dict(
+        params,
+        **{
+            "ctde_teammate_actor/residual/kernel": (
+                jnp.ones_like(params["ctde_teammate_actor/residual/kernel"])
+                * jnp.asarray([-10.0, -3.0, 3.0, 10.0])[None]
+            )
+        },
+    )
+    output = nj.pure(forward)(params, seed=1013)[1]
+    assert float(jnp.abs(output["residual"]).max()) > 0.0
+
+    unimix = float(agent.config.policy.unimix)
+    mixed_probability = (1.0 - unimix) * jax.nn.softmax(
+        output["raw"] + output["residual"], axis=-1
+    ) + unimix / 4
+    np.testing.assert_allclose(
+        jax.nn.softmax(output["treated"], axis=-1),
+        mixed_probability,
+        rtol=1e-6,
+        atol=1e-7,
+    )
+    assert float(mixed_probability.min()) >= unimix / 4 - 1e-7
+
+    exact_probability = mixed_probability * action_mask
+    exact_probability /= exact_probability.sum(axis=-1, keepdims=True)
+    np.testing.assert_allclose(
+        jax.nn.softmax(output["exact"], axis=-1),
+        exact_probability,
+        rtol=1e-6,
+        atol=1e-7,
+    )
+    availability = jax.nn.sigmoid(availability_logits)
+    predicted_probability = mixed_probability * availability
+    predicted_probability /= predicted_probability.sum(axis=-1, keepdims=True)
+    np.testing.assert_allclose(
+        jax.nn.softmax(output["predicted"], axis=-1),
+        predicted_probability,
+        rtol=1e-6,
+        atol=1e-7,
+    )
+
+
+def test_teammate_belief_v2_context_is_bounded_offset_invariant_evidence() -> None:
+    agent = _teammate_belief_v2_agent()
+    logits = jnp.asarray([[[0.0, 1.0, -1.0, 2.0], [3.0, 3.0, 3.0, 3.0]]])
+    context = agent._teammate_belief_context(logits)
+    shifted = agent._teammate_belief_context(logits + 1_000.0)
+    uniform = agent._teammate_belief_context(jnp.ones_like(logits) * -17.0)
+    np.testing.assert_allclose(context, shifted, atol=1e-6)
+    np.testing.assert_array_equal(uniform, jnp.zeros_like(uniform))
+    assert float(jnp.abs(context).max()) <= 1.0
+
+
+def test_teammate_actor_uniform_context_remains_zero_after_parameter_change() -> None:
+    adapter = TeammateBeliefActorAdapter(
+        action_count=5,
+        units=8,
+        layers=1,
+        name="ctde_teammate_actor",
+    )
+    local_state = jax.random.normal(jax.random.key(1010), (3, 7))
+    zero_context = jnp.zeros((3, 10), jnp.float32)
+
+    def forward(context):
+        return adapter(local_state, context, bdims=1)
+
+    params = nj.init(forward)({}, zero_context, seed=1011)
+    changed = {
+        key: (
+            jax.random.normal(jax.random.key(1012 + index), value.shape)
+            if jnp.issubdtype(value.dtype, jnp.inexact)
+            else value
+        )
+        for index, (key, value) in enumerate(params.items())
+    }
+    output = nj.pure(forward)(changed, zero_context, seed=1020)[1]
+    np.testing.assert_array_equal(output, jnp.zeros_like(output))
+
+
+def test_teammate_belief_v2_stops_predictor_and_adapter_inputs() -> None:
+    predictor = TeammateActionBelief(
+        peers=2,
+        action_count=4,
+        layers=1,
+        units=8,
+        outscale=1.0,
+        name="ctde_teammate_belief",
+    )
+    adapter = TeammateBeliefActorAdapter(
+        action_count=4,
+        units=8,
+        layers=1,
+        name="ctde_teammate_actor",
+    )
+    local_state = jax.random.normal(jax.random.key(1030), (3, 7))
+    context = jax.random.normal(jax.random.key(1031), (3, 8))
+
+    def predictor_output(value):
+        return predictor(value, 1)
+
+    predictor_params = nj.init(predictor_output)({}, local_state, seed=1032)
+    predictor_grad = jax.grad(
+        lambda value: jnp.square(
+            nj.pure(predictor_output)(predictor_params, value, seed=1033)[1]
+        ).sum()
+    )(local_state)
+    np.testing.assert_array_equal(predictor_grad, jnp.zeros_like(predictor_grad))
+
+    def adapter_output(state, belief):
+        return adapter(state, belief, 1)
+
+    adapter_params = nj.init(adapter_output)({}, local_state, context, seed=1034)
+    adapter_params = dict(
+        adapter_params,
+        **{
+            "ctde_teammate_actor/residual/kernel": jnp.ones_like(
+                adapter_params["ctde_teammate_actor/residual/kernel"]
+            )
+        },
+    )
+    state_grad, context_grad = jax.grad(
+        lambda state, belief: jnp.square(
+            nj.pure(adapter_output)(adapter_params, state, belief, seed=1035)[1]
+        ).sum(),
+        argnums=(0, 1),
+    )(local_state, context)
+    np.testing.assert_array_equal(state_grad, jnp.zeros_like(state_grad))
+    np.testing.assert_array_equal(context_grad, jnp.zeros_like(context_grad))
+
+
+def test_teammate_belief_v2_actor_and_predictor_ownership_are_disjoint() -> None:
+    agent = _teammate_belief_v2_agent()
+    local_state = jax.random.normal(jax.random.key(1040), (3, 2, 6))
+    action_mask = jnp.ones((3, 2, 4), bool)
+
+    def objectives():
+        policy = agent.policy_distribution(local_state, 2, action_mask)
+        actor = jnp.square(policy["action"].logits).sum()
+        belief = agent._teammate_belief_logits(local_state, 2)
+        labels = jnp.zeros(belief.shape[:-1], jnp.int32)
+        supervised = -jnp.take_along_axis(
+            jax.nn.log_softmax(belief, axis=-1),
+            labels[..., None],
+            axis=-1,
+        ).mean()
+        return actor, supervised
+
+    params = nj.init(objectives)({}, seed=1041)
+    params = dict(
+        params,
+        **{
+            "ctde_teammate_actor/residual/kernel": jnp.ones_like(
+                params["ctde_teammate_actor/residual/kernel"]
+            )
+            * 0.1
+        },
+    )
+
+    def gradient(index):
+        return jax.grad(lambda state: nj.pure(objectives)(state, seed=1042)[1][index])(
+            params
+        )
+
+    actor_grad = gradient(0)
+    supervised_grad = gradient(1)
+    predictor_keys = [key for key in params if key.startswith("ctde_teammate_belief/")]
+    adapter_keys = [key for key in params if key.startswith("ctde_teammate_actor/")]
+    assert predictor_keys and adapter_keys
+    for key in predictor_keys:
+        np.testing.assert_array_equal(actor_grad[key], jnp.zeros_like(actor_grad[key]))
+    for key in adapter_keys:
+        np.testing.assert_array_equal(
+            supervised_grad[key], jnp.zeros_like(supervised_grad[key])
+        )
+    assert any(float(jnp.linalg.norm(actor_grad[key])) > 0.0 for key in adapter_keys)
+    assert any(
+        float(jnp.linalg.norm(supervised_grad[key])) > 0.0 for key in predictor_keys
+    )
+
+
+def test_teammate_belief_v2_execution_is_invariant_to_peer_state_rows() -> None:
+    agent = _teammate_belief_v2_agent()
+    local_state = jax.random.normal(jax.random.key(1050), (3, 6))
+    action_mask = jnp.ones((3, 4), bool)
+
+    def focal_logits(value):
+        return agent.policy_distribution(value, 1, action_mask)["action"].logits[0]
+
+    params = nj.init(focal_logits)({}, local_state, seed=1051)
+    params = dict(
+        params,
+        **{
+            "ctde_teammate_actor/residual/kernel": jnp.ones_like(
+                params["ctde_teammate_actor/residual/kernel"]
+            )
+            * 0.1
+        },
+    )
+    changed = local_state.at[1:].set(
+        jax.random.normal(jax.random.key(1052), local_state[1:].shape) * 100.0
+    )
+    baseline = nj.pure(focal_logits)(params, local_state, seed=1053)[1]
+    intervened = nj.pure(focal_logits)(params, changed, seed=1053)[1]
+    np.testing.assert_array_equal(intervened, baseline)
+
+
+@pytest.mark.parametrize(("team_size", "action_count"), ((5, 9), (8, 14)))
+def test_teammate_belief_v2_policy_paths_and_smac_shapes(
+    team_size: int,
+    action_count: int,
+) -> None:
+    agent = _teammate_belief_v2_agent(team_size, action_count)
+    sequence_length = 16
+    local_state = jax.random.normal(
+        jax.random.key(1060 + team_size), (team_size, sequence_length, 6)
+    )
+    action_mask = jnp.ones((team_size, sequence_length, action_count), bool)
+    action_mask = action_mask.at[..., -1].set(False)
+    valid = jnp.ones((team_size, sequence_length), jnp.float32)
+
+    def forward():
+        online = agent.policy_distribution(local_state, 2, action_mask)
+        imagined = agent.imagination_policy_distribution(
+            local_state,
+            {
+                "action_mask": agent.team.unfold_sequence(action_mask),
+                "present": jnp.ones((1, sequence_length, team_size), bool),
+                "controllable_alive": jnp.ones((1, sequence_length, team_size), bool),
+            },
+        )
+        metrics = agent._teammate_belief_policy_metrics(local_state, action_mask, valid)
+        probabilistic, _ = agent._ctde_probabilistic_policy(
+            local_state,
+            2,
+            jnp.ones((team_size, sequence_length), bool),
+            availability_logits=jnp.zeros_like(action_mask, jnp.float32),
+            exact_mask=action_mask,
+            exact_rows=jnp.ones((team_size, sequence_length), bool),
+        )
+        return (
+            online["action"].logits,
+            imagined["action"].logits,
+            probabilistic["action"].logits,
+            metrics,
+        )
+
+    params = nj.init(forward)({}, seed=1070 + team_size)
+    params = dict(
+        params,
+        **{
+            "ctde_teammate_actor/residual/kernel": (
+                jnp.ones_like(params["ctde_teammate_actor/residual/kernel"])
+                * jnp.arange(action_count, dtype=jnp.float32)[None]
+                * 0.1
+            )
+        },
+    )
+    online, imagined, probabilistic, metrics = nj.pure(forward)(
+        params, seed=1080 + team_size
+    )[1]
+    np.testing.assert_array_equal(online, imagined)
+    np.testing.assert_array_equal(online, probabilistic)
+    np.testing.assert_array_equal(
+        jax.nn.softmax(online, axis=-1)[..., -1],
+        jnp.zeros_like(online[..., -1]),
+    )
+    assert online.shape == (team_size, sequence_length, action_count)
+    for value in metrics.values():
+        assert np.isfinite(float(value))
+    for horizon in (1, 4, 8, 15):
+        for suffix in (
+            "valid_fraction",
+            "valid_count",
+            "logit_rms",
+            "context_norm",
+            "residual_rms",
+            "policy_kl_vs_zero",
+            "policy_flip_vs_zero",
+            "policy_kl_vs_peer_shuffle",
+            "policy_flip_vs_peer_shuffle",
+        ):
+            assert f"ctde/teammate_belief_h{horizon}_{suffix}" in metrics
+    assert float(metrics["ctde/teammate_belief_policy_kl_vs_zero"]) > 0.0
+
+
+def test_teammate_belief_v2_online_policy_carry_is_finite_and_synced() -> None:
+    team_size = 3
+    agent = _teammate_belief_v2_agent(team_size, 4)
+    carry = agent.init_policy(1)
+    observation = {
+        "vector": jax.random.normal(jax.random.key(1090), (1, team_size, 3)),
+        "reward": jnp.zeros((1, team_size), jnp.float32),
+        "agent_present": jnp.ones((1, team_size), bool),
+        "agent_alive": jnp.ones((1, team_size), bool),
+        "controllable_alive": jnp.ones((1, team_size), bool),
+        "action_mask": jnp.ones((1, team_size, 4), bool),
+        "is_first": jnp.ones((1,), bool),
+        "is_last": jnp.zeros((1,), bool),
+        "is_terminal": jnp.zeros((1,), bool),
+    }
+
+    def step():
+        return agent.policy(carry, observation, mode="eval")
+
+    params = nj.init(step)({}, seed=1091)
+    _, action, output = nj.pure(step)(params, seed=1092)[1]
+    assert action["action"].shape == (1, team_size)
+    assert all(np.asarray(value).all() for value in output["finite"].values())
+    assert any(key.startswith("ctde_teammate_belief/") for key in params)
+    assert any(key.startswith("ctde_teammate_actor/") for key in params)
+
+
+def test_teammate_belief_v2_replay_alignment_and_conditional_masks() -> None:
+    agent = _teammate_belief_v2_agent(team_size=3, action_count=7)
+    source_state = jax.random.normal(jax.random.key(1100), (1, 2, 3, 6))
+    current_action = jnp.asarray([[[0, 1, 6], [3, 2, 1]]], jnp.int32)
+    previous_action = jnp.full_like(current_action, 4)
+    present = jnp.ones((1, 2, 3), bool)
+    alive = jnp.asarray([[[True, True, False], [True, True, True]]])
+    action_mask = jnp.ones((1, 2, 3, 7), bool)
+    action_mask = action_mask.at[0, 0, 2].set(
+        jnp.asarray([True, False, False, False, False, False, True])
+    )
+    current_first = jnp.asarray([[True, False]])
+    next_first = jnp.asarray([[False, True]])
+
+    def loss_and_metrics(mask, roster):
+        return agent._ctde_teammate_belief_loss(
+            source_state,
+            current_action,
+            previous_action,
+            roster,
+            alive,
+            mask,
+            current_first,
+            next_first,
+        )
+
+    params = nj.init(loss_and_metrics)({}, action_mask, present, seed=1101)
+    _, metrics = nj.pure(loss_and_metrics)(params, action_mask, present, seed=1102)[1]
+    assert float(metrics["ctde/teammate_belief_target_count"]) == 4.0
+    assert float(metrics["ctde/teammate_belief_active_peer_count"]) == 2.0
+    assert float(metrics["ctde/teammate_belief_nonnoop_count"]) == 3.0
+    assert float(metrics["ctde/teammate_belief_attack_count"]) == 2.0
+    assert float(metrics["ctde/teammate_belief_dead_peer_fraction"]) == pytest.approx(
+        0.5
+    )
+
+    illegal = action_mask.at[0, 0, 2, 6].set(False)
+    _, illegal_metrics = nj.pure(loss_and_metrics)(params, illegal, present, seed=1102)[
+        1
+    ]
+    assert float(illegal_metrics["ctde/teammate_belief_target_count"]) == 2.0
+    assert float(illegal_metrics["ctde/teammate_belief_attack_count"]) == 0.0
+
+    absent = present.at[0, 0, 2].set(False)
+    _, absent_metrics = nj.pure(loss_and_metrics)(
+        params, action_mask, absent, seed=1102
+    )[1]
+    assert float(absent_metrics["ctde/teammate_belief_target_count"]) == 2.0
+    assert float(absent_metrics["ctde/teammate_belief_dead_peer_fraction"]) == 0.0
+
+
+def test_teammate_belief_v2_labels_use_a_t_not_previous_action() -> None:
+    agent = _teammate_belief_v2_agent(team_size=3, action_count=5)
+    source_state = jnp.ones((1, 1, 3, 6), jnp.float32)
+    current_action = jnp.asarray([[[0, 1, 2]]], jnp.int32)
+    previous_action = jnp.full_like(current_action, 4)
+    present = jnp.ones((1, 1, 3), bool)
+    alive = jnp.ones((1, 1, 3), bool)
+    action_mask = jnp.ones((1, 1, 3, 5), bool)
+    first = jnp.zeros((1, 1), bool)
+
+    def loss_and_metrics():
+        return agent._ctde_teammate_belief_loss(
+            source_state,
+            current_action,
+            previous_action,
+            present,
+            alive,
+            action_mask,
+            first,
+            first,
+        )
+
+    params = nj.init(loss_and_metrics)({}, seed=1110)
+    bias_key = "ctde_teammate_belief/logits/bias"
+    kernel_key = "ctde_teammate_belief/logits/kernel"
+    bias = jnp.arange(10, dtype=jnp.float32) * 0.2
+    params = dict(
+        params,
+        **{
+            bias_key: bias,
+            kernel_key: jnp.zeros_like(params[kernel_key]),
+        },
+    )
+    _, metrics = nj.pure(loss_and_metrics)(params, seed=1111)[1]
+    peer_action = jnp.take(current_action, agent._teammate_peer_indices(), axis=2)
+    log_probability = jax.nn.log_softmax(bias.reshape(2, 5), axis=-1)
+    expected = -jnp.take_along_axis(
+        jnp.broadcast_to(log_probability, (*peer_action.shape, 5)),
+        peer_action[..., None],
+        axis=-1,
+    ).mean()
+    previous_expected = -log_probability[:, 4].mean()
+    actual = metrics["ctde/teammate_belief_nll"]
+    np.testing.assert_allclose(actual, expected, rtol=1e-3, atol=1e-3)
+    assert not np.isclose(float(actual), float(previous_expected))
 
 
 def test_inactive_agents_are_excluded_from_loss() -> None:

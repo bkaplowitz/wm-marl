@@ -117,6 +117,23 @@ def test_mask_balanced_treatment_changes_only_bce_reduction() -> None:
     assert differences == {"agent.action_mask_reduction": ("sum", "balanced")}
 
 
+def test_teammate_belief_v2_is_dormant_and_changes_one_switch() -> None:
+    control = _resolved("ctde_generalist")
+    treatment = _resolved("ctde_generalist", "ctde_teammate_belief_v2")
+    keys = set(control.flat) | set(treatment.flat)
+    differences = {
+        key: (control.flat.get(key), treatment.flat.get(key))
+        for key in keys
+        if control.flat.get(key) != treatment.flat.get(key)
+    }
+
+    assert not control.agent.marl.ctde.teammate_belief.enabled
+    assert treatment.agent.marl.ctde.teammate_belief.enabled
+    assert treatment.agent.marl.ctde.teammate_belief.units == 512
+    assert treatment.agent.marl.ctde.teammate_belief.adapter_units == 256
+    assert differences == {"agent.marl.ctde.teammate_belief.enabled": (False, True)}
+
+
 def test_generalist_replay_factory_selects_the_dual_view_transport(tmp_path) -> None:
     config = _resolved("ctde_generalist").update(logdir=str(tmp_path / "run"))
     replay = make_replay(config, "replay")
@@ -379,6 +396,270 @@ def test_dual_learner_keeps_world_and_behavior_updates_isolated() -> None:
         "opt/critic/grad_norm",
     ):
         assert np.isfinite(float(metrics[key])), key
+
+
+@pytest.mark.parametrize(("team_size", "action_count"), ((5, 9), (8, 14)))
+def test_teammate_belief_v2_dual_learner_keeps_updates_isolated(
+    team_size: int,
+    action_count: int,
+) -> None:
+    """Changing one replay view cannot update the other view's modules."""
+
+    local_observations = {
+        "vector": elements.Space(np.float32, (3,)),
+        "reward": elements.Space(np.float32, ()),
+        "agent_present": elements.Space(bool, ()),
+        "agent_alive": elements.Space(bool, ()),
+        "controllable_alive": elements.Space(bool, ()),
+        "action_mask": elements.Space(bool, (action_count,)),
+        "is_first": elements.Space(bool, ()),
+        "is_last": elements.Space(bool, ()),
+        "is_terminal": elements.Space(bool, ()),
+    }
+    global_fields = {"is_first", "is_last", "is_terminal"}
+    observations = {
+        key: space if key in global_fields else add_agent_axis(space, team_size)
+        for key, space in local_observations.items()
+    }
+    actions = {
+        "action": add_agent_axis(
+            elements.Space(np.int32, (), 0, action_count), team_size
+        )
+    }
+    resolved = _resolved("ctde_generalist", "ctde_teammate_belief_v2", "debug").update(
+        {
+            "replay_context": 2,
+            "agent.num_agents": team_size,
+            "agent.imag_length": 1,
+            "agent.imag_last": 2,
+            "agent.enc.simple.units": 2,
+            "agent.dyn.parallel_transformer.deter": 2,
+            "agent.dyn.parallel_transformer.hidden": 2,
+            "agent.dyn.parallel_transformer.stoch": 1,
+            "agent.dyn.parallel_transformer.classes": 2,
+            "agent.dyn.parallel_transformer.model": 2,
+            "agent.dyn.parallel_transformer.heads": 1,
+            "agent.dyn.parallel_transformer.context": 2,
+            "agent.sigreg.knots": 3,
+            "agent.sigreg.num_proj": 1,
+            "agent.rewhead.units": 2,
+            "agent.conhead.units": 2,
+            "agent.maskhead.units": 2,
+            "agent.policy.units": 2,
+            "agent.value.units": 2,
+            "agent.marl.ctde.joint.width": 2,
+            "agent.marl.ctde.joint.heads": 1,
+            "agent.marl.ctde.joint.context": 2,
+            "agent.marl.ctde.head.units": 2,
+            "agent.marl.ctde.critic.width": 2,
+            "agent.marl.ctde.critic.heads": 1,
+            "agent.marl.ctde.critic.value_units": 2,
+            "agent.marl.ctde.teammate_belief.layers": 1,
+            "agent.marl.ctde.teammate_belief.units": 4,
+            "agent.marl.ctde.teammate_belief.outscale": 1.0,
+            "agent.marl.ctde.teammate_belief.adapter_layers": 1,
+            "agent.marl.ctde.teammate_belief.adapter_units": 4,
+            "agent.opt.warmup": 0,
+            "agent.marl.ctde.opt.warmup": 0,
+        }
+    )
+    config = elements.Config(
+        **resolved.agent,
+        logdir="/tmp/dreamarl-dual-learner-test",
+        seed=0,
+        jax=resolved.jax,
+        batch_size=1,
+        batch_length=2,
+        replay_context=2,
+        replay_sampling="recent_world_uniform_behavior",
+        report_length=1,
+        replica=0,
+        replicas=1,
+    )
+    agent = object.__new__(MARLCore)
+    MARLCore.__init__(agent, observations, actions, config)
+    carry = agent.init_train(1)
+
+    def replay_view(seed, reward_shift=0.0):
+        length = 4
+        data = {
+            "vector": jax.random.normal(
+                jax.random.key(seed), (1, length, team_size, 3)
+            ),
+            "reward": jax.random.normal(
+                jax.random.key(seed + 1), (1, length, team_size)
+            )
+            + reward_shift,
+            "agent_present": jnp.ones((1, length, team_size), bool),
+            "agent_alive": jnp.ones((1, length, team_size), bool),
+            "controllable_alive": jnp.ones((1, length, team_size), bool),
+            "action_mask": jnp.ones((1, length, team_size, action_count), bool),
+            "is_first": jnp.zeros((1, length), bool).at[:, 0].set(True),
+            "is_last": jnp.zeros((1, length), bool),
+            "is_terminal": jnp.zeros((1, length), bool),
+            "action": jax.random.randint(
+                jax.random.key(seed + 2),
+                (1, length, team_size),
+                0,
+                action_count,
+            ),
+            "stepid": jnp.zeros((1, length, 20), jnp.uint8),
+            "consec": jnp.zeros((1, length), jnp.int32),
+        }
+        for key, space in agent.ext_space.items():
+            if key.startswith("_behavior_replay/") or key in data:
+                continue
+            shape = (1, length, *space.shape)
+            data[key] = (
+                jnp.ones(shape, space.dtype)
+                if space.dtype == np.bool_
+                else jnp.zeros(shape, space.dtype)
+            )
+        data["dyn/reset"] = jnp.broadcast_to(
+            data["is_first"][:, :, None], (1, length, team_size)
+        )
+        data["dyn/position"] = jnp.broadcast_to(
+            jnp.arange(length, dtype=jnp.int32)[None, :, None],
+            (1, length, team_size),
+        )
+        data["dyn/active"] = jnp.ones((1, length, team_size), bool)
+        return data
+
+    def paired(world, behavior):
+        return {
+            **world,
+            **{f"_behavior_replay/{key}": value for key, value in behavior.items()},
+        }
+
+    world_a = replay_view(1)
+    world_b = replay_view(2, reward_shift=2.0)
+    behavior_a = replay_view(3)
+    behavior_b = replay_view(4, reward_shift=3.0)
+
+    def step(batch):
+        return agent.train(carry, batch)
+
+    initial = nj.init(lambda: step(paired(world_a, behavior_a)))({}, seed=10)
+    state_aa, result_aa = nj.pure(lambda: step(paired(world_a, behavior_a)))(
+        initial, seed=11
+    )
+    state_ab, result_ab = nj.pure(lambda: step(paired(world_a, behavior_b)))(
+        initial, seed=11
+    )
+    state_ba, _ = nj.pure(lambda: step(paired(world_b, behavior_a)))(initial, seed=11)
+
+    def assert_parameters_equal(left, right, prefixes):
+        keys = [key for key in left if key.startswith(prefixes)]
+        assert keys
+        for key in keys:
+            np.testing.assert_array_equal(np.asarray(left[key]), np.asarray(right[key]))
+
+    assert_parameters_equal(
+        state_aa,
+        state_ab,
+        (
+            "enc/",
+            "dyn/",
+            "rew/",
+            "con/",
+            "actmask/",
+            "ctde_joint/",
+            "ctde_rew/",
+            "ctde_con/",
+            "ctde_mask/",
+            "ctde_alive/",
+            "ctde_teammate_belief/",
+        ),
+    )
+    assert_parameters_equal(
+        state_aa,
+        state_ba,
+        ("pol/", "ctde_teammate_actor/", "ctde_val/"),
+    )
+
+    carry_aa = result_aa[0]
+    carry_ab = result_ab[0]
+    assert jax.tree.structure(carry_aa) == jax.tree.structure(carry_ab)
+    for left, right in zip(jax.tree.leaves(carry_aa), jax.tree.leaves(carry_ab)):
+        np.testing.assert_array_equal(np.asarray(left), np.asarray(right))
+
+    replay_aa = result_aa[1]["replay"]
+    replay_ab = result_ab[1]["replay"]
+    assert replay_aa
+    assert not any(key.startswith("_behavior_replay/") for key in replay_aa)
+    for key in replay_aa:
+        np.testing.assert_array_equal(
+            np.asarray(replay_aa[key]), np.asarray(replay_ab[key])
+        )
+
+    metrics = result_aa[2]
+    for key in (
+        "replay_views/world_loss",
+        "replay_views/behavior_loss",
+        "loss/ctde_embedding",
+        "loss/ctde_teammate_belief",
+        "ctde/teammate_belief_nll",
+        "ctde/teammate_belief_active_peer_nll",
+        "ctde/teammate_belief_nonnoop_nll",
+        "ctde/teammate_belief_attack_nll",
+        "ctde/teammate_belief_policy_kl_vs_zero",
+        "ctde/teammate_belief_policy_kl_vs_peer_shuffle",
+        "ctde/teammate_belief_residual_rms",
+        "loss/policy",
+        "loss/value",
+        "loss/repval",
+        "opt/local_world/grad_norm",
+        "opt/joint_world/grad_norm",
+        "opt/actor/grad_norm",
+        "opt/actor/ctde_teammate_actor_grad_norm",
+        "opt/actor/ctde_teammate_actor_update_norm",
+        "opt/critic/grad_norm",
+    ):
+        assert np.isfinite(float(metrics[key])), key
+
+    control_config = config.update({"marl.ctde.teammate_belief.enabled": False})
+    control_agent = object.__new__(MARLCore)
+    MARLCore.__init__(control_agent, observations, actions, control_config)
+    control_carry = control_agent.init_train(1)
+
+    def control_step(batch):
+        return control_agent.train(control_carry, batch)
+
+    control_initial = nj.init(lambda: control_step(paired(world_a, behavior_a)))(
+        {}, seed=10
+    )
+    control_state, control_result = nj.pure(
+        lambda: control_step(paired(world_a, behavior_a))
+    )(control_initial, seed=11)
+    common_keys = sorted(set(state_aa).intersection(control_state))
+    common_keys = [
+        key
+        for key in common_keys
+        if not key.startswith(("opt/", "ctde_teammate_belief/", "ctde_teammate_actor/"))
+    ]
+    assert common_keys
+    for key in common_keys:
+        np.testing.assert_array_equal(
+            np.asarray(state_aa[key]),
+            np.asarray(control_state[key]),
+            err_msg=key,
+        )
+    control_metrics = control_result[2]
+    for key in (
+        "loss/policy",
+        "loss/value",
+        "loss/repval",
+        "loss/ctde_embedding",
+        "loss/ctde_reward",
+        "loss/ctde_continuation",
+        "loss/ctde_action_mask",
+        "loss/ctde_alive",
+    ):
+        np.testing.assert_array_equal(
+            np.asarray(metrics[key]),
+            np.asarray(control_metrics[key]),
+            err_msg=key,
+        )
 
 
 def test_dual_view_selectors_have_distinct_age_distributions() -> None:

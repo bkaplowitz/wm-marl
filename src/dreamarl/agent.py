@@ -157,14 +157,23 @@ class Agent(
             self.modules.append(self.actmask)
         self.modules.extend(additional_modules)
         ctde_modules = tuple(getattr(self, "ctde_modules", ()))
+        ctde_actor_modules = tuple(getattr(self, "ctde_actor_modules", ()))
         ctde_module_ids = {id(module) for module in ctde_modules}
-        if not ctde_module_ids.issubset({id(module) for module in additional_modules}):
+        ctde_actor_module_ids = {id(module) for module in ctde_actor_modules}
+        additional_module_ids = {id(module) for module in additional_modules}
+        if not ctde_module_ids.issubset(additional_module_ids):
             raise ValueError("CTDE optimizer modules must be additional modules")
+        if not ctde_actor_module_ids.issubset(additional_module_ids):
+            raise ValueError("CTDE actor modules must be additional modules")
+        if ctde_module_ids.intersection(ctde_actor_module_ids):
+            raise ValueError("CTDE world and actor modules must be disjoint")
         world_modules = [self.dyn, self.enc, self.rew, self.con]
         if self.actmask is not None:
             world_modules.append(self.actmask)
         world_modules.extend(
-            module for module in additional_modules if id(module) not in ctde_module_ids
+            module
+            for module in additional_modules
+            if id(module) not in ctde_module_ids | ctde_actor_module_ids
         )
 
         if ctde_modules:
@@ -172,7 +181,7 @@ class Agent(
                 self.modules,
                 world_modules,
                 list(ctde_modules),
-                [self.pol],
+                [self.pol, *ctde_actor_modules],
                 [self.val],
             )
         else:

@@ -145,6 +145,7 @@ ctde:
         rollout_steps: 1
         multistep: {anchors: 0}
         mask_calibration: {enabled: False, horizons: [1, 4, 8, 15], soft_liveness: False}
+        teammate_belief: {enabled: False, layers: 2, units: 512, outscale: 0.0, logit_clip: 5.0, adapter_layers: 1, adapter_units: 256, act: silu, norm: rms, winit: trunc_normal_in}
         joint: {width: 256, heads: 4, agent_layers: 2, temporal_layers: 4, context: 16, ffup: 4, dropout: 0.1, action_conditioning: add, act: silu, norm: rms, winit: trunc_normal_in}
         head: {layers: 2, units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
         critic: {width: 256, heads: 4, layers: 2, ffup: 4, dropout: 0.0, value_layers: 2, value_units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
@@ -158,6 +159,7 @@ ctde:
       ctde_continuation: 1.0
       ctde_action_mask: 1.0
       ctde_alive: 1.0
+      ctde_teammate_belief: 1.0
       ctde_mask_calibration: 1.0
       ctde_alive_calibration: 1.0
       ctde_multistep_embedding: 2.0
@@ -200,6 +202,12 @@ ctde_generalist_mask_mean:
 ctde_generalist_mask_balanced:
   agent:
     action_mask_reduction: balanced
+
+ctde_teammate_belief_v2:
+  agent:
+    marl:
+      ctde:
+        teammate_belief: {enabled: True}
 
 ctde_two_step:
   agent:

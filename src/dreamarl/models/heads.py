@@ -25,6 +25,12 @@ class Head(upstream.Head):
         shape = (*self.space.shape, classes[0].item())
         logits = self.sub("logits", upstream.nets.Linear, shape, **self.kw)(x)
         output = outs.Categorical(logits, self.unimix)
+        # Keep the pre-unimix parameterization available to additive policy
+        # treatments. Reapplying the configured unimix after a residual is the
+        # only way to preserve the actor's exploration floor without double
+        # mixing its already transformed ``output.logits``.
+        output.raw_logits = logits
+        output.unimix = float(self.unimix)
         output.minent = 0
         output.maxent = np.log(logits.shape[-1])
         return output
