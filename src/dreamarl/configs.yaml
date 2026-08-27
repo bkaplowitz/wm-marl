@@ -18,7 +18,7 @@ defaults:
 
   logger:
     outputs: [jsonl, scope]
-    filter: 'score|return|length|fps|ratio|train/loss/|train/rand/|train/posterior_jepa/|train/dynamics_jepa/|train/ctde/|report/ctde/|train/critic/|train/reploss/critic/|central_critic/|report/world_model/|report/openloop/|battle_won|win_rate|legacy_|corrected_|enemy_|ally_|timeout|action_|attack_target_|eval/'
+    filter: 'score|return|length|fps|ratio|train/loss/|train/rand/|train/posterior_jepa/|train/dynamics_jepa/|train/ctde/|report/ctde/|train/critic/|train/reploss/critic/|central_critic/|report/world_model/|report/openloop/|battle_won|win_rate|legacy_|corrected_|enemy_|ally_|timeout|action_|attack_target_|eval/|final_eval/'
     timer: True
     fps: 15
     user: ''
@@ -44,6 +44,7 @@ defaults:
     envs: 1
     eval_envs: 4
     eval_eps: 1
+    eval_worker_offset: 0
     eval_policy_mode: eval
     curve_eval_interval: 0
     curve_eval_eps: 20
