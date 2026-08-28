@@ -242,6 +242,7 @@ def make_agent(config):
             batch_length=config.batch_length,
             replay_context=config.replay_context,
             replay_sampling=str(config.replay.sampling),
+            actor_critic_start_step=int(config.run.actor_critic_start_step),
             report_length=config.report_length,
             replica=config.replica,
             replicas=config.replicas,

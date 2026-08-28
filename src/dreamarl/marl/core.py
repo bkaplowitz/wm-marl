@@ -51,7 +51,12 @@ from ..training.multistep_jepa import (
     same_focal_legal_action_interventions,
 )
 from ..training.common import sample
-from .axes import BEHAVIOR_REPLAY_PREFIX, TeamAxis, split_prefixed_data
+from .axes import (
+    BEHAVIOR_REPLAY_PREFIX,
+    TeamAxis,
+    is_environment_field,
+    split_prefixed_data,
+)
 from .spaces import (
     add_agent_axis,
     local_action_spaces,
@@ -68,16 +73,23 @@ class TeamAxisAdapter:
         local_spaces = {
             key: (
                 space
-                if key in {"consec", "stepid"}
+                if is_environment_field(key)
                 else add_agent_axis(space, self.team.size)
             )
             for key, space in super().ext_space.items()
         }
         spaces = dict(local_spaces)
+        # Learner-control inputs are stamped after replay sampling. They are
+        # intentionally absent from independent replay views.
+        replay_local_spaces = {
+            key: value
+            for key, value in local_spaces.items()
+            if key != "_environment_step"
+        }
         replay_view = {
             **self.public_obs_space,
             **self.public_act_space,
-            **local_spaces,
+            **replay_local_spaces,
         }
         if self.two_branch_replay:
             spaces.update(

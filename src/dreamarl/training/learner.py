@@ -86,8 +86,17 @@ class LearnerMixin:
                 raise ValueError("actor trust requires replay_context for burn-in")
         elif reference_data is not None:
             raise ValueError("actor-trust reference supplied while trust is disabled")
+        behavior_active = self._actor_critic_schedule(data)
         carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
         if self.two_branch_replay:
+            optimizer_kwargs = {}
+            loss_kwargs = {}
+            if behavior_active is not None:
+                optimizer_kwargs["active_groups"] = {
+                    "actor": behavior_active,
+                    "critic": behavior_active,
+                }
+                loss_kwargs["behavior_active"] = behavior_active
             metrics, (carry, entries, outs, mets) = self.opt(
                 self.two_branch_loss,
                 carry,
@@ -96,8 +105,14 @@ class LearnerMixin:
                 behavior_data=behavior_data,
                 training=True,
                 has_aux=True,
+                **loss_kwargs,
+                **optimizer_kwargs,
             )
         else:
+            if behavior_active is not None:
+                raise ValueError(
+                    "actor/critic warm-start gating requires separated CTDE replay"
+                )
             metrics, (carry, entries, outs, mets) = self.opt(
                 self.loss,
                 carry,
@@ -110,9 +125,25 @@ class LearnerMixin:
         metrics.update(mets)
         if self.actor_trust_enabled:
             self.actor_trust.update(mets["actor_trust/kl"])
-        self._update_slow_models()
+        self._update_slow_models(behavior_active)
         if self.slowenc is not None:
             self.slowenc.update()
+        if behavior_active is not None:
+            environment_step = data["_environment_step"].reshape(-1)[0]
+            metrics.update(
+                {
+                    "schedule/environment_step": environment_step,
+                    "schedule/actor_critic_start_step": jnp.asarray(
+                        self.actor_critic_start_step, jnp.int32
+                    ),
+                    "schedule/world_model_active": jnp.asarray(1.0, jnp.float32),
+                    "schedule/actor_active": behavior_active.astype(jnp.float32),
+                    "schedule/critic_active": behavior_active.astype(jnp.float32),
+                    "schedule/world_only_active": (~behavior_active).astype(
+                        jnp.float32
+                    ),
+                }
+            )
         outs = {}
         if self.config.replay_context:
             replay_entries = dict(
@@ -126,6 +157,22 @@ class LearnerMixin:
             outs["replay"] = updates
         carry = (*carry, {key: data[key][:, -1] for key in self.act_space})
         return carry, outs, metrics
+
+    def _actor_critic_schedule(self, data):
+        """Return the dynamic behavior-group gate, or None for exact control."""
+
+        start = int(self.actor_critic_start_step)
+        if not start:
+            return None
+        if "_environment_step" not in data:
+            raise ValueError("warm-start training requires _environment_step")
+        environment_step = data["_environment_step"]
+        if environment_step.ndim != 2:
+            raise ValueError(
+                "folded _environment_step must be [B*A,T], got "
+                f"{environment_step.shape}"
+            )
+        return environment_step.reshape(-1)[0].astype(jnp.int32) >= start
 
     def loss(
         self,
@@ -286,6 +333,7 @@ class LearnerMixin:
         prevact,
         behavior_data,
         training,
+        behavior_active=None,
     ):
         """Train world and behavior modules from independent replay views."""
 
@@ -332,6 +380,7 @@ class LearnerMixin:
             behavior_prevact,
             training,
             detach_world=True,
+            behavior_active=behavior_active,
         )
         overlap = set(world_losses).intersection(behavior_losses)
         if overlap:
@@ -537,6 +586,7 @@ class LearnerMixin:
         training,
         *,
         detach_world,
+        behavior_active=None,
     ):
         """Compute actor and critic objectives from one explicit replay view."""
 
@@ -608,6 +658,16 @@ class LearnerMixin:
         imagination_valid = self.imagination_validity(
             imagination_context, horizon, imagination_aux
         )
+        if behavior_active is not None:
+            if imagination_valid is None:
+                imagination_valid = jnp.ones(
+                    imgprevact[next(iter(imgprevact))].shape[:2], bool
+                )
+            imagination_valid = jnp.where(
+                behavior_active,
+                imagination_valid,
+                jnp.zeros_like(imagination_valid),
+            )
         metrics.update(
             self.imagination_behavior_metrics(
                 imgprevact,
@@ -693,6 +753,12 @@ class LearnerMixin:
                     context=jax.tree.map(jnp.zeros_like, critic_context),
                 )
             replay_valid = self.replay_value_validity(obs)[:, -starts_count:-1]
+            if behavior_active is not None:
+                replay_valid = jnp.where(
+                    behavior_active,
+                    replay_valid,
+                    jnp.zeros_like(replay_valid),
+                )
             replay_losses, replay_out, replay_metrics = repl_loss(
                 last,
                 term,
@@ -722,10 +788,25 @@ class LearnerMixin:
                 )
         return losses, metrics
 
-    def _update_slow_models(self):
-        self.slowval.update()
+    def _update_slow_models(self, behavior_active=None):
+        if behavior_active is None:
+            self.slowval.update()
+        else:
+            self._gated_slow_update(self.slowval, behavior_active)
         if self.trust_teacher is not None:
             self.trust_teacher.update()
+
+    @staticmethod
+    def _gated_slow_update(model, active):
+        """Update a slow model without advancing any state while disabled."""
+
+        model._initonce()
+        old_values = dict(model.model.values)
+        old_count = model.count.read()
+        model.update()
+        for key, new_value in model.model.values.items():
+            model.model.write(key, jnp.where(active, new_value, old_values[key]))
+        model.count.write(jnp.where(active, model.count.read(), old_count))
 
     def additional_world_model_losses(
         self,

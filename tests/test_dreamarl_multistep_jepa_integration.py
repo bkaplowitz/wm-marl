@@ -46,6 +46,7 @@ def _config(
     coupled: bool = False,
     uncoupled: bool = False,
     action0: bool = False,
+    actor_critic_start_step: int = 0,
 ):
     profiles = ["smac_vector", "ctde", "ctde_generalist"]
     if action0:
@@ -106,6 +107,7 @@ def _config(
         batch_length=9,
         replay_context=2,
         replay_sampling="recent_world_uniform_behavior",
+        actor_critic_start_step=actor_critic_start_step,
         report_length=1,
         replica=0,
         replicas=1,
@@ -120,6 +122,7 @@ def _agent(
     coupled: bool = False,
     uncoupled: bool = False,
     action0: bool = False,
+    actor_critic_start_step: int = 0,
 ):
     observations, actions = _spaces(team_size, action_count)
     agent = object.__new__(MARLCore)
@@ -133,6 +136,7 @@ def _agent(
             coupled=coupled,
             uncoupled=uncoupled,
             action0=action0,
+            actor_critic_start_step=actor_critic_start_step,
         ),
     )
     return agent
@@ -186,7 +190,11 @@ def _replay_view(agent, team_size: int, action_count: int, seed: int):
 def _paired(world, behavior):
     return {
         **world,
-        **{f"_behavior_replay/{key}": value for key, value in behavior.items()},
+        **{
+            f"_behavior_replay/{key}": value
+            for key, value in behavior.items()
+            if key != "_environment_step"
+        },
     }
 
 
@@ -550,3 +558,239 @@ def test_coupled_action0_compiled_path_skips_counterfactual_queries() -> None:
             )
             == 0.0
         )
+
+
+def test_schedule_profiles_are_exact_action0_control_overlays() -> None:
+    base_profiles = [
+        "smac_vector",
+        "ctde",
+        "ctde_generalist",
+        "ctde_tbv2_multistep_coupled_action0",
+    ]
+    base = _resolve_config_profiles(_load_configs(), base_profiles)
+    ratio = _resolve_config_profiles(
+        _load_configs(),
+        [*base_profiles, "ctde_train_ratio_1024"],
+    )
+    warmstart = _resolve_config_profiles(
+        _load_configs(),
+        [*base_profiles, "ctde_train_ratio_1024_world_warmstart"],
+    )
+
+    def differences(left, right):
+        keys = set(left.flat) | set(right.flat)
+        return {
+            key: (left.flat.get(key), right.flat.get(key))
+            for key in keys
+            if left.flat.get(key) != right.flat.get(key)
+        }
+
+    assert differences(base, ratio) == {"run.train_ratio": (256, 1024)}
+    assert differences(base, warmstart) == {
+        "run.actor_critic_start_step": (0, 3000),
+        "run.train_ratio": (256, 1024),
+    }
+    assert ratio.agent.loss_scales.ctde_multistep_jepa_action == 0.0
+    assert warmstart.agent.loss_scales.ctde_multistep_jepa_action == 0.0
+    assert ratio.agent.marl.ctde.multistep_jepa.action_margin == 0.1
+    assert warmstart.agent.marl.ctde.multistep_jepa.action_margin == 0.1
+    assert ratio.replay.sampling == "recent_world_uniform_behavior"
+    assert warmstart.replay.sampling == "recent_world_uniform_behavior"
+    assert (ratio.batch_size, ratio.batch_length, ratio.replay_context) == (16, 64, 192)
+    assert (warmstart.batch_size, warmstart.batch_length, warmstart.replay_context) == (
+        16,
+        64,
+        192,
+    )
+    assert ratio.seed == base.seed == warmstart.seed
+    assert ratio.run.curve_eval_interval == base.run.curve_eval_interval
+    assert warmstart.run.curve_eval_interval == base.run.curve_eval_interval
+
+
+def test_ratio_one_schedule_has_expected_50k_phase_counts() -> None:
+    # With context=192 and optimized length=64, the first 1024 eligible starts
+    # become available at raw environment step 1279.
+    ratio = elements.when.Ratio(1.0)
+    world_only = 0
+    actor_critic = 0
+    total = 0
+    for environment_step in range(1279, 50_001):
+        repeats = ratio(environment_step)
+        total += repeats
+        if environment_step < 3000:
+            world_only += repeats
+        else:
+            actor_critic += repeats
+
+    assert total == 48_722
+    assert world_only == 1_721
+    assert actor_critic == 47_001
+
+
+@pytest.mark.parametrize("team_size", (3, 5, 8))
+def test_warmstart_environment_step_is_global_transport(team_size: int) -> None:
+    agent = _agent(
+        team_size,
+        14,
+        enabled=True,
+        action0=True,
+        actor_critic_start_step=3000,
+    )
+
+    assert agent.ext_space["_environment_step"].shape == ()
+    assert "_behavior_replay/_environment_step" not in agent.ext_space
+    public = jnp.asarray([[17, 18], [29, 30]], jnp.int32)
+    local = agent.team.local_sequence_data({"_environment_step": public})[
+        "_environment_step"
+    ]
+    assert local.shape == (2 * team_size, 2)
+    np.testing.assert_array_equal(
+        local,
+        np.repeat(np.asarray(public), team_size, axis=0),
+    )
+
+
+def test_world_warmstart_literally_freezes_all_behavior_state() -> None:
+    team_size, action_count = 3, 9
+    agent = _agent(
+        team_size,
+        action_count,
+        enabled=True,
+        action0=True,
+        actor_critic_start_step=3000,
+    )
+    carry = agent.init_train(1)
+    world = _replay_view(agent, team_size, action_count, 401)
+    behavior = _replay_view(agent, team_size, action_count, 402)
+
+    def batch_at(environment_step):
+        batch = _paired(world, behavior)
+        batch["_environment_step"] = jnp.full(
+            batch["is_first"].shape,
+            environment_step,
+            jnp.int32,
+        )
+        return batch
+
+    def step(batch):
+        return agent.train(carry, batch)
+
+    frozen_batch = batch_at(2999)
+    initial = nj.init(lambda: step(frozen_batch))({}, seed=410)
+    frozen_state, frozen_result = nj.pure(step)(
+        initial,
+        frozen_batch,
+        seed=411,
+    )
+
+    world_state_prefixes = (
+        "enc/",
+        "dyn/",
+        "rew/",
+        "con/",
+        "actmask/",
+        "target_enc/",
+        "target_enc_count",
+        "ctde_joint/",
+        "ctde_rew/",
+        "ctde_con/",
+        "ctde_mask/",
+        "ctde_alive/",
+        "ctde_teammate_belief/",
+        "ctde_teammate_plan/",
+        "ctde_multistep_jepa/",
+        "opt/local_world_",
+        "opt/joint_world_",
+    )
+
+    # The schedule flag adds no modules and consumes no model RNG. A disabled
+    # schedule and a warm-start schedule therefore share bit-exact initial
+    # state. Actor losses are detached from the world branches, so their first
+    # world updates must also remain identical.
+    control = _agent(
+        team_size,
+        action_count,
+        enabled=True,
+        action0=True,
+    )
+    control_carry = control.init_train(1)
+    control_world = _replay_view(control, team_size, action_count, 401)
+    control_behavior = _replay_view(control, team_size, action_count, 402)
+    control_batch = _paired(control_world, control_behavior)
+
+    def control_step():
+        return control.train(control_carry, control_batch)
+
+    control_initial = nj.init(control_step)({}, seed=410)
+    common_initial = sorted(set(initial).intersection(control_initial))
+    assert common_initial
+    for key in common_initial:
+        np.testing.assert_array_equal(
+            np.asarray(initial[key]),
+            np.asarray(control_initial[key]),
+            err_msg=key,
+        )
+    control_state, _ = nj.pure(control_step)(control_initial, seed=411)
+    for key in common_initial:
+        if key.startswith(world_state_prefixes):
+            np.testing.assert_array_equal(
+                np.asarray(frozen_state[key]),
+                np.asarray(control_state[key]),
+                err_msg=key,
+            )
+
+    changed = []
+    for key in sorted(initial):
+        if not np.array_equal(np.asarray(initial[key]), np.asarray(frozen_state[key])):
+            changed.append(key)
+            assert key.startswith(world_state_prefixes), key
+    assert changed
+
+    frozen_behavior_prefixes = (
+        "pol/",
+        "ctde_teammate_actor/",
+        "ctde_val/",
+        "slowctde_val/",
+        "slowctde_val_count",
+        "retnorm/",
+        "valnorm/",
+        "advnorm/",
+        "opt/actor_",
+        "opt/critic_",
+    )
+    behavior_keys = [key for key in initial if key.startswith(frozen_behavior_prefixes)]
+    assert behavior_keys
+    for key in behavior_keys:
+        np.testing.assert_array_equal(
+            np.asarray(initial[key]),
+            np.asarray(frozen_state[key]),
+            err_msg=key,
+        )
+
+    frozen_metrics = frozen_result[2]
+    assert float(frozen_metrics["schedule/actor_active"]) == 0.0
+    assert float(frozen_metrics["schedule/critic_active"]) == 0.0
+    assert float(frozen_metrics["schedule/world_only_active"]) == 1.0
+    assert float(frozen_metrics["opt/actor/active"]) == 0.0
+    assert float(frozen_metrics["opt/critic/active"]) == 0.0
+    assert float(frozen_metrics["opt/actor/update_rms"]) == 0.0
+    assert float(frozen_metrics["opt/critic/update_rms"]) == 0.0
+    assert float(frozen_metrics["loss/policy"]) == 0.0
+    assert float(frozen_metrics["loss/value"]) == 0.0
+    assert float(frozen_metrics["loss/repval"]) == 0.0
+
+    active_state, active_result = nj.pure(step)(
+        frozen_state,
+        batch_at(3000),
+        seed=412,
+    )
+    assert any(
+        not np.array_equal(np.asarray(frozen_state[key]), np.asarray(active_state[key]))
+        for key in behavior_keys
+    )
+    active_metrics = active_result[2]
+    assert float(active_metrics["schedule/actor_active"]) == 1.0
+    assert float(active_metrics["schedule/critic_active"]) == 1.0
+    assert float(active_metrics["schedule/world_only_active"]) == 0.0
+    assert float(active_metrics["opt/actor/active"]) == 1.0
+    assert float(active_metrics["opt/critic/active"]) == 1.0

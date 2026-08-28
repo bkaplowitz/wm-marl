@@ -39,6 +39,17 @@ class Agent(
         self.config = config
         self.replay_sampling = str(getattr(config, "replay_sampling", "uniform"))
         self.two_branch_replay = self.replay_sampling == "recent_world_uniform_behavior"
+        self.actor_critic_start_step = int(
+            getattr(config, "actor_critic_start_step", 0)
+        )
+        if self.actor_critic_start_step < 0:
+            raise ValueError("actor_critic_start_step must be nonnegative")
+        if self.actor_critic_start_step and not getattr(self, "ctde_enabled", False):
+            raise ValueError("actor/critic warm-start gating requires multi-agent CTDE")
+        if self.actor_critic_start_step and not self.two_branch_replay:
+            raise ValueError(
+                "actor/critic warm-start gating requires separated CTDE replay"
+            )
         self.world_model = world_model_backend()
         self.objective = "embedding"
         self.embedding_target = "ema"
@@ -94,6 +105,10 @@ class Agent(
         if self.actor_trust_mode not in {"none", "delayed", "behavior"}:
             raise ValueError(f"unsupported actor trust mode: {self.actor_trust_mode!r}")
         self.actor_trust_enabled = self.actor_trust_mode != "none"
+        if self.actor_critic_start_step and self.actor_trust_enabled:
+            raise ValueError(
+                "actor/critic warm-start gating does not support actor trust"
+            )
         if self.two_branch_replay and self.actor_trust_enabled:
             raise ValueError(
                 "recent_world_uniform_behavior is a direct REINFORCE experiment "
@@ -218,6 +233,10 @@ class Agent(
             "consec": elements.Space(np.int32),
             "stepid": elements.Space(np.uint8, 20),
         }
+        if self.actor_critic_start_step:
+            # Runtime-only control input. It is injected after replay sampling,
+            # so it never becomes replay content or changes sampled sequences.
+            spaces["_environment_step"] = elements.Space(np.int32)
         if self.config.replay_context:
             spaces.update(
                 elements.tree.flatdict(

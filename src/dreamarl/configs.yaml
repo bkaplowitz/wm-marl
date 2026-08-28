@@ -18,7 +18,7 @@ defaults:
 
   logger:
     outputs: [jsonl, scope]
-    filter: 'score|return|length|fps|ratio|train/loss/|train/rand/|train/posterior_jepa/|train/dynamics_jepa/|train/ctde/|report/ctde/|train/critic/|train/reploss/critic/|central_critic/|report/world_model/|report/openloop/|battle_won|win_rate|legacy_|corrected_|enemy_|ally_|timeout|action_|attack_target_|eval/|final_eval/'
+    filter: 'score|return|length|fps|ratio|schedule/|train/opt/|train/loss/|train/rand/|train/posterior_jepa/|train/dynamics_jepa/|train/ctde/|report/ctde/|train/critic/|train/reploss/critic/|central_critic/|report/world_model/|report/openloop/|battle_won|win_rate|legacy_|corrected_|enemy_|ally_|timeout|action_|attack_target_|eval/|final_eval/'
     timer: True
     fps: 15
     user: ''
@@ -37,6 +37,7 @@ defaults:
   run:
     steps: 5e4
     train_ratio: 32.0
+    actor_critic_start_step: 0
     log_every: 120
     report_every: 300
     save_every: 900
@@ -246,6 +247,18 @@ ctde_tbv2_multistep_uncoupled:
       ctde:
         teammate_belief: {enabled: True}
         multistep_jepa: {enabled: True, belief_context: False}
+
+# Schedule-only controls. The first profile changes only learner replay reuse.
+# The second retains that exact ratio and delays behavior optimization while the
+# local and joint world-model groups continue to train.
+ctde_train_ratio_1024:
+  run:
+    train_ratio: 1024
+
+ctde_train_ratio_1024_world_warmstart:
+  run:
+    train_ratio: 1024
+    actor_critic_start_step: 3000
 
 ctde_two_step:
   agent:

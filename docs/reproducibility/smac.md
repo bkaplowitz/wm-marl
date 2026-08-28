@@ -80,6 +80,30 @@ other launch arguments must remain matched in a controlled comparison.
 Use `--algorithm local` with the same three-agent SMAC task for the independent
 local-model control.
 
+## Replay-intensity and world warm-start controls
+
+The schedule ablation uses the coupled TBv2 plus multi-step JEPA model with the
+action counterfactual loss disabled, followed by exactly one of these overlays:
+
+- `ctde_train_ratio_1024`: one learner call per real environment step after the
+  existing replay-eligibility gate;
+- `ctde_train_ratio_1024_world_warmstart`: the same learner cadence, with actor
+  and critic optimization enabled at environment step 3,000.
+
+Both arms retain batch size 16, optimized sequence length 64, replay context
+192, and `recent_world_uniform_behavior` sampling. The replay eligibility gate
+is unchanged: it requires 1,024 eligible starts, which first occurs at raw SMAC
+step 1,279 under this sequence geometry. The ratio controller is not called
+during prefill, so those steps do not create a learner-update backlog.
+
+Before step 3,000 in the warm-start arm, local-world and joint-world modules,
+including teammate belief, teammate planning, multi-step JEPA, and the slow
+encoder, update normally. Actor and critic parameters, optimizer moments,
+learning-rate counters, behavior normalizers, and the slow critic remain
+unchanged. The executed policy is not literally fixed because its encoder and
+dynamics features continue learning; the intervention is an optimizer-group
+warm-start, not a frozen behavior-policy control.
+
 ## Periodic fixed evaluation
 
 Every 5,000 environment transitions, the current policy is evaluated for 32

@@ -51,7 +51,19 @@ class GroupedOptimizer(nj.Module):
             self.grad_scale = nj.Variable(jnp.array, 1e4, f32, name="grad_scale")
             self.good_steps = nj.Variable(jnp.array, 0, i32, name="good_steps")
 
-    def __call__(self, lossfn, *args, has_aux=False, **kwargs):
+    def __call__(
+        self,
+        lossfn,
+        *args,
+        has_aux=False,
+        active_groups=None,
+        **kwargs,
+    ):
+        active_groups = dict(active_groups or {})
+        unknown = set(active_groups).difference(self.groups)
+        if unknown:
+            raise ValueError(f"unknown optimizer activity groups: {sorted(unknown)}")
+
         def lossfn2(*inner_args, **inner_kwargs):
             outputs = lossfn(*inner_args, **inner_kwargs)
             loss, aux = outputs if has_aux else (outputs, None)
@@ -79,6 +91,12 @@ class GroupedOptimizer(nj.Module):
         assigned = set()
         finite = True
         for key, (modules, optimizer) in self.groups.items():
+            gated = key in active_groups
+            active = jnp.asarray(active_groups.get(key, True), bool)
+            if active.shape:
+                raise ValueError(
+                    f"optimizer group activity must be scalar, got {active.shape}"
+                )
             prefixes = tuple(f"{module.path}/" for module in modules)
             group_params = {
                 name: value
@@ -94,14 +112,28 @@ class GroupedOptimizer(nj.Module):
             assigned.update(group_params)
 
             state = self.sub(f"{key}_state", nj.Tree, optimizer.init, group_params)
-            updates, new_state = optimizer.update(
-                group_grads, state.read(), group_params
-            )
+            old_state = state.read()
+            updates, new_state = optimizer.update(group_grads, old_state, group_params)
             group_finite = jnp.isfinite(optax.global_norm(group_grads))
             finite = finite & group_finite
-            state.write(new_state)
+            # A disabled group is a literal optimizer freeze: parameters,
+            # moments, schedule counters, and update counters all stay fixed.
+            if gated:
+                state.write(
+                    jax.tree.map(
+                        lambda new, old: jnp.where(active, new, old),
+                        new_state,
+                        old_state,
+                    )
+                )
+                updates = jax.tree.map(
+                    lambda value: jnp.where(active, value, jnp.zeros_like(value)),
+                    updates,
+                )
+            else:
+                state.write(new_state)
             all_updates.update(updates)
-            self.step[key].write(self.step[key].read() + i32(group_finite))
+            self.step[key].write(self.step[key].read() + i32(active & group_finite))
 
             counts = {
                 name: math.prod(value.shape) for name, value in group_params.items()
@@ -110,6 +142,7 @@ class GroupedOptimizer(nj.Module):
             metrics.update(
                 {
                     f"{prefix}/updates": self.step[key].read(),
+                    f"{prefix}/active": f32(active),
                     f"{prefix}/grad_norm": optax.global_norm(group_grads),
                     f"{prefix}/grad_rms": nets.rms(group_grads),
                     f"{prefix}/update_rms": nets.rms(updates),
