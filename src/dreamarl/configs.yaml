@@ -145,6 +145,7 @@ ctde:
       ctde:
         rollout_steps: 1
         multistep: {anchors: 0}
+        multistep_jepa: {enabled: False, belief_context: False, horizons: [1, 2, 4, 8], max_horizon: 8, decay: 0.75, action_margin: 0.1, plan_units: 256, width: 256, layers: 2, units: 512, act: silu, norm: rms, winit: trunc_normal_in}
         mask_calibration: {enabled: False, horizons: [1, 4, 8, 15], soft_liveness: False}
         teammate_belief: {enabled: False, layers: 2, units: 512, outscale: 0.0, logit_clip: 5.0, adapter_layers: 1, adapter_units: 256, act: silu, norm: rms, winit: trunc_normal_in}
         joint: {width: 256, heads: 4, agent_layers: 2, temporal_layers: 4, context: 16, ffup: 4, dropout: 0.1, action_conditioning: add, act: silu, norm: rms, winit: trunc_normal_in}
@@ -169,6 +170,9 @@ ctde:
       ctde_multistep_continuation: 1.0
       ctde_multistep_action_mask: 1.0
       ctde_multistep_alive: 1.0
+      ctde_multistep_jepa_cosine: 2.0
+      ctde_multistep_jepa_action: 1.0
+      ctde_teammate_plan: 0.5
 
 ctde_generalist:
   replay_context: 192
@@ -209,6 +213,39 @@ ctde_teammate_belief_v2:
     marl:
       ctde:
         teammate_belief: {enabled: True}
+
+ctde_multistep_jepa:
+  agent:
+    marl:
+      ctde:
+        multistep_jepa: {enabled: True}
+
+ctde_tbv2_multistep_coupled:
+  agent:
+    loss_scales:
+      ctde_multistep_jepa_action: 0.25
+    marl:
+      ctde:
+        teammate_belief: {enabled: True}
+        multistep_jepa: {enabled: True, belief_context: True}
+
+ctde_tbv2_multistep_coupled_action0:
+  agent:
+    loss_scales:
+      ctde_multistep_jepa_action: 0.0
+    marl:
+      ctde:
+        teammate_belief: {enabled: True}
+        multistep_jepa: {enabled: True, belief_context: True}
+
+ctde_tbv2_multistep_uncoupled:
+  agent:
+    loss_scales:
+      ctde_multistep_jepa_action: 0.25
+    marl:
+      ctde:
+        teammate_belief: {enabled: True}
+        multistep_jepa: {enabled: True, belief_context: False}
 
 ctde_two_step:
   agent:
@@ -299,5 +336,6 @@ debug:
     marl:
       ctde:
         joint: {width: 8, heads: 2, agent_layers: 1, temporal_layers: 1, context: 4, ffup: 2, dropout: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
+        multistep_jepa: {plan_units: 8, width: 8, layers: 1, units: 8}
         head: {layers: 1, units: 8, bins: 5, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
         critic: {width: 8, heads: 2, layers: 1, ffup: 2, dropout: 0.0, value_layers: 1, value_units: 8, bins: 5, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}

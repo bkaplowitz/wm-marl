@@ -25,6 +25,11 @@ from ..models.ctde import (
     TeammateActionBelief,
     TeammateBeliefActorAdapter,
 )
+from ..models.multistep_jepa import (
+    ActionConditionedMultiStepJEPA,
+    TeammateActionPlanGRU,
+    isolated_creation_call,
+)
 from ..models.heads import (
     apply_action_mask,
     apply_predicted_action_mask,
@@ -38,6 +43,12 @@ from ..training.ctde import (
     sample_two_step_anchors,
     two_step_anchor_mask,
     two_step_objective,
+)
+from ..training.multistep_jepa import (
+    action_window_validity,
+    aligned_action_windows,
+    direct_multistep_objective,
+    same_focal_legal_action_interventions,
 )
 from ..training.common import sample
 from .axes import BEHAVIOR_REPLAY_PREFIX, TeamAxis, split_prefixed_data
@@ -199,6 +210,58 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         )
         if self.ctde_teammate_belief_logit_clip <= 0.0:
             raise ValueError("teammate belief logit clip must be positive")
+        self.ctde_multistep_jepa_enabled = bool(
+            marl.ctde.multistep_jepa.enabled if self.ctde_enabled else False
+        )
+        self.ctde_multistep_jepa_belief_context = bool(
+            marl.ctde.multistep_jepa.belief_context
+            if self.ctde_multistep_jepa_enabled
+            else False
+        )
+        self.ctde_multistep_jepa_action_scale = (
+            float(config.loss_scales.ctde_multistep_jepa_action)
+            if self.ctde_multistep_jepa_enabled
+            else 0.0
+        )
+        if self.ctde_multistep_jepa_action_scale < 0.0:
+            raise ValueError("multi-step JEPA action loss scale must be nonnegative")
+        if self.ctde_enabled:
+            multistep_jepa = marl.ctde.multistep_jepa
+            self.ctde_multistep_jepa_horizons = tuple(
+                int(value) for value in multistep_jepa.horizons
+            )
+            self.ctde_multistep_jepa_max_horizon = int(
+                multistep_jepa.max_horizon
+            )
+            self.ctde_multistep_jepa_decay = float(multistep_jepa.decay)
+            self.ctde_multistep_jepa_action_margin = float(
+                multistep_jepa.action_margin
+            )
+        else:
+            self.ctde_multistep_jepa_horizons = (1, 2, 4, 8)
+            self.ctde_multistep_jepa_max_horizon = 8
+            self.ctde_multistep_jepa_decay = 0.75
+            self.ctde_multistep_jepa_action_margin = 0.1
+        if (
+            not self.ctde_multistep_jepa_horizons
+            or tuple(sorted(set(self.ctde_multistep_jepa_horizons)))
+            != self.ctde_multistep_jepa_horizons
+            or min(self.ctde_multistep_jepa_horizons) < 1
+            or max(self.ctde_multistep_jepa_horizons)
+            != self.ctde_multistep_jepa_max_horizon
+        ):
+            raise ValueError(
+                "multi-step JEPA horizons must be sorted unique positives ending at K"
+            )
+        if not 0.0 < self.ctde_multistep_jepa_decay <= 1.0:
+            raise ValueError("multi-step JEPA decay must be in (0, 1]")
+        if self.ctde_multistep_jepa_action_margin < 0.0:
+            raise ValueError("multi-step JEPA action margin must be nonnegative")
+        if (
+            self.ctde_multistep_jepa_belief_context
+            and not self.ctde_teammate_belief_enabled
+        ):
+            raise ValueError("multi-step belief context requires teammate belief v2")
         self.action_mask_reduction = str(
             getattr(config, "action_mask_reduction", "sum")
         )
@@ -230,6 +293,18 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             raise ValueError(
                 "teammate belief v2 requires direct REINFORCE without actor trust"
             )
+        if self.ctde_multistep_jepa_enabled:
+            if not self.two_branch_replay:
+                raise ValueError(
+                    "multi-step JEPA is defined only on the recent world branch of "
+                    "recent_world_uniform_behavior replay"
+                )
+            if int(config.batch_length) <= self.ctde_multistep_jepa_max_horizon:
+                raise ValueError(
+                    "multi-step JEPA batch_length must exceed max_horizon, got "
+                    f"{config.batch_length} and "
+                    f"{self.ctde_multistep_jepa_max_horizon}"
+                )
         if self.two_branch_replay:
             if not self.ctde_enabled:
                 raise ValueError(
@@ -428,6 +503,36 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 )
                 ctde_modules.append(self.ctde_teammate_belief)
                 actor_modules.append(self.ctde_teammate_actor)
+            if self.ctde_multistep_jepa_enabled:
+                multistep = cfg.multistep_jepa
+                if self.ctde_multistep_jepa_belief_context:
+                    self.ctde_teammate_plan = TeammateActionPlanGRU(
+                        self.ctde_action_count,
+                        self.ctde_action_low,
+                        self.team.size - 1,
+                        self.ctde_multistep_jepa_max_horizon,
+                        units=int(multistep.plan_units),
+                        act=str(multistep.act),
+                        norm=str(multistep.norm),
+                        winit=str(multistep.winit),
+                        name="ctde_teammate_plan",
+                    )
+                    ctde_modules.append(self.ctde_teammate_plan)
+                self.ctde_multistep_jepa = ActionConditionedMultiStepJEPA(
+                    self.ctde_action_count,
+                    self.ctde_action_low,
+                    self.enc_output_dim,
+                    self.ctde_multistep_jepa_horizons,
+                    self.ctde_multistep_jepa_max_horizon,
+                    width=int(multistep.width),
+                    layers=int(multistep.layers),
+                    units=int(multistep.units),
+                    act=str(multistep.act),
+                    norm=str(multistep.norm),
+                    winit=str(multistep.winit),
+                    name="ctde_multistep_jepa",
+                )
+                ctde_modules.append(self.ctde_multistep_jepa)
             self.ctde_modules = tuple(ctde_modules)
             self.ctde_actor_modules = tuple(actor_modules)
             modules.extend(self.ctde_modules)
@@ -491,6 +596,13 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             )
             / self.ctde_teammate_belief_logit_clip
         )
+        return jax.lax.stop_gradient(context)
+
+    def _teammate_plan_context(self, logits):
+        """Map plan logits to bounded, offset-invariant zero-uniform evidence."""
+
+        probability = jax.nn.softmax(logits.astype(jnp.float32), axis=-1)
+        context = probability - 1.0 / self.ctde_action_count
         return jax.lax.stop_gradient(context)
 
     def _teammate_actor_residual(
@@ -938,6 +1050,22 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             )
             losses["ctde_teammate_belief"] = belief_loss
             metrics.update(belief_metrics)
+        if self.ctde_multistep_jepa_enabled:
+            multistep_losses, multistep_metrics = (
+                self._ctde_direct_multistep_jepa_loss(
+                    prediction["hidden"],
+                    source_state,
+                    grouped_target,
+                    grouped_present,
+                    grouped_alive,
+                    grouped_first,
+                    grouped_mask,
+                    grouped_action,
+                    training=training,
+                )
+            )
+            losses.update(multistep_losses)
+            metrics.update(multistep_metrics)
         if self.ctde_mask_calibration:
             calibration_losses, calibration_metrics = (
                 self._ctde_mask_calibration_losses(
@@ -1138,6 +1266,410 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             "ctde/teammate_belief_dead_peer_fraction": average(~peer_alive),
         }
         return folded_loss, metrics
+
+    def _ctde_direct_multistep_jepa_loss(
+        self,
+        grouped_hidden,
+        grouped_source_state,
+        grouped_target,
+        grouped_present,
+        grouped_alive,
+        grouped_first,
+        grouped_mask,
+        grouped_action,
+        *,
+        training,
+    ):
+        """Fit direct EMA futures with a stopped causal teammate-action plan."""
+
+        if not self.ctde_multistep_jepa_enabled or not self.two_branch_replay:
+            raise RuntimeError(
+                "direct multi-step JEPA requires the recent world replay branch"
+            )
+        max_horizon = self.ctde_multistep_jepa_max_horizon
+        length = grouped_target.shape[1]
+        roots = length - max_horizon
+        expected = (grouped_target.shape[0], length - 1, self.team.size)
+        if grouped_hidden.shape[:3] != expected:
+            raise ValueError(
+                "multi-step shared hidden is not aligned with factual replay: "
+                f"{grouped_hidden.shape[:3]} versus {expected}"
+            )
+        if grouped_source_state.shape[:3] != expected:
+            raise ValueError(
+                "multi-step local roots are not aligned with factual replay: "
+                f"{grouped_source_state.shape[:3]} versus {expected}"
+            )
+
+        action_windows, all_valid = aligned_action_windows(
+            grouped_action[:, 1:],
+            grouped_mask[:, :-1],
+            grouped_present,
+            grouped_alive,
+            grouped_first,
+            action_low=self.ctde_action_low,
+            max_horizon=max_horizon,
+        )
+        horizons = self.ctde_multistep_jepa_horizons
+        valid = {horizon: all_valid[horizon] for horizon in horizons}
+        root_hidden = grouped_hidden[:, :roots]
+        root_state = grouped_source_state[:, :roots]
+
+        q0_logits = None
+        q0_context = None
+        plan_logits = None
+        plan_context = None
+        plan_loss = None
+        plan_metrics = {}
+        if self.ctde_multistep_jepa_belief_context:
+            folded_root = self.team.fold_sequence(root_state)
+            q0_logits = self.team.unfold_sequence(
+                self._teammate_belief_logits(folded_root, bdims=2)
+            )
+            q0_context = self._teammate_belief_context(q0_logits)
+            plan_logits = isolated_creation_call(
+                self.ctde_teammate_plan,
+                0x5442504C,
+                root_state,
+                action_windows,
+                q0_logits,
+                q0_context,
+            )
+            plan_context = self._teammate_plan_context(plan_logits)
+            plan_loss, plan_metrics = self._ctde_teammate_plan_loss(
+                plan_logits,
+                q0_logits,
+                grouped_action,
+                grouped_mask,
+                grouped_present,
+                grouped_alive,
+                grouped_first,
+                all_valid,
+                roots,
+                length,
+            )
+
+        predictions = isolated_creation_call(
+            self.ctde_multistep_jepa,
+            0x4D534A50,
+            root_hidden,
+            action_windows,
+            plan_context,
+        )
+        if self.ctde_multistep_jepa_action_scale > 0.0:
+            counterfactual_windows, distinct_tail = (
+                same_focal_legal_action_interventions(
+                    action_windows,
+                    grouped_mask[:, :-1],
+                    action_low=self.ctde_action_low,
+                    horizons=horizons,
+                )
+            )
+            counterfactual_predictions = {}
+            counterfactual_valid = {}
+            for horizon in horizons:
+                window = counterfactual_windows[horizon]
+                window_valid = action_window_validity(
+                    window,
+                    grouped_mask[:, :-1],
+                    grouped_present,
+                    grouped_alive,
+                    grouped_first,
+                    action_low=self.ctde_action_low,
+                )
+                counterfactual_valid[horizon] = window_valid[horizon]
+                if horizon == 1:
+                    counterfactual_predictions[horizon] = jax.lax.stop_gradient(
+                        predictions[horizon]
+                    )
+                    continue
+                counterfactual_predictions[horizon] = self.ctde_multistep_jepa(
+                    root_hidden,
+                    window,
+                    plan_context,
+                    selected_horizon=horizon,
+                )[horizon]
+            counterfactual_enabled = jnp.asarray(1.0, jnp.float32)
+        else:
+            counterfactual_predictions = {
+                horizon: jax.lax.stop_gradient(predictions[horizon])
+                for horizon in horizons
+            }
+            counterfactual_valid = {
+                horizon: jnp.zeros_like(valid[horizon]) for horizon in horizons
+            }
+            distinct_tail = {
+                horizon: jnp.zeros_like(valid[horizon]) for horizon in horizons
+            }
+            counterfactual_enabled = jnp.asarray(0.0, jnp.float32)
+
+        targets = {
+            horizon: jax.lax.stop_gradient(
+                grouped_target[:, horizon : horizon + roots]
+            )
+            for horizon in horizons
+        }
+        root_losses, raw_metrics = direct_multistep_objective(
+            predictions,
+            targets,
+            valid,
+            counterfactual_predictions,
+            counterfactual_valid,
+            distinct_tail,
+            horizons=horizons,
+            decay=self.ctde_multistep_jepa_decay,
+            action_margin=self.ctde_multistep_jepa_action_margin,
+        )
+        losses = {}
+        for name, root_loss in root_losses.items():
+            padded = jnp.pad(root_loss, ((0, 0), (0, max_horizon), (0, 0)))
+            padded *= length / roots
+            losses[f"ctde_multistep_jepa_{name}"] = self.team.fold_sequence(
+                padded
+            )
+        if plan_loss is not None:
+            losses["ctde_teammate_plan"] = plan_loss
+
+        metrics = {
+            f"ctde/multistep_jepa_{key}": value for key, value in raw_metrics.items()
+        }
+        metrics.update(plan_metrics)
+        metrics.update(
+            {
+                "ctde/multistep_jepa_root_count": jnp.asarray(
+                    grouped_target.shape[0] * roots * self.team.size,
+                    jnp.float32,
+                ),
+                "ctde/multistep_jepa_max_horizon": jnp.asarray(
+                    max_horizon, jnp.float32
+                ),
+                "ctde/multistep_jepa_belief_context_enabled": jnp.asarray(
+                    float(self.ctde_multistep_jepa_belief_context), jnp.float32
+                ),
+                "ctde/multistep_jepa_action_counterfactual_enabled": (
+                    counterfactual_enabled
+                ),
+                "ctde/multistep_jepa_recent_training_view": jnp.asarray(
+                    float(bool(training)), jnp.float32
+                ),
+            }
+        )
+        if plan_context is not None:
+            context_norm = jnp.sqrt(jnp.square(plan_context).sum(axis=(-1, -2)))
+            metrics.update(
+                {
+                    "ctde/multistep_jepa_plan_context_rms": jnp.sqrt(
+                        jnp.square(plan_context).mean()
+                    ),
+                    "ctde/multistep_jepa_plan_context_nonzero_fraction": (
+                        context_norm > 1e-8
+                    ).astype(jnp.float32).mean(),
+                }
+            )
+        if plan_context is not None and not training:
+            zero_plan = jnp.zeros_like(plan_context)
+            ablated_predictions = self.ctde_multistep_jepa(
+                root_hidden, action_windows, zero_plan
+            )
+            for horizon in horizons:
+                weight = valid[horizon].astype(jnp.float32)
+                count = jnp.maximum(weight.sum(), 1.0)
+                factual = predictions[horizon].astype(jnp.float32)
+                ablated = ablated_predictions[horizon].astype(jnp.float32)
+                delta = jnp.sqrt(jnp.square(factual - ablated).mean(axis=-1))
+                metrics[
+                    f"ctde/multistep_jepa_h{horizon}_plan_ablation_delta_rms"
+                ] = (delta * weight).sum() / count
+        return losses, metrics
+
+    def _ctde_teammate_plan_loss(
+        self,
+        plan_logits,
+        q0_logits,
+        grouped_action,
+        grouped_mask,
+        grouped_present,
+        grouped_alive,
+        grouped_first,
+        all_valid,
+        roots,
+        length,
+    ):
+        """Supervise q1..qK-1 with stopped factual future peer actions."""
+
+        steps = self.ctde_multistep_jepa_max_horizon - 1
+        expected = (
+            grouped_action.shape[0],
+            roots,
+            self.team.size,
+            steps,
+            self.team.size - 1,
+            self.ctde_action_count,
+        )
+        if plan_logits.shape != expected:
+            raise ValueError(
+                f"teammate plan logits {plan_logits.shape} do not match {expected}"
+            )
+        q0_expected = expected[:3] + expected[4:]
+        if q0_logits.shape != q0_expected:
+            raise ValueError(
+                f"teammate q0 logits {q0_logits.shape} do not match {q0_expected}"
+            )
+        peer_indices = self._teammate_peer_indices()
+        source_actions = grouped_action[:, 1:]
+        nll_terms = []
+        top1_terms = []
+        weight_terms = []
+        q0_nll_terms = []
+        repeat_nll_terms = []
+        repeat_weight_terms = []
+        metrics = {}
+        for step in range(1, steps + 1):
+            peer_action = jnp.take(
+                source_actions[:, step : step + roots], peer_indices, axis=2
+            )
+            peer_mask = jnp.take(
+                grouped_mask[:, step : step + roots], peer_indices, axis=2
+            )
+            peer_present = jnp.take(
+                grouped_present[:, step : step + roots], peer_indices, axis=2
+            )
+            peer_alive = jnp.take(
+                grouped_alive[:, step : step + roots], peer_indices, axis=2
+            )
+            target = peer_action.astype(jnp.int32) - self.ctde_action_low
+            in_range = (target >= 0) & (target < self.ctde_action_count)
+            safe_target = jnp.clip(target, 0, self.ctde_action_count - 1)
+            legal = jnp.take_along_axis(
+                peer_mask, safe_target[..., None], axis=-1
+            )[..., 0]
+            valid = (
+                all_valid[step][..., None]
+                & peer_present
+                & in_range
+                & legal
+                & ~grouped_first[
+                    :, step + 1 : step + roots + 1, None, None
+                ]
+            )
+            weight = valid.astype(jnp.float32)
+            active_weight = weight * peer_alive.astype(jnp.float32)
+            dead_weight = weight * (~peer_alive).astype(jnp.float32)
+            logits = plan_logits[..., step - 1, :, :].astype(jnp.float32)
+            log_probability = jax.nn.log_softmax(logits, axis=-1)
+            nll = -jnp.take_along_axis(
+                log_probability, safe_target[..., None], axis=-1
+            )[..., 0]
+            top1 = jnp.argmax(logits, axis=-1) == safe_target
+            q0_log_probability = jax.nn.log_softmax(
+                q0_logits.astype(jnp.float32), axis=-1
+            )
+            q0_nll = -jnp.take_along_axis(
+                q0_log_probability, safe_target[..., None], axis=-1
+            )[..., 0]
+            root_peer_action = jnp.take(
+                source_actions[:, :roots], peer_indices, axis=2
+            )
+            repeat_target = root_peer_action.astype(jnp.int32) - self.ctde_action_low
+            repeat_in_range = (repeat_target >= 0) & (
+                repeat_target < self.ctde_action_count
+            )
+            safe_repeat = jnp.clip(repeat_target, 0, self.ctde_action_count - 1)
+            repeat_unimix = max(float(self.config.policy.unimix), 1e-6)
+            repeat_probability = jax.nn.one_hot(
+                safe_repeat, self.ctde_action_count, dtype=jnp.float32
+            )
+            repeat_probability = (
+                (1.0 - repeat_unimix) * repeat_probability
+                + repeat_unimix / self.ctde_action_count
+            )
+            repeat_nll = -jnp.log(
+                jnp.take_along_axis(
+                    repeat_probability, safe_target[..., None], axis=-1
+                )[..., 0]
+            )
+            repeat_weight = weight * repeat_in_range.astype(jnp.float32)
+            count = jnp.maximum(weight.sum(), 1.0)
+            active_count = jnp.maximum(active_weight.sum(), 1.0)
+            dead_count = jnp.maximum(dead_weight.sum(), 1.0)
+            metrics.update(
+                {
+                    f"ctde/teammate_plan_q{step}_nll": (nll * weight).sum()
+                    / count,
+                    f"ctde/teammate_plan_q{step}_top1": (
+                        top1.astype(jnp.float32) * weight
+                    ).sum()
+                    / count,
+                    f"ctde/teammate_plan_q{step}_count": weight.sum(),
+                    f"ctde/teammate_plan_q{step}_nll_gain_vs_q0": (
+                        ((q0_nll - nll) * weight).sum() / count
+                    ),
+                    f"ctde/teammate_plan_q{step}_nll_gain_vs_root_repeat": (
+                        ((repeat_nll - nll) * repeat_weight).sum()
+                        / jnp.maximum(repeat_weight.sum(), 1.0)
+                    ),
+                    f"ctde/teammate_plan_q{step}_active_nll": (
+                        nll * active_weight
+                    ).sum()
+                    / active_count,
+                    f"ctde/teammate_plan_q{step}_active_top1": (
+                        top1.astype(jnp.float32) * active_weight
+                    ).sum()
+                    / active_count,
+                    f"ctde/teammate_plan_q{step}_active_count": active_weight.sum(),
+                    f"ctde/teammate_plan_q{step}_dead_nll": (
+                        nll * dead_weight
+                    ).sum()
+                    / dead_count,
+                    f"ctde/teammate_plan_q{step}_dead_top1": (
+                        top1.astype(jnp.float32) * dead_weight
+                    ).sum()
+                    / dead_count,
+                    f"ctde/teammate_plan_q{step}_dead_count": dead_weight.sum(),
+                }
+            )
+            nll_terms.append(nll)
+            top1_terms.append(top1)
+            weight_terms.append(weight)
+            q0_nll_terms.append(q0_nll)
+            repeat_nll_terms.append(repeat_nll)
+            repeat_weight_terms.append(repeat_weight)
+
+        nll = jnp.stack(nll_terms, axis=3)
+        top1 = jnp.stack(top1_terms, axis=3)
+        weight = jnp.stack(weight_terms, axis=3)
+        q0_nll = jnp.stack(q0_nll_terms, axis=3)
+        repeat_nll = jnp.stack(repeat_nll_terms, axis=3)
+        repeat_weight = jnp.stack(repeat_weight_terms, axis=3)
+        event_count = jnp.maximum(weight.sum(), 1.0)
+        row_count = jnp.maximum(weight.sum(axis=(-1, -2)), 1.0)
+        row_loss = (nll * weight).sum(axis=(-1, -2)) / row_count
+        row_valid = (weight.sum(axis=(-1, -2)) > 0).astype(jnp.float32)
+        row_loss *= row_valid / jnp.maximum(row_valid.mean(), 1e-8)
+        padded = jnp.pad(
+            row_loss,
+            ((0, 0), (0, self.ctde_multistep_jepa_max_horizon), (0, 0)),
+        )
+        padded *= length / roots
+        metrics.update(
+            {
+                "ctde/teammate_plan_recent_nll": (nll * weight).sum()
+                / event_count,
+                "ctde/teammate_plan_recent_top1": (
+                    top1.astype(jnp.float32) * weight
+                ).sum()
+                / event_count,
+                "ctde/teammate_plan_recent_count": weight.sum(),
+                "ctde/teammate_plan_recent_nll_gain_vs_q0": (
+                    ((q0_nll - nll) * weight).sum() / event_count
+                ),
+                "ctde/teammate_plan_recent_nll_gain_vs_root_repeat": (
+                    ((repeat_nll - nll) * repeat_weight).sum()
+                    / jnp.maximum(repeat_weight.sum(), 1.0)
+                ),
+            }
+        )
+        return self.team.fold_sequence(padded), metrics
 
     def _ctde_mask_calibration_losses(
         self,

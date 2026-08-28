@@ -134,6 +134,52 @@ def test_teammate_belief_v2_is_dormant_and_changes_one_switch() -> None:
     assert differences == {"agent.marl.ctde.teammate_belief.enabled": (False, True)}
 
 
+def test_coupled_tbv2_multistep_profile_changes_only_locked_switches() -> None:
+    control = _resolved("ctde_generalist")
+    treatment = _resolved("ctde_generalist", "ctde_tbv2_multistep_coupled")
+    differences = {
+        key: (control.flat.get(key), treatment.flat.get(key))
+        for key in set(control.flat) | set(treatment.flat)
+        if control.flat.get(key) != treatment.flat.get(key)
+    }
+
+    assert differences == {
+        "agent.loss_scales.ctde_multistep_jepa_action": (1.0, 0.25),
+        "agent.marl.ctde.multistep_jepa.belief_context": (False, True),
+        "agent.marl.ctde.multistep_jepa.enabled": (False, True),
+        "agent.marl.ctde.teammate_belief.enabled": (False, True),
+    }
+    assert treatment.agent.marl.ctde.multistep_jepa.action_margin == pytest.approx(
+        0.1
+    )
+    assert treatment.agent.loss_scales.ctde_teammate_plan == pytest.approx(0.5)
+
+
+def test_coupling_and_action_scale_ablations_are_one_switch_each() -> None:
+    coupled = _resolved("ctde_generalist", "ctde_tbv2_multistep_coupled")
+    uncoupled = _resolved("ctde_generalist", "ctde_tbv2_multistep_uncoupled")
+    action0 = _resolved(
+        "ctde_generalist", "ctde_tbv2_multistep_coupled_action0"
+    )
+
+    coupling_diff = {
+        key: (uncoupled.flat.get(key), coupled.flat.get(key))
+        for key in set(uncoupled.flat) | set(coupled.flat)
+        if uncoupled.flat.get(key) != coupled.flat.get(key)
+    }
+    action_diff = {
+        key: (coupled.flat.get(key), action0.flat.get(key))
+        for key in set(coupled.flat) | set(action0.flat)
+        if coupled.flat.get(key) != action0.flat.get(key)
+    }
+    assert coupling_diff == {
+        "agent.marl.ctde.multistep_jepa.belief_context": (False, True)
+    }
+    assert action_diff == {
+        "agent.loss_scales.ctde_multistep_jepa_action": (0.25, 0.0)
+    }
+
+
 def test_generalist_replay_factory_selects_the_dual_view_transport(tmp_path) -> None:
     config = _resolved("ctde_generalist").update(logdir=str(tmp_path / "run"))
     replay = make_replay(config, "replay")
