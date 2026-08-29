@@ -242,18 +242,22 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             self.ctde_multistep_jepa_horizons = tuple(
                 int(value) for value in multistep_jepa.horizons
             )
-            self.ctde_multistep_jepa_max_horizon = int(
-                multistep_jepa.max_horizon
-            )
+            self.ctde_multistep_jepa_max_horizon = int(multistep_jepa.max_horizon)
             self.ctde_multistep_jepa_decay = float(multistep_jepa.decay)
-            self.ctde_multistep_jepa_action_margin = float(
-                multistep_jepa.action_margin
+            self.ctde_multistep_jepa_action_margin = float(multistep_jepa.action_margin)
+            self.ctde_multistep_jepa_plan_aggregation = str(
+                multistep_jepa.plan_aggregation
+            )
+            self.ctde_multistep_jepa_plan_attention_heads = int(
+                multistep_jepa.plan_attention_heads
             )
         else:
             self.ctde_multistep_jepa_horizons = (1, 2, 4, 8)
             self.ctde_multistep_jepa_max_horizon = 8
             self.ctde_multistep_jepa_decay = 0.75
             self.ctde_multistep_jepa_action_margin = 0.1
+            self.ctde_multistep_jepa_plan_aggregation = "mean"
+            self.ctde_multistep_jepa_plan_attention_heads = 4
         if (
             not self.ctde_multistep_jepa_horizons
             or tuple(sorted(set(self.ctde_multistep_jepa_horizons)))
@@ -269,6 +273,11 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             raise ValueError("multi-step JEPA decay must be in (0, 1]")
         if self.ctde_multistep_jepa_action_margin < 0.0:
             raise ValueError("multi-step JEPA action margin must be nonnegative")
+        if self.ctde_multistep_jepa_plan_aggregation not in {
+            "mean",
+            "identity_attention",
+        }:
+            raise ValueError("unsupported multi-step teammate-plan aggregation")
         if (
             self.ctde_multistep_jepa_belief_context
             and not self.ctde_teammate_belief_enabled
@@ -536,6 +545,10 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                     self.enc_output_dim,
                     self.ctde_multistep_jepa_horizons,
                     self.ctde_multistep_jepa_max_horizon,
+                    plan_aggregation=self.ctde_multistep_jepa_plan_aggregation,
+                    plan_attention_heads=(
+                        self.ctde_multistep_jepa_plan_attention_heads
+                    ),
                     width=int(multistep.width),
                     layers=int(multistep.layers),
                     units=int(multistep.units),
@@ -1063,18 +1076,16 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             losses["ctde_teammate_belief"] = belief_loss
             metrics.update(belief_metrics)
         if self.ctde_multistep_jepa_enabled:
-            multistep_losses, multistep_metrics = (
-                self._ctde_direct_multistep_jepa_loss(
-                    prediction["hidden"],
-                    source_state,
-                    grouped_target,
-                    grouped_present,
-                    grouped_alive,
-                    grouped_first,
-                    grouped_mask,
-                    grouped_action,
-                    training=training,
-                )
+            multistep_losses, multistep_metrics = self._ctde_direct_multistep_jepa_loss(
+                prediction["hidden"],
+                source_state,
+                grouped_target,
+                grouped_present,
+                grouped_alive,
+                grouped_first,
+                grouped_mask,
+                grouped_action,
+                training=training,
             )
             losses.update(multistep_losses)
             metrics.update(multistep_metrics)
@@ -1333,6 +1344,11 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         plan_context = None
         plan_loss = None
         plan_metrics = {}
+        plan_peer_ids = (
+            self._teammate_peer_indices()
+            if self.ctde_multistep_jepa_plan_aggregation == "identity_attention"
+            else None
+        )
         if self.ctde_multistep_jepa_belief_context:
             folded_root = self.team.fold_sequence(root_state)
             q0_logits = self.team.unfold_sequence(
@@ -1367,6 +1383,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             root_hidden,
             action_windows,
             plan_context,
+            peer_ids=plan_peer_ids,
         )
         if self.ctde_multistep_jepa_action_scale > 0.0:
             counterfactual_windows, distinct_tail = (
@@ -1399,6 +1416,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                     root_hidden,
                     window,
                     plan_context,
+                    peer_ids=plan_peer_ids,
                     selected_horizon=horizon,
                 )[horizon]
             counterfactual_enabled = jnp.asarray(1.0, jnp.float32)
@@ -1416,9 +1434,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             counterfactual_enabled = jnp.asarray(0.0, jnp.float32)
 
         targets = {
-            horizon: jax.lax.stop_gradient(
-                grouped_target[:, horizon : horizon + roots]
-            )
+            horizon: jax.lax.stop_gradient(grouped_target[:, horizon : horizon + roots])
             for horizon in horizons
         }
         root_losses, raw_metrics = direct_multistep_objective(
@@ -1436,9 +1452,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         for name, root_loss in root_losses.items():
             padded = jnp.pad(root_loss, ((0, 0), (0, max_horizon), (0, 0)))
             padded *= length / roots
-            losses[f"ctde_multistep_jepa_{name}"] = self.team.fold_sequence(
-                padded
-            )
+            losses[f"ctde_multistep_jepa_{name}"] = self.team.fold_sequence(padded)
         if plan_loss is not None:
             losses["ctde_teammate_plan"] = plan_loss
 
@@ -1458,6 +1472,13 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 "ctde/multistep_jepa_belief_context_enabled": jnp.asarray(
                     float(self.ctde_multistep_jepa_belief_context), jnp.float32
                 ),
+                "ctde/multistep_jepa_identity_attention_enabled": jnp.asarray(
+                    float(
+                        self.ctde_multistep_jepa_plan_aggregation
+                        == "identity_attention"
+                    ),
+                    jnp.float32,
+                ),
                 "ctde/multistep_jepa_action_counterfactual_enabled": (
                     counterfactual_enabled
                 ),
@@ -1475,13 +1496,18 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                     ),
                     "ctde/multistep_jepa_plan_context_nonzero_fraction": (
                         context_norm > 1e-8
-                    ).astype(jnp.float32).mean(),
+                    )
+                    .astype(jnp.float32)
+                    .mean(),
                 }
             )
         if plan_context is not None and not training:
             zero_plan = jnp.zeros_like(plan_context)
             ablated_predictions = self.ctde_multistep_jepa(
-                root_hidden, action_windows, zero_plan
+                root_hidden,
+                action_windows,
+                zero_plan,
+                peer_ids=plan_peer_ids,
             )
             for horizon in horizons:
                 weight = valid[horizon].astype(jnp.float32)
@@ -1489,9 +1515,9 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 factual = predictions[horizon].astype(jnp.float32)
                 ablated = ablated_predictions[horizon].astype(jnp.float32)
                 delta = jnp.sqrt(jnp.square(factual - ablated).mean(axis=-1))
-                metrics[
-                    f"ctde/multistep_jepa_h{horizon}_plan_ablation_delta_rms"
-                ] = (delta * weight).sum() / count
+                metrics[f"ctde/multistep_jepa_h{horizon}_plan_ablation_delta_rms"] = (
+                    delta * weight
+                ).sum() / count
         return losses, metrics
 
     def _ctde_teammate_plan_loss(
@@ -1552,17 +1578,15 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             target = peer_action.astype(jnp.int32) - self.ctde_action_low
             in_range = (target >= 0) & (target < self.ctde_action_count)
             safe_target = jnp.clip(target, 0, self.ctde_action_count - 1)
-            legal = jnp.take_along_axis(
-                peer_mask, safe_target[..., None], axis=-1
-            )[..., 0]
+            legal = jnp.take_along_axis(peer_mask, safe_target[..., None], axis=-1)[
+                ..., 0
+            ]
             valid = (
                 all_valid[step][..., None]
                 & peer_present
                 & in_range
                 & legal
-                & ~grouped_first[
-                    :, step + 1 : step + roots + 1, None, None
-                ]
+                & ~grouped_first[:, step + 1 : step + roots + 1, None, None]
             )
             weight = valid.astype(jnp.float32)
             active_weight = weight * peer_alive.astype(jnp.float32)
@@ -1579,9 +1603,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             q0_nll = -jnp.take_along_axis(
                 q0_log_probability, safe_target[..., None], axis=-1
             )[..., 0]
-            root_peer_action = jnp.take(
-                source_actions[:, :roots], peer_indices, axis=2
-            )
+            root_peer_action = jnp.take(source_actions[:, :roots], peer_indices, axis=2)
             repeat_target = root_peer_action.astype(jnp.int32) - self.ctde_action_low
             repeat_in_range = (repeat_target >= 0) & (
                 repeat_target < self.ctde_action_count
@@ -1592,9 +1614,8 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 safe_repeat, self.ctde_action_count, dtype=jnp.float32
             )
             repeat_probability = (
-                (1.0 - repeat_unimix) * repeat_probability
-                + repeat_unimix / self.ctde_action_count
-            )
+                1.0 - repeat_unimix
+            ) * repeat_probability + repeat_unimix / self.ctde_action_count
             repeat_nll = -jnp.log(
                 jnp.take_along_axis(
                     repeat_probability, safe_target[..., None], axis=-1
@@ -1606,8 +1627,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             dead_count = jnp.maximum(dead_weight.sum(), 1.0)
             metrics.update(
                 {
-                    f"ctde/teammate_plan_q{step}_nll": (nll * weight).sum()
-                    / count,
+                    f"ctde/teammate_plan_q{step}_nll": (nll * weight).sum() / count,
                     f"ctde/teammate_plan_q{step}_top1": (
                         top1.astype(jnp.float32) * weight
                     ).sum()
@@ -1629,9 +1649,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                     ).sum()
                     / active_count,
                     f"ctde/teammate_plan_q{step}_active_count": active_weight.sum(),
-                    f"ctde/teammate_plan_q{step}_dead_nll": (
-                        nll * dead_weight
-                    ).sum()
+                    f"ctde/teammate_plan_q{step}_dead_nll": (nll * dead_weight).sum()
                     / dead_count,
                     f"ctde/teammate_plan_q{step}_dead_top1": (
                         top1.astype(jnp.float32) * dead_weight
@@ -1665,8 +1683,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         padded *= length / roots
         metrics.update(
             {
-                "ctde/teammate_plan_recent_nll": (nll * weight).sum()
-                / event_count,
+                "ctde/teammate_plan_recent_nll": (nll * weight).sum() / event_count,
                 "ctde/teammate_plan_recent_top1": (
                     top1.astype(jnp.float32) * weight
                 ).sum()

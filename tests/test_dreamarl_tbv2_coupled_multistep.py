@@ -46,6 +46,21 @@ def _set_nonzero_belief_path(params):
     return changed
 
 
+def _set_random_belief_path(params, seed=0):
+    changed = dict(params)
+    for index, key in enumerate(sorted(params)):
+        if "belief_" in key:
+            changed[key] = (
+                0.2
+                * jax.random.normal(
+                    jax.random.fold_in(jax.random.key(seed), index),
+                    params[key].shape,
+                    dtype=jnp.float32,
+                )
+            ).astype(params[key].dtype)
+    return changed
+
+
 def test_qplan_zero_delta_prior_and_causal_own_prefix_alignment() -> None:
     model = _plan_model()
     root = jax.random.normal(jax.random.key(1), (1, 2, 3, 5))
@@ -92,9 +107,7 @@ def test_qplan_stops_local_root_and_q0_but_ce_trains_plan_parameters() -> None:
     params = nj.init(lambda: objective(root, q0))({}, seed=12)
 
     def pure_objective(local_root, baseline):
-        return nj.pure(lambda: objective(local_root, baseline))(
-            params, seed=13
-        )[1]
+        return nj.pure(lambda: objective(local_root, baseline))(params, seed=13)[1]
 
     root_grad, q0_grad = jax.grad(pure_objective, (0, 1))(root, q0)
     np.testing.assert_array_equal(root_grad, jnp.zeros_like(root_grad))
@@ -125,12 +138,10 @@ def test_uniform_plan_is_exactly_inert_after_arbitrary_belief_changes() -> None:
 
     params = nj.init(lambda: model(hidden, actions, uniform_context))({}, seed=21)
     params = _set_nonzero_belief_path(params)
-    without_plan = nj.pure(lambda: model(hidden, actions, None))(
-        params, seed=22
-    )[1]
-    uniform = nj.pure(lambda: model(hidden, actions, uniform_context))(
-        params, seed=22
-    )[1]
+    without_plan = nj.pure(lambda: model(hidden, actions, None))(params, seed=22)[1]
+    uniform = nj.pure(lambda: model(hidden, actions, uniform_context))(params, seed=22)[
+        1
+    ]
     for horizon in (1, 2, 4):
         np.testing.assert_array_equal(without_plan[horizon], uniform[horizon])
 
@@ -182,6 +193,70 @@ def test_plan_pool_is_peer_permutation_invariant_and_team_normalized() -> None:
         )
 
 
+def test_identity_attention_preserves_peer_ownership_without_breaking_inert_init() -> (
+    None
+):
+    model = ActionConditionedMultiStepJEPA(
+        4,
+        0,
+        5,
+        (1, 2, 4),
+        4,
+        plan_aggregation="identity_attention",
+        plan_attention_heads=2,
+        width=8,
+        layers=1,
+        units=8,
+        name="multistep",
+    )
+    hidden = jax.random.normal(jax.random.key(35), (1, 1, 3, 8))
+    actions = jnp.zeros((1, 1, 3, 4), jnp.int32)
+    plan = jax.random.normal(jax.random.key(36), (1, 1, 3, 3, 2, 4))
+    peer_ids = jnp.asarray(((1, 2), (0, 2), (0, 1)), jnp.int32)
+
+    params = nj.init(
+        lambda: model(hidden, actions, plan, peer_ids=peer_ids),
+    )({}, seed=37)
+    initial = nj.pure(lambda: model(hidden, actions, plan, peer_ids=peer_ids))(
+        params, seed=38
+    )[1]
+    no_plan = nj.pure(lambda: model(hidden, actions, None))(params, seed=38)[1]
+    for horizon in (1, 2, 4):
+        np.testing.assert_array_equal(initial[horizon], no_plan[horizon])
+
+    params = _set_random_belief_path(params, seed=40)
+    factual = nj.pure(lambda: model(hidden, actions, plan, peer_ids=peer_ids))(
+        params, seed=39
+    )[1]
+    paired = nj.pure(
+        lambda: model(
+            hidden,
+            actions,
+            plan[..., ::-1, :],
+            peer_ids=peer_ids[:, ::-1],
+        )
+    )(params, seed=39)[1]
+    wrong_owner = nj.pure(
+        lambda: model(hidden, actions, plan[..., ::-1, :], peer_ids=peer_ids)
+    )(params, seed=39)[1]
+    for horizon in (1, 2, 4):
+        np.testing.assert_allclose(
+            np.asarray(factual[horizon], np.float32),
+            np.asarray(paired[horizon], np.float32),
+            atol=1e-5,
+        )
+    assert not np.allclose(
+        np.asarray(factual[4], np.float32), np.asarray(wrong_owner[4], np.float32)
+    )
+
+    uniform = jnp.zeros_like(plan)
+    uniform_output = nj.pure(
+        lambda: model(hidden, actions, uniform, peer_ids=peer_ids)
+    )(params, seed=39)[1]
+    for horizon in (1, 2, 4):
+        np.testing.assert_array_equal(no_plan[horizon], uniform_output[horizon])
+
+
 def test_each_ms_head_sees_only_its_causal_plan_prefix() -> None:
     model = ActionConditionedMultiStepJEPA(
         4,
@@ -201,18 +276,16 @@ def test_each_ms_head_sees_only_its_causal_plan_prefix() -> None:
     params = _set_nonzero_belief_path(params)
     base = nj.pure(lambda: model(hidden, actions, plan))(params, seed=43)[1]
     changed = plan.at[..., 1:, :, 0].add(10.0)
-    intervened = nj.pure(lambda: model(hidden, actions, changed))(
-        params, seed=43
-    )[1]
+    intervened = nj.pure(lambda: model(hidden, actions, changed))(params, seed=43)[1]
     np.testing.assert_array_equal(base[1], intervened[1])
     np.testing.assert_array_equal(base[2], intervened[2])
     assert not np.allclose(
         np.asarray(base[4], np.float32), np.asarray(intervened[4], np.float32)
     )
 
-    selected = nj.pure(
-        lambda: model(hidden, actions, plan, selected_horizon=4)
-    )(params, seed=43)[1]
+    selected = nj.pure(lambda: model(hidden, actions, plan, selected_horizon=4))(
+        params, seed=43
+    )[1]
     assert set(selected) == {4}
     np.testing.assert_array_equal(selected[4], base[4])
 
@@ -271,8 +344,7 @@ def test_plan_ce_alignment_and_dead_peer_mask_boundary() -> None:
     grouped_alive = grouped_alive.at[0, 1, 1].set(False)
     grouped_first = jnp.zeros((1, length), bool).at[0, 4].set(True)
     all_valid = {
-        step: jnp.ones((1, 1, agents), bool)
-        for step in range(1, max_horizon + 1)
+        step: jnp.ones((1, 1, agents), bool) for step in range(1, max_horizon + 1)
     }
     # q1 must not inherit q2's invalidity.
     all_valid[2] = all_valid[2].at[0, 0, 2].set(False)

@@ -113,6 +113,7 @@ def test_default_config_is_clean_single_agent_dmc() -> None:
         "ctde_tbv2_multistep_coupled",
         "ctde_tbv2_multistep_coupled_action0",
         "ctde_tbv2_multistep_uncoupled",
+        "ctde_peer_plan_identity_attention",
         "ctde_train_ratio_1024",
         "ctde_train_ratio_1024_world_warmstart",
         "ctde_mask",

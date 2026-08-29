@@ -1,5 +1,6 @@
 """Training-only direct multi-step JEPA predictor for CTDE replay."""
 
+import math
 from collections.abc import Sequence
 
 import embodied.jax.nets as nn
@@ -9,6 +10,26 @@ import ninjax as nj
 
 f32 = jnp.float32
 sg = jax.lax.stop_gradient
+
+
+def sinusoidal_agent_identity(agent_ids, width):
+    """Return deterministic identity features without learned slot parameters."""
+
+    if width < 1:
+        raise ValueError("agent identity width must be positive")
+    half = max(width // 2, 1)
+    frequency = jnp.exp(
+        -math.log(10_000.0) * jnp.arange(half, dtype=f32) / max(half - 1, 1)
+    )
+    angle = agent_ids.astype(f32)[..., None] * frequency
+    encoding = jnp.concatenate([jnp.sin(angle), jnp.cos(angle)], axis=-1)
+    return (
+        encoding[..., :width]
+        if encoding.shape[-1] >= width
+        else jnp.pad(
+            encoding, ((0, 0),) * agent_ids.ndim + ((0, width - encoding.shape[-1]),)
+        )
+    )
 
 
 def isolated_creation_call(function, salt, *args, **kwargs):
@@ -87,9 +108,9 @@ class TeammateActionPlanGRU(nj.Module):
             local_root[..., None, :], (*batch_shape, self.peers, local_root.shape[-1])
         )
         initial = jnp.concatenate([repeated_root, q0_context], axis=-1)
-        carry = self.sub(
-            "initial_projection", nn.Linear, self.units, winit=self.winit
-        )(initial)
+        carry = self.sub("initial_projection", nn.Linear, self.units, winit=self.winit)(
+            initial
+        )
         carry = nn.act(self.act)(self.sub("initial_norm", nn.Norm, self.norm)(carry))
 
         action_index = action_windows.astype(jnp.int32) - self.action_low
@@ -157,6 +178,8 @@ class ActionConditionedMultiStepJEPA(nj.Module):
         target_dim: int,
         horizons: Sequence[int],
         max_horizon: int,
+        plan_aggregation: str = "mean",
+        plan_attention_heads: int = 4,
         **kwargs,
     ):
         self.action_count = int(action_count)
@@ -164,6 +187,8 @@ class ActionConditionedMultiStepJEPA(nj.Module):
         self.target_dim = int(target_dim)
         self.horizons = tuple(int(horizon) for horizon in horizons)
         self.max_horizon = int(max_horizon)
+        self.plan_aggregation = str(plan_aggregation)
+        self.plan_attention_heads = int(plan_attention_heads)
         if self.action_count < 2 or self.target_dim < 1:
             raise ValueError("multi-step JEPA needs categorical actions and a target")
         if (
@@ -179,6 +204,16 @@ class ActionConditionedMultiStepJEPA(nj.Module):
             raise ValueError("multi-step JEPA K must equal the largest horizon")
         if self.width < 1 or self.layers < 1 or self.units < 1:
             raise ValueError("multi-step JEPA widths and layer count must be positive")
+        if self.plan_aggregation not in {"mean", "identity_attention"}:
+            raise ValueError(
+                "multi-step plan aggregation must be 'mean' or 'identity_attention'"
+            )
+        if self.plan_aggregation == "identity_attention" and (
+            self.plan_attention_heads < 1 or self.width % self.plan_attention_heads
+        ):
+            raise ValueError(
+                "multi-step plan attention heads must divide the plan width"
+            )
         del kwargs
 
     def _belief_residual(self, root, action, belief_context, horizon):
@@ -194,9 +229,7 @@ class ActionConditionedMultiStepJEPA(nj.Module):
         belief = nn.act(self.act)(
             self.sub(f"h{horizon}_belief_norm", nn.Norm, self.norm)(belief)
         )
-        value = jnp.concatenate(
-            [belief, root * belief, action * belief], axis=-1
-        )
+        value = jnp.concatenate([belief, root * belief, action * belief], axis=-1)
         for index in range(self.layers):
             value = self.sub(
                 f"h{horizon}_belief_fusion{index}",
@@ -206,9 +239,9 @@ class ActionConditionedMultiStepJEPA(nj.Module):
                 winit=self.winit,
             )(value)
             value = nn.act(self.act)(
-                self.sub(
-                    f"h{horizon}_belief_fusion_norm{index}", nn.Norm, self.norm
-                )(value)
+                self.sub(f"h{horizon}_belief_fusion_norm{index}", nn.Norm, self.norm)(
+                    value
+                )
             )
         return self.sub(
             f"h{horizon}_belief_prediction",
@@ -219,8 +252,8 @@ class ActionConditionedMultiStepJEPA(nj.Module):
             outscale=0.0,
         )(value)
 
-    def _pool_belief_plan(self, belief_plan):
-        """Project every peer identically and normalize across team size."""
+    def _aggregate_belief_plan(self, belief_plan, root, peer_ids):
+        """Aggregate peer plans while optionally preserving their global identity."""
 
         peer_plan = self.sub(
             "belief_peer_projection",
@@ -232,7 +265,57 @@ class ActionConditionedMultiStepJEPA(nj.Module):
         peer_plan = nn.act(self.act)(
             self.sub("belief_peer_norm", nn.Norm, self.norm)(peer_plan)
         )
-        return peer_plan.mean(axis=-2)
+        if self.plan_aggregation == "mean":
+            return peer_plan.mean(axis=-2)
+
+        agents, peers = belief_plan.shape[2], belief_plan.shape[-2]
+        if peer_ids is None or peer_ids.shape != (agents, peers):
+            raise ValueError(
+                "identity-aware plan attention requires global peer IDs shaped "
+                f"[{agents},{peers}], got {None if peer_ids is None else peer_ids.shape}"
+            )
+        head_width = self.width // self.plan_attention_heads
+        peer_identity = sinusoidal_agent_identity(peer_ids, self.width)
+        focal_identity = sinusoidal_agent_identity(jnp.arange(agents), self.width)
+
+        # Identity affects addressing, never the values. Consequently a uniform
+        # (zero-centered) teammate plan remains exactly inert after training.
+        key_input = peer_plan + peer_identity[None, None, :, None, :, :].astype(
+            peer_plan.dtype
+        )
+        query_input = root + focal_identity[None, None, :, :].astype(root.dtype)
+        query = self.sub(
+            "belief_identity_query", nn.Linear, self.width, bias=False, winit=self.winit
+        )(query_input)
+        key = self.sub(
+            "belief_identity_key", nn.Linear, self.width, bias=False, winit=self.winit
+        )(key_input)
+        value = self.sub(
+            "belief_identity_value", nn.Linear, self.width, bias=False, winit=self.winit
+        )(peer_plan)
+        query = query.reshape(
+            (*query.shape[:-1], self.plan_attention_heads, head_width)
+        )
+        key = key.reshape((*key.shape[:-1], self.plan_attention_heads, head_width))
+        value = value.reshape(
+            (*value.shape[:-1], self.plan_attention_heads, head_width)
+        )
+        logits = jnp.einsum("brahd,brakphd->brakhp", f32(query), f32(key)) / math.sqrt(
+            head_width
+        )
+        weights = jax.nn.softmax(logits, axis=-1).astype(value.dtype)
+        attended = jnp.einsum("brakhp,brakphd->brakhd", weights, value)
+        attended = attended.reshape((*attended.shape[:-2], self.width))
+        attended = self.sub(
+            "belief_identity_output",
+            nn.Linear,
+            self.width,
+            bias=False,
+            winit=self.winit,
+        )(attended)
+        return nn.act(self.act)(
+            self.sub("belief_identity_output_norm", nn.Norm, self.norm)(attended)
+        )
 
     def __call__(
         self,
@@ -240,14 +323,14 @@ class ActionConditionedMultiStepJEPA(nj.Module):
         action_windows,
         belief_plan=None,
         *,
+        peer_ids=None,
         selected_horizon=None,
     ):
         """Apply direct heads to live roots, own tails, and stopped TBv2 context."""
 
         if joint_hidden.ndim != 4:
             raise ValueError(
-                "multi-step shared hidden must be [B,R,A,D], got "
-                f"{joint_hidden.shape}"
+                f"multi-step shared hidden must be [B,R,A,D], got {joint_hidden.shape}"
             )
         if action_windows.shape != (*joint_hidden.shape[:-1], self.max_horizon):
             raise ValueError(
@@ -267,15 +350,17 @@ class ActionConditionedMultiStepJEPA(nj.Module):
                     "multi-step belief plan must be [B,R,A,K-1,P,C], got "
                     f"{belief_plan.shape} for roots {joint_hidden.shape}"
                 )
+            if self.plan_aggregation == "identity_attention" and peer_ids is None:
+                raise ValueError("identity-aware plan aggregation requires peer IDs")
         if selected_horizon is not None:
             selected_horizon = int(selected_horizon)
             if selected_horizon not in self.horizons:
                 raise ValueError(
                     f"selected horizon {selected_horizon} not in {self.horizons}"
                 )
-        root = self.sub(
-            "joint_projection", nn.Linear, self.width, winit=self.winit
-        )(nn.cast(joint_hidden))
+        root = self.sub("joint_projection", nn.Linear, self.width, winit=self.winit)(
+            nn.cast(joint_hidden)
+        )
         root = nn.act(self.act)(self.sub("joint_norm", nn.Norm, self.norm)(root))
         action_index = action_windows.astype(jnp.int32) - self.action_low
         in_range = (action_index >= 0) & (action_index < self.action_count)
@@ -287,9 +372,11 @@ class ActionConditionedMultiStepJEPA(nj.Module):
         onehot *= in_range[..., None].astype(f32)
         pooled_plan = (
             isolated_creation_call(
-                self._pool_belief_plan,
+                self._aggregate_belief_plan,
                 0x4D534250,
                 belief_plan,
+                root,
+                peer_ids,
             )
             if belief_plan is not None
             else None
@@ -304,9 +391,7 @@ class ActionConditionedMultiStepJEPA(nj.Module):
             tail_positions = (jnp.arange(self.max_horizon) >= 1) & (
                 jnp.arange(self.max_horizon) < horizon
             )
-            prefix = onehot * tail_positions.astype(f32)[
-                None, None, None, :, None
-            ]
+            prefix = onehot * tail_positions.astype(f32)[None, None, None, :, None]
             prefix = prefix.reshape((*prefix.shape[:-2], -1))
             action = self.sub(
                 f"h{horizon}_action", nn.Linear, self.width, winit=self.winit
@@ -334,12 +419,10 @@ class ActionConditionedMultiStepJEPA(nj.Module):
                 predictions[horizon] = prediction
             else:
                 plan_positions = jnp.arange(self.max_horizon - 1) < horizon - 1
-                belief_context = pooled_plan * plan_positions.astype(f32)[
-                    None, None, None, :, None
-                ]
-                belief_context = belief_context.reshape(
-                    (*belief_context.shape[:3], -1)
+                belief_context = (
+                    pooled_plan * plan_positions.astype(f32)[None, None, None, :, None]
                 )
+                belief_context = belief_context.reshape((*belief_context.shape[:3], -1))
                 belief_residual = isolated_creation_call(
                     self._belief_residual,
                     0x4D534250 + horizon,
@@ -356,4 +439,5 @@ __all__ = [
     "ActionConditionedMultiStepJEPA",
     "TeammateActionPlanGRU",
     "isolated_creation_call",
+    "sinusoidal_agent_identity",
 ]

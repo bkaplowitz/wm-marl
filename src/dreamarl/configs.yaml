@@ -146,7 +146,7 @@ ctde:
       ctde:
         rollout_steps: 1
         multistep: {anchors: 0}
-        multistep_jepa: {enabled: False, belief_context: False, horizons: [1, 2, 4, 8], max_horizon: 8, decay: 0.75, action_margin: 0.1, plan_units: 256, width: 256, layers: 2, units: 512, act: silu, norm: rms, winit: trunc_normal_in}
+        multistep_jepa: {enabled: False, belief_context: False, horizons: [1, 2, 4, 8], max_horizon: 8, decay: 0.75, action_margin: 0.1, plan_units: 256, plan_aggregation: mean, plan_attention_heads: 4, width: 256, layers: 2, units: 512, act: silu, norm: rms, winit: trunc_normal_in}
         mask_calibration: {enabled: False, horizons: [1, 4, 8, 15], soft_liveness: False}
         teammate_belief: {enabled: False, layers: 2, units: 512, outscale: 0.0, logit_clip: 5.0, adapter_layers: 1, adapter_units: 256, act: silu, norm: rms, winit: trunc_normal_in}
         joint: {width: 256, heads: 4, agent_layers: 2, temporal_layers: 4, context: 16, ffup: 4, dropout: 0.1, action_conditioning: add, act: silu, norm: rms, winit: trunc_normal_in}
@@ -238,6 +238,14 @@ ctde_tbv2_multistep_coupled_action0:
       ctde:
         teammate_belief: {enabled: True}
         multistep_jepa: {enabled: True, belief_context: True}
+
+# MARIE-style agent ownership for the centralized future-plan consumer. Fixed
+# global agent identities address peer tokens; no identity reaches the actor.
+ctde_peer_plan_identity_attention:
+  agent:
+    marl:
+      ctde:
+        multistep_jepa: {plan_aggregation: identity_attention, plan_attention_heads: 4}
 
 ctde_tbv2_multistep_uncoupled:
   agent:

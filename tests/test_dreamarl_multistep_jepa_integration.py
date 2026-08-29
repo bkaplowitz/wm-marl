@@ -46,6 +46,7 @@ def _config(
     coupled: bool = False,
     uncoupled: bool = False,
     action0: bool = False,
+    identity_attention: bool = False,
     actor_critic_start_step: int = 0,
 ):
     profiles = ["smac_vector", "ctde", "ctde_generalist"]
@@ -57,6 +58,8 @@ def _config(
         profiles.append("ctde_tbv2_multistep_uncoupled")
     elif enabled:
         profiles.append("ctde_multistep_jepa")
+    if identity_attention:
+        profiles.append("ctde_peer_plan_identity_attention")
     profiles.append("debug")
     resolved = _resolve_config_profiles(_load_configs(), profiles).update(
         {
@@ -122,6 +125,7 @@ def _agent(
     coupled: bool = False,
     uncoupled: bool = False,
     action0: bool = False,
+    identity_attention: bool = False,
     actor_critic_start_step: int = 0,
 ):
     observations, actions = _spaces(team_size, action_count)
@@ -136,6 +140,7 @@ def _agent(
             coupled=coupled,
             uncoupled=uncoupled,
             action0=action0,
+            identity_attention=identity_attention,
             actor_critic_start_step=actor_critic_start_step,
         ),
     )
@@ -145,12 +150,8 @@ def _agent(
 def _replay_view(agent, team_size: int, action_count: int, seed: int):
     length = 11  # replay context 2 + optimized suffix 9; K=8 leaves one root.
     data = {
-        "vector": jax.random.normal(
-            jax.random.key(seed), (1, length, team_size, 3)
-        ),
-        "reward": jax.random.normal(
-            jax.random.key(seed + 1), (1, length, team_size)
-        ),
+        "vector": jax.random.normal(jax.random.key(seed), (1, length, team_size, 3)),
+        "reward": jax.random.normal(jax.random.key(seed + 1), (1, length, team_size)),
         "agent_present": jnp.ones((1, length, team_size), bool),
         "agent_alive": jnp.ones((1, length, team_size), bool),
         "controllable_alive": jnp.ones((1, length, team_size), bool),
@@ -204,9 +205,7 @@ def _ready(tree):
             value.block_until_ready()
 
 
-@pytest.mark.parametrize(
-    ("team_size", "action_count"), ((3, 9), (5, 9), (8, 14))
-)
+@pytest.mark.parametrize(("team_size", "action_count"), ((3, 9), (5, 9), (8, 14)))
 def test_multistep_jepa_real_compiled_dual_update(
     team_size: int,
     action_count: int,
@@ -229,12 +228,12 @@ def test_multistep_jepa_real_compiled_dual_update(
     state_b, _ = compiled(initial, batch_b)
     _ready((state_a, result_a, state_b))
 
-    module_keys = [
-        key for key in state_a if key.startswith("ctde_multistep_jepa/")
-    ]
+    module_keys = [key for key in state_a if key.startswith("ctde_multistep_jepa/")]
     assert module_keys
     for key in module_keys:
-        np.testing.assert_array_equal(np.asarray(state_a[key]), np.asarray(state_b[key]))
+        np.testing.assert_array_equal(
+            np.asarray(state_a[key]), np.asarray(state_b[key])
+        )
     assert agent.ctde_multistep_jepa in agent.opt.groups["joint_world"][0]
     assert agent.ctde_multistep_jepa not in agent.opt.groups["actor"][0]
     assert agent.ctde_multistep_jepa not in agent.opt.groups["critic"][0]
@@ -365,9 +364,7 @@ def test_multistep_jepa_preserves_base_initialization_and_first_update() -> None
         )
 
 
-@pytest.mark.parametrize(
-    ("team_size", "action_count"), ((3, 9), (5, 11), (8, 14))
-)
+@pytest.mark.parametrize(("team_size", "action_count"), ((3, 9), (5, 11), (8, 14)))
 def test_tbv2_coupled_multistep_real_compiled_dual_update(
     team_size: int,
     action_count: int,
@@ -396,9 +393,7 @@ def test_tbv2_coupled_multistep_real_compiled_dual_update(
     _ready((state_a, result_a, state_b))
 
     plan_keys = [key for key in state_a if key.startswith("ctde_teammate_plan/")]
-    multistep_keys = [
-        key for key in state_a if key.startswith("ctde_multistep_jepa/")
-    ]
+    multistep_keys = [key for key in state_a if key.startswith("ctde_multistep_jepa/")]
     assert plan_keys and multistep_keys
     assert any(
         not np.array_equal(np.asarray(initial[key]), np.asarray(state_a[key]))
@@ -406,7 +401,9 @@ def test_tbv2_coupled_multistep_real_compiled_dual_update(
         if key in initial
     )
     for key in plan_keys + multistep_keys:
-        np.testing.assert_array_equal(np.asarray(state_a[key]), np.asarray(state_b[key]))
+        np.testing.assert_array_equal(
+            np.asarray(state_a[key]), np.asarray(state_b[key])
+        )
 
     assert agent.ctde_teammate_plan in agent.opt.groups["joint_world"][0]
     assert agent.ctde_multistep_jepa in agent.opt.groups["joint_world"][0]
@@ -492,9 +489,7 @@ def test_coupled_zero_residual_preserves_uncoupled_first_update() -> None:
     assert any(key.startswith("ctde_teammate_plan/") for key in coupled_initial)
     assert not any(key.startswith("ctde_teammate_plan/") for key in uncoupled_initial)
 
-    coupled_state, coupled_result = nj.pure(coupled_step)(
-        coupled_initial, seed=211
-    )
+    coupled_state, coupled_result = nj.pure(coupled_step)(coupled_initial, seed=211)
     uncoupled_state, uncoupled_result = nj.pure(uncoupled_step)(
         uncoupled_initial, seed=211
     )
@@ -541,9 +536,7 @@ def test_coupled_action0_compiled_path_skips_counterfactual_queries() -> None:
         return agent.train(carry, data)
 
     initial = nj.init(lambda: step(batch))({}, seed=310)
-    compiled = jax.jit(
-        lambda state, data: nj.pure(step)(state, data, seed=311)
-    )
+    compiled = jax.jit(lambda state, data: nj.pure(step)(state, data, seed=311))
     state, result = compiled(initial, batch)
     _ready((state, result))
     metrics = result[2]
@@ -552,12 +545,52 @@ def test_coupled_action0_compiled_path_skips_counterfactual_queries() -> None:
     for horizon in (1, 2, 4, 8):
         assert (
             float(
-                metrics[
-                    f"ctde/multistep_jepa_h{horizon}_action_distinct_legal_count"
-                ]
+                metrics[f"ctde/multistep_jepa_h{horizon}_action_distinct_legal_count"]
             )
             == 0.0
         )
+
+
+def test_identity_aware_action0_compiled_heterogeneous_shape() -> None:
+    team_size, action_count = 5, 11
+    agent = _agent(
+        team_size,
+        action_count,
+        enabled=True,
+        action0=True,
+        identity_attention=True,
+    )
+    carry = agent.init_train(1)
+    world = _replay_view(agent, team_size, action_count, 321)
+    behavior = _replay_view(agent, team_size, action_count, 322)
+    batch = _paired(world, behavior)
+
+    def step(data):
+        return agent.train(carry, data)
+
+    initial = nj.init(lambda: step(batch))({}, seed=323)
+    compiled = jax.jit(lambda state, data: nj.pure(step)(state, data, seed=324))
+    state, result = compiled(initial, batch)
+    _ready((state, result))
+    identity_keys = [
+        key for key in state if key.startswith("ctde_multistep_jepa/belief_identity_")
+    ]
+    assert identity_keys
+    assert agent.ctde_multistep_jepa in agent.opt.groups["joint_world"][0]
+    metrics = result[2]
+    for key in (
+        "loss/ctde_teammate_plan",
+        "loss/ctde_multistep_jepa_cosine",
+        "ctde/multistep_jepa_plan_context_rms",
+        "ctde/multistep_jepa_identity_attention_enabled",
+        "opt/joint_world/grad_norm",
+    ):
+        assert np.isfinite(float(metrics[key])), key
+    assert float(metrics["loss/ctde_multistep_jepa_action"]) == 0.0
+    assert float(metrics["ctde/multistep_jepa_identity_attention_enabled"]) == 1.0
+    assert agent.policy_keys == (
+        "^(enc|dyn|pol|ctde_teammate_belief|ctde_teammate_actor)/"
+    )
 
 
 def test_schedule_profiles_are_exact_action0_control_overlays() -> None:

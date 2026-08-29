@@ -149,18 +149,14 @@ def test_coupled_tbv2_multistep_profile_changes_only_locked_switches() -> None:
         "agent.marl.ctde.multistep_jepa.enabled": (False, True),
         "agent.marl.ctde.teammate_belief.enabled": (False, True),
     }
-    assert treatment.agent.marl.ctde.multistep_jepa.action_margin == pytest.approx(
-        0.1
-    )
+    assert treatment.agent.marl.ctde.multistep_jepa.action_margin == pytest.approx(0.1)
     assert treatment.agent.loss_scales.ctde_teammate_plan == pytest.approx(0.5)
 
 
 def test_coupling_and_action_scale_ablations_are_one_switch_each() -> None:
     coupled = _resolved("ctde_generalist", "ctde_tbv2_multistep_coupled")
     uncoupled = _resolved("ctde_generalist", "ctde_tbv2_multistep_uncoupled")
-    action0 = _resolved(
-        "ctde_generalist", "ctde_tbv2_multistep_coupled_action0"
-    )
+    action0 = _resolved("ctde_generalist", "ctde_tbv2_multistep_coupled_action0")
 
     coupling_diff = {
         key: (uncoupled.flat.get(key), coupled.flat.get(key))
@@ -175,8 +171,26 @@ def test_coupling_and_action_scale_ablations_are_one_switch_each() -> None:
     assert coupling_diff == {
         "agent.marl.ctde.multistep_jepa.belief_context": (False, True)
     }
-    assert action_diff == {
-        "agent.loss_scales.ctde_multistep_jepa_action": (0.25, 0.0)
+    assert action_diff == {"agent.loss_scales.ctde_multistep_jepa_action": (0.25, 0.0)}
+
+
+def test_peer_plan_identity_attention_changes_only_the_aggregator() -> None:
+    control = _resolved("ctde_generalist", "ctde_tbv2_multistep_coupled_action0")
+    treatment = _resolved(
+        "ctde_generalist",
+        "ctde_tbv2_multistep_coupled_action0",
+        "ctde_peer_plan_identity_attention",
+    )
+    differences = {
+        key: (control.flat.get(key), treatment.flat.get(key))
+        for key in set(control.flat) | set(treatment.flat)
+        if control.flat.get(key) != treatment.flat.get(key)
+    }
+    assert differences == {
+        "agent.marl.ctde.multistep_jepa.plan_aggregation": (
+            "mean",
+            "identity_attention",
+        )
     }
 
 
