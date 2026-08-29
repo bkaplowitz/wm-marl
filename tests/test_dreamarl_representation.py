@@ -117,28 +117,6 @@ def test_inactive_embeddings_do_not_change_sigreg() -> None:
     np.testing.assert_allclose(candidate, baseline, rtol=1e-6, atol=1e-6)
 
 
-def test_per_timestep_sigreg_aggregates_each_time_index() -> None:
-    key = jax.random.key(82)
-    embeddings = jax.random.normal(key, (5, 7, 16))
-    actual = sigreg_loss(
-        embeddings,
-        key,
-        knots=9,
-        num_proj=32,
-        aggregation="per_timestep",
-    )
-    from dreamarl.ablations.representation import sigreg_loss as reference
-
-    expected = reference(
-        embeddings,
-        key,
-        knots=9,
-        num_proj=32,
-        aggregation="per_timestep",
-    )
-    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
-
-
 def test_spatial_mask_hides_complete_image_patches() -> None:
     mask = jnp.array([[[[True, False], [False, True]]]])
     image = jnp.arange(1 * 1 * 4 * 6 * 1, dtype=jnp.uint8).reshape((1, 1, 4, 6, 1))

@@ -81,12 +81,10 @@ def _worker_seed(seed: int, index: int) -> int:
 
 
 def _validate_script(script: str, num_agents: int) -> None:
-    if num_agents > 1 and (script == "train_eval" or script.startswith("parallel")):
-        raise ValueError(
-            f"script={script} uses generic single-agent reporting and is not "
-            "supported for MARL runs; use script=train with explicit curve "
-            "evaluation"
-        )
+    if num_agents < 2:
+        raise ValueError("final DreaMARL requires at least two agents")
+    if script not in {"train", "eval_only"}:
+        raise ValueError("final DreaMARL supports only train and eval_only")
 
 
 def main(argv=None, extra_config_path=None):
@@ -95,7 +93,9 @@ def main(argv=None, extra_config_path=None):
     [elements.print(line) for line in MARLCore.banner]
 
     configs = _load_configs(extra_config_path)
-    parsed, other = elements.Flags(configs=["defaults"]).parse_known(argv)
+    parsed, other = elements.Flags(
+        configs=["defaults", "smac_vector", "dreamarl_final"]
+    ).parse_known(argv)
     config = _resolve_config_profiles(configs, parsed.configs)
     config = elements.Flags(config).parse(other)
     config = config.update(
@@ -110,9 +110,8 @@ def main(argv=None, extra_config_path=None):
     print("Logdir:", logdir)
     print("Run script:", config.script)
     _validate_script(str(config.script), int(config.agent.num_agents))
-    if not config.script.endswith(("_env", "_replay")):
-        logdir.mkdir()
-        config.save(logdir / "config.yaml")
+    logdir.mkdir()
+    config.save(logdir / "config.yaml")
 
     def init():
         elements.timer.global_timer.enabled = config.logger.timer
@@ -151,18 +150,6 @@ def main(argv=None, extra_config_path=None):
             args,
         )
 
-    elif config.script == "train_eval":
-        embodied.run.train_eval(
-            bind(make_agent, config),
-            bind(make_replay, config, "replay"),
-            bind(make_replay, config, "eval_replay", "eval"),
-            bind(make_env, config),
-            bind(make_env, config),
-            bind(make_stream, config),
-            bind(make_logger, config),
-            args,
-        )
-
     elif config.script == "eval_only":
         from . import evaluation
 
@@ -173,47 +160,12 @@ def main(argv=None, extra_config_path=None):
             args,
         )
 
-    elif config.script == "parallel":
-        embodied.run.parallel.combined(
-            bind(make_agent, config),
-            bind(make_replay, config, "replay"),
-            bind(make_replay, config, "replay_eval", "eval"),
-            bind(make_env, config),
-            bind(make_env, config),
-            bind(make_stream, config),
-            bind(make_logger, config),
-            args,
-        )
-
-    elif config.script == "parallel_env":
-        is_eval = config.replica >= args.envs
-        embodied.run.parallel.parallel_env(
-            bind(make_env, config), config.replica, args, is_eval
-        )
-
-    elif config.script == "parallel_envs":
-        is_eval = config.replica >= args.envs
-        embodied.run.parallel.parallel_envs(
-            bind(make_env, config), bind(make_env, config), args
-        )
-
-    elif config.script == "parallel_replay":
-        embodied.run.parallel.parallel_replay(
-            bind(make_replay, config, "replay"),
-            bind(make_replay, config, "replay_eval", "eval"),
-            bind(make_stream, config),
-            args,
-        )
-
     else:
         raise NotImplementedError(config.script)
 
 
 def make_agent(config):
-    if config.agent.get("ablation", False):
-        from .ablations.algorithm import AblationAlgorithm as Algorithm
-    else:
-        from .marl.core import MARLCore as Algorithm
+    from .marl.core import MARLCore as Algorithm
 
     env = make_env(config, 0)
     if env.num_agents != config.agent.num_agents:
@@ -337,19 +289,12 @@ def make_env(config, index, **overrides):
             if suite == "smac"
             else _worker_seed(config.seed, index)
         )
-    if suite == "dmc":
-        from .envs.dmc import make_dmc
-        from .envs.single_agent import SingletonAgentEnv
-
-        if "seed" not in kwargs:
-            raise ValueError("DMC requires env.dmc.use_seed=True")
-        env = SingletonAgentEnv(make_dmc(task, **kwargs))
-    elif suite == "smac":
+    if suite == "smac":
         from .envs.smac import SMACEnv
 
         env = SMACEnv(task, **kwargs)
     else:
-        raise ValueError(f"unsupported DreaMARL task: {config.task!r}")
+        raise ValueError(f"final DreaMARL supports only SMAC: {config.task!r}")
     return wrap_env(env, config)
 
 

@@ -10,7 +10,6 @@ from pathlib import Path
 
 from dreamarl.baselines.dreamerv3.config import absolute_path
 from dreamarl.config import (
-    PUBLIC_ALGORITHMS,
     algorithm_config_profiles,
     environment_config_profile,
 )
@@ -32,21 +31,12 @@ def _latest_checkpoint(experiment: Path) -> Path:
 
 
 def _manifest_algorithm(manifest: dict[str, object]) -> str:
-    """Resolve current and pre-cleanup launch manifests."""
+    """Reject checkpoints from historical experiment branches."""
 
     algorithm = manifest.get("algorithm")
-    if algorithm in PUBLIC_ALGORITHMS:
+    if algorithm == "final-dreamarl":
         return str(algorithm)
-    stage = manifest.get("marl_stage", "b0")
-    if stage in {"b0", "local"}:
-        return "local"
-    if stage == "ctde":
-        rollout_steps = int(manifest.get("ctde_rollout_steps", 1))
-        if rollout_steps == 1:
-            return "ctde-one-step"
-        if rollout_steps == 2:
-            return "ctde-two-step"
-    raise ValueError("checkpoint does not use a maintained local or CTDE algorithm")
+    raise ValueError("checkpoint was not produced by final-dreamarl")
 
 
 def _evaluation_protocol(manifest, *, episodes, envs, eval_seed):
@@ -98,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     experiment = args.experiment_dir.expanduser().resolve()
     manifest = json.loads((experiment / "launch.json").read_text(encoding="utf-8"))
     if manifest.get("implementation") != "first-party decoder-free DreaMARL":
-        raise ValueError("use the ablation evaluator for non-canonical checkpoints")
+        raise ValueError("checkpoint was not produced by final DreaMARL")
 
     algorithm = _manifest_algorithm(manifest)
     episodes, envs, eval_seed = _evaluation_protocol(

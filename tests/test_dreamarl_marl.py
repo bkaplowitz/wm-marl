@@ -1273,38 +1273,3 @@ def test_ctde_soft_mask_and_liveness_update_is_finite() -> None:
         "opt/critic/grad_norm",
     ):
         assert np.isfinite(float(metrics[key]))
-
-
-def test_ctde_two_step_self_fed_objective_is_finite() -> None:
-    observations, actions = _team_spaces(3)
-    config = _agent_config(3, "ctde").update(
-        {
-            "opt.warmup": 0,
-            "marl.ctde.opt.warmup": 0,
-            "marl.ctde.rollout_steps": 2,
-            "marl.ctde.multistep.anchors": 2,
-        }
-    )
-    agent = object.__new__(MARLCore)
-    MARLCore.__init__(agent, observations, actions, config)
-    data = _add_team_axis(_local_batch(length=5), 3)
-    carry = agent.init_train(1)
-
-    def step():
-        return agent.train(carry, data)
-
-    state = nj.init(step)({}, seed=711)
-    _, (_, _, metrics) = nj.pure(step)(state, seed=712)
-    for key in (
-        "loss/ctde_multistep_embedding",
-        "loss/ctde_multistep_interface",
-        "loss/ctde_multistep_reward",
-        "loss/ctde_multistep_continuation",
-        "loss/ctde_multistep_action_mask",
-        "loss/ctde_multistep_alive",
-        "ctde/multistep_embedding_cosine",
-        "ctde/multistep_posterior_kl",
-    ):
-        assert np.isfinite(float(metrics[key]))
-    assert float(metrics["ctde/multistep_anchors"]) == 2.0
-    assert "loss/ctde_multistep_posterior" not in metrics

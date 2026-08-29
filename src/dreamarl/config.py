@@ -12,39 +12,33 @@ from dreamarl.baselines.dreamerv3.config import (
 )
 
 
-PUBLIC_ALGORITHMS = ("local", "ctde-one-step", "ctde-two-step")
+PUBLIC_ALGORITHMS = ("final-dreamarl",)
 
 
 def algorithm_config_profiles(algorithm: str) -> list[str]:
-    """Return the internal YAML profiles for one public algorithm name."""
+    """Return the canonical profiles for the only supported algorithm."""
 
-    if algorithm == "local":
-        return ["local"]
-    if algorithm == "ctde-one-step":
-        return ["ctde"]
-    if algorithm == "ctde-two-step":
-        return ["ctde", "ctde_two_step"]
+    if algorithm == "final-dreamarl":
+        return ["dreamarl_final"]
     raise ValueError(f"unsupported algorithm: {algorithm!r}")
 
 
 def environment_config_profile(task: str, num_agents: int) -> str:
     """Resolve the observation/environment profile without instantiating the env."""
 
-    if task.startswith("dmc_") and num_agents == 1:
-        return "dmc_vision"
     if task.startswith("smac_"):
         return "smac_vector"
-    raise ValueError("DreaMARL supports SMAC or singleton visual DMC tasks")
+    raise ValueError("final-dreamarl supports SMAC tasks")
 
 
 @dataclass(frozen=True, slots=True)
 class DreaMARLRunSpec:
-    """One reproducible local or CTDE training run."""
+    """One reproducible final-DreaMARL training run."""
 
     experiment_dir: Path
     task: str
     num_agents: int
-    algorithm: str = "local"
+    algorithm: str = "final-dreamarl"
     seed: int = 0
     train_steps: int = 50_000
     platform: str = "cuda"
@@ -57,8 +51,6 @@ class DreaMARLRunSpec:
     curve_eval_episodes: int | None = None
     curve_eval_envs: int | None = None
     curve_eval_seed_offset: int | None = None
-    train_ratio: float = 256.0
-    replay_sampling: str = "uniform"
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -74,16 +66,12 @@ class DreaMARLRunSpec:
             raise ValueError(f"unsupported algorithm: {self.algorithm!r}")
         if self.num_agents < 1:
             raise ValueError("num_agents must be positive")
-        if self.algorithm != "local" and self.num_agents < 2:
-            raise ValueError("CTDE requires at least two agents")
+        if self.num_agents < 2:
+            raise ValueError("final-dreamarl requires at least two agents")
         if self.train_steps < 1:
             raise ValueError("train_steps must be positive")
         if self.curve_eval_interval < 0:
             raise ValueError("curve_eval_interval must be non-negative")
-        if self.train_ratio <= 0:
-            raise ValueError("train_ratio must be positive")
-        if self.replay_sampling not in {"uniform", "recent"}:
-            raise ValueError(f"unsupported replay sampling: {self.replay_sampling!r}")
         if self.platform not in {"cpu", "cuda", "tpu"}:
             raise ValueError(f"unsupported platform: {self.platform!r}")
 
@@ -124,27 +112,27 @@ class DreaMARLRunSpec:
 
     @property
     def marl_stage(self) -> str:
-        return "local" if self.algorithm == "local" else "ctde"
+        return "ctde"
 
     @property
     def optimizer_topology(self) -> str:
-        return "joint" if self.algorithm == "local" else "separated"
+        return "separated"
 
     @property
     def ctde_rollout_steps(self) -> int | None:
-        if self.algorithm == "ctde-one-step":
-            return 1
-        if self.algorithm == "ctde-two-step":
-            return 2
-        return None
+        return 1
 
     @property
     def ctde_version(self) -> str | None:
-        if self.algorithm == "ctde-one-step":
-            return "1.1"
-        if self.algorithm == "ctde-two-step":
-            return "2"
-        return None
+        return "final"
+
+    @property
+    def effective_train_ratio(self) -> float:
+        return 1024.0
+
+    @property
+    def effective_replay_sampling(self) -> str:
+        return "recent_world_uniform_behavior"
 
     @property
     def command(self) -> list[str]:
@@ -165,10 +153,6 @@ class DreaMARLRunSpec:
             str(self.seed),
             "--agent.num_agents",
             str(self.num_agents),
-            "--replay.sampling",
-            self.replay_sampling,
-            "--run.train_ratio",
-            str(self.train_ratio),
             "--run.steps",
             str(self.train_steps),
             "--jax.platform",
@@ -187,8 +171,6 @@ class DreaMARLRunSpec:
                 "attack_target_|eval/"
             ),
         ]
-        if self.replay_sampling == "recent":
-            command.extend(["--replay.size", "50000", "--replay.online", "False"])
         if self.save_every_seconds is not None:
             command.extend(["--run.save_every", str(self.save_every_seconds)])
         if self.curve_eval_interval:
@@ -210,28 +192,26 @@ class DreaMARLRunSpec:
 
     @property
     def ctde_manifest(self) -> dict[str, object] | None:
-        if self.algorithm == "local":
-            return None
         return {
             "version": self.ctde_version,
             "rollout_steps": self.ctde_rollout_steps,
-            "two_step_anchors": 128 if self.algorithm == "ctde-two-step" else 0,
-            "self_fed_training": self.algorithm == "ctde-two-step",
-            "self_fed_gradient": (
-                "last_step_only" if self.algorithm == "ctde-two-step" else None
-            ),
-            "self_fed_local_posterior": (
-                "deterministic_frozen" if self.algorithm == "ctde-two-step" else None
-            ),
+            "two_step_anchors": 0,
+            "self_fed_training": False,
             "agent_attention": {"width": 256, "layers": 2, "heads": 4},
             "temporal_transformer": {
                 "width": 256,
-                "layers": 4,
+                "layers": 12,
                 "heads": 4,
                 "context": 16,
             },
             "optimizer_groups": ["local_world", "joint_world", "actor", "critic"],
             "learning_rate": 4e-5,
+            "teammate_belief": True,
+            "multi_step_jepa": True,
+            "role_aware_peer_plan": True,
+            "actor_units": 512,
+            "actor_learning_rate": 1e-5,
+            "actor_critic_start_step": 3000,
         }
 
     def to_dict(self) -> dict[str, object]:
@@ -268,21 +248,34 @@ class DreaMARLRunSpec:
             "embedding_loss": "cosine",
             "posterior_jepa": True,
             "dynamics_jepa": True,
-            "spatial_jepa": not self.task.startswith("smac_"),
+            "spatial_jepa": False,
             "spatial_mask_ratio": 0.5,
             "sigreg": True,
             "sigreg_aggregation": "per_agent",
-            "replay_context": 128,
-            "replay_sampling": self.replay_sampling,
-            "recency_decay": 0.9998 if self.replay_sampling == "recent" else None,
+            "replay_context": 192,
+            "replay_sampling": self.effective_replay_sampling,
+            "recency_decay": (
+                0.9998
+                if self.effective_replay_sampling
+                in {"recent", "recent_world_uniform_behavior"}
+                else None
+            ),
             "actor_objective": "score_function_reinforce",
             "optimizer_topology": self.optimizer_topology,
-            "train_ratio": self.train_ratio,
-            "optimizer_updates_per_environment_step": self.train_ratio / (16 * 64),
+            "train_ratio": self.effective_train_ratio,
+            "optimizer_updates_per_environment_step": (
+                self.effective_train_ratio / (16 * 64)
+            ),
             "execution": "strict decentralized parameter-shared actors",
             "policy_information": "one observation-local latent history per agent",
             "policy_peer_access": False,
-            "policy_modules": ["enc", "dyn", "pol"],
+            "policy_modules": [
+                "enc",
+                "dyn",
+                "pol",
+                "ctde_teammate_belief",
+                "ctde_teammate_actor",
+            ],
             "evaluation_protocol": evaluation,
             "platform": self.platform,
             "save_every_seconds": self.save_every_seconds,

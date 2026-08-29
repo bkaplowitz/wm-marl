@@ -9,18 +9,16 @@ from dreamarl.config import DreaMARLRunSpec, PUBLIC_ALGORITHMS
 from dreamarl.contracts import verify_run_contract
 from dreamarl.launcher import run_training
 from dreamarl.main import _load_configs, _resolve_config_profiles, _validate_script
-from dreamarl.replay import ExponentialRecency, RecentReplay
 from dreamarl.runtime import algorithm_root
 from dreamarl.scripts.eval_dreamarl import main as eval_main
 
 
 def _spec(tmp_path: Path, **updates) -> DreaMARLRunSpec:
     values = {
-        "experiment_dir": tmp_path / "local",
-        "task": "dmc_reacher_easy",
-        "num_agents": 1,
-        "algorithm": "local",
-        "seed": 7,
+        "experiment_dir": tmp_path / "final",
+        "task": "smac_3m",
+        "num_agents": 3,
+        "seed": 234,
         "train_steps": 50_000,
         "platform": "cpu",
         "python": Path("/usr/bin/python3"),
@@ -29,270 +27,111 @@ def _spec(tmp_path: Path, **updates) -> DreaMARLRunSpec:
     return DreaMARLRunSpec(**values)
 
 
-@pytest.mark.parametrize(
-    ("algorithm", "profiles", "stage", "rollout_steps", "anchors"),
-    (
-        ("local", ["smac_vector", "local"], "local", None, None),
-        ("ctde-one-step", ["smac_vector", "ctde"], "ctde", 1, 0),
-        (
-            "ctde-two-step",
-            ["smac_vector", "ctde", "ctde_two_step"],
-            "ctde",
-            2,
-            128,
-        ),
-    ),
-)
-def test_public_profiles_resolve_to_complete_configs(
-    tmp_path: Path,
-    algorithm: str,
-    profiles: list[str],
-    stage: str,
-    rollout_steps: int | None,
-    anchors: int | None,
-) -> None:
-    spec = _spec(
-        tmp_path,
-        experiment_dir=tmp_path / algorithm,
-        task="smac_3m",
-        num_agents=3,
-        algorithm=algorithm,
-    )
-    resolved = _resolve_config_profiles(_load_configs(), spec.configs)
-
-    assert spec.configs == profiles
-    assert resolved.agent.marl.stage == stage
-    assert resolved.agent.loss_scales.posterior_jepa == 2.0
-    if rollout_steps is None:
-        assert "agent.marl.ctde.rollout_steps" not in resolved.flat
-        assert spec.ctde_manifest is None
-    else:
-        assert resolved.agent.marl.ctde.rollout_steps == rollout_steps
-        assert resolved.agent.marl.ctde.multistep.anchors == anchors
-        assert resolved.agent.loss_scales.ctde_embedding == 2.0
-        assert spec.ctde_manifest["rollout_steps"] == rollout_steps
-        assert spec.ctde_manifest["two_step_anchors"] == anchors
-
-
-def test_default_config_is_clean_single_agent_dmc() -> None:
-    assert (algorithm_root() / "configs.yaml").is_file()
+def test_repository_exposes_only_final_dreamarl() -> None:
     configs = _load_configs()
-    defaults = configs["defaults"]
 
-    assert defaults["task"] == "dmc_reacher_easy"
-    assert defaults["agent"]["num_agents"] == 1
-    assert defaults["agent"]["marl"] == {
-        "stage": "local",
-        "execution": "strict_decentralized",
-    }
-    assert "typ" not in defaults["agent"]["dyn"]
-    assert "typ" not in defaults["agent"]["enc"]
-    for fixed_choice in (
-        "objective",
-        "embedding_target",
-        "embedding_loss",
-        "posterior_jepa",
-        "dynamics_jepa",
-    ):
-        assert fixed_choice not in defaults["agent"]
-    assert "enabled" not in defaults["agent"]["spatial_jepa"]
-    assert "enabled" not in defaults["agent"]["sigreg"]
-    assert set(defaults["env"]) == {"dmc", "smac"}
-    assert set(defaults["agent"]["spatial_jepa"]) == {
-        "mask_ratio",
-        "fill_value",
-    }
+    assert PUBLIC_ALGORITHMS == ("final-dreamarl",)
     assert set(configs) == {
         "defaults",
-        "local",
-        "ctde",
-        "ctde_generalist",
-        "ctde_generalist_mask_balanced",
-        "ctde_generalist_mask_mean",
-        "ctde_teammate_belief_v2",
-        "ctde_tbv2_multistep_coupled",
-        "ctde_tbv2_multistep_coupled_action0",
-        "ctde_tbv2_multistep_uncoupled",
-        "ctde_peer_plan_identity_attention",
-        "ctde_train_ratio_1024",
-        "ctde_train_ratio_1024_world_warmstart",
-        "ctde_mask",
-        "ctde_mask_mean",
-        "ctde_mask_full",
-        "ctde_multistep_jepa",
-        "ctde_adaln",
-        "ctde_deep",
-        "ctde_wide",
-        "ctde_two_step",
-        "ctde_trust_delayed_005",
-        "ctde_trust_delayed_010",
-        "ctde_trust_behavior_005",
-        "dmc_vision",
+        "dreamarl_final",
         "smac_vector",
         "debug",
     }
 
 
-def test_internal_ctde_study_profiles_change_only_the_intended_axis() -> None:
-    configs = _load_configs()
-    mean_mask = _resolve_config_profiles(
-        configs, ["smac_vector", "ctde", "ctde_mask_mean"]
-    )
-    full_mask = _resolve_config_profiles(
-        configs, ["smac_vector", "ctde", "ctde_mask_full"]
-    )
-    deep = _resolve_config_profiles(configs, ["smac_vector", "ctde", "ctde_deep"])
-    wide = _resolve_config_profiles(configs, ["smac_vector", "ctde", "ctde_wide"])
+def test_final_profile_resolves_to_the_locked_architecture(tmp_path: Path) -> None:
+    spec = _spec(tmp_path)
+    resolved = _resolve_config_profiles(_load_configs(), spec.configs)
 
-    assert mean_mask.agent.action_mask_reduction == "mean"
-    assert not mean_mask.agent.marl.ctde.mask_calibration.enabled
-    assert full_mask.agent.action_mask_reduction == "mean"
-    assert full_mask.agent.marl.ctde.mask_calibration.enabled
-    assert full_mask.agent.marl.ctde.mask_calibration.soft_liveness
-    assert deep.agent.marl.ctde.joint.temporal_layers == 8
-    assert deep.agent.marl.ctde.joint.width == 256
-    assert wide.agent.marl.ctde.joint.temporal_layers == 4
-    assert wide.agent.marl.ctde.joint.width == 512
+    assert spec.configs == ["smac_vector", "dreamarl_final"]
+    assert resolved.replay_context == 192
+    assert resolved.replay.sampling == "recent_world_uniform_behavior"
+    assert resolved.replay.size == 250_000
+    assert not resolved.replay.online
+    assert resolved.run.train_ratio == 1024
+    assert resolved.run.actor_critic_start_step == 3000
+    assert resolved.agent.action_mask_reduction == "balanced"
+    assert resolved.agent.policy.units == 512
+    assert resolved.agent.imag_loss.actent == pytest.approx(6e-4)
+    assert resolved.agent.marl.ctde.actor_lr == pytest.approx(1e-5)
+    assert resolved.agent.marl.ctde.teammate_belief.enabled
+    multistep = resolved.agent.marl.ctde.multistep_jepa
+    assert multistep.enabled and multistep.belief_context
+    assert tuple(multistep.horizons) == (1, 2, 4, 8)
+    assert multistep.plan_aggregation == "identity_attention"
+    assert multistep.plan_attention_heads == 4
+    assert resolved.agent.loss_scales.ctde_multistep_jepa_action == 0.0
 
 
-@pytest.mark.parametrize("algorithm", PUBLIC_ALGORITHMS)
-def test_public_commands_select_profiles_without_internal_stage_overrides(
-    tmp_path: Path, algorithm: str
-) -> None:
-    spec = _spec(
-        tmp_path,
-        task="smac_3m",
-        num_agents=3,
-        algorithm=algorithm,
-    )
-    start = spec.command.index("--configs") + 1
-    assert spec.command[start : start + len(spec.configs)] == spec.configs
+def test_manifest_and_command_have_no_architecture_overrides(tmp_path: Path) -> None:
+    spec = _spec(tmp_path, task="smac_8m", num_agents=8)
+    manifest = spec.to_dict()
+
     assert "--agent.marl.stage" not in spec.command
-    assert "--agent.marl.ctde.rollout_steps" not in spec.command
-
-
-def test_contract_preserves_the_decentralized_execution_boundary(
-    tmp_path: Path,
-) -> None:
-    local = verify_run_contract(_spec(tmp_path))
-    ctde = verify_run_contract(
-        _spec(
-            tmp_path,
-            task="smac_3m",
-            num_agents=3,
-            algorithm="ctde-two-step",
-        )
-    )
-
-    for contract in (local, ctde):
-        assert contract["execution"]["mode"] == "strict_decentralized"
-        assert contract["execution"]["policy_peer_access"] is False
-        assert contract["execution"]["runtime_communication"] is False
-        assert contract["training"]["actor_objective"] == ("score_function_reinforce")
-    assert local["ctde"] is None
-    assert ctde["ctde"]["training_only"] is True
-    assert ctde["ctde"]["rollout_steps"] == 2
-
-
-def test_environment_and_ctde_boundaries_are_validated(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="singleton visual DMC"):
-        _spec(tmp_path, task="dmc_reacher_easy", num_agents=2)
-    with pytest.raises(ValueError, match="supports SMAC"):
-        _spec(tmp_path, task="unknown_task", num_agents=5)
-    with pytest.raises(ValueError, match="at least two agents"):
-        _spec(tmp_path, algorithm="ctde-one-step")
-
-
-def test_recorded_evaluation_protocol_uses_benchmark_defaults(tmp_path: Path) -> None:
-    dmc = _spec(tmp_path).to_dict()["evaluation_protocol"]
-    smac = _spec(tmp_path, task="smac_3m", num_agents=3).to_dict()[
-        "evaluation_protocol"
+    assert "--run.train_ratio" not in spec.command
+    assert "--replay.sampling" not in spec.command
+    assert manifest["algorithm"] == "final-dreamarl"
+    assert manifest["train_ratio"] == 1024.0
+    assert manifest["replay_sampling"] == "recent_world_uniform_behavior"
+    assert manifest["replay_context"] == 192
+    assert manifest["ctde"]["temporal_transformer"]["layers"] == 12
+    assert manifest["ctde"]["actor_units"] == 512
+    assert manifest["ctde"]["actor_learning_rate"] == pytest.approx(1e-5)
+    assert manifest["policy_modules"] == [
+        "enc",
+        "dyn",
+        "pol",
+        "ctde_teammate_belief",
+        "ctde_teammate_actor",
     ]
 
-    assert dmc == {
-        "policy_mode": "deterministic",
-        "interval": 0,
-        "episodes": 20,
-        "envs": 4,
-        "seed_offset": 10_000,
-    }
-    assert smac == {
-        "policy_mode": "deterministic",
-        "interval": 0,
-        "episodes": 32,
-        "envs": 1,
-        "seed_offset": 50_000,
-    }
+
+def test_contract_preserves_strict_decentralized_execution(tmp_path: Path) -> None:
+    contract = verify_run_contract(_spec(tmp_path))
+
+    assert contract["execution"]["mode"] == "strict_decentralized"
+    assert contract["execution"]["policy_peer_access"] is False
+    assert contract["execution"]["runtime_communication"] is False
+    assert contract["training"]["actor_objective"] == "score_function_reinforce"
+    assert contract["ctde"]["training_only"] is True
+    assert contract["ctde"]["role_aware_peer_plan"] is True
 
 
-def test_training_cadence_is_explicit_and_recorded(tmp_path: Path) -> None:
-    spec = _spec(tmp_path, train_ratio=1024.0)
-    index = spec.command.index("--run.train_ratio")
-
-    assert spec.command[index + 1] == "1024.0"
-    assert spec.to_dict()["optimizer_updates_per_environment_step"] == 1.0
-
-
-def test_recent_replay_keeps_the_exponential_selector_when_empty() -> None:
-    replay = RecentReplay(length=4, capacity=32, recency_decay=0.9998, seed=7)
-    assert isinstance(replay.sampler, ExponentialRecency)
+def test_non_final_inputs_are_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="unsupported algorithm"):
+        _spec(tmp_path, algorithm="ctde-one-step")
+    with pytest.raises(ValueError, match="requires at least two agents"):
+        _spec(tmp_path, num_agents=1)
+    with pytest.raises(ValueError, match="supports SMAC"):
+        _spec(tmp_path, task="dmc_reacher_easy")
 
 
-def test_generic_reporting_modes_are_rejected_for_marl() -> None:
+def test_only_final_train_and_eval_modes_are_supported() -> None:
     for script in ("train_eval", "parallel", "parallel_env", "parallel_replay"):
-        with pytest.raises(ValueError, match="single-agent reporting"):
+        with pytest.raises(ValueError, match="only train and eval_only"):
             _validate_script(script, 3)
     _validate_script("train", 3)
-    _validate_script("parallel", 1)
 
 
-def test_dry_run_records_one_nested_authoritative_contract(tmp_path: Path) -> None:
-    spec = _spec(
-        tmp_path,
-        task="smac_3m",
-        num_agents=3,
-        algorithm="ctde-one-step",
-    )
+def test_dry_run_and_fixed_eval_preserve_the_final_profile(tmp_path: Path) -> None:
+    spec = _spec(tmp_path)
     assert run_training(spec, dry_run=True) == 0
     manifest = json.loads(
         (spec.experiment_dir / "launch.json").read_text(encoding="utf-8")
     )
+    assert manifest["algorithm"] == "final-dreamarl"
+    assert manifest["configs"] == ["smac_vector", "dreamarl_final"]
 
-    assert manifest["algorithm"] == "ctde-one-step"
-    assert manifest["configs"] == ["smac_vector", "ctde"]
-    assert manifest["contract"]["algorithm"] == "ctde-one-step"
-    assert manifest["contract"]["ctde"]["training_only"] is True
-    assert manifest["actor_objective"] == "score_function_reinforce"
-    assert manifest["optimizer_topology"] == "separated"
-
-
-@pytest.mark.parametrize("algorithm", PUBLIC_ALGORITHMS)
-def test_fixed_evaluation_reconstructs_the_recorded_algorithm_and_protocol(
-    tmp_path: Path, algorithm: str
-) -> None:
-    spec = _spec(
-        tmp_path,
-        experiment_dir=tmp_path / algorithm,
-        task="smac_3m",
-        num_agents=3,
-        algorithm=algorithm,
-    )
-    assert run_training(spec, dry_run=True) == 0
     checkpoint = spec.logdir / "ckpt" / "checkpoint-123"
     checkpoint.mkdir(parents=True)
     (checkpoint / "done").touch()
     (checkpoint.parent / "latest").write_text(checkpoint.name, encoding="utf-8")
-
     assert eval_main([str(spec.experiment_dir), "--dry-run"]) == 0
     launch_file = next((spec.experiment_dir / "evaluation").glob("*.launch.json"))
     launch = json.loads(launch_file.read_text(encoding="utf-8"))
-    command = launch["command"]
+    assert launch["algorithm"] == "final-dreamarl"
+    assert launch["configs"] == ["smac_vector", "dreamarl_final"]
 
-    assert launch["algorithm"] == algorithm
-    assert launch["configs"] == spec.configs
-    assert launch["episodes"] == 32
-    assert launch["envs"] == 1
-    assert launch["eval_seed"] == spec.seed + 50_000
-    assert command[command.index("--agent.num_agents") + 1] == "3"
-    assert command[command.index("--run.eval_eps") + 1] == "32"
-    assert command[command.index("--seed") + 1] == str(spec.seed + 50_000)
+
+def test_config_file_is_packaged() -> None:
+    assert (algorithm_root() / "configs.yaml").is_file()

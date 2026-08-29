@@ -54,9 +54,9 @@ Budgets are counted in real environment transitions. Agent transitions are
 reported separately and equal three times the environment-transition count on
 both maps.
 
-## Algorithms
+## Algorithm
 
-The public CTDE configurations are selected directly:
+This branch exposes only final DreaMARL:
 
 ```bash
 SC2PATH=/path/to/StarCraftII \
@@ -64,7 +64,6 @@ uv run dreamarl-train-dreamarl \
   --python .venv/bin/python \
   --task smac_3m \
   --num-agents 3 \
-  --algorithm ctde-one-step \
   --seed 0 \
   --total-env-steps 100000 \
   --eval-interval 5000 \
@@ -73,30 +72,18 @@ uv run dreamarl-train-dreamarl \
   --eval-seed-offset 50000
 ```
 
-Replace `smac_3m` with `smac_3s_vs_4z` for the hard map. Replace
-`ctde-one-step` with `ctde-two-step` for the bounded self-fed treatment. All
-other launch arguments must remain matched in a controlled comparison.
+Replace `smac_3m` with another SMAC task and set its matching agent count. There
+is no architecture selector or schedule overlay on this branch.
 
-Use `--algorithm local` with the same three-agent SMAC task for the independent
-local-model control.
+## Replay intensity and world warmstart
 
-## Replay-intensity and world warm-start controls
-
-The schedule ablation uses the coupled TBv2 plus multi-step JEPA model with the
-action counterfactual loss disabled, followed by exactly one of these overlays:
-
-- `ctde_train_ratio_1024`: one learner call per real environment step after the
-  existing replay-eligibility gate;
-- `ctde_train_ratio_1024_world_warmstart`: the same learner cadence, with actor
-  and critic optimization enabled at environment step 3,000.
-
-Both arms retain batch size 16, optimized sequence length 64, replay context
-192, and `recent_world_uniform_behavior` sampling. The replay eligibility gate
-is unchanged: it requires 1,024 eligible starts, which first occurs at raw SMAC
+Final DreaMARL uses batch size 16, optimized sequence length 64, replay context
+192, train ratio 1024, and `recent_world_uniform_behavior` sampling. The replay
+eligibility gate requires 1,024 eligible starts, which first occurs at raw SMAC
 step 1,279 under this sequence geometry. The ratio controller is not called
 during prefill, so those steps do not create a learner-update backlog.
 
-Before step 3,000 in the warm-start arm, local-world and joint-world modules,
+Before step 3,000, local-world and joint-world modules,
 including teammate belief, teammate planning, multi-step JEPA, and the slow
 encoder, update normally. Actor and critic parameters, optimizer moments,
 learning-rate counters, behavior normalizers, and the slow critic remain

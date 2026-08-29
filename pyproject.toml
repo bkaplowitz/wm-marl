@@ -18,7 +18,7 @@ dependencies = [
   "scope>=0.4.4",
   "wandb>=0.18",
 ]
-description = "Decoder-free JEPA world models for single-agent and multi-agent RL."
+description = "DreaMARL: decoder-free JEPA world models for multi-agent RL."
 license = "MIT"
 name = "dreamarl"
 readme = "README.md"
@@ -33,7 +33,6 @@ dev = [
   "pytest>=8",
   "ruff==0.15.18",
 ]
-dmc = ["dm-control>=1.0"]
 smac = [
   "s2clientprotocol==5.0.14.93333.0",
   "smac @ git+https://github.com/oxwhirl/smac.git@d6aab33f76abc3849c50463a8592a84f59a5ef84",
@@ -41,28 +40,15 @@ smac = [
 
 [project.scripts]
 dreamarl-setup-dreamerv3 = "dreamarl.scripts.setup_dreamerv3:main"
-dreamarl-train-dmc-dreamerv3 = "dreamarl.scripts.train_dmc_dreamerv3:main"
-dreamarl-eval-dmc-dreamerv3 = "dreamarl.scripts.eval_dmc_dreamerv3:main"
 dreamarl-normalize-dreamerv3 = "dreamarl.scripts.normalize_dreamerv3_run:main"
-dreamarl-setup-dreamer-cdp = "dreamarl.scripts.setup_dreamer_cdp:main"
-dreamarl-train-dmc-dreamer-cdp = "dreamarl.scripts.train_dmc_dreamer_cdp:main"
-dreamarl-eval-dmc-dreamer-cdp = "dreamarl.scripts.eval_dmc_dreamer_cdp:main"
-dreamarl-setup-nedreamer = "dreamarl.scripts.setup_nedreamer:main"
-dreamarl-train-dmc-nedreamer = "dreamarl.scripts.train_dmc_nedreamer:main"
-dreamarl-eval-dmc-nedreamer = "dreamarl.scripts.eval_dmc_nedreamer:main"
-dreamarl-train-marie = "dreamarl.scripts.train_marie:main"
 dreamarl-train-dreamarl = "dreamarl.scripts.train_dreamarl:main"
 dreamarl-eval-dreamarl = "dreamarl.scripts.eval_dreamarl:main"
-dreamarl-plot-dreamarl-paper = "dreamarl.scripts.plot_dreamarl_paper:main"
-dreamarl-train-dreamarl-ablation = "dreamarl.ablations.train:main"
-dreamarl-eval-dreamarl-ablation = "dreamarl.ablations.eval:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
 "dreamarl" = ["LICENSE", "configs.yaml"]
-"dreamarl.ablations" = ["configs.yaml", "README.md"]
 
 [tool.pytest.ini_options]
 markers = [

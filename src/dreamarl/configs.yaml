@@ -3,7 +3,7 @@ defaults:
   logdir: ~/logdir/{timestamp}
   replica: 0
   replicas: 1
-  task: dmc_reacher_easy
+  task: smac_3m
   seed: 0
   script: train
   batch_size: 16
@@ -24,7 +24,6 @@ defaults:
     user: ''
 
   env:
-    dmc: {size: [64, 64], repeat: 1, proprio: False, image: True, camera: -1, use_seed: True}
     smac: {difficulty: '7', continuing_episode: True, use_seed: True}
 
   replay:
@@ -82,9 +81,9 @@ defaults:
     coordinator_address: ''
 
   agent:
-    num_agents: 1
+    num_agents: 3
     marl:
-      stage: local
+      stage: ctde
       execution: strict_decentralized
     spatial_jepa:
       mask_ratio: 0.5
@@ -115,7 +114,7 @@ defaults:
     maskhead: {layers: 1, units: 1024, act: silu, norm: rms, output: binary, outscale: 0.0, winit: trunc_normal_in}
     action_mask_reduction: sum
     policy: {layers: 3, units: 1024, act: silu, norm: rms, minstd: 0.1, maxstd: 1.0, outscale: 0.01, unimix: 0.01, winit: trunc_normal_in}
-    actor_trust: {mode: none, target: 0.005, refresh_every: 64, dual_rate: 0.01, beta_init: 1.0, beta_min: 1e-4, beta_max: 1000.0, ema_rate: 0.05}
+    actor_trust: {mode: none}
     value: {layers: 3, units: 1024, act: silu, norm: rms, output: symexp_twohot, outscale: 0.0, winit: trunc_normal_in, bins: 255}
     policy_dist_disc: categorical
     policy_dist_cont: bounded_normal
@@ -134,27 +133,24 @@ defaults:
     report: True
     report_gradnorms: False
 
-local:
+# Single supported publication architecture.
+dreamarl_final:
+  replay_context: 192
+  replay:
+    size: 250000
+    online: False
+    sampling: recent_world_uniform_behavior
+    recency_decay: 0.9998
+  run:
+    train_ratio: 1024
+    actor_critic_start_step: 3000
   agent:
-    marl: {stage: local, execution: strict_decentralized}
-
-ctde:
-  agent:
-    marl:
-      stage: ctde
-      execution: strict_decentralized
-      ctde:
-        rollout_steps: 1
-        multistep: {anchors: 0}
-        multistep_jepa: {enabled: False, belief_context: False, horizons: [1, 2, 4, 8], max_horizon: 8, decay: 0.75, action_margin: 0.1, plan_units: 256, plan_aggregation: mean, plan_attention_heads: 4, width: 256, layers: 2, units: 512, act: silu, norm: rms, winit: trunc_normal_in}
-        mask_calibration: {enabled: False, horizons: [1, 4, 8, 15], soft_liveness: False}
-        teammate_belief: {enabled: False, layers: 2, units: 512, outscale: 0.0, logit_clip: 5.0, adapter_layers: 1, adapter_units: 256, act: silu, norm: rms, winit: trunc_normal_in}
-        joint: {width: 256, heads: 4, agent_layers: 2, temporal_layers: 4, context: 16, ffup: 4, dropout: 0.1, action_conditioning: add, act: silu, norm: rms, winit: trunc_normal_in}
-        head: {layers: 2, units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
-        critic: {width: 256, heads: 4, layers: 2, ffup: 4, dropout: 0.0, value_layers: 2, value_units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
-        opt: {lr: 4e-5, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
-        actor_lr: 4e-5
-        actor_update_every: 1
+    imag_length: 15
+    action_mask_reduction: balanced
+    policy: {units: 512}
+    imag_loss: {actent: 6e-4}
+    actor_trust: {mode: none}
+    opt: {lr: 4e-5}
     loss_scales:
       ctde_embedding: 2.0
       ctde_interface: 1.0
@@ -172,23 +168,8 @@ ctde:
       ctde_multistep_action_mask: 1.0
       ctde_multistep_alive: 1.0
       ctde_multistep_jepa_cosine: 2.0
-      ctde_multistep_jepa_action: 1.0
+      ctde_multistep_jepa_action: 0.0
       ctde_teammate_plan: 0.5
-
-ctde_generalist:
-  replay_context: 192
-  run:
-    train_ratio: 256
-  replay:
-    size: 250000
-    online: False
-    sampling: recent_world_uniform_behavior
-    recency_decay: 0.9998
-  agent:
-    imag_length: 15
-    action_mask_reduction: sum
-    actor_trust: {mode: none}
-    opt: {lr: 4e-5}
     marl:
       stage: ctde
       execution: strict_decentralized
@@ -196,141 +177,33 @@ ctde_generalist:
         rollout_steps: 1
         multistep: {anchors: 0}
         mask_calibration: {enabled: False, horizons: [1, 4, 8, 15], soft_liveness: False}
-        joint: {width: 256, temporal_layers: 12}
-        opt: {lr: 4e-5}
+        joint: {width: 256, heads: 4, agent_layers: 2, temporal_layers: 12, context: 16, ffup: 4, dropout: 0.1, action_conditioning: add, act: silu, norm: rms, winit: trunc_normal_in}
+        head: {layers: 2, units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
+        critic: {width: 256, heads: 4, layers: 2, ffup: 4, dropout: 0.0, value_layers: 2, value_units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
+        opt: {lr: 4e-5, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
         actor_lr: 1e-5
         actor_update_every: 1
-
-ctde_generalist_mask_mean:
-  agent:
-    action_mask_reduction: mean
-
-ctde_generalist_mask_balanced:
-  agent:
-    action_mask_reduction: balanced
-
-ctde_teammate_belief_v2:
-  agent:
-    marl:
-      ctde:
-        teammate_belief: {enabled: True}
-
-ctde_multistep_jepa:
-  agent:
-    marl:
-      ctde:
-        multistep_jepa: {enabled: True}
-
-ctde_tbv2_multistep_coupled:
-  agent:
-    loss_scales:
-      ctde_multistep_jepa_action: 0.25
-    marl:
-      ctde:
-        teammate_belief: {enabled: True}
-        multistep_jepa: {enabled: True, belief_context: True}
-
-ctde_tbv2_multistep_coupled_action0:
-  agent:
-    loss_scales:
-      ctde_multistep_jepa_action: 0.0
-    marl:
-      ctde:
-        teammate_belief: {enabled: True}
-        multistep_jepa: {enabled: True, belief_context: True}
-
-# MARIE-style agent ownership for the centralized future-plan consumer. Fixed
-# global agent identities address peer tokens; no identity reaches the actor.
-ctde_peer_plan_identity_attention:
-  agent:
-    marl:
-      ctde:
-        multistep_jepa: {plan_aggregation: identity_attention, plan_attention_heads: 4}
-
-ctde_tbv2_multistep_uncoupled:
-  agent:
-    loss_scales:
-      ctde_multistep_jepa_action: 0.25
-    marl:
-      ctde:
-        teammate_belief: {enabled: True}
-        multistep_jepa: {enabled: True, belief_context: False}
-
-# Schedule-only controls. The first profile changes only learner replay reuse.
-# The second retains that exact ratio and delays behavior optimization while the
-# local and joint world-model groups continue to train.
-ctde_train_ratio_1024:
-  run:
-    train_ratio: 1024
-
-ctde_train_ratio_1024_world_warmstart:
-  run:
-    train_ratio: 1024
-    actor_critic_start_step: 3000
-
-ctde_two_step:
-  agent:
-    marl:
-      ctde:
-        rollout_steps: 2
-        multistep: {anchors: 128}
-
-ctde_mask:
-  agent:
-    marl:
-      ctde:
-        mask_calibration: {enabled: True, horizons: [1, 4, 8, 15], soft_liveness: False}
-
-ctde_mask_mean:
-  agent:
-    action_mask_reduction: mean
-
-ctde_mask_full:
-  agent:
-    action_mask_reduction: mean
-    marl:
-      ctde:
-        mask_calibration: {enabled: True, horizons: [1, 4, 8, 15], soft_liveness: True}
-
-ctde_deep:
-  agent:
-    marl:
-      ctde:
-        joint:
-          temporal_layers: 8
-
-ctde_wide:
-  agent:
-    marl:
-      ctde:
-        joint:
-          width: 512
-
-ctde_adaln:
-  agent:
-    marl:
-      ctde:
-        joint:
-          action_conditioning: adaln
-
-ctde_trust_delayed_005:
-  agent:
-    actor_trust: {mode: delayed, target: 0.005}
-
-ctde_trust_delayed_010:
-  agent:
-    actor_trust: {mode: delayed, target: 0.01}
-
-ctde_trust_behavior_005:
-  agent:
-    actor_trust: {mode: behavior, target: 0.005}
-
-dmc_vision:
-  task: dmc_reacher_easy
-  run: {steps: 1.1e6, train_ratio: 256, envs: 16}
+        teammate_belief: {enabled: True, layers: 2, units: 512, outscale: 0.0, logit_clip: 5.0, adapter_layers: 1, adapter_units: 256, act: silu, norm: rms, winit: trunc_normal_in}
+        multistep_jepa:
+          enabled: True
+          belief_context: True
+          horizons: [1, 2, 4, 8]
+          max_horizon: 8
+          decay: 0.75
+          action_margin: 0.1
+          plan_units: 256
+          plan_aggregation: identity_attention
+          plan_attention_heads: 4
+          width: 256
+          layers: 2
+          units: 512
+          act: silu
+          norm: rms
+          winit: trunc_normal_in
 
 smac_vector:
   task: smac_3m
+  agent: {num_agents: 3}
   run: {steps: 1e5, train_ratio: 256, envs: 1, eval_envs: 1, curve_eval_eps: 32, curve_eval_seed_offset: 50000}
 
 debug:

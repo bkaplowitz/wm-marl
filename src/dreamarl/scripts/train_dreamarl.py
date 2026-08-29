@@ -1,4 +1,4 @@
-"""Train the canonical local or CTDE DreaMARL algorithm."""
+"""Train the canonical final DreaMARL algorithm."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from dreamarl.baselines.dreamerv3.config import (
     default_upstream_root,
     repository_root,
 )
-from dreamarl.config import PUBLIC_ALGORITHMS, DreaMARLRunSpec
+from dreamarl.config import DreaMARLRunSpec
 from dreamarl.launcher import run_training, timestamp
 
 
@@ -18,13 +18,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", required=True)
     parser.add_argument("--num-agents", type=int, required=True)
-    parser.add_argument("--algorithm", choices=PUBLIC_ALGORITHMS, default="local")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--total-env-steps", type=int, default=50_000)
-    parser.add_argument(
-        "--replay-sampling", choices=("uniform", "recent"), default="uniform"
-    )
-    parser.add_argument("--train-ratio", type=float, default=256.0)
     parser.add_argument("--experiment-dir", type=Path)
     parser.add_argument(
         "--output-root",
@@ -58,11 +53,8 @@ def main(argv: list[str] | None = None) -> int:
         experiment_dir=experiment_dir,
         task=args.task,
         num_agents=args.num_agents,
-        algorithm=args.algorithm,
         seed=args.seed,
         train_steps=args.total_env_steps,
-        replay_sampling=args.replay_sampling,
-        train_ratio=args.train_ratio,
         platform=args.platform,
         infrastructure_root=args.infrastructure_root,
         python=args.python,
