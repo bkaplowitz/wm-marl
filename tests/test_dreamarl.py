@@ -58,6 +58,7 @@ def test_final_profile_resolves_to_the_locked_architecture(tmp_path: Path) -> No
     multistep = resolved.agent.marl.ctde.multistep_jepa
     assert multistep.enabled and multistep.belief_context
     assert tuple(multistep.horizons) == (1, 2, 4, 8)
+    assert multistep.action_counterfactual_mode == "cyclic"
     assert multistep.plan_aggregation == "identity_attention"
     assert multistep.plan_attention_heads == 4
     assert resolved.agent.loss_scales.ctde_multistep_jepa_action == 0.0

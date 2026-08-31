@@ -47,6 +47,7 @@ from ..training.ctde import (
 from ..training.multistep_jepa import (
     action_window_validity,
     aligned_action_windows,
+    all_legal_same_focal_action_interventions,
     direct_multistep_objective,
     same_focal_legal_action_interventions,
 )
@@ -245,6 +246,9 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             self.ctde_multistep_jepa_max_horizon = int(multistep_jepa.max_horizon)
             self.ctde_multistep_jepa_decay = float(multistep_jepa.decay)
             self.ctde_multistep_jepa_action_margin = float(multistep_jepa.action_margin)
+            self.ctde_multistep_jepa_action_counterfactual_mode = str(
+                getattr(multistep_jepa, "action_counterfactual_mode", "cyclic")
+            )
             self.ctde_multistep_jepa_plan_aggregation = str(
                 multistep_jepa.plan_aggregation
             )
@@ -256,6 +260,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             self.ctde_multistep_jepa_max_horizon = 8
             self.ctde_multistep_jepa_decay = 0.75
             self.ctde_multistep_jepa_action_margin = 0.1
+            self.ctde_multistep_jepa_action_counterfactual_mode = "cyclic"
             self.ctde_multistep_jepa_plan_aggregation = "mean"
             self.ctde_multistep_jepa_plan_attention_heads = 4
         if (
@@ -273,6 +278,14 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             raise ValueError("multi-step JEPA decay must be in (0, 1]")
         if self.ctde_multistep_jepa_action_margin < 0.0:
             raise ValueError("multi-step JEPA action margin must be nonnegative")
+        if self.ctde_multistep_jepa_action_counterfactual_mode not in {
+            "cyclic",
+            "all_legal_mean",
+        }:
+            raise ValueError(
+                "multi-step JEPA action counterfactual mode must be "
+                "'cyclic' or 'all_legal_mean'"
+            )
         if self.ctde_multistep_jepa_plan_aggregation not in {
             "mean",
             "identity_attention",
@@ -1386,39 +1399,95 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             peer_ids=plan_peer_ids,
         )
         if self.ctde_multistep_jepa_action_scale > 0.0:
-            counterfactual_windows, distinct_tail = (
-                same_focal_legal_action_interventions(
-                    action_windows,
-                    grouped_mask[:, :-1],
-                    action_low=self.ctde_action_low,
-                    horizons=horizons,
-                )
-            )
-            counterfactual_predictions = {}
-            counterfactual_valid = {}
-            for horizon in horizons:
-                window = counterfactual_windows[horizon]
-                window_valid = action_window_validity(
-                    window,
-                    grouped_mask[:, :-1],
-                    grouped_present,
-                    grouped_alive,
-                    grouped_first,
-                    action_low=self.ctde_action_low,
-                )
-                counterfactual_valid[horizon] = window_valid[horizon]
-                if horizon == 1:
-                    counterfactual_predictions[horizon] = jax.lax.stop_gradient(
-                        predictions[horizon]
+            if self.ctde_multistep_jepa_action_counterfactual_mode == "all_legal_mean":
+                counterfactual_windows, distinct_tail = (
+                    all_legal_same_focal_action_interventions(
+                        action_windows,
+                        grouped_mask[:, :-1],
+                        action_low=self.ctde_action_low,
+                        horizons=horizons,
                     )
-                    continue
-                counterfactual_predictions[horizon] = self.ctde_multistep_jepa(
-                    root_hidden,
-                    window,
-                    plan_context,
-                    peer_ids=plan_peer_ids,
-                    selected_horizon=horizon,
-                )[horizon]
+                )
+                counterfactual_predictions = {}
+                counterfactual_valid = {}
+                classes = grouped_mask.shape[-1]
+                batch = root_hidden.shape[0]
+                expanded_root = jnp.broadcast_to(
+                    root_hidden[:, None],
+                    (batch, classes, *root_hidden.shape[1:]),
+                ).reshape((batch * classes, *root_hidden.shape[1:]))
+                expanded_plan = (
+                    jnp.broadcast_to(
+                        plan_context[:, None],
+                        (batch, classes, *plan_context.shape[1:]),
+                    ).reshape((batch * classes, *plan_context.shape[1:]))
+                    if plan_context is not None
+                    else None
+                )
+                for horizon in horizons:
+                    candidate_valid = valid[horizon][..., None] & distinct_tail[horizon]
+                    counterfactual_valid[horizon] = candidate_valid
+                    if horizon == 1:
+                        counterfactual_predictions[horizon] = jnp.broadcast_to(
+                            jax.lax.stop_gradient(predictions[horizon])[..., None, :],
+                            (
+                                *predictions[horizon].shape[:-1],
+                                classes,
+                                predictions[horizon].shape[-1],
+                            ),
+                        )
+                        continue
+                    window = counterfactual_windows[horizon]
+                    flat_window = jnp.transpose(window, (0, 3, 1, 2, 4)).reshape(
+                        (batch * classes, *window.shape[1:3], window.shape[-1])
+                    )
+                    flat_prediction = self.ctde_multistep_jepa(
+                        expanded_root,
+                        flat_window,
+                        expanded_plan,
+                        peer_ids=plan_peer_ids,
+                        selected_horizon=horizon,
+                    )[horizon]
+                    counterfactual_predictions[horizon] = jnp.transpose(
+                        flat_prediction.reshape(
+                            (batch, classes, *flat_prediction.shape[1:])
+                        ),
+                        (0, 2, 3, 1, 4),
+                    )
+            else:
+                counterfactual_windows, distinct_tail = (
+                    same_focal_legal_action_interventions(
+                        action_windows,
+                        grouped_mask[:, :-1],
+                        action_low=self.ctde_action_low,
+                        horizons=horizons,
+                    )
+                )
+                counterfactual_predictions = {}
+                counterfactual_valid = {}
+                for horizon in horizons:
+                    window = counterfactual_windows[horizon]
+                    window_valid = action_window_validity(
+                        window,
+                        grouped_mask[:, :-1],
+                        grouped_present,
+                        grouped_alive,
+                        grouped_first,
+                        action_low=self.ctde_action_low,
+                    )
+                    counterfactual_valid[horizon] = window_valid[horizon]
+                    if horizon == 1:
+                        counterfactual_predictions[horizon] = jax.lax.stop_gradient(
+                            predictions[horizon]
+                        )
+                        continue
+                    counterfactual_predictions[horizon] = self.ctde_multistep_jepa(
+                        root_hidden,
+                        window,
+                        plan_context,
+                        peer_ids=plan_peer_ids,
+                        selected_horizon=horizon,
+                    )[horizon]
             counterfactual_enabled = jnp.asarray(1.0, jnp.float32)
         else:
             counterfactual_predictions = {
@@ -1487,6 +1556,12 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 ),
             }
         )
+        if self.ctde_multistep_jepa_action_counterfactual_mode == "all_legal_mean":
+            metrics["ctde/multistep_jepa_action_counterfactual_all_legal_enabled"] = (
+                jnp.asarray(
+                    float(self.ctde_multistep_jepa_action_scale > 0.0), jnp.float32
+                )
+            )
         if plan_context is not None:
             context_norm = jnp.sqrt(jnp.square(plan_context).sum(axis=(-1, -2)))
             metrics.update(

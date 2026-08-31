@@ -191,6 +191,7 @@ dreamarl_final:
           max_horizon: 8
           decay: 0.75
           action_margin: 0.1
+          action_counterfactual_mode: cyclic
           plan_units: 256
           plan_aggregation: identity_attention
           plan_attention_heads: 4
