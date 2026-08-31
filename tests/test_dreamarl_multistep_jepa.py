@@ -301,6 +301,8 @@ def test_cosine_zero_and_masked_rows_have_finite_vjps() -> None:
     assert bool(jnp.isfinite(value))
     for gradient in gradients:
         assert bool(jnp.isfinite(gradient).all())
+    np.testing.assert_array_equal(gradients[0][:, 0], 0.0)
+    np.testing.assert_array_equal(gradients[1][:, 0], 0.0)
     np.testing.assert_array_equal(gradients[2], jnp.zeros_like(target))
 
 

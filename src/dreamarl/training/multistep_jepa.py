@@ -392,45 +392,65 @@ def direct_multistep_objective(
                 f"{weight.shape}, {counterfactual_weight.shape}, {distinct.shape}"
             )
 
-        cosine = _cosine(prediction, target)
-        distance = 1.0 - cosine
-        normalized = distance * weight / jnp.maximum(weight.mean(), 1e-8)
+        factual_mask = weight.astype(bool)[..., None]
+        masked_prediction = jnp.where(factual_mask, prediction, 0.0)
+        masked_target = jnp.where(factual_mask, target, 0.0)
+        cosine = _cosine(masked_prediction, masked_target)
+        distance = jnp.where(weight.astype(bool), 1.0 - cosine, 0.0)
+        normalized = distance / jnp.maximum(weight.mean(), 1e-8)
         weighted = geometric[index] * normalized
         cosine_combined = (
             weighted if cosine_combined is None else cosine_combined + weighted
         )
 
         if all_legal:
-            counterfactual_cosine = _cosine(counterfactual, target[..., None, :])
             counterfactual_weight = weight[..., None] * counterfactual_weight
             if horizon == 1:
                 # hidden_t already consumed a_t, so there is no future action tail.
                 counterfactual_weight = jnp.zeros_like(counterfactual_weight)
             action_weight = counterfactual_weight * distinct.astype(f32)
+            candidate_mask = action_weight.astype(bool)[..., None]
+            masked_counterfactual = jnp.where(candidate_mask, counterfactual, 0.0)
+            candidate_target = jnp.broadcast_to(
+                target[..., None, :], counterfactual.shape
+            )
+            masked_candidate_target = jnp.where(candidate_mask, candidate_target, 0.0)
+            counterfactual_cosine = _cosine(
+                masked_counterfactual, masked_candidate_target
+            )
             action_count = action_weight.sum(axis=-1)
             root_action_weight = weight * (action_count > 0).astype(f32)
             cosine_gap = cosine[..., None] - counterfactual_cosine
-            margin_loss = jax.nn.relu(float(action_margin) - cosine_gap)
-            per_root_margin = (margin_loss * action_weight).sum(axis=-1) / jnp.maximum(
-                action_count, 1.0
+            margin_loss = jnp.where(
+                action_weight.astype(bool),
+                jax.nn.relu(float(action_margin) - cosine_gap),
+                0.0,
             )
+            per_root_margin = margin_loss.sum(axis=-1) / jnp.maximum(action_count, 1.0)
             normalized_margin = (
                 per_root_margin
                 * root_action_weight
                 / jnp.maximum(root_action_weight.mean(), 1e-8)
             )
         else:
-            counterfactual_cosine = _cosine(counterfactual, target)
             counterfactual_weight = weight * counterfactual_weight
             if horizon == 1:
                 # hidden_t already consumed a_t, so there is no future action tail.
                 counterfactual_weight = jnp.zeros_like(counterfactual_weight)
             action_weight = counterfactual_weight * distinct.astype(f32)
-            cosine_gap = cosine - counterfactual_cosine
-            margin_loss = jax.nn.relu(float(action_margin) - cosine_gap)
-            normalized_margin = (
-                margin_loss * action_weight / jnp.maximum(action_weight.mean(), 1e-8)
+            candidate_mask = action_weight.astype(bool)[..., None]
+            masked_counterfactual = jnp.where(candidate_mask, counterfactual, 0.0)
+            masked_candidate_target = jnp.where(candidate_mask, target, 0.0)
+            counterfactual_cosine = _cosine(
+                masked_counterfactual, masked_candidate_target
             )
+            cosine_gap = cosine - counterfactual_cosine
+            margin_loss = jnp.where(
+                action_weight.astype(bool),
+                jax.nn.relu(float(action_margin) - cosine_gap),
+                0.0,
+            )
+            normalized_margin = margin_loss / jnp.maximum(action_weight.mean(), 1e-8)
         weighted_margin = action_geometric[index] * normalized_margin
         action_combined = (
             weighted_margin
@@ -438,12 +458,14 @@ def direct_multistep_objective(
             else action_combined + weighted_margin
         )
 
-        metric_prediction = sg(prediction)
-        metric_cosine = _cosine(metric_prediction, target)
-        metric_counterfactual = sg(counterfactual)
+        metric_prediction = sg(masked_prediction)
+        metric_target = sg(masked_target)
+        metric_cosine = _cosine(metric_prediction, metric_target)
+        metric_counterfactual = sg(masked_counterfactual)
+        metric_counterfactual_target = sg(masked_candidate_target)
         if all_legal:
             metric_counterfactual_cosine = _cosine(
-                metric_counterfactual, target[..., None, :]
+                metric_counterfactual, metric_counterfactual_target
             )
             prediction_change = 1.0 - _cosine(
                 metric_prediction[..., None, :], metric_counterfactual
@@ -485,7 +507,9 @@ def direct_multistep_objective(
                 "action_counterfactual_all_legal": jnp.asarray(1.0, f32),
             }
         else:
-            metric_counterfactual_cosine = _cosine(metric_counterfactual, target)
+            metric_counterfactual_cosine = _cosine(
+                metric_counterfactual, metric_counterfactual_target
+            )
             prediction_change = 1.0 - _cosine(metric_prediction, metric_counterfactual)
             action_metrics = {
                 "action_counterfactual_cosine_drop": _masked_average(
@@ -507,11 +531,13 @@ def direct_multistep_objective(
                     action_weight.sum() / jnp.maximum(weight.sum(), 1.0)
                 ),
             }
-        mean_rank = _within_team_mean_rank(metric_prediction, target, weight)
+        mean_rank = _within_team_mean_rank(metric_prediction, metric_target, weight)
         prediction_std, prediction_rank, prediction_rank_count = _spread_metrics(
             metric_prediction, weight
         )
-        target_std, target_rank, target_rank_count = _spread_metrics(target, weight)
+        target_std, target_rank, target_rank_count = _spread_metrics(
+            metric_target, weight
+        )
         prefix = f"h{horizon}"
         metrics.update(
             {
@@ -557,16 +583,16 @@ def _cosine(left, right):
 
 def _masked_average(value, weight):
     weight = weight.astype(f32)
-    return (value.astype(f32) * weight).sum() / jnp.maximum(weight.sum(), 1.0)
+    selected = jnp.where(weight.astype(bool), value.astype(f32), 0.0)
+    return selected.sum() / jnp.maximum(weight.sum(), 1.0)
 
 
 def _candidate_average(value, weight):
     """Average candidates per factual root without favoring larger legal sets."""
 
     weight = weight.astype(f32)
-    return (value.astype(f32) * weight).sum(axis=-1) / jnp.maximum(
-        weight.sum(axis=-1), 1.0
-    )
+    selected = jnp.where(weight.astype(bool), value.astype(f32), 0.0)
+    return selected.sum(axis=-1) / jnp.maximum(weight.sum(axis=-1), 1.0)
 
 
 def _within_team_mean_rank(prediction, target, valid):
