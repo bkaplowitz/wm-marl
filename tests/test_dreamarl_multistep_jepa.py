@@ -333,6 +333,104 @@ def test_all_legal_candidate_batch_preserves_candidate_and_agent_axes() -> None:
     assert float(jnp.linalg.norm(gradient)) > 0.0
 
 
+def test_all_legal_predictor_has_finite_parameter_gradient_leaves() -> None:
+    batch, roots, agents, classes, target_dim, max_horizon = 1, 2, 3, 5, 4, 4
+    horizons = (1, 2, 4)
+    model = ActionConditionedMultiStepJEPA(
+        classes,
+        0,
+        target_dim,
+        horizons,
+        max_horizon,
+        plan_aggregation="mean",
+        width=8,
+        layers=1,
+        units=8,
+        name="alllegal_param_grad",
+    )
+    root = 0.1 * jax.random.normal(
+        jax.random.key(71), (batch, roots, agents, target_dim)
+    )
+    windows = (
+        jnp.arange(batch * roots * agents * max_horizon).reshape(
+            (batch, roots, agents, max_horizon)
+        )
+        % classes
+    )
+    masks = jnp.ones((batch, roots + max_horizon - 1, agents, classes), bool)
+    plan = 0.1 * jax.random.normal(
+        jax.random.key(72),
+        (batch, roots, agents, max_horizon - 1, agents - 1, classes),
+    )
+    target = jax.random.normal(jax.random.key(73), (batch, roots, agents, target_dim))
+    candidates, candidate_mask = all_legal_same_focal_action_interventions(
+        windows, masks, action_low=0, horizons=horizons
+    )
+    valid = {horizon: jnp.ones((batch, roots, agents), bool) for horizon in horizons}
+
+    def objective(value):
+        predictions = model(value, windows, plan)
+        expanded_root = jnp.broadcast_to(
+            value[:, None], (batch, classes, *value.shape[1:])
+        ).reshape((batch * classes, *value.shape[1:]))
+        expanded_plan = jnp.broadcast_to(
+            plan[:, None], (batch, classes, *plan.shape[1:])
+        ).reshape((batch * classes, *plan.shape[1:]))
+        counterfactuals = {}
+        for horizon in horizons:
+            if horizon == 1:
+                counterfactuals[horizon] = jnp.broadcast_to(
+                    jax.lax.stop_gradient(predictions[horizon])[..., None, :],
+                    (*predictions[horizon].shape[:-1], classes, target_dim),
+                )
+                continue
+            candidate_windows = candidates[horizon]
+            flat_windows = jnp.transpose(candidate_windows, (0, 3, 1, 2, 4)).reshape(
+                (batch * classes, roots, agents, max_horizon)
+            )
+            flat = model(
+                expanded_root,
+                flat_windows,
+                expanded_plan,
+                selected_horizon=horizon,
+            )[horizon]
+            counterfactuals[horizon] = jnp.transpose(
+                flat.reshape((batch, classes, roots, agents, target_dim)),
+                (0, 2, 3, 1, 4),
+            )
+        losses, _ = direct_multistep_objective(
+            predictions,
+            {horizon: target for horizon in horizons},
+            valid,
+            counterfactuals,
+            candidate_mask,
+            candidate_mask,
+            horizons=horizons,
+            decay=0.75,
+            action_margin=0.1,
+        )
+        return losses["cosine"].mean() + 0.25 * losses["action"].mean()
+
+    params = nj.init(lambda: objective(root))({}, seed=74)
+
+    def parameter_loss(parameters, value):
+        return nj.pure(lambda: objective(value))(parameters, seed=75)[1]
+
+    parameter_gradients, root_gradient = jax.grad(parameter_loss, argnums=(0, 1))(
+        params, root
+    )
+    leaves = jax.tree_util.tree_leaves(parameter_gradients)
+    assert leaves
+    for leaf in leaves:
+        assert bool(jnp.isfinite(leaf).all())
+    total_norm = jnp.sqrt(
+        sum(jnp.square(leaf.astype(jnp.float32)).sum() for leaf in leaves)
+    )
+    assert float(total_norm) > 0.0
+    assert bool(jnp.isfinite(root_gradient).all())
+    assert float(jnp.linalg.norm(root_gradient)) > 0.0
+
+
 def test_direct_objective_stops_targets_and_trains_both_action_queries() -> None:
     horizons = (1, 2, 4, 8)
     shape = (1, 2, 3, 4)
