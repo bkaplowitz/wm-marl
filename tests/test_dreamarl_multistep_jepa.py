@@ -11,6 +11,7 @@ import numpy as np
 
 from dreamarl.models.multistep_jepa import ActionConditionedMultiStepJEPA
 from dreamarl.training.multistep_jepa import (
+    _cosine,
     action_window_validity,
     aligned_action_windows,
     all_legal_same_focal_action_interventions,
@@ -251,6 +252,80 @@ def test_all_legal_objective_is_candidate_normalized_and_has_finite_grads() -> N
     np.testing.assert_allclose(loss_two, loss_five, rtol=0.0, atol=1e-6)
     assert float(metrics["h2_action_counterfactual_candidates_per_root"]) == 3.0
     assert float(metrics["h2_action_counterfactual_all_legal"]) == 1.0
+
+
+def test_cosine_zero_and_masked_rows_have_finite_vjps() -> None:
+    horizons = (1, 2)
+    shape = (1, 2, 2, 3)
+    prediction = (
+        jnp.zeros(shape, jnp.float32)
+        .at[:, 1]
+        .set(jax.random.normal(jax.random.key(55), (1, 2, 3)))
+    )
+    target = (
+        jnp.zeros(shape, jnp.float32)
+        .at[:, 1]
+        .set(jax.random.normal(jax.random.key(56), (1, 2, 3)))
+    )
+    counterfactual = (
+        jnp.zeros((*shape[:-1], 3, shape[-1]), jnp.float32)
+        .at[:, 1]
+        .set(jax.random.normal(jax.random.key(57), (1, 2, 3, 3)))
+    )
+    valid = jnp.asarray([[[False, False], [True, True]]])
+    candidate_valid = jnp.broadcast_to(valid[..., None], (*valid.shape, 3))
+
+    def objective(value, alternative, ema_target):
+        losses, _ = direct_multistep_objective(
+            {horizon: value for horizon in horizons},
+            {horizon: ema_target for horizon in horizons},
+            {horizon: valid for horizon in horizons},
+            {horizon: alternative for horizon in horizons},
+            {
+                1: jnp.zeros_like(candidate_valid),
+                2: candidate_valid,
+            },
+            {
+                1: jnp.zeros_like(candidate_valid),
+                2: candidate_valid,
+            },
+            horizons=horizons,
+            decay=0.75,
+            action_margin=0.1,
+        )
+        return losses["cosine"].mean() + losses["action"].mean()
+
+    value, gradients = jax.value_and_grad(objective, (0, 1, 2))(
+        prediction, counterfactual, target
+    )
+    assert bool(jnp.isfinite(value))
+    for gradient in gradients:
+        assert bool(jnp.isfinite(gradient).all())
+    np.testing.assert_array_equal(gradients[2], jnp.zeros_like(target))
+
+
+def test_safe_cosine_matches_canonical_cosine_on_nondegenerate_vectors() -> None:
+    left = jax.random.normal(jax.random.key(58), (2, 3, 7)) + 0.25
+    right = jax.random.normal(jax.random.key(59), (2, 3, 7)) - 0.4
+
+    def canonical_cosine(value, target):
+        value = value / jnp.maximum(
+            jnp.linalg.norm(value, axis=-1, keepdims=True), 1e-8
+        )
+        target = target / jnp.maximum(
+            jnp.linalg.norm(target, axis=-1, keepdims=True), 1e-8
+        )
+        return jnp.sum(value * target, axis=-1).sum()
+
+    safe_value, safe_gradients = jax.value_and_grad(
+        lambda value, target: _cosine(value, target).sum(), (0, 1)
+    )(left, right)
+    canonical_value, canonical_gradients = jax.value_and_grad(canonical_cosine, (0, 1))(
+        left, right
+    )
+    np.testing.assert_allclose(safe_value, canonical_value, rtol=1e-6, atol=1e-7)
+    for safe, canonical in zip(safe_gradients, canonical_gradients, strict=True):
+        np.testing.assert_allclose(safe, canonical, rtol=1e-6, atol=1e-7)
 
 
 def test_horizon_heads_cannot_see_actions_after_their_prefix() -> None:

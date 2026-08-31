@@ -541,8 +541,17 @@ def direct_multistep_objective(
 
 
 def _cosine(left, right):
-    left = left / jnp.maximum(jnp.linalg.norm(left, axis=-1, keepdims=True), 1e-8)
-    right = right / jnp.maximum(jnp.linalg.norm(right, axis=-1, keepdims=True), 1e-8)
+    # Clamp squared norms before the square root. This is mathematically the
+    # same epsilon-clamped cosine on nondegenerate vectors, while its VJP is
+    # finite at exactly zero (important for masked/padded replay rows).
+    left_norm = jnp.sqrt(
+        jnp.maximum(jnp.square(left).sum(axis=-1, keepdims=True), 1e-16)
+    )
+    right_norm = jnp.sqrt(
+        jnp.maximum(jnp.square(right).sum(axis=-1, keepdims=True), 1e-16)
+    )
+    left = left / left_norm
+    right = right / right_norm
     return jnp.sum(left * right, axis=-1)
 
 
