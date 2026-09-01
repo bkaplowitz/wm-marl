@@ -116,13 +116,15 @@ class SMACEnv(embodied.Env):
         reward, terminated, info = self._env.step(actions.tolist())
         info = dict(info or {})
         self._needs_reset = bool(terminated)
-        truncated = bool(info.get("episode_limit", False))
         diagnostics = self._combat_diagnostics(actions, float(reward), info)
         return self._observation(
             reward=float(reward),
             is_first=False,
             is_last=self._needs_reset,
-            is_terminal=self._needs_reset and not truncated,
+            # SMAC evaluation is finite horizon. There is no benchmark
+            # successor after an episode-limit transition, so value targets
+            # must stop there just as they do after a win or loss.
+            is_terminal=self._needs_reset,
             info=info,
             diagnostics=diagnostics,
         )
