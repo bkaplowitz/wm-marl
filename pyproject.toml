@@ -9,7 +9,6 @@ dependencies = [
   "elements>=3.19.1",
   "granular>=0.20.3",
   "jax==0.4.36",
-  "matplotlib",
   "ninjax>=3.5.1",
   "numpy<2",
   "optax",
@@ -18,9 +17,9 @@ dependencies = [
   "scope>=0.4.4",
   "wandb>=0.18",
 ]
-description = "DreaMARL: decoder-free JEPA world models for multi-agent RL."
+description = "MA-JEPA: decoder-free JEPA world models for multi-agent RL."
 license = "MIT"
-name = "dreamarl"
+name = "majepa"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 version = "0.1.0"
@@ -39,22 +38,16 @@ smac = [
 ]
 
 [project.scripts]
-dreamarl-setup-dreamerv3 = "dreamarl.scripts.setup_dreamerv3:main"
-dreamarl-normalize-dreamerv3 = "dreamarl.scripts.normalize_dreamerv3_run:main"
-dreamarl-train-dreamarl = "dreamarl.scripts.train_dreamarl:main"
-dreamarl-eval-dreamarl = "dreamarl.scripts.eval_dreamarl:main"
+majepa-train = "majepa.scripts.train:main"
+majepa-evaluate = "majepa.scripts.evaluate:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-"dreamarl" = ["LICENSE", "configs.yaml"]
+"majepa" = ["LICENSE", "configs.yaml"]
 
 [tool.pytest.ini_options]
-markers = [
-  "integration: tests requiring an external simulator runtime",
-  "dreamerv3_integration: tests requiring the isolated DreamerV3 runtime",
-]
 testpaths = ["tests"]
 pythonpath = ["."]
 
@@ -62,6 +55,7 @@ pythonpath = ["."]
 exclude = [".venv"]
 
 [tool.ruff]
+exclude = ["external"]
 indent-width = 4
 line-length = 88
 target-version = "py311"
