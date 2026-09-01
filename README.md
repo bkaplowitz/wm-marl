@@ -6,6 +6,67 @@ single architecture used in the paper: stopped EMA cosine targets, a
 joint-action-conditioned CTDE world model, all-legal action discrimination, a
 centralized critic, and shared decentralized actors.
 
+## How it works
+
+```mermaid
+flowchart TB
+    ENV["Environment"] --> OBS["Local observation and legal-action mask"]
+
+    subgraph EXEC["Decentralized execution — independently for every agent"]
+        OBS --> ENC["Shared local encoder"]
+        ENC --> LAT["Local latent state"]
+        LAT --> ACTOR["Shared actor"]
+        OBS --> ACTOR
+        ACTOR --> ACTION["Greedy legal action"]
+    end
+
+    ACTION --> ENV
+
+    subgraph TRAIN["Centralized training only"]
+        LAT --> LOCAL["Causal local world model"]
+        ACTION --> LOCAL
+        LOCAL --> IMAG["Imagined local trajectories"]
+        IMAG --> CRITIC["Centralized critic"]
+        IMAG --> ACTORLOSS["Actor objective"]
+        CRITIC --> ACTORLOSS
+
+        LAT --> SYNC["Synchronize agents, actions, and liveness"]
+        ACTION --> SYNC
+        SYNC --> JOINT["Joint action-conditioned predictor"]
+        JOINT --> PRED["Future embeddings at h = 1, 2, 4, 8"]
+
+        FUTURE["Future local observations"] --> EMA["Stopped EMA encoder"]
+        EMA --> TARGET["Target future embeddings"]
+        PRED -.->|cosine prediction| JEPA["JEPA loss"]
+        TARGET -.-> JEPA
+
+        SYNC --> LEGAL["Replace the focal tail action with every legal alternative"]
+        LEGAL --> CFPRED["Same predictor, shared weights"]
+        CFPRED -.->|legal counterfactuals| MARGIN["Action-discrimination margin"]
+        PRED -.->|factual action| MARGIN
+        TARGET -.-> MARGIN
+
+        LAT -.-> SIGREG["SIGReg anti-collapse regularization"]
+        JEPA -.-> UPDATE["World-model update"]
+        MARGIN -.-> UPDATE
+        SIGREG -.-> UPDATE
+        ACTORLOSS -.-> POLICYUPDATE["Actor and critic update"]
+    end
+
+    UPDATE -.-> ENC
+    UPDATE -.-> JOINT
+    POLICYUPDATE -.-> ACTOR
+```
+
+The encoder learns predictive rather than reconstructive features: its online
+prediction must match a stopped EMA target by cosine similarity. The
+all-legal margin additionally requires the factual action to predict that
+target better than every other legal focal-agent action at the intervened
+future step, making the latent dynamics sensitive to control. SIGReg preserves
+representation diversity.
+The joint predictor and centralized critic are training-only; execution keeps
+only the shared encoder, local state, legal-action mask, and shared actor.
+
 ## Setup
 
 ```bash
