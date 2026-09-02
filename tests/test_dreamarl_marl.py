@@ -16,6 +16,7 @@ from dreamarl.marl.spaces import add_agent_axis
 from dreamarl.models.heads import (
     MLPHead,
     apply_action_mask,
+    apply_legal_unimix,
     apply_predicted_action_mask,
     binary_vector_loss,
 )
@@ -979,6 +980,22 @@ def test_action_mask_assigns_no_probability_to_invalid_actions() -> None:
     probs = nj.pure(probabilities)(state, seed=33)[1]
     np.testing.assert_array_equal(np.asarray(probs)[0, [0, 2]], 0.0)
     np.testing.assert_allclose(np.asarray(probs).sum(), 1.0)
+
+
+def test_collection_unimix_is_uniform_over_legal_actions() -> None:
+    distribution = outs.Categorical(jnp.array([[4.0, 0.0, -2.0, 3.0]]))
+    distribution.raw_logits = jnp.array([[4.0, 0.0, -2.0, 3.0]])
+    policy = apply_action_mask(
+        {"action": distribution},
+        jnp.array([[True, False, True, False]]),
+        "action",
+    )
+    mixed = apply_legal_unimix(policy, "action", 0.2)["action"]
+    probabilities = jax.nn.softmax(mixed.logits, axis=-1)
+    expected = 0.8 * jax.nn.softmax(jnp.array([4.0, -2.0])) + 0.1
+
+    np.testing.assert_allclose(np.asarray(probabilities)[0, [0, 2]], expected)
+    np.testing.assert_array_equal(np.asarray(probabilities)[0, [1, 3]], 0.0)
 
 
 def test_action_mask_loss_scale_honors_canonical_loss_scales() -> None:
