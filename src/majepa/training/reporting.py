@@ -17,6 +17,7 @@ class ReportingMixin:
         if not self.config.report:
             return carry, {}
 
+        entropy_coefficient = self._entropy_coefficient(data)
         carry, obs, prevact, _ = self._apply_replay_context(carry, data)
         _, dyn_carry, dec_carry = carry
         batch, length = obs["is_first"].shape
@@ -24,7 +25,11 @@ class ReportingMixin:
         metrics = {}
 
         _, (new_carry, entries, outs, loss_metrics) = self.loss(
-            carry, obs, prevact, training=False
+            carry,
+            obs,
+            prevact,
+            entropy_coefficient=entropy_coefficient,
+            training=False,
         )
         metrics.update(loss_metrics)
 
@@ -34,9 +39,13 @@ class ReportingMixin:
 
                     def lossfn(data, carry):
                         del data
-                        return self.loss(carry, obs, prevact, training=False)[1][2][
-                            "losses"
-                        ][key].mean()
+                        return self.loss(
+                            carry,
+                            obs,
+                            prevact,
+                            entropy_coefficient=entropy_coefficient,
+                            training=False,
+                        )[1][2]["losses"][key].mean()
 
                     grad = nj.grad(lossfn, self.modules)(data, carry)[-1]
                     metrics[f"gradnorm/{key}"] = optax.global_norm(grad)
