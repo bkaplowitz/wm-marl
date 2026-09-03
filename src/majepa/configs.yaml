@@ -169,6 +169,7 @@ ma_jepa:
       ctde_multistep_alive: 1.0
       ctde_multistep_jepa_cosine: 2.0
       ctde_multistep_jepa_action: 0.25
+      ctde_authoritative_action_binding: 1.0
       ctde_teammate_plan: 0.5
     marl:
       stage: ctde
@@ -177,6 +178,9 @@ ma_jepa:
         rollout_steps: 1
         multistep: {anchors: 0}
         mask_calibration: {enabled: False, horizons: [1, 4, 8, 15], soft_liveness: False}
+        death_aware_team_returns: {enabled: False}
+        authoritative_action_binding: {enabled: False, anchors: 8, margin: 0.1}
+        support_preserving: {enabled: False, probability_floor: 0.05}
         joint: {width: 256, heads: 4, agent_layers: 2, temporal_layers: 12, context: 16, ffup: 4, dropout: 0.1, action_conditioning: add, act: silu, norm: rms, winit: trunc_normal_in}
         head: {layers: 2, units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
         critic: {width: 256, heads: 4, layers: 2, ffup: 4, dropout: 0.0, value_layers: 2, value_units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}

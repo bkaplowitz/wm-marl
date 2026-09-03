@@ -12,6 +12,7 @@ from majepa.training.multistep_jepa import (
     _cosine,
     aligned_action_windows,
     all_legal_same_focal_action_interventions,
+    authoritative_action_binding_objective,
     direct_multistep_objective,
 )
 
@@ -136,6 +137,55 @@ def test_all_legal_intervention_is_action_label_permutation_equivariant() -> Non
                 permuted[horizon][..., new_action, :],
                 permutation[original[horizon][..., old_action, :]],
             )
+
+
+def test_authoritative_action_binding_ranks_factual_candidate_and_stops_target() -> (
+    None
+):
+    prediction = jnp.asarray([[[[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]]]])
+    target = jnp.asarray([[[1.0, 0.0]]])
+    action = jnp.asarray([[0]])
+    legal = jnp.ones((1, 1, 3), bool)
+    valid = jnp.ones((1, 1), bool)
+
+    def objective(candidate, ema_target):
+        loss, root_valid, metrics = authoritative_action_binding_objective(
+            candidate,
+            ema_target,
+            action,
+            legal,
+            valid,
+            action_low=0,
+            margin=0.1,
+        )
+        return loss.sum(), (root_valid, metrics)
+
+    (candidate_gradient, target_gradient), (root_valid, metrics) = jax.grad(
+        objective, (0, 1), has_aux=True
+    )(prediction, target)
+    assert bool(root_valid[0, 0])
+    assert float(metrics["factual_top1_fraction"]) == 1.0
+    assert float(metrics["factual_mean_rank"]) == 1.0
+    assert float(metrics["margin_loss"]) == 0.0
+    np.testing.assert_array_equal(target_gradient, jnp.zeros_like(target))
+    assert bool(jnp.isfinite(candidate_gradient).all())
+
+
+def test_authoritative_action_binding_penalizes_action_agnostic_predictions() -> None:
+    target = jnp.asarray([[[1.0, 0.0]]])
+    prediction = jnp.broadcast_to(target[..., None, :], (1, 1, 3, 2))
+    loss, root_valid, metrics = authoritative_action_binding_objective(
+        prediction,
+        target,
+        jnp.asarray([[1]]),
+        jnp.ones((1, 1, 3), bool),
+        jnp.ones((1, 1), bool),
+        action_low=0,
+        margin=0.1,
+    )
+    assert bool(root_valid[0, 0])
+    np.testing.assert_allclose(loss, 0.1, atol=1e-6)
+    np.testing.assert_allclose(metrics["factual_counterfactual_gap"], 0.0)
 
 
 def test_all_legal_objective_is_candidate_normalized_and_has_finite_grads() -> None:

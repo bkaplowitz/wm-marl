@@ -232,6 +232,107 @@ def all_legal_same_focal_action_interventions(
     return windows, alternatives
 
 
+def authoritative_action_binding_objective(
+    candidate_predictions,
+    target,
+    factual_action,
+    legal,
+    valid,
+    *,
+    action_low: int,
+    margin: float,
+):
+    """Rank the factual action with the authoritative one-step simulator.
+
+    Candidate axis ``C`` enumerates environment actions ``action_low + c``.
+    Unlike the direct multi-step side predictor, every candidate here must be
+    produced by the same ``JointObservationJEPA.step`` used for imagination.
+    """
+
+    prediction = jnp.asarray(candidate_predictions, f32)
+    target = sg(jnp.asarray(target, f32))
+    factual_action = jnp.asarray(factual_action, jnp.int32)
+    legal = jnp.asarray(legal, bool)
+    valid = jnp.asarray(valid, bool)
+    if prediction.ndim != 4:
+        raise ValueError(
+            f"authoritative candidates must be [K,A,C,D], got {prediction.shape}"
+        )
+    samples, agents, classes, _ = prediction.shape
+    if target.shape != (samples, agents, prediction.shape[-1]):
+        raise ValueError(
+            f"authoritative target {target.shape} does not match {prediction.shape}"
+        )
+    expected = (samples, agents)
+    if factual_action.shape != expected or valid.shape != expected:
+        raise ValueError(
+            "authoritative actions/validity must be [K,A], got "
+            f"{factual_action.shape} and {valid.shape}"
+        )
+    if legal.shape != (samples, agents, classes):
+        raise ValueError(
+            f"authoritative legal mask {legal.shape} does not match {prediction.shape}"
+        )
+    if float(margin) < 0.0:
+        raise ValueError("authoritative action margin must be nonnegative")
+
+    factual_index = factual_action - int(action_low)
+    in_range = (factual_index >= 0) & (factual_index < classes)
+    safe_factual = jnp.clip(factual_index, 0, classes - 1)
+    factual_legal = jnp.take_along_axis(legal, safe_factual[..., None], axis=-1)[..., 0]
+    alternative = legal & (
+        jnp.arange(classes, dtype=jnp.int32) != safe_factual[..., None]
+    )
+    alternative &= valid[..., None] & in_range[..., None] & factual_legal[..., None]
+    alternative_count = alternative.astype(f32).sum(axis=-1)
+    root_valid = valid & in_range & factual_legal & (alternative_count > 0)
+
+    candidate_target = jnp.broadcast_to(target[..., None, :], prediction.shape)
+    cosine = _cosine(prediction, candidate_target)
+    factual_cosine = jnp.take_along_axis(cosine, safe_factual[..., None], axis=-1)[
+        ..., 0
+    ]
+    cosine_gap = factual_cosine[..., None] - cosine
+    margin_loss = jnp.where(
+        alternative,
+        jax.nn.relu(float(margin) - cosine_gap),
+        0.0,
+    )
+    loss = margin_loss.sum(axis=-1) / jnp.maximum(alternative_count, 1.0)
+    loss = jnp.where(root_valid, loss, 0.0)
+
+    alternative_weight = alternative.astype(f32)
+    root_weight = root_valid.astype(f32)
+    root_count = jnp.maximum(root_weight.sum(), 1.0)
+    candidate_count = jnp.maximum(alternative_weight.sum(), 1.0)
+    factual_better = cosine_gap > 0.0
+    top1 = ~((cosine > factual_cosine[..., None]) & alternative).any(axis=-1)
+    rank = 1.0 + (
+        (cosine > factual_cosine[..., None]).astype(f32) * alternative_weight
+    ).sum(axis=-1)
+    metrics = {
+        "valid_count": root_weight.sum(),
+        "alternative_count": alternative_weight.sum(),
+        "alternatives_per_root": alternative_weight.sum() / root_count,
+        "factual_cosine": (factual_cosine * root_weight).sum() / root_count,
+        "counterfactual_cosine": (cosine * alternative_weight).sum() / candidate_count,
+        "factual_counterfactual_gap": (cosine_gap * alternative_weight).sum()
+        / candidate_count,
+        "margin_loss": (margin_loss * alternative_weight).sum() / candidate_count,
+        "factual_better_fraction": (
+            factual_better.astype(f32) * alternative_weight
+        ).sum()
+        / candidate_count,
+        "factual_top1_fraction": (top1.astype(f32) * root_weight).sum() / root_count,
+        "factual_mean_rank": (rank * root_weight).sum() / root_count,
+        "candidate_cosine_std": jnp.sqrt(
+            (jnp.square(cosine - factual_cosine[..., None]) * alternative_weight).sum()
+            / candidate_count
+        ),
+    }
+    return loss, root_valid, metrics
+
+
 def direct_multistep_objective(
     predictions: Mapping[int, jax.Array],
     targets: Mapping[int, jax.Array],
@@ -574,5 +675,6 @@ __all__ = [
     "action_window_validity",
     "aligned_action_windows",
     "all_legal_same_focal_action_interventions",
+    "authoritative_action_binding_objective",
     "direct_multistep_objective",
 ]

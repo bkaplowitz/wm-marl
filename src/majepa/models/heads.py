@@ -163,6 +163,56 @@ def apply_predicted_action_mask(
     return dict(distributions, **{action_key: masked})
 
 
+def apply_support_preserving_availability(
+    distributions,
+    availability_logits,
+    alive,
+    action_key,
+    *,
+    probability_floor,
+):
+    """Bias future actions by availability without deleting live support.
+
+    Exact environment masks should still be used at imagination roots. Beyond
+    the root, every action of a live agent keeps at least ``probability_floor``
+    availability. Dead agents retain only no-op support.
+    """
+
+    floor = float(probability_floor)
+    if not 0.0 < floor < 1.0:
+        raise ValueError("availability probability floor must be in (0, 1)")
+    distribution = distributions[action_key]
+    if not isinstance(distribution, outs.Categorical):
+        raise TypeError("action availability requires a categorical policy output")
+    availability_logits = jnp.asarray(availability_logits)
+    alive = jnp.asarray(alive, bool)
+    if availability_logits.shape != distribution.logits.shape:
+        raise ValueError(
+            f"action availability shape {availability_logits.shape} does not "
+            f"match logits {distribution.logits.shape}"
+        )
+    if alive.shape != distribution.logits.shape[:-1]:
+        raise ValueError(
+            f"liveness shape {alive.shape} does not match policy rows "
+            f"{distribution.logits.shape[:-1]}"
+        )
+    probability = floor + (1.0 - floor) * jax.nn.sigmoid(availability_logits)
+    live_logits = distribution.logits + jnp.log(probability)
+    noop = jax.nn.one_hot(
+        jnp.zeros_like(alive, jnp.int32),
+        distribution.logits.shape[-1],
+        dtype=bool,
+    )
+    selected_logits = jnp.where(
+        alive[..., None], live_logits, jnp.where(noop, distribution.logits, -1e30)
+    )
+    selected = outs.Categorical(selected_logits)
+    for name in ("minent", "maxent"):
+        if hasattr(distribution, name):
+            setattr(selected, name, getattr(distribution, name))
+    return dict(distributions, **{action_key: selected})
+
+
 def binary_vector_loss(output, target, reduction="sum"):
     """Binary cross entropy over the final event axis.
 

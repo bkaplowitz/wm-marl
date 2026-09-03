@@ -60,6 +60,11 @@ def test_locked_profile_values(tmp_path: Path) -> None:
     assert ctde.multistep_jepa.action_counterfactual_mode == "all_legal_mean"
     assert ctde.multistep_jepa.plan_aggregation == "mean"
     assert resolved.agent.loss_scales.ctde_multistep_jepa_action == pytest.approx(0.25)
+    assert not ctde.death_aware_team_returns.enabled
+    assert not ctde.authoritative_action_binding.enabled
+    assert ctde.authoritative_action_binding.anchors == 8
+    assert not ctde.support_preserving.enabled
+    assert ctde.support_preserving.probability_floor == pytest.approx(0.05)
 
 
 def test_manifest_describes_the_locked_architecture(tmp_path: Path) -> None:

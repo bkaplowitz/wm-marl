@@ -33,10 +33,13 @@ from ..models.multistep_jepa import (
 from ..models.heads import (
     apply_action_mask,
     apply_predicted_action_mask,
+    apply_support_preserving_availability,
     balanced_binary_event_loss,
     binary_vector_loss,
 )
 from ..training.ctde import (
+    alive_weighted_team_logits,
+    alive_weighted_team_signal,
     detach_self_feed,
     gather_anchors,
     predicted_controllable_alive,
@@ -47,6 +50,7 @@ from ..training.ctde import (
 from ..training.multistep_jepa import (
     aligned_action_windows,
     all_legal_same_focal_action_interventions,
+    authoritative_action_binding_objective,
     direct_multistep_objective,
 )
 from ..training.common import sample
@@ -185,6 +189,44 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             if self.ctde_mask_calibration
             else False
         )
+        self.ctde_death_aware_team_returns = bool(
+            marl.ctde.death_aware_team_returns.enabled if self.ctde_enabled else False
+        )
+        self.ctde_authoritative_action_binding = bool(
+            marl.ctde.authoritative_action_binding.enabled
+            if self.ctde_enabled
+            else False
+        )
+        self.ctde_authoritative_action_binding_anchors = int(
+            marl.ctde.authoritative_action_binding.anchors if self.ctde_enabled else 1
+        )
+        self.ctde_authoritative_action_binding_margin = float(
+            marl.ctde.authoritative_action_binding.margin if self.ctde_enabled else 0.0
+        )
+        self.ctde_support_preserving = bool(
+            marl.ctde.support_preserving.enabled if self.ctde_enabled else False
+        )
+        self.ctde_support_probability_floor = float(
+            marl.ctde.support_preserving.probability_floor
+            if self.ctde_enabled
+            else 0.05
+        )
+        self.ctde_probabilistic_availability = (
+            self.ctde_mask_calibration or self.ctde_support_preserving
+        )
+        if self.ctde_authoritative_action_binding_anchors < 1:
+            raise ValueError("authoritative action binding anchors must be positive")
+        if self.ctde_authoritative_action_binding_margin < 0.0:
+            raise ValueError("authoritative action binding margin must be nonnegative")
+        if (
+            self.ctde_authoritative_action_binding
+            and float(config.loss_scales.ctde_authoritative_action_binding) <= 0.0
+        ):
+            raise ValueError(
+                "enabled authoritative action binding requires a positive loss scale"
+            )
+        if not 0.0 < self.ctde_support_probability_floor < 1.0:
+            raise ValueError("support-preserving probability floor must be in (0, 1)")
         self.ctde_teammate_belief_enabled = bool(
             marl.ctde.teammate_belief.enabled if self.ctde_enabled else False
         )
@@ -382,7 +424,10 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 grouped_alive,
                 bdims=3,
             )
-            logits = self.team.fold_sequence(distribution.logits)
+            logits = distribution.logits
+            if self.ctde_death_aware_team_returns:
+                logits = alive_weighted_team_logits(logits, grouped_alive)
+            logits = self.team.fold_sequence(logits)
             return jaxouts.TwoHot(logits, distribution.bins)
         return super().critic(features, bdims, slow=slow, context=context)
 
@@ -1004,6 +1049,15 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             "ctde/posterior_kl": masked_metric(posterior_kl),
             "ctde/valid_fraction": weight.mean(),
             "ctde/controllable_alive_fraction": source_alive.mean(),
+            "ctde/treatment_death_aware_team_returns": jnp.asarray(
+                float(self.ctde_death_aware_team_returns), jnp.float32
+            ),
+            "ctde/treatment_authoritative_action_binding": jnp.asarray(
+                float(self.ctde_authoritative_action_binding), jnp.float32
+            ),
+            "ctde/treatment_support_preserving": jnp.asarray(
+                float(self.ctde_support_preserving), jnp.float32
+            ),
         }
 
         def folded(value):
@@ -1026,6 +1080,24 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             "ctde_action_mask": folded(mask_loss),
             "ctde_alive": folded_alive(alive_loss),
         }
+        if self.ctde_authoritative_action_binding:
+            binding_loss, binding_metrics = (
+                self._ctde_authoritative_action_binding_loss(
+                    cache,
+                    snapshots,
+                    source_state,
+                    source_action,
+                    source_present,
+                    source_alive,
+                    reset,
+                    grouped_target[:, 1:],
+                    grouped_mask[:, :-1],
+                    transition_valid,
+                    grouped_present,
+                )
+            )
+            losses["ctde_authoritative_action_binding"] = binding_loss
+            metrics.update(binding_metrics)
         if self.ctde_teammate_belief_enabled:
             belief_loss, belief_metrics = self._ctde_teammate_belief_loss(
                 source_state,
@@ -1086,6 +1158,137 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             losses.update(multistep_losses)
             metrics.update(multistep_metrics)
         return losses, metrics
+
+    def _ctde_authoritative_action_binding_loss(
+        self,
+        initial_cache,
+        snapshots,
+        source_state,
+        source_action,
+        source_present,
+        source_alive,
+        reset,
+        target_embedding,
+        source_mask,
+        transition_valid,
+        destination_present,
+    ):
+        """Enumerate legal H1 actions through the simulator used by the actor."""
+
+        batch, transitions, agents = source_action.shape
+        classes = self.ctde_action_count
+        anchor_count = min(
+            self.ctde_authoritative_action_binding_anchors,
+            batch * transitions,
+        )
+        anchor_mask = transition_valid.any(axis=-1)
+        anchors = sample_two_step_anchors(nj.seed(), anchor_mask, anchor_count)
+
+        grouped_initial = self.team.unfold_tree_batch(initial_cache)
+        grouped_snapshots = jax.tree.map(self.team.unfold_sequence, snapshots)
+        pre_transition_cache = jax.tree.map(
+            lambda initial, history: jnp.concatenate(
+                [initial[:, None], history[:, :-1]], axis=1
+            ),
+            grouped_initial,
+            grouped_snapshots,
+        )
+        sampled_cache = gather_anchors(pre_transition_cache, anchors)
+        sampled_state = gather_anchors(source_state, anchors)
+        sampled_action = gather_anchors(source_action, anchors)
+        sampled_present = gather_anchors(source_present, anchors)
+        sampled_alive = gather_anchors(source_alive, anchors)
+        sampled_reset = gather_anchors(reset, anchors)
+        sampled_target = gather_anchors(target_embedding, anchors)
+        sampled_mask = gather_anchors(source_mask, anchors)
+        sampled_valid = gather_anchors(transition_valid, anchors)
+        sampled_valid &= anchors.valid[:, None]
+
+        scenario_shape = (anchor_count, agents, classes, agents)
+
+        def expand_team(value):
+            expanded = jnp.broadcast_to(
+                value[:, None, None], (*scenario_shape, *value.shape[2:])
+            )
+            return expanded.reshape(
+                (anchor_count * agents * classes * agents, *value.shape[2:])
+            )
+
+        expanded_cache = jax.tree.map(expand_team, sampled_cache)
+        expanded_state = jnp.broadcast_to(
+            sampled_state[:, None, None],
+            (*scenario_shape, sampled_state.shape[-1]),
+        ).reshape((anchor_count * agents * classes, agents, sampled_state.shape[-1]))
+        base_action = jnp.broadcast_to(sampled_action[:, None, None], scenario_shape)
+        candidate_action = (
+            jnp.arange(classes, dtype=jnp.int32) + self.ctde_action_low
+        )[None, None, :, None]
+        focal = jnp.eye(agents, dtype=bool)[None, :, None, :]
+        expanded_action = jnp.where(focal, candidate_action, base_action).reshape(
+            (anchor_count * agents * classes, agents)
+        )
+        expanded_present = jnp.broadcast_to(
+            sampled_present[:, None, None], scenario_shape
+        ).reshape((anchor_count * agents * classes, agents))
+        expanded_alive = jnp.broadcast_to(
+            sampled_alive[:, None, None], scenario_shape
+        ).reshape((anchor_count * agents * classes, agents))
+        expanded_reset = jnp.broadcast_to(
+            sampled_reset[:, None, None], (anchor_count, agents, classes)
+        ).reshape(-1)
+
+        _, candidate = self.ctde_joint.step(
+            expanded_cache,
+            expanded_state,
+            expanded_action,
+            expanded_present,
+            expanded_alive,
+            expanded_reset,
+            training=False,
+        )
+        all_predictions = candidate["embedding"].reshape(
+            (
+                anchor_count,
+                agents,
+                classes,
+                agents,
+                candidate["embedding"].shape[-1],
+            )
+        )
+        selector = jnp.eye(agents, dtype=all_predictions.dtype)[None, :, None, :, None]
+        focal_predictions = (all_predictions * selector).sum(axis=3)
+        sampled_loss, root_valid, raw_metrics = authoritative_action_binding_objective(
+            focal_predictions,
+            sampled_target,
+            sampled_action,
+            sampled_mask,
+            sampled_valid,
+            action_low=self.ctde_action_low,
+            margin=self.ctde_authoritative_action_binding_margin,
+        )
+
+        outer_count = destination_present.astype(jnp.float32).sum()
+        sample_count = root_valid.astype(jnp.float32).sum()
+        scale = outer_count / jnp.maximum(sample_count, 1.0)
+        replay_grid = jnp.zeros(destination_present.shape, jnp.float32)
+        replay_grid = replay_grid.at[anchors.batch, anchors.time].add(
+            sampled_loss * root_valid.astype(jnp.float32) * scale
+        )
+        metrics = {
+            f"ctde/authoritative_action_binding_{key}": value
+            for key, value in raw_metrics.items()
+        }
+        metrics.update(
+            {
+                "ctde/authoritative_action_binding_enabled": jnp.asarray(
+                    1.0, jnp.float32
+                ),
+                "ctde/authoritative_action_binding_anchor_count": jnp.asarray(
+                    anchor_count, jnp.float32
+                ),
+            }
+        )
+        return self.team.fold_sequence(replay_grid), metrics
 
     def _ctde_teammate_belief_loss(
         self,
@@ -2434,7 +2637,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
     def imagine_with_aux(self, starts, policy, horizon, training, context=None):
         if not self.ctde_enabled:
             return super().imagine_with_aux(starts, policy, horizon, training, context)
-        if self.ctde_mask_calibration:
+        if self.ctde_probabilistic_availability:
             return self._imagine_with_calibrated_mask(
                 starts, horizon, training, context
             )
@@ -2602,7 +2805,15 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             )
             availability_logits = availability_binary.logit
         availability_logits = jax.lax.stop_gradient(availability_logits)
-        if self.ctde_soft_liveness:
+        if self.ctde_support_preserving:
+            distribution = apply_support_preserving_availability(
+                base_distribution,
+                availability_logits,
+                alive,
+                self.ctde_action_key,
+                probability_floor=self.ctde_support_probability_floor,
+            )
+        elif self.ctde_soft_liveness:
             alive_probability = jnp.clip(alive.astype(jnp.float32), 0.0, 1.0)
             availability = jax.nn.sigmoid(availability_logits)
             availability *= alive_probability[..., None]
@@ -2834,7 +3045,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             return super().imagination_last_action(policy_features, auxiliary, policyfn)
         del policyfn
         last_features = jax.tree.map(lambda value: value[:, -1], policy_features)
-        if self.ctde_mask_calibration:
+        if self.ctde_probabilistic_availability:
             last_alive = self.team.fold_batch(auxiliary["controllable_alive"][:, -1])
             distribution, _ = self._ctde_probabilistic_policy(
                 self.feat2tensor(last_features),
@@ -2857,7 +3068,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         if not self.ctde_enabled:
             return super().imagination_policy_distribution(policy_inputs, auxiliary)
         action_mask = self.team.fold_sequence(auxiliary["action_mask"])
-        if self.ctde_mask_calibration:
+        if self.ctde_probabilistic_availability:
             grouped_alive = auxiliary["controllable_alive"]
             folded_alive = self.team.fold_sequence(grouped_alive)
             root_rows = jnp.zeros_like(grouped_alive)
@@ -2879,9 +3090,16 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         if not self.ctde_enabled:
             return super().imagination_reward_continuation(local_inputs, auxiliary)
         del local_inputs
+        reward = auxiliary["reward"]
+        continuation = auxiliary["continuation"]
+        if self.ctde_death_aware_team_returns:
+            alive = auxiliary["controllable_alive"].astype(bool)
+            source_alive = jnp.concatenate([alive[:, :1], alive[:, :-1]], axis=1)
+            reward = alive_weighted_team_signal(reward, source_alive)
+            continuation = alive_weighted_team_signal(continuation, source_alive)
         return (
-            self.team.fold_sequence(auxiliary["reward"]),
-            self.team.fold_sequence(auxiliary["continuation"]),
+            self.team.fold_sequence(reward),
+            self.team.fold_sequence(continuation),
         )
 
     def restore_imagination_results(self, losses, outputs, context=None):
@@ -2899,7 +3117,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 raise ValueError("CTDE imagination requires predicted activity")
             present = auxiliary["present"]
             validity = present
-            if self.ctde_soft_liveness:
+            if self.ctde_death_aware_team_returns or self.ctde_soft_liveness:
                 validity = validity.astype(jnp.float32) * auxiliary[
                     "controllable_alive"
                 ].astype(jnp.float32)
@@ -2907,6 +3125,12 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             return folded[:, :horizon]
         _, active = context
         return jnp.broadcast_to(active[:, None], (active.shape[0], horizon))
+
+    def replay_value_validity(self, obs):
+        validity = super().replay_value_validity(obs)
+        if self.ctde_enabled and self.ctde_death_aware_team_returns:
+            validity *= self._controllable(obs).astype(jnp.float32)
+        return validity
 
     def imagination_behavior_metrics(self, actions, validity, auxiliary=None):
         """Summarize the actions that actually drive CTDE imagination."""

@@ -24,6 +24,50 @@ import jax.numpy as jnp
 f32 = jnp.float32
 
 
+def alive_weighted_team_signal(value, source_alive):
+    """Pool supervised per-agent heads into one team signal and broadcast it.
+
+    CTDE reward and continuation heads are only supervised for controllable
+    source agents. Reading a dead source row during imagination therefore
+    exposes the actor to an unconstrained prediction. This helper excludes
+    those rows, computes one team-level signal, and broadcasts it back over the
+    fixed roster. Teams with no live source receive zero, the safe absorbing
+    value after a team wipe.
+    """
+
+    value = jnp.asarray(value, f32)
+    source_alive = jnp.asarray(source_alive, bool)
+    if value.shape != source_alive.shape or value.ndim < 2:
+        raise ValueError(
+            "team signal and source liveness must share [...,A], got "
+            f"{value.shape} and {source_alive.shape}"
+        )
+    weight = source_alive.astype(f32)
+    count = weight.sum(axis=-1, keepdims=True)
+    pooled = (value * weight).sum(axis=-1, keepdims=True) / jnp.maximum(count, 1.0)
+    pooled = jnp.where(count > 0, pooled, 0.0)
+    return jnp.broadcast_to(pooled, value.shape)
+
+
+def alive_weighted_team_logits(logits, alive):
+    """Turn per-agent critic logits into one live-agent team distribution."""
+
+    logits = jnp.asarray(logits)
+    alive = jnp.asarray(alive, bool)
+    if logits.ndim < 3 or alive.shape != logits.shape[:-1]:
+        raise ValueError(
+            "critic logits must be [...,A,K] with liveness [...,A], got "
+            f"{logits.shape} and {alive.shape}"
+        )
+    weight = alive.astype(f32)[..., None]
+    count = weight.sum(axis=-2, keepdims=True)
+    pooled = (logits.astype(f32) * weight).sum(axis=-2, keepdims=True) / jnp.maximum(
+        count, 1.0
+    )
+    pooled = jnp.where(count > 0, pooled, 0.0).astype(logits.dtype)
+    return jnp.broadcast_to(pooled, logits.shape)
+
+
 class TwoStepAnchors(NamedTuple):
     """Fixed-size replay anchor sample.
 
@@ -233,6 +277,8 @@ def _masked_mean(value, valid):
 
 __all__ = [
     "TwoStepAnchors",
+    "alive_weighted_team_logits",
+    "alive_weighted_team_signal",
     "detach_self_feed",
     "gather_anchors",
     "predicted_controllable_alive",
