@@ -3,12 +3,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import jax
+import jax.numpy as jnp
+import numpy as np
 import pytest
+
+import embodied.jax.outs as outs
 
 from majepa.config import MAJEPARunSpec, PUBLIC_ALGORITHMS
 from majepa.contracts import verify_run_contract
 from majepa.launcher import run_training
 from majepa.main import _load_configs, _resolve_config_profiles, _validate_script
+from majepa.models.heads import apply_action_mask, apply_legal_unimix
 from majepa.runtime import algorithm_root
 from majepa.scripts.evaluate import main as evaluate
 
@@ -44,6 +50,7 @@ def test_locked_profile_values(tmp_path: Path) -> None:
     assert resolved.run.actor_critic_start_step == 0
     assert resolved.agent.action_mask_reduction == "balanced"
     assert resolved.agent.policy.units == 1024
+    assert resolved.agent.collection_unimix == pytest.approx(0.05)
     assert resolved.agent.imag_loss.actent == pytest.approx(3e-4)
     ctde = resolved.agent.marl.ctde
     assert ctde.actor_lr == pytest.approx(1e-5)
@@ -106,3 +113,19 @@ def test_dry_run_and_evaluation_keep_the_locked_profile(tmp_path: Path) -> None:
 
 def test_config_file_is_packaged() -> None:
     assert (algorithm_root() / "configs.yaml").is_file()
+
+
+def test_collection_unimix_only_mixes_legal_actions() -> None:
+    distribution = outs.Categorical(jnp.array([[4.0, 0.0, -2.0, 3.0]]))
+    distribution.raw_logits = jnp.array([[4.0, 0.0, -2.0, 3.0]])
+    policy = apply_action_mask(
+        {"action": distribution},
+        jnp.array([[True, False, True, False]]),
+        "action",
+    )
+    mixed = apply_legal_unimix(policy, "action", 0.2)["action"]
+    probabilities = jax.nn.softmax(mixed.logits, axis=-1)
+    expected = 0.8 * jax.nn.softmax(jnp.array([4.0, -2.0])) + 0.1
+
+    np.testing.assert_allclose(np.asarray(probabilities)[0, [0, 2]], expected)
+    np.testing.assert_array_equal(np.asarray(probabilities)[0, [1, 3]], 0.0)

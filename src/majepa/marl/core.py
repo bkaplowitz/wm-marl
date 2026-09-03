@@ -2330,11 +2330,16 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         )
         active = self._active(obs)[:, -starts_count:].reshape((-1,))
         grouped_active = self.team.group_starts(active, starts_count).astype(bool)
+        last = obs["is_last"][:, -starts_count:].reshape((-1,))
+        grouped_last = self.team.group_starts(last, starts_count).astype(bool)
+        grouped_active &= ~grouped_last
         if self.ctde_enabled:
             present = self._present(obs)[:, -starts_count:].reshape((-1,))
             grouped_present = self.team.group_starts(present, starts_count).astype(bool)
             alive = self._controllable(obs)[:, -starts_count:].reshape((-1,))
             grouped_alive = self.team.group_starts(alive, starts_count).astype(bool)
+            grouped_present &= ~grouped_last
+            grouped_alive &= ~grouped_last
             action_mask = obs["action_mask"][:, -starts_count:]
             action_mask = action_mask.reshape((-1, *action_mask.shape[2:]))
             grouped_mask = self.team.group_starts(action_mask, starts_count).astype(

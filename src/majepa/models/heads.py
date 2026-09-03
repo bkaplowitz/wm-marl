@@ -100,10 +100,32 @@ def apply_action_mask(distributions, mask, action_key):
     )
     mask = jnp.where(mask.any(axis=-1, keepdims=True), mask, fallback)
     masked = outs.Categorical(jnp.where(mask, distribution.logits, -1e30))
+    if hasattr(distribution, "raw_logits"):
+        masked.raw_logits = distribution.raw_logits
     for name in ("minent", "maxent"):
         if hasattr(distribution, name):
             setattr(masked, name, getattr(distribution, name))
     return dict(distributions, **{action_key: masked})
+
+
+def apply_legal_unimix(distributions, action_key, amount):
+    """Mix a collection policy uniformly over its currently legal actions."""
+
+    amount = float(amount)
+    if amount <= 0.0:
+        return distributions
+    distribution = distributions[action_key]
+    legal = distribution.logits > -1e20
+    raw_logits = getattr(distribution, "raw_logits", distribution.logits)
+    policy = jax.nn.softmax(jnp.where(legal, raw_logits, -1e30), axis=-1)
+    uniform = legal / legal.sum(axis=-1, keepdims=True)
+    probabilities = (1.0 - amount) * policy + amount * uniform
+    logits = jnp.log(jnp.where(legal, probabilities, 1.0))
+    mixed = outs.Categorical(jnp.where(legal, logits, -1e30))
+    for name in ("minent", "maxent"):
+        if hasattr(distribution, name):
+            setattr(mixed, name, getattr(distribution, name))
+    return dict(distributions, **{action_key: mixed})
 
 
 def apply_predicted_action_mask(
@@ -209,6 +231,7 @@ def balanced_binary_event_loss(per_event, target):
 __all__ = [
     "MLPHead",
     "apply_action_mask",
+    "apply_legal_unimix",
     "apply_predicted_action_mask",
     "balanced_binary_event_loss",
     "binary_vector_loss",
