@@ -34,6 +34,10 @@ TREATMENTS = {
         "--agent.entropy_schedule.enabled",
         "True",
     ),
+    "entropy_no_death_masking": (
+        "--agent.entropy_schedule.enabled",
+        "True",
+    ),
     "entropy_no_collection": (
         "--agent.marl.ctde.death_masking.enabled",
         "True",
@@ -122,7 +126,7 @@ def validate_profile(args) -> dict[str, object]:
         expected = {name: name == args.treatment for name in legacy}
     else:
         expected = {
-            "death_masking": True,
+            "death_masking": args.treatment != "entropy_no_death_masking",
             "action_binding": False,
             "support_preserving": False,
         }
