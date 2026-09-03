@@ -19,7 +19,7 @@ from majepa.main import _load_configs, _resolve_config_profiles
 
 ALGORITHM_COMMIT = "ef45ab7cb243546b97befc5ed2c8e5c6583211a4"
 TREATMENTS = {
-    "death_aware": "--agent.marl.ctde.death_aware_team_returns.enabled",
+    "death_masking": "--agent.marl.ctde.death_masking.enabled",
     "action_binding": "--agent.marl.ctde.authoritative_action_binding.enabled",
     "support_preserving": "--agent.marl.ctde.support_preserving.enabled",
 }
@@ -84,7 +84,7 @@ def validate_profile(args) -> dict[str, object]:
     )
     ctde = parsed.agent.marl.ctde
     selected = {
-        "death_aware": bool(ctde.death_aware_team_returns.enabled),
+        "death_masking": bool(ctde.death_masking.enabled),
         "action_binding": bool(ctde.authoritative_action_binding.enabled),
         "support_preserving": bool(ctde.support_preserving.enabled),
     }

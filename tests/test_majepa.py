@@ -60,7 +60,7 @@ def test_locked_profile_values(tmp_path: Path) -> None:
     assert ctde.multistep_jepa.action_counterfactual_mode == "all_legal_mean"
     assert ctde.multistep_jepa.plan_aggregation == "mean"
     assert resolved.agent.loss_scales.ctde_multistep_jepa_action == pytest.approx(0.25)
-    assert not ctde.death_aware_team_returns.enabled
+    assert not ctde.death_masking.enabled
     assert not ctde.authoritative_action_binding.enabled
     assert ctde.authoritative_action_binding.anchors == 8
     assert not ctde.support_preserving.enabled

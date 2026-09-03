@@ -38,8 +38,6 @@ from ..models.heads import (
     binary_vector_loss,
 )
 from ..training.ctde import (
-    alive_weighted_team_logits,
-    alive_weighted_team_signal,
     detach_self_feed,
     gather_anchors,
     predicted_controllable_alive,
@@ -189,8 +187,8 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             if self.ctde_mask_calibration
             else False
         )
-        self.ctde_death_aware_team_returns = bool(
-            marl.ctde.death_aware_team_returns.enabled if self.ctde_enabled else False
+        self.ctde_death_masking = bool(
+            marl.ctde.death_masking.enabled if self.ctde_enabled else False
         )
         self.ctde_authoritative_action_binding = bool(
             marl.ctde.authoritative_action_binding.enabled
@@ -424,10 +422,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 grouped_alive,
                 bdims=3,
             )
-            logits = distribution.logits
-            if self.ctde_death_aware_team_returns:
-                logits = alive_weighted_team_logits(logits, grouped_alive)
-            logits = self.team.fold_sequence(logits)
+            logits = self.team.fold_sequence(distribution.logits)
             return jaxouts.TwoHot(logits, distribution.bins)
         return super().critic(features, bdims, slow=slow, context=context)
 
@@ -1049,8 +1044,8 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             "ctde/posterior_kl": masked_metric(posterior_kl),
             "ctde/valid_fraction": weight.mean(),
             "ctde/controllable_alive_fraction": source_alive.mean(),
-            "ctde/treatment_death_aware_team_returns": jnp.asarray(
-                float(self.ctde_death_aware_team_returns), jnp.float32
+            "ctde/treatment_death_masking": jnp.asarray(
+                float(self.ctde_death_masking), jnp.float32
             ),
             "ctde/treatment_authoritative_action_binding": jnp.asarray(
                 float(self.ctde_authoritative_action_binding), jnp.float32
@@ -3093,16 +3088,9 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         if not self.ctde_enabled:
             return super().imagination_reward_continuation(local_inputs, auxiliary)
         del local_inputs
-        reward = auxiliary["reward"]
-        continuation = auxiliary["continuation"]
-        if self.ctde_death_aware_team_returns:
-            alive = auxiliary["controllable_alive"].astype(bool)
-            source_alive = jnp.concatenate([alive[:, :1], alive[:, :-1]], axis=1)
-            reward = alive_weighted_team_signal(reward, source_alive)
-            continuation = alive_weighted_team_signal(continuation, source_alive)
         return (
-            self.team.fold_sequence(reward),
-            self.team.fold_sequence(continuation),
+            self.team.fold_sequence(auxiliary["reward"]),
+            self.team.fold_sequence(auxiliary["continuation"]),
         )
 
     def restore_imagination_results(self, losses, outputs, context=None):
@@ -3120,7 +3108,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 raise ValueError("CTDE imagination requires predicted activity")
             present = auxiliary["present"]
             validity = present
-            if self.ctde_death_aware_team_returns or self.ctde_soft_liveness:
+            if self.ctde_death_masking or self.ctde_soft_liveness:
                 validity = validity.astype(jnp.float32) * auxiliary[
                     "controllable_alive"
                 ].astype(jnp.float32)
@@ -3131,7 +3119,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
 
     def replay_value_validity(self, obs):
         validity = super().replay_value_validity(obs)
-        if self.ctde_enabled and self.ctde_death_aware_team_returns:
+        if self.ctde_enabled and self.ctde_death_masking:
             validity *= self._controllable(obs).astype(jnp.float32)
         return validity
 

@@ -178,7 +178,7 @@ ma_jepa:
         rollout_steps: 1
         multistep: {anchors: 0}
         mask_calibration: {enabled: False, horizons: [1, 4, 8, 15], soft_liveness: False}
-        death_aware_team_returns: {enabled: False}
+        death_masking: {enabled: False}
         authoritative_action_binding: {enabled: False, anchors: 8, margin: 0.1}
         support_preserving: {enabled: False, probability_floor: 0.05}
         joint: {width: 256, heads: 4, agent_layers: 2, temporal_layers: 12, context: 16, ffup: 4, dropout: 0.1, action_conditioning: add, act: silu, norm: rms, winit: trunc_normal_in}
