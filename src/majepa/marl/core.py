@@ -1193,7 +1193,10 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             grouped_initial,
             grouped_snapshots,
         )
-        sampled_cache = gather_anchors(pre_transition_cache, anchors)
+        # Counterfactual candidates answer a same-history, current-action query.
+        # Detaching the factual pre-transition cache prevents the ranking loss
+        # from satisfying its margin by rewriting earlier temporal context.
+        sampled_cache = detach_self_feed(gather_anchors(pre_transition_cache, anchors))
         sampled_state = gather_anchors(source_state, anchors)
         sampled_action = gather_anchors(source_action, anchors)
         sampled_present = gather_anchors(source_present, anchors)
