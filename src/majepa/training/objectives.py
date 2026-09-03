@@ -6,6 +6,20 @@ import jax.numpy as jnp
 from .common import f32, sg
 
 
+def normalized_policy_entropy(distribution, entropy):
+    """Normalize entropy to [0, 1] using the distribution's live support."""
+
+    if hasattr(distribution, "logits"):
+        support = (distribution.logits > -1e20).sum(axis=-1)
+        maximum = jnp.log(jnp.maximum(support, 1)).astype(jnp.float32)
+        return entropy / jnp.maximum(maximum, 1e-8)
+    if hasattr(distribution, "minent") and hasattr(distribution, "maxent"):
+        minimum = jnp.asarray(distribution.minent)
+        maximum = jnp.asarray(distribution.maxent)
+        return (entropy - minimum) / jnp.maximum(maximum - minimum, 1e-8)
+    raise TypeError("normalized entropy requires logits or entropy bounds")
+
+
 def imag_loss(
     act,
     rew,
@@ -23,6 +37,7 @@ def imag_loss(
     horizon=333,
     lam=0.95,
     actent=3e-4,
+    normalize_entropy=False,
     slowreg=1.0,
 ):
     losses = {}
@@ -51,10 +66,16 @@ def imag_loss(
     adv_normed = (adv - aoffset) / ascale
     logpi = sum([dist.logp(sg(act[key]))[:, :-1] for key, dist in policy.items()])
     ents = {key: dist.entropy()[:, :-1] for key, dist in policy.items()}
+    bonus_ents = ents
+    if normalize_entropy:
+        bonus_ents = {
+            key: normalized_policy_entropy(policy[key], entropy)
+            for key, entropy in ents.items()
+        }
     policy_loss = (
         loss_valid
         * sg(weight[:, :-1])
-        * -(logpi * sg(adv_normed) + actent * sum(ents.values()))
+        * -(logpi * sg(adv_normed) + actent * sum(bonus_ents.values()))
     )
     losses["policy"] = policy_loss
 
@@ -130,9 +151,11 @@ def imag_loss(
     metrics["ret_min"] = ret_normed.min()
     metrics["ret_max"] = ret_normed.max()
     metrics["ret_rate"] = (jnp.abs(ret_normed) >= 1.0).mean()
+    metrics["actor_entropy/coefficient"] = jnp.asarray(actent, jnp.float32)
     for key in act:
         entropy = ents[key].mean()
         metrics[f"ent/{key}"] = entropy
+        metrics[f"actor_entropy/bonus_{key}"] = bonus_ents[key].mean()
         metrics[f"act_abs/{key}"] = jnp.abs(act[key][:, :-1]).mean()
         if jnp.issubdtype(act[key].dtype, jnp.floating):
             metrics[f"act_saturation/{key}"] = (

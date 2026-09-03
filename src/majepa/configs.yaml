@@ -123,6 +123,7 @@ defaults:
     horizon: 333
     contdisc: True
     imag_loss: {slowtar: False, lam: 0.95, actent: 3e-4, slowreg: 1.0}
+    entropy_schedule: {enabled: False, initial: 1e-3, final: 3e-4, decay_steps: 40000, schedule: cosine, normalize: True}
     repl_loss: {slowtar: False, lam: 0.95, slowreg: 1.0}
     slowvalue: {rate: 0.02, every: 1}
     retnorm: {impl: perc, rate: 0.01, limit: 1.0, perclo: 5.0, perchi: 95.0, debias: False}

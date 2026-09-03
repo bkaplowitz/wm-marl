@@ -19,6 +19,32 @@ from .representation import (
 )
 
 
+def actor_entropy_coefficient(
+    environment_step,
+    *,
+    initial,
+    final,
+    decay_steps,
+    schedule,
+):
+    """Return an environment-step actor entropy coefficient."""
+
+    if decay_steps <= 0:
+        raise ValueError("entropy decay_steps must be positive")
+    progress = jnp.clip(
+        jnp.asarray(environment_step, jnp.float32) / float(decay_steps), 0.0, 1.0
+    )
+    if schedule == "cosine":
+        mix = 0.5 * (1.0 + jnp.cos(jnp.pi * progress))
+    elif schedule == "linear":
+        mix = 1.0 - progress
+    else:
+        raise ValueError(f"unknown entropy schedule: {schedule!r}")
+    return jnp.asarray(final, jnp.float32) + (
+        jnp.asarray(initial, jnp.float32) - jnp.asarray(final, jnp.float32)
+    ) * mix
+
+
 def masked_mean(value, valid, *, alignment="tail"):
     """Average a per-transition loss over valid local agent transitions."""
 
@@ -79,10 +105,11 @@ class LearnerMixin:
                 "behavior replay batch supplied outside recent_world_uniform_behavior"
             )
         behavior_active = self._actor_critic_schedule(data)
+        entropy_coefficient = self._entropy_coefficient(data)
         carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
         if self.two_branch_replay:
             optimizer_kwargs = {}
-            loss_kwargs = {}
+            loss_kwargs = {"entropy_coefficient": entropy_coefficient}
             if behavior_active is not None:
                 optimizer_kwargs["active_groups"] = {
                     "actor": behavior_active,
@@ -110,10 +137,12 @@ class LearnerMixin:
                 carry,
                 obs,
                 prevact,
+                entropy_coefficient=entropy_coefficient,
                 training=True,
                 has_aux=True,
             )
         metrics.update(mets)
+        metrics["schedule/actor_entropy_coefficient"] = entropy_coefficient
         self._update_slow_models(behavior_active)
         if self.slowenc is not None:
             self.slowenc.update()
@@ -163,11 +192,26 @@ class LearnerMixin:
             )
         return environment_step.reshape(-1)[0].astype(jnp.int32) >= start
 
+    def _entropy_coefficient(self, data):
+        schedule = self.config.entropy_schedule
+        if not schedule.enabled:
+            return jnp.asarray(self.config.imag_loss.actent, jnp.float32)
+        if "_environment_step" not in data:
+            raise ValueError("entropy scheduling requires _environment_step")
+        return actor_entropy_coefficient(
+            data["_environment_step"].reshape(-1)[0],
+            initial=schedule.initial,
+            final=schedule.final,
+            decay_steps=int(schedule.decay_steps),
+            schedule=schedule.schedule,
+        )
+
     def loss(
         self,
         carry,
         obs,
         prevact,
+        entropy_coefficient,
         training,
     ):
         model_carry, entries, tokens, repfeat, losses, metrics, target_tokens = (
@@ -185,6 +229,7 @@ class LearnerMixin:
             prevact,
             training,
             detach_world=False,
+            entropy_coefficient=entropy_coefficient,
         )
         losses.update(behavior_losses)
         metrics.update(behavior_metrics)
@@ -233,6 +278,7 @@ class LearnerMixin:
         obs,
         prevact,
         behavior_data,
+        entropy_coefficient,
         training,
         behavior_active=None,
     ):
@@ -281,6 +327,7 @@ class LearnerMixin:
             behavior_prevact,
             training,
             detach_world=True,
+            entropy_coefficient=entropy_coefficient,
             behavior_active=behavior_active,
         )
         overlap = set(world_losses).intersection(behavior_losses)
@@ -487,6 +534,7 @@ class LearnerMixin:
         training,
         *,
         detach_world,
+        entropy_coefficient,
         behavior_active=None,
     ):
         """Compute actor and critic objectives from one explicit replay view."""
@@ -588,6 +636,12 @@ class LearnerMixin:
             imagined_reward, imagined_continuation = jax.tree.map(
                 sg, (imagined_reward, imagined_continuation)
             )
+        imag_loss_config = dict(self.config.imag_loss)
+        imag_loss_config["actent"] = entropy_coefficient
+        imag_loss_config["normalize_entropy"] = bool(
+            self.config.entropy_schedule.enabled
+            and self.config.entropy_schedule.normalize
+        )
         imagined_losses, imgloss_out, imagined_metrics = imag_loss(
             imgact,
             imagined_reward,
@@ -602,7 +656,7 @@ class LearnerMixin:
             valid=imagination_valid,
             contdisc=self.config.contdisc,
             horizon=self.config.horizon,
-            **self.config.imag_loss,
+            **imag_loss_config,
         )
         if local_only_value is not None:
             local_metrics = value_fit_metrics(

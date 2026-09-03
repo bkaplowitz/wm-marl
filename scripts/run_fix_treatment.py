@@ -19,9 +19,39 @@ from majepa.main import _load_configs, _resolve_config_profiles
 
 ALGORITHM_COMMIT = "e3fd3e562ff522326281f5e144c6ddd9c859d8e3"
 TREATMENTS = {
-    "death_masking": "--agent.marl.ctde.death_masking.enabled",
-    "action_binding": "--agent.marl.ctde.authoritative_action_binding.enabled",
-    "support_preserving": "--agent.marl.ctde.support_preserving.enabled",
+    "death_masking": ("--agent.marl.ctde.death_masking.enabled", "True"),
+    "action_binding": (
+        "--agent.marl.ctde.authoritative_action_binding.enabled",
+        "True",
+    ),
+    "support_preserving": (
+        "--agent.marl.ctde.support_preserving.enabled",
+        "True",
+    ),
+    "entropy_keep_unimix": (
+        "--agent.marl.ctde.death_masking.enabled",
+        "True",
+        "--agent.entropy_schedule.enabled",
+        "True",
+    ),
+    "entropy_no_collection": (
+        "--agent.marl.ctde.death_masking.enabled",
+        "True",
+        "--agent.entropy_schedule.enabled",
+        "True",
+        "--agent.collection_unimix",
+        "0.0",
+    ),
+    "entropy_no_action_unimix": (
+        "--agent.marl.ctde.death_masking.enabled",
+        "True",
+        "--agent.entropy_schedule.enabled",
+        "True",
+        "--agent.collection_unimix",
+        "0.0",
+        "--agent.policy.unimix",
+        "0.0",
+    ),
 }
 LOGGER_FILTER = (
     "score|return|length|fps|ratio|sample_age|replay/behavior_|schedule/|"
@@ -78,8 +108,7 @@ def validate_profile(args) -> dict[str, object]:
             "5",
             "--agent.imag_length",
             "5",
-            TREATMENTS[args.treatment],
-            "True",
+            *TREATMENTS[args.treatment],
         ]
     )
     ctde = parsed.agent.marl.ctde
@@ -88,14 +117,48 @@ def validate_profile(args) -> dict[str, object]:
         "action_binding": bool(ctde.authoritative_action_binding.enabled),
         "support_preserving": bool(ctde.support_preserving.enabled),
     }
-    expected = {name: name == args.treatment for name in TREATMENTS}
+    legacy = {"death_masking", "action_binding", "support_preserving"}
+    if args.treatment in legacy:
+        expected = {name: name == args.treatment for name in legacy}
+    else:
+        expected = {
+            "death_masking": True,
+            "action_binding": False,
+            "support_preserving": False,
+        }
     if selected != expected:
         raise RuntimeError(f"treatment isolation failed: {selected} != {expected}")
+    entropy = parsed.agent.entropy_schedule
+    entropy_expected = args.treatment.startswith("entropy_")
+    if bool(entropy.enabled) != entropy_expected:
+        raise RuntimeError("entropy schedule does not match the selected treatment")
+    expected_collection = (
+        0.0
+        if args.treatment in {"entropy_no_collection", "entropy_no_action_unimix"}
+        else 0.05
+    )
+    expected_policy = 0.0 if args.treatment == "entropy_no_action_unimix" else 0.01
+    if float(parsed.agent.collection_unimix) != expected_collection:
+        raise RuntimeError("collection unimix does not match the selected treatment")
+    if float(parsed.agent.policy.unimix) != expected_policy:
+        raise RuntimeError("policy unimix does not match the selected treatment")
+    if float(parsed.agent.dyn.parallel_transformer.unimix) != 0.01:
+        raise RuntimeError("world-model latent unimix must remain at 0.01")
     return {
         **selected,
         "seed": int(parsed.seed),
         "imag_length": int(parsed.agent.imag_length),
         "collection_unimix": float(parsed.agent.collection_unimix),
+        "policy_unimix": float(parsed.agent.policy.unimix),
+        "world_model_unimix": float(parsed.agent.dyn.parallel_transformer.unimix),
+        "entropy_schedule": {
+            "enabled": bool(entropy.enabled),
+            "initial": float(entropy.initial),
+            "final": float(entropy.final),
+            "decay_steps": int(entropy.decay_steps),
+            "schedule": str(entropy.schedule),
+            "normalize": bool(entropy.normalize),
+        },
         "action_binding_anchors": int(ctde.authoritative_action_binding.anchors),
         "action_binding_margin": float(ctde.authoritative_action_binding.margin),
         "support_probability_floor": float(ctde.support_preserving.probability_floor),
@@ -151,8 +214,7 @@ def common_command(args, logdir: Path) -> list[str]:
         "5",
         "--agent.imag_length",
         "5",
-        TREATMENTS[args.treatment],
-        "True",
+        *TREATMENTS[args.treatment],
     ]
 
 

@@ -8,6 +8,31 @@ import numpy as np
 import embodied.jax.outs as outs
 
 from majepa.models.heads import apply_support_preserving_availability
+from majepa.training.learner import actor_entropy_coefficient
+from majepa.training.objectives import normalized_policy_entropy
+
+
+def test_actor_entropy_cosine_schedule_uses_environment_steps() -> None:
+    coefficient = actor_entropy_coefficient(
+        jnp.asarray([0, 20_000, 40_000, 50_000]),
+        initial=1e-3,
+        final=3e-4,
+        decay_steps=40_000,
+        schedule="cosine",
+    )
+    np.testing.assert_allclose(
+        np.asarray(coefficient), [1e-3, 6.5e-4, 3e-4, 3e-4], rtol=1e-6
+    )
+
+
+def test_actor_entropy_normalizes_by_live_action_support() -> None:
+    distribution = outs.Categorical(
+        jnp.asarray([[0.0, 0.0, -1e30], [0.0, 0.0, 0.0]], jnp.float32)
+    )
+    normalized = normalized_policy_entropy(distribution, distribution.entropy())
+    np.testing.assert_allclose(np.asarray(normalized), [1.0, 1.0], rtol=1e-6)
+
+
 def test_support_preserving_availability_keeps_every_live_action() -> None:
     policy = {"action": outs.Categorical(jnp.zeros((2, 4), jnp.float32))}
     availability = jnp.asarray(

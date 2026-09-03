@@ -52,6 +52,12 @@ def test_locked_profile_values(tmp_path: Path) -> None:
     assert resolved.agent.policy.units == 1024
     assert resolved.agent.collection_unimix == pytest.approx(0.05)
     assert resolved.agent.imag_loss.actent == pytest.approx(3e-4)
+    assert not resolved.agent.entropy_schedule.enabled
+    assert resolved.agent.entropy_schedule.initial == pytest.approx(1e-3)
+    assert resolved.agent.entropy_schedule.final == pytest.approx(3e-4)
+    assert resolved.agent.entropy_schedule.decay_steps == 40_000
+    assert resolved.agent.entropy_schedule.schedule == "cosine"
+    assert resolved.agent.entropy_schedule.normalize
     ctde = resolved.agent.marl.ctde
     assert ctde.actor_lr == pytest.approx(1e-5)
     assert ctde.actor_update_every == 1
