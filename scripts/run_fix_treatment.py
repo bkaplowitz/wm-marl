@@ -34,9 +34,13 @@ TREATMENTS = {
         "--agent.entropy_schedule.enabled",
         "True",
     ),
-    "entropy_no_death_masking": (
+    "entropy_aggressive": (
+        "--agent.marl.ctde.death_masking.enabled",
+        "True",
         "--agent.entropy_schedule.enabled",
         "True",
+        "--agent.entropy_schedule.initial",
+        "0.003",
     ),
     "entropy_no_collection": (
         "--agent.marl.ctde.death_masking.enabled",
@@ -126,7 +130,7 @@ def validate_profile(args) -> dict[str, object]:
         expected = {name: name == args.treatment for name in legacy}
     else:
         expected = {
-            "death_masking": args.treatment != "entropy_no_death_masking",
+            "death_masking": True,
             "action_binding": False,
             "support_preserving": False,
         }
@@ -136,6 +140,9 @@ def validate_profile(args) -> dict[str, object]:
     entropy_expected = args.treatment.startswith("entropy_")
     if bool(entropy.enabled) != entropy_expected:
         raise RuntimeError("entropy schedule does not match the selected treatment")
+    expected_initial = 0.003 if args.treatment == "entropy_aggressive" else 0.001
+    if float(entropy.initial) != expected_initial:
+        raise RuntimeError("entropy initial coefficient does not match treatment")
     expected_collection = (
         0.0
         if args.treatment in {"entropy_no_collection", "entropy_no_action_unimix"}
