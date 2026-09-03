@@ -185,7 +185,7 @@ class Agent(
             "consec": elements.Space(np.int32),
             "stepid": elements.Space(np.uint8, 20),
         }
-        if self.actor_critic_start_step:
+        if self.actor_critic_start_step or self.config.entropy_schedule.enabled:
             # Runtime-only control input. It is injected after replay sampling,
             # so it never becomes replay content or changes sampled sequences.
             spaces["_environment_step"] = elements.Space(np.int32)

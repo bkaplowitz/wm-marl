@@ -11,6 +11,7 @@ import pytest
 import embodied.jax.outs as outs
 
 from majepa.config import MAJEPARunSpec, PUBLIC_ALGORITHMS
+from majepa.agent import Agent
 from majepa.contracts import verify_run_contract
 from majepa.launcher import run_training
 from majepa.main import _load_configs, _resolve_config_profiles, _validate_script
@@ -140,3 +141,23 @@ def test_collection_unimix_only_mixes_legal_actions() -> None:
 
     np.testing.assert_allclose(np.asarray(probabilities)[0, [0, 2]], expected)
     np.testing.assert_array_equal(np.asarray(probabilities)[0, [1, 3]], 0.0)
+
+
+def test_entropy_schedule_declares_runtime_environment_step() -> None:
+    assert "_environment_step" in Agent.ext_space.fget(
+        type(
+            "ScheduleAgent",
+            (),
+            {
+                "actor_critic_start_step": 0,
+                "config": type(
+                    "Config",
+                    (),
+                    {
+                        "entropy_schedule": type("Schedule", (), {"enabled": True})(),
+                        "replay_context": 0,
+                    },
+                )(),
+            },
+        )()
+    )
