@@ -104,7 +104,7 @@ def validate_profile(args) -> dict[str, object]:
 
 def environment(args, run_root: Path, phase: str) -> dict[str, str]:
     env = os.environ.copy()
-    identifier = f"mfix-ef45-2s3z-{args.treatment}-s{args.seed}"
+    identifier = f"mfix-{ALGORITHM_COMMIT[:4]}-2s3z-{args.treatment}-s{args.seed}"
     if phase == "final128":
         identifier = "f" + identifier
     env.update(
@@ -118,7 +118,7 @@ def environment(args, run_root: Path, phase: str) -> dict[str, str]:
         WANDB_DIR=str(run_root),
         WANDB_ENTITY=args.wandb_entity,
         WANDB_PROJECT=args.wandb_project,
-        WANDB_RUN_GROUP="ma-jepa-fixes-2s3z-isolated-ef45ab7",
+        WANDB_RUN_GROUP=f"ma-jepa-fixes-2s3z-isolated-{ALGORITHM_COMMIT[:7]}",
         WANDB_JOB_TYPE=phase,
         WANDB_NAME=identifier,
         WANDB_RUN_ID=identifier,
