@@ -17,7 +17,7 @@ import elements
 from majepa.main import _load_configs, _resolve_config_profiles
 
 
-ALGORITHM_COMMIT = "e8dece4f73e4eee28b7de9dfc2e9837a50e3245a"
+ALGORITHM_COMMIT = "811476572ef5fece1bfe757afe0cc72b8cc3cca7"
 TREATMENTS = {
     "death_masking": ("--agent.marl.ctde.death_masking.enabled", "True"),
     "action_binding": (
