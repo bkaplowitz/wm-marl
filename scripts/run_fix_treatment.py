@@ -17,7 +17,7 @@ import elements
 from majepa.main import _load_configs, _resolve_config_profiles
 
 
-ALGORITHM_COMMIT = "d47879049162031357cabd2ca8cdc48f15e6c517"
+ALGORITHM_COMMIT = "ef45ab7cb243546b97befc5ed2c8e5c6583211a4"
 TREATMENTS = {
     "death_aware": "--agent.marl.ctde.death_aware_team_returns.enabled",
     "action_binding": "--agent.marl.ctde.authoritative_action_binding.enabled",
@@ -104,7 +104,7 @@ def validate_profile(args) -> dict[str, object]:
 
 def environment(args, run_root: Path, phase: str) -> dict[str, str]:
     env = os.environ.copy()
-    identifier = f"mfix-d478-2s3z-{args.treatment}-s{args.seed}"
+    identifier = f"mfix-ef45-2s3z-{args.treatment}-s{args.seed}"
     if phase == "final128":
         identifier = "f" + identifier
     env.update(
@@ -118,7 +118,7 @@ def environment(args, run_root: Path, phase: str) -> dict[str, str]:
         WANDB_DIR=str(run_root),
         WANDB_ENTITY=args.wandb_entity,
         WANDB_PROJECT=args.wandb_project,
-        WANDB_RUN_GROUP="ma-jepa-fixes-2s3z-isolated-d478790",
+        WANDB_RUN_GROUP="ma-jepa-fixes-2s3z-isolated-ef45ab7",
         WANDB_JOB_TYPE=phase,
         WANDB_NAME=identifier,
         WANDB_RUN_ID=identifier,
