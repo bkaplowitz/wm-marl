@@ -299,7 +299,9 @@ def main() -> None:
     args = parser.parse_args()
     args.experiment_root = args.experiment_root.resolve()
     args.source = args.source.resolve()
-    args.python = args.python.resolve()
+    # Resolving a venv Python symlink selects the base interpreter and drops
+    # the venv's site-packages. Keep the absolute symlink path intact.
+    args.python = args.python.absolute()
     args.external = args.external.resolve()
     args.sc2 = args.sc2.resolve()
     args.portserver_script = args.portserver_script.resolve()
