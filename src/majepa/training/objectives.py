@@ -65,12 +65,13 @@ def imag_loss(
     aoffset, ascale = advnorm(adv, update, norm_valid)
     adv_normed = (adv - aoffset) / ascale
     logpi = sum([dist.logp(sg(act[key]))[:, :-1] for key, dist in policy.items()])
-    ents = {key: dist.entropy()[:, :-1] for key, dist in policy.items()}
+    full_ents = {key: dist.entropy() for key, dist in policy.items()}
+    ents = {key: entropy[:, :-1] for key, entropy in full_ents.items()}
     bonus_ents = ents
     if normalize_entropy:
         bonus_ents = {
-            key: normalized_policy_entropy(policy[key], entropy)
-            for key, entropy in ents.items()
+            key: normalized_policy_entropy(policy[key], full_ents[key])[:, :-1]
+            for key in policy
         }
     policy_loss = (
         loss_valid

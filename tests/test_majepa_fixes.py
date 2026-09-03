@@ -32,6 +32,13 @@ def test_actor_entropy_normalizes_by_live_action_support() -> None:
     normalized = normalized_policy_entropy(distribution, distribution.entropy())
     np.testing.assert_allclose(np.asarray(normalized), [1.0, 1.0], rtol=1e-6)
 
+    sequence = outs.Categorical(jnp.zeros((2, 6, 4), jnp.float32))
+    normalized_sequence = normalized_policy_entropy(sequence, sequence.entropy())[
+        :, :-1
+    ]
+    assert normalized_sequence.shape == (2, 5)
+    np.testing.assert_allclose(np.asarray(normalized_sequence), 1.0, rtol=1e-6)
+
 
 def test_support_preserving_availability_keeps_every_live_action() -> None:
     policy = {"action": outs.Categorical(jnp.zeros((2, 4), jnp.float32))}
