@@ -36,6 +36,7 @@ defaults:
   run:
     steps: 5e4
     train_ratio: 128.0
+    world_model_start_step: 0
     ppo_start_step: 0
     log_every: 120
     report_every: 300
@@ -118,7 +119,15 @@ defaults:
     imag_length: 5
     horizon: 333
     contdisc: True
-    ppo: {epochs: 5, clip_epsilon: 0.2, entropy_coefficient: 1e-2, lam: 0.95, actor_lr: 3e-5, critic_lr: 3e-5, optimizer_warmup: 0}
+    ppo:
+      epochs: 5
+      clip_epsilon: 0.2
+      entropy_coefficient: 1e-2
+      entropy_schedule: {enabled: False, initial: 1e-3, final: 3e-4, decay_steps: 40000, schedule: cosine, normalize: True}
+      lam: 0.95
+      actor_lr: 3e-5
+      critic_lr: 3e-5
+      optimizer_warmup: 0
     slowvalue: {rate: 1.0, every: 1}
     reward_grad: True
     report: True
@@ -171,7 +180,7 @@ ma_jepa:
         head: {layers: 2, units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
         critic: {width: 256, heads: 4, layers: 2, ffup: 4, dropout: 0.0, value_layers: 2, value_units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
         opt: {lr: 4e-5, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
-        teammate_belief: {enabled: True, layers: 2, units: 512, outscale: 0.0, logit_clip: 5.0, adapter_layers: 1, adapter_units: 256, act: silu, norm: rms, winit: trunc_normal_in}
+        teammate_belief: {enabled: True, actor_residual: True, layers: 2, units: 512, outscale: 0.0, logit_clip: 5.0, adapter_layers: 1, adapter_units: 256, act: silu, norm: rms, winit: trunc_normal_in}
         multistep_jepa:
           enabled: True
           belief_context: True

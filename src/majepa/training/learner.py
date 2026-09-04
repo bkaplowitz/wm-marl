@@ -13,6 +13,7 @@ from .ppo import (
     generalized_advantage_estimate,
     masked_weighted_mean,
     normalize_advantage,
+    scheduled_entropy_coefficient,
     value_objective,
 )
 from .representation import (
@@ -72,7 +73,11 @@ class LearnerMixin:
         # This is deliberately after the world-model optimizer step. PPO sees
         # the newest JEPA dynamics, and its immutable behavior snapshot cannot
         # be invalidated by a simultaneous teammate/world update.
-        ppo_batch, batch_metrics = self._prepare_ppo_batch(behavior_data)
+        entropy_coefficient = self._ppo_entropy_coefficient(data)
+        ppo_batch, batch_metrics = self._prepare_ppo_batch(
+            behavior_data,
+            entropy_coefficient,
+        )
         metrics.update(batch_metrics)
         actor_epochs = []
         critic_epochs = []
@@ -99,6 +104,7 @@ class LearnerMixin:
         metrics.update(self._ppo_epoch_metrics("critic", critic_epochs))
         metrics["ppo/epochs"] = jnp.asarray(self.config.ppo.epochs, jnp.float32)
         metrics["ppo/active"] = ppo_active.astype(jnp.float32)
+        metrics["ppo/entropy_coefficient"] = entropy_coefficient
 
         self._update_slow_models(ppo_active)
         if self.slowenc is not None:
@@ -156,6 +162,26 @@ class LearnerMixin:
                 f"{environment_step.shape}"
             )
         return environment_step.reshape(-1)[0].astype(jnp.int32) >= start
+
+    def _ppo_entropy_coefficient(self, data):
+        schedule = self.config.ppo.entropy_schedule
+        if not bool(schedule.enabled):
+            return jnp.asarray(self.config.ppo.entropy_coefficient, jnp.float32)
+        if "_environment_step" not in data:
+            raise ValueError("PPO entropy annealing requires _environment_step")
+        environment_step = data["_environment_step"]
+        if environment_step.ndim != 2:
+            raise ValueError(
+                "folded _environment_step must be [B*A,T], got "
+                f"{environment_step.shape}"
+            )
+        return scheduled_entropy_coefficient(
+            environment_step.reshape(-1)[0],
+            initial=float(schedule.initial),
+            final=float(schedule.final),
+            decay_steps=int(schedule.decay_steps),
+            schedule=str(schedule.schedule),
+        )
 
     def loss(
         self,
@@ -319,7 +345,7 @@ class LearnerMixin:
         del obs
         return entries
 
-    def _prepare_ppo_batch(self, behavior_data):
+    def _prepare_ppo_batch(self, behavior_data, entropy_coefficient):
         """Create one immutable PPO batch after the JEPA model update."""
 
         behavior_carry, obs, prevact, _ = self._apply_behavior_replay_context(
@@ -451,6 +477,7 @@ class LearnerMixin:
                 "target_return": target_return,
                 "valid": valid,
                 "trajectory_weight": trajectory_weight,
+                "entropy_coefficient": entropy_coefficient,
             }
         )
         metrics = {
@@ -506,7 +533,11 @@ class LearnerMixin:
             batch["valid"],
             batch["trajectory_weight"],
             clip_epsilon=float(self.config.ppo.clip_epsilon),
-            entropy_coefficient=float(self.config.ppo.entropy_coefficient),
+            entropy_coefficient=batch["entropy_coefficient"],
+            normalize_entropy=bool(
+                self.config.ppo.entropy_schedule.enabled
+                and self.config.ppo.entropy_schedule.normalize
+            ),
         )
 
     def _ppo_critic_loss(self, batch):

@@ -64,6 +64,9 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
 
     batch_steps = args.batch_size * args.batch_length
     minimum_replay_size = batch_steps
+    world_model_start_step = int(args.world_model_start_step)
+    if world_model_start_step < 0:
+        raise ValueError("world_model_start_step must be nonnegative")
     ppo_start_step = int(args.ppo_start_step)
     if ppo_start_step < 0:
         raise ValueError("ppo_start_step must be nonnegative")
@@ -165,7 +168,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
         current_step = int(step)
         # Do not call Ratio before replay eligibility. This prevents prefill
         # collection from creating a learner-update backlog.
-        if len(replay) < minimum_replay_size:
+        if len(replay) < minimum_replay_size or current_step < world_model_start_step:
             return
         for _ in range(should_train(step)):
             with elements.timer.section("stream_next"):
@@ -245,14 +248,19 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
             logger.add(
                 {
                     "ppo_start_step": ppo_start_step,
+                    "world_model_start_step": world_model_start_step,
                     "minimum_replay_eligible_starts": minimum_replay_size,
                     "first_learner_environment_step": int(
                         first_learner_environment_step
                     ),
                     "first_ppo_environment_step": int(first_ppo_environment_step),
-                    "world_model_active": float(len(replay) >= minimum_replay_size),
+                    "world_model_active": float(
+                        int(step) >= world_model_start_step
+                        and len(replay) >= minimum_replay_size
+                    ),
                     "ppo_active": float(
                         int(step) >= ppo_start_step
+                        and int(step) >= world_model_start_step
                         and len(replay) >= minimum_replay_size
                     ),
                     "configured_train_ratio": float(args.train_ratio),

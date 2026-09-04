@@ -10,6 +10,36 @@ f32 = jnp.float32
 sg = jax.lax.stop_gradient
 
 
+def scheduled_entropy_coefficient(
+    environment_step,
+    *,
+    initial,
+    final,
+    decay_steps,
+    schedule="cosine",
+):
+    """Anneal the PPO entropy bonus against total environment transitions."""
+
+    initial = float(initial)
+    final = float(final)
+    decay_steps = int(decay_steps)
+    schedule = str(schedule)
+    if initial < 0.0 or final < 0.0:
+        raise ValueError("entropy coefficients must be nonnegative")
+    if decay_steps < 1:
+        raise ValueError("entropy decay_steps must be positive")
+    progress = jnp.clip(
+        jnp.asarray(environment_step, f32) / float(decay_steps), 0.0, 1.0
+    )
+    if schedule == "linear":
+        weight = 1.0 - progress
+    elif schedule == "cosine":
+        weight = 0.5 * (1.0 + jnp.cos(jnp.pi * progress))
+    else:
+        raise ValueError("entropy schedule must be 'linear' or 'cosine'")
+    return jnp.asarray(final, f32) + (initial - final) * weight
+
+
 def _same_shape(name, *values):
     shapes = {tuple(jnp.shape(value)) for value in values}
     if len(shapes) != 1:
@@ -151,6 +181,7 @@ def clipped_policy_objective(
     *,
     clip_epsilon=0.2,
     entropy_coefficient=1e-2,
+    normalize_entropy=False,
 ):
     """Categorical clipped PPO on the exact policy support used in imagination."""
 
@@ -178,11 +209,9 @@ def clipped_policy_objective(
         trajectory_weight,
     )
     clip_epsilon = float(clip_epsilon)
-    entropy_coefficient = float(entropy_coefficient)
+    entropy_coefficient = jnp.asarray(entropy_coefficient, f32)
     if not 0.0 < clip_epsilon < 1.0:
         raise ValueError("PPO clip epsilon must be in (0, 1)")
-    if entropy_coefficient < 0.0:
-        raise ValueError("PPO entropy coefficient must be nonnegative")
 
     old_logprob_all = jax.nn.log_softmax(old_logits, axis=-1)
     new_logprob_all = jax.nn.log_softmax(new_logits, axis=-1)
@@ -196,7 +225,15 @@ def clipped_policy_objective(
 
     new_probability = jnp.exp(new_logprob_all)
     old_probability = jnp.exp(old_logprob_all)
-    entropy = -(new_probability * new_logprob_all).sum(axis=-1)
+    raw_entropy = -(new_probability * new_logprob_all).sum(axis=-1)
+    legal_count = (new_logits > -1e20).sum(axis=-1).astype(f32)
+    max_entropy = jnp.log(jnp.maximum(legal_count, 1.0))
+    normalized_entropy = jnp.where(
+        max_entropy > 0.0,
+        raw_entropy / jnp.maximum(max_entropy, 1e-8),
+        0.0,
+    )
+    entropy = normalized_entropy if normalize_entropy else raw_entropy
     exact_kl = (old_probability * (old_logprob_all - new_logprob_all)).sum(axis=-1)
     approx_kl = (ratio - 1.0) - logratio
     clipped = jnp.abs(ratio - 1.0) > clip_epsilon
@@ -211,6 +248,11 @@ def clipped_policy_objective(
         "loss": loss,
         "surrogate": masked_weighted_mean(surrogate, valid, trajectory_weight),
         "entropy": masked_weighted_mean(entropy, valid, trajectory_weight),
+        "raw_entropy": masked_weighted_mean(raw_entropy, valid, trajectory_weight),
+        "normalized_entropy": masked_weighted_mean(
+            normalized_entropy, valid, trajectory_weight
+        ),
+        "entropy_coefficient": entropy_coefficient,
         "exact_kl": masked_weighted_mean(exact_kl, valid, trajectory_weight),
         "approx_kl": masked_weighted_mean(approx_kl, valid, trajectory_weight),
         "clip_fraction": masked_weighted_mean(

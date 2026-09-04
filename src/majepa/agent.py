@@ -57,6 +57,15 @@ class Agent(
             raise ValueError("PPO clip_epsilon must be in (0, 1)")
         if float(config.ppo.entropy_coefficient) < 0.0:
             raise ValueError("PPO entropy_coefficient must be nonnegative")
+        entropy_schedule = config.ppo.entropy_schedule
+        if float(entropy_schedule.initial) < 0.0:
+            raise ValueError("PPO initial entropy coefficient must be nonnegative")
+        if float(entropy_schedule.final) < 0.0:
+            raise ValueError("PPO final entropy coefficient must be nonnegative")
+        if int(entropy_schedule.decay_steps) < 1:
+            raise ValueError("PPO entropy decay_steps must be positive")
+        if str(entropy_schedule.schedule) not in {"linear", "cosine"}:
+            raise ValueError("PPO entropy schedule must be 'linear' or 'cosine'")
         self.world_model = world_model_backend()
         self.objective = "embedding"
         self.embedding_target = "ema"
@@ -190,7 +199,7 @@ class Agent(
             "consec": elements.Space(np.int32),
             "stepid": elements.Space(np.uint8, 20),
         }
-        if self.ppo_start_step:
+        if self.ppo_start_step or bool(self.config.ppo.entropy_schedule.enabled):
             # Runtime-only control input. It is injected after replay sampling,
             # so it never becomes replay content or changes sampled sequences.
             spaces["_environment_step"] = elements.Space(np.int32)

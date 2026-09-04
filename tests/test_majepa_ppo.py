@@ -12,6 +12,7 @@ from majepa.training.ppo import (
     clipped_policy_objective,
     generalized_advantage_estimate,
     normalize_advantage,
+    scheduled_entropy_coefficient,
     value_objective,
 )
 from majepa.marl.axes import TeamAxis
@@ -100,6 +101,50 @@ def test_policy_objective_clips_ratio_and_reports_divergence() -> None:
     assert float(metrics["approx_kl"]) > 0.0
     np.testing.assert_allclose(metrics["clip_fraction"], 1.0)
     np.testing.assert_allclose(metrics["ratio"], 2.0, atol=1e-3)
+
+
+def test_entropy_schedule_reaches_endpoints_and_supports_linear() -> None:
+    cosine = scheduled_entropy_coefficient(
+        jnp.asarray([0, 20_000, 40_000, 80_000]),
+        initial=1e-3,
+        final=3e-4,
+        decay_steps=40_000,
+        schedule="cosine",
+    )
+    linear = scheduled_entropy_coefficient(
+        jnp.asarray([0, 20_000, 40_000]),
+        initial=1e-3,
+        final=3e-4,
+        decay_steps=40_000,
+        schedule="linear",
+    )
+    np.testing.assert_allclose(cosine, [1e-3, 6.5e-4, 3e-4, 3e-4])
+    np.testing.assert_allclose(linear, [1e-3, 6.5e-4, 3e-4])
+
+
+def test_normalized_entropy_is_invariant_to_legal_action_count() -> None:
+    logits = jnp.asarray([[[0.0, 0.0, -1e30, -1e30]], [[0.0, 0.0, 0.0, 0.0]]])
+    action = jnp.zeros((2, 1), jnp.int32)
+    advantage = jnp.zeros((2, 1))
+    valid = jnp.ones((2, 1), bool)
+    weight = jnp.ones((2, 1))
+    coefficient = jnp.asarray(0.25)
+
+    loss, metrics = clipped_policy_objective(
+        logits,
+        logits,
+        action,
+        advantage,
+        valid,
+        weight,
+        entropy_coefficient=coefficient,
+        normalize_entropy=True,
+    )
+
+    np.testing.assert_allclose(metrics["normalized_entropy"], 1.0, atol=1e-6)
+    np.testing.assert_allclose(metrics["entropy"], 1.0, atol=1e-6)
+    np.testing.assert_allclose(metrics["entropy_coefficient"], coefficient)
+    np.testing.assert_allclose(loss, -coefficient, atol=1e-6)
 
 
 def test_policy_targets_are_frozen_and_invalid_entries_have_no_gradient() -> None:

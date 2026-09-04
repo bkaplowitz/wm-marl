@@ -47,6 +47,7 @@ def test_locked_profile_values(tmp_path: Path) -> None:
     assert resolved.replay_context == 192
     assert resolved.replay.sampling == "recent_world_uniform_behavior"
     assert resolved.run.train_ratio == 128
+    assert resolved.run.world_model_start_step == 0
     assert resolved.run.ppo_start_step == 5000
     assert resolved.agent.imag_length == 5
     assert resolved.agent.action_mask_reduction == "balanced"
@@ -55,12 +56,14 @@ def test_locked_profile_values(tmp_path: Path) -> None:
     assert resolved.agent.ppo.epochs == 5
     assert resolved.agent.ppo.clip_epsilon == pytest.approx(0.2)
     assert resolved.agent.ppo.entropy_coefficient == pytest.approx(1e-2)
+    assert not resolved.agent.ppo.entropy_schedule.enabled
     assert resolved.agent.ppo.lam == pytest.approx(0.95)
     assert resolved.agent.ppo.actor_lr == pytest.approx(3e-5)
     assert resolved.agent.ppo.critic_lr == pytest.approx(3e-5)
     assert resolved.agent.slowvalue.rate == pytest.approx(1.0)
     ctde = resolved.agent.marl.ctde
     assert ctde.teammate_belief.enabled
+    assert ctde.teammate_belief.actor_residual
     assert tuple(ctde.multistep_jepa.horizons) == (1, 2, 4, 8)
     assert ctde.multistep_jepa.action_counterfactual_mode == "all_legal_mean"
     assert ctde.multistep_jepa.plan_aggregation == "mean"

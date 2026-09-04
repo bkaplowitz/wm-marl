@@ -188,6 +188,10 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         self.ctde_teammate_belief_enabled = bool(
             marl.ctde.teammate_belief.enabled if self.ctde_enabled else False
         )
+        self.ctde_teammate_actor_enabled = bool(
+            self.ctde_teammate_belief_enabled
+            and marl.ctde.teammate_belief.actor_residual
+        )
         self.ctde_teammate_belief_logit_clip = (
             float(marl.ctde.teammate_belief.logit_clip)
             if self.ctde_teammate_belief_enabled
@@ -481,17 +485,18 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                     winit=str(belief.winit),
                     name="ctde_teammate_belief",
                 )
-                self.ctde_teammate_actor = TeammateBeliefActorAdapter(
-                    self.ctde_action_count,
-                    layers=int(belief.adapter_layers),
-                    units=int(belief.adapter_units),
-                    act=str(belief.act),
-                    norm=str(belief.norm),
-                    winit=str(belief.winit),
-                    name="ctde_teammate_actor",
-                )
                 ctde_modules.append(self.ctde_teammate_belief)
-                actor_modules.append(self.ctde_teammate_actor)
+                if self.ctde_teammate_actor_enabled:
+                    self.ctde_teammate_actor = TeammateBeliefActorAdapter(
+                        self.ctde_action_count,
+                        layers=int(belief.adapter_layers),
+                        units=int(belief.adapter_units),
+                        act=str(belief.act),
+                        norm=str(belief.norm),
+                        winit=str(belief.winit),
+                        name="ctde_teammate_actor",
+                    )
+                    actor_modules.append(self.ctde_teammate_actor)
             if self.ctde_multistep_jepa_enabled:
                 multistep = cfg.multistep_jepa
                 if self.ctde_multistep_jepa_belief_context:
@@ -530,7 +535,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
 
     @property
     def policy_keys(self):
-        if self.ctde_teammate_belief_enabled:
+        if self.ctde_teammate_actor_enabled:
             return "^(enc|dyn|pol|ctde_teammate_belief|ctde_teammate_actor)/"
         return super().policy_keys
 
@@ -639,7 +644,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         belief_context=None,
     ):
         base = self.pol(tensor, bdims=bdims)
-        if not self.ctde_teammate_belief_enabled:
+        if not self.ctde_teammate_actor_enabled:
             return base, None
         residual = self._teammate_actor_residual(
             tensor, bdims, belief_context=belief_context
@@ -650,7 +655,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         )
 
     def policy_distribution(self, tensor, bdims, action_mask=None):
-        if not self.ctde_teammate_belief_enabled:
+        if not self.ctde_teammate_actor_enabled:
             return super().policy_distribution(tensor, bdims, action_mask)
         policy, _ = self._teammate_policy_before_mask(tensor, bdims)
         if action_mask is None:
@@ -669,7 +674,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         if auxiliary is None:
             raise ValueError("CTDE critic requires imagined activity")
         metrics = {}
-        if self.ctde_teammate_belief_enabled:
+        if self.ctde_teammate_actor_enabled:
             local_state = self.feat2tensor(features)
             action_mask = self.team.fold_sequence(auxiliary["action_mask"])
             valid = auxiliary["present"].astype(jnp.float32)
