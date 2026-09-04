@@ -54,8 +54,8 @@ def spec(treatment: str, map_name: str) -> RunSpec:
     return RunSpec(treatment, map_name, 3 if map_name == "3m" else 5)
 
 
-# The first treatment in each slot starts immediately. The second is queued on
-# the same GPU and starts only after training plus the fixed final evaluation.
+# Treatments in each slot run sequentially. Each successor starts only after
+# the preceding training run and its fixed final evaluation complete.
 SLOT_QUEUES = {
     0: (spec("base", "3m"), spec("actor2x256_nopeerres", "3m")),
     1: (spec("base", "2s3z"), spec("actor2x256_nopeerres", "2s3z")),
@@ -63,6 +63,7 @@ SLOT_QUEUES = {
     3: (spec("env16_total50k", "2s3z"), spec("critic1l8h", "2s3z")),
     4: (spec("wm_start5k_nowarmup", "3m"), spec("entropy_annealed", "3m")),
     5: (spec("wm_start5k_nowarmup", "2s3z"), spec("entropy_annealed", "2s3z")),
+    6: (spec("wm_start5k_env16_total50k", "2s3z"),),
 }
 
 
@@ -119,6 +120,16 @@ def treatment_flags(run: RunSpec) -> tuple[str, ...]:
             "0",
         ),
         "env16_total50k": ("--run.envs", "16"),
+        "wm_start5k_env16_total50k": (
+            "--run.envs",
+            "16",
+            "--run.world_model_start_step",
+            "5000",
+            "--agent.opt.warmup",
+            "0",
+            "--agent.marl.ctde.opt.warmup",
+            "0",
+        ),
         "actor2x256_nopeerres": (
             "--agent.policy.layers",
             "2",
@@ -237,6 +248,13 @@ def validate_profile(run: RunSpec) -> dict[str, object]:
         )
     elif run.treatment == "env16_total50k":
         expected.update(training_envs=16)
+    elif run.treatment == "wm_start5k_env16_total50k":
+        expected.update(
+            training_envs=16,
+            world_model_start_step=5000,
+            local_world_warmup=0,
+            joint_world_warmup=0,
+        )
     elif run.treatment == "actor2x256_nopeerres":
         expected.update(
             actor_layers=2,
