@@ -60,6 +60,50 @@ TREATMENTS = {
         "--agent.policy.unimix",
         "0.0",
     ),
+    "fixed_no_action_unimix": (
+        "--agent.marl.ctde.death_masking.enabled",
+        "True",
+        "--agent.collection_unimix",
+        "0.0",
+        "--agent.policy.unimix",
+        "0.0",
+    ),
+    "entropy_no_action_h4": (
+        "--agent.marl.ctde.death_masking.enabled",
+        "True",
+        "--agent.entropy_schedule.enabled",
+        "True",
+        "--agent.collection_unimix",
+        "0.0",
+        "--agent.policy.unimix",
+        "0.0",
+        "--agent.imag_length",
+        "4",
+    ),
+    "entropy_no_action_h6": (
+        "--agent.marl.ctde.death_masking.enabled",
+        "True",
+        "--agent.entropy_schedule.enabled",
+        "True",
+        "--agent.collection_unimix",
+        "0.0",
+        "--agent.policy.unimix",
+        "0.0",
+        "--agent.imag_length",
+        "6",
+    ),
+    "entropy_no_action_h8": (
+        "--agent.marl.ctde.death_masking.enabled",
+        "True",
+        "--agent.entropy_schedule.enabled",
+        "True",
+        "--agent.collection_unimix",
+        "0.0",
+        "--agent.policy.unimix",
+        "0.0",
+        "--agent.imag_length",
+        "8",
+    ),
 }
 LOGGER_FILTER = (
     "score|return|length|fps|ratio|sample_age|replay/behavior_|schedule/|"
@@ -143,18 +187,30 @@ def validate_profile(args) -> dict[str, object]:
     expected_initial = 0.003 if args.treatment == "entropy_aggressive" else 0.001
     if float(entropy.initial) != expected_initial:
         raise RuntimeError("entropy initial coefficient does not match treatment")
-    expected_collection = (
-        0.0
-        if args.treatment in {"entropy_no_collection", "entropy_no_action_unimix"}
-        else 0.05
-    )
-    expected_policy = 0.0 if args.treatment == "entropy_no_action_unimix" else 0.01
+    no_collection = {
+        "entropy_no_collection",
+        "entropy_no_action_unimix",
+        "fixed_no_action_unimix",
+        "entropy_no_action_h4",
+        "entropy_no_action_h6",
+        "entropy_no_action_h8",
+    }
+    no_policy_unimix = no_collection - {"entropy_no_collection"}
+    expected_collection = 0.0 if args.treatment in no_collection else 0.05
+    expected_policy = 0.0 if args.treatment in no_policy_unimix else 0.01
     if float(parsed.agent.collection_unimix) != expected_collection:
         raise RuntimeError("collection unimix does not match the selected treatment")
     if float(parsed.agent.policy.unimix) != expected_policy:
         raise RuntimeError("policy unimix does not match the selected treatment")
     if float(parsed.agent.dyn.parallel_transformer.unimix) != 0.01:
         raise RuntimeError("world-model latent unimix must remain at 0.01")
+    expected_horizon = {
+        "entropy_no_action_h4": 4,
+        "entropy_no_action_h6": 6,
+        "entropy_no_action_h8": 8,
+    }.get(args.treatment, 5)
+    if int(parsed.agent.imag_length) != expected_horizon:
+        raise RuntimeError("imagination horizon does not match treatment")
     return {
         **selected,
         "seed": int(parsed.seed),
@@ -200,7 +256,8 @@ def environment(args, run_root: Path, phase: str) -> dict[str, str]:
         WANDB_MODE="online",
         WANDB_NOTES=(
             f"Isolated {args.treatment} treatment at {ALGORITHM_COMMIT}; "
-            f"2s3z H5 seed {args.seed}; 50k plus held-out fixed128."
+            f"2s3z H{validate_profile(args)['imag_length']} seed {args.seed}; "
+            "50k plus held-out fixed128."
         ),
     )
     env.pop("WANDB_FORK_FROM", None)
