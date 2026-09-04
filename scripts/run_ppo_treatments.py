@@ -64,6 +64,11 @@ SLOT_QUEUES = {
     4: (spec("wm_start5k_nowarmup", "3m"), spec("entropy_annealed", "3m")),
     5: (spec("wm_start5k_nowarmup", "2s3z"), spec("entropy_annealed", "2s3z")),
     6: (spec("wm_start5k_env16_total50k", "2s3z"),),
+    7: (spec("wm_start5k_env16_actor2x256_nopeerres", "2s3z"),),
+    8: (spec("wm_start5k_env16_entropy_actor2x256_nopeerres", "2s3z"),),
+    9: (spec("wm_start5k_env16_critic1l8h", "2s3z"),),
+    10: (spec("wm_start5k_env16_entropy_critic1l8h", "2s3z"),),
+    11: (spec("wm_start5k_env16_entropy", "2s3z"),),
 }
 
 
@@ -109,6 +114,46 @@ def treatment_flags(run: RunSpec) -> tuple[str, ...]:
         "--agent.imag_length",
         str(run.horizon),
     )
+    delayed_env16 = (
+        "--run.envs",
+        "16",
+        "--run.world_model_start_step",
+        "5000",
+        "--agent.opt.warmup",
+        "0",
+        "--agent.marl.ctde.opt.warmup",
+        "0",
+    )
+    annealed_entropy = (
+        "--agent.collection_unimix",
+        "0.0",
+        "--agent.ppo.entropy_schedule.enabled",
+        "True",
+        "--agent.ppo.entropy_schedule.initial",
+        "0.001",
+        "--agent.ppo.entropy_schedule.final",
+        "0.0003",
+        "--agent.ppo.entropy_schedule.decay_steps",
+        "40000",
+        "--agent.ppo.entropy_schedule.schedule",
+        "cosine",
+        "--agent.ppo.entropy_schedule.normalize",
+        "True",
+    )
+    small_actor = (
+        "--agent.policy.layers",
+        "2",
+        "--agent.policy.units",
+        "256",
+        "--agent.marl.ctde.teammate_belief.actor_residual",
+        "False",
+    )
+    simple_critic = (
+        "--agent.marl.ctde.critic.layers",
+        "1",
+        "--agent.marl.ctde.critic.heads",
+        "8",
+    )
     treatments = {
         "base": (),
         "wm_start5k_nowarmup": (
@@ -120,45 +165,25 @@ def treatment_flags(run: RunSpec) -> tuple[str, ...]:
             "0",
         ),
         "env16_total50k": ("--run.envs", "16"),
-        "wm_start5k_env16_total50k": (
-            "--run.envs",
-            "16",
-            "--run.world_model_start_step",
-            "5000",
-            "--agent.opt.warmup",
-            "0",
-            "--agent.marl.ctde.opt.warmup",
-            "0",
+        "wm_start5k_env16_total50k": delayed_env16,
+        "actor2x256_nopeerres": small_actor,
+        "entropy_annealed": annealed_entropy,
+        "critic1l8h": simple_critic,
+        "wm_start5k_env16_entropy": (*delayed_env16, *annealed_entropy),
+        "wm_start5k_env16_critic1l8h": (*delayed_env16, *simple_critic),
+        "wm_start5k_env16_actor2x256_nopeerres": (
+            *delayed_env16,
+            *small_actor,
         ),
-        "actor2x256_nopeerres": (
-            "--agent.policy.layers",
-            "2",
-            "--agent.policy.units",
-            "256",
-            "--agent.marl.ctde.teammate_belief.actor_residual",
-            "False",
+        "wm_start5k_env16_entropy_actor2x256_nopeerres": (
+            *delayed_env16,
+            *annealed_entropy,
+            *small_actor,
         ),
-        "entropy_annealed": (
-            "--agent.collection_unimix",
-            "0.0",
-            "--agent.ppo.entropy_schedule.enabled",
-            "True",
-            "--agent.ppo.entropy_schedule.initial",
-            "0.001",
-            "--agent.ppo.entropy_schedule.final",
-            "0.0003",
-            "--agent.ppo.entropy_schedule.decay_steps",
-            "40000",
-            "--agent.ppo.entropy_schedule.schedule",
-            "cosine",
-            "--agent.ppo.entropy_schedule.normalize",
-            "True",
-        ),
-        "critic1l8h": (
-            "--agent.marl.ctde.critic.layers",
-            "1",
-            "--agent.marl.ctde.critic.heads",
-            "8",
+        "wm_start5k_env16_entropy_critic1l8h": (
+            *delayed_env16,
+            *annealed_entropy,
+            *simple_critic,
         ),
     }
     if run.treatment not in treatments:
@@ -248,13 +273,26 @@ def validate_profile(run: RunSpec) -> dict[str, object]:
         )
     elif run.treatment == "env16_total50k":
         expected.update(training_envs=16)
-    elif run.treatment == "wm_start5k_env16_total50k":
+    elif run.treatment.startswith("wm_start5k_env16"):
         expected.update(
             training_envs=16,
             world_model_start_step=5000,
             local_world_warmup=0,
             joint_world_warmup=0,
         )
+        if "entropy" in run.treatment:
+            expected.update(
+                collection_legal_unimix=0.0,
+                entropy_schedule_enabled=True,
+            )
+        if "actor2x256_nopeerres" in run.treatment:
+            expected.update(
+                actor_layers=2,
+                actor_units=256,
+                teammate_actor_residual=False,
+            )
+        if "critic1l8h" in run.treatment:
+            expected.update(critic_layers=1, critic_heads=8)
     elif run.treatment == "actor2x256_nopeerres":
         expected.update(
             actor_layers=2,
