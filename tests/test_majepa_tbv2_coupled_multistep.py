@@ -193,6 +193,50 @@ def test_plan_pool_is_peer_permutation_invariant_and_team_normalized() -> None:
         )
 
 
+def test_focal_attention_is_peer_permutation_invariant_and_root_conditioned() -> None:
+    model = ActionConditionedMultiStepJEPA(
+        4,
+        0,
+        5,
+        (1, 2, 4),
+        4,
+        width=8,
+        layers=1,
+        units=8,
+        plan_aggregation="focal_attention",
+        plan_attention_heads=2,
+        name="multistep",
+    )
+    hidden = jax.random.normal(jax.random.key(35), (1, 1, 3, 8))
+    actions = jnp.zeros((1, 1, 3, 4), jnp.int32)
+    peer = jax.random.normal(jax.random.key(36), (1, 1, 3, 3, 2, 4))
+    params = nj.init(lambda: model(hidden, actions, peer))({}, seed=37)
+    params = _set_random_belief_path(params, seed=38)
+
+    def predict(root, plan):
+        return nj.pure(lambda: model(root, actions, plan))(params, seed=39)[1]
+
+    factual = predict(hidden, peer)
+    permuted = predict(hidden, peer[..., ::-1, :])
+    for horizon in (1, 2, 4):
+        np.testing.assert_allclose(
+            np.asarray(factual[horizon], np.float32),
+            np.asarray(permuted[horizon], np.float32),
+            atol=1e-5,
+        )
+
+    def aggregate(root, plan):
+        return model._aggregate_belief_plan(root, plan)
+
+    pooled = nj.pure(lambda: aggregate(hidden, peer))(params, seed=40)[1]
+    changed_root = hidden.at[..., 0, :].multiply(-2.0)
+    changed = nj.pure(lambda: aggregate(changed_root, peer))(params, seed=40)[1]
+    assert not np.allclose(
+        np.asarray(pooled[..., 0, :, :], np.float32),
+        np.asarray(changed[..., 0, :, :], np.float32),
+    )
+
+
 def test_each_ms_head_sees_only_its_causal_plan_prefix() -> None:
     model = ActionConditionedMultiStepJEPA(
         4,

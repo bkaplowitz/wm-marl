@@ -288,8 +288,14 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             raise ValueError("multi-step JEPA action margin must be nonnegative")
         if self.ctde_multistep_jepa_action_counterfactual_mode != "all_legal_mean":
             raise ValueError("MA-JEPA requires all-legal action counterfactuals")
-        if self.ctde_multistep_jepa_plan_aggregation != "mean":
-            raise ValueError("MA-JEPA requires mean teammate-plan aggregation")
+        if self.ctde_multistep_jepa_plan_aggregation not in {
+            "mean",
+            "focal_attention",
+        }:
+            raise ValueError(
+                "MA-JEPA teammate-plan aggregation must be 'mean' or "
+                "'focal_attention'"
+            )
         if (
             self.ctde_multistep_jepa_belief_context
             and not self.ctde_teammate_belief_enabled
@@ -556,6 +562,8 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                     width=int(multistep.width),
                     layers=int(multistep.layers),
                     units=int(multistep.units),
+                    plan_aggregation=str(multistep.plan_aggregation),
+                    plan_attention_heads=int(multistep.plan_attention_heads),
                     act=str(multistep.act),
                     norm=str(multistep.norm),
                     winit=str(multistep.winit),

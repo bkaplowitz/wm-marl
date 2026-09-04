@@ -199,6 +199,7 @@ ma_jepa:
           action_counterfactual_mode: all_legal_mean
           plan_units: 256
           plan_aggregation: mean
+          plan_attention_heads: 4
           width: 256
           layers: 2
           units: 512

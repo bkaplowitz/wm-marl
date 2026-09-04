@@ -1,5 +1,6 @@
 """Training-only direct multi-step JEPA predictor for CTDE replay."""
 
+import math
 from collections.abc import Sequence
 
 import embodied.jax.nets as nn
@@ -149,6 +150,8 @@ class ActionConditionedMultiStepJEPA(nj.Module):
     act: str = "silu"
     norm: str = "rms"
     winit: str = "trunc_normal_in"
+    plan_aggregation: str = "mean"
+    plan_attention_heads: int = 4
 
     def __init__(
         self,
@@ -179,6 +182,20 @@ class ActionConditionedMultiStepJEPA(nj.Module):
             raise ValueError("multi-step JEPA K must equal the largest horizon")
         if self.width < 1 or self.layers < 1 or self.units < 1:
             raise ValueError("multi-step JEPA widths and layer count must be positive")
+        if self.plan_aggregation not in {"mean", "focal_attention"}:
+            raise ValueError(
+                "multi-step JEPA plan aggregation must be 'mean' or "
+                "'focal_attention'"
+            )
+        if self.plan_attention_heads < 1:
+            raise ValueError("multi-step JEPA plan-attention heads must be positive")
+        if (
+            self.plan_aggregation == "focal_attention"
+            and self.width % self.plan_attention_heads
+        ):
+            raise ValueError(
+                "multi-step JEPA plan-attention heads must divide its width"
+            )
         del kwargs
 
     def _belief_residual(self, root, action, belief_context, horizon):
@@ -217,8 +234,8 @@ class ActionConditionedMultiStepJEPA(nj.Module):
             outscale=0.0,
         )(value)
 
-    def _aggregate_belief_plan(self, belief_plan):
-        """Mean-pool the stopped per-peer action plan."""
+    def _aggregate_belief_plan(self, root, belief_plan):
+        """Aggregate stopped peer-plan tokens without fixed peer identities."""
 
         peer_plan = self.sub(
             "belief_peer_projection",
@@ -230,7 +247,49 @@ class ActionConditionedMultiStepJEPA(nj.Module):
         peer_plan = nn.act(self.act)(
             self.sub("belief_peer_norm", nn.Norm, self.norm)(peer_plan)
         )
-        return peer_plan.mean(axis=-2)
+        if self.plan_aggregation == "mean":
+            return peer_plan.mean(axis=-2)
+
+        heads = self.plan_attention_heads
+        head_width = self.width // heads
+        query = self.sub(
+            "belief_attention_query",
+            nn.Linear,
+            self.width,
+            bias=False,
+            winit=self.winit,
+        )(nn.cast(root))
+        key = self.sub(
+            "belief_attention_key",
+            nn.Linear,
+            self.width,
+            bias=False,
+            winit=self.winit,
+        )(peer_plan)
+        value = self.sub(
+            "belief_attention_value",
+            nn.Linear,
+            self.width,
+            bias=False,
+            winit=self.winit,
+        )(peer_plan)
+        query = query.reshape((*query.shape[:-1], heads, head_width))
+        key = key.reshape((*key.shape[:-1], heads, head_width))
+        value = value.reshape((*value.shape[:-1], heads, head_width))
+        logits = jnp.einsum(
+            "...hd,...sphd->...shp", f32(query), f32(key)
+        ) / math.sqrt(head_width)
+        weights = jax.nn.softmax(logits, axis=-1).astype(value.dtype)
+        attended = jnp.einsum("...shp,...sphd->...shd", weights, value)
+        attended = attended.reshape((*attended.shape[:-2], self.width))
+        attended = self.sub(
+            "belief_attention_output",
+            nn.Linear,
+            self.width,
+            bias=False,
+            winit=self.winit,
+        )(attended)
+        return self.sub("belief_attention_norm", nn.Norm, self.norm)(attended)
 
     def __call__(
         self,
@@ -286,6 +345,7 @@ class ActionConditionedMultiStepJEPA(nj.Module):
             isolated_creation_call(
                 self._aggregate_belief_plan,
                 0x4D534250,
+                root,
                 belief_plan,
             )
             if belief_plan is not None
