@@ -64,9 +64,9 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
 
     batch_steps = args.batch_size * args.batch_length
     minimum_replay_size = batch_steps
-    actor_critic_start_step = int(args.actor_critic_start_step)
-    if actor_critic_start_step < 0:
-        raise ValueError("actor_critic_start_step must be nonnegative")
+    ppo_start_step = int(args.ppo_start_step)
+    if ppo_start_step < 0:
+        raise ValueError("ppo_start_step must be nonnegative")
     should_train = elements.when.Ratio(args.train_ratio / batch_steps)
     should_log = embodied.LocalClock(args.log_every)
     should_report = embodied.LocalClock(args.report_every)
@@ -156,9 +156,9 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     carry_report = agent.init_report(args.batch_size)
     learner_update_calls = elements.Counter()
     world_only_update_calls = elements.Counter()
-    actor_critic_update_calls = elements.Counter()
+    ppo_update_calls = elements.Counter()
     first_learner_environment_step = elements.Counter(-1)
-    first_actor_critic_environment_step = elements.Counter(-1)
+    first_ppo_environment_step = elements.Counter(-1)
 
     def trainfn(tran, worker):
         del tran, worker
@@ -180,12 +180,12 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
             learner_update_calls.increment()
             if int(first_learner_environment_step) < 0:
                 first_learner_environment_step.increment(current_step + 1)
-            if current_step < actor_critic_start_step:
+            if current_step < ppo_start_step:
                 world_only_update_calls.increment()
             else:
-                actor_critic_update_calls.increment()
-                if int(first_actor_critic_environment_step) < 0:
-                    first_actor_critic_environment_step.increment(current_step + 1)
+                ppo_update_calls.increment()
+                if int(first_ppo_environment_step) < 0:
+                    first_ppo_environment_step.increment(current_step + 1)
             train_fps.step(batch_steps * (2 if dual_view else 1))
             if "replay" in outputs:
                 replay.update(outputs["replay"])
@@ -202,9 +202,9 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     checkpoint.replay = replay
     checkpoint.learner_update_calls = learner_update_calls
     checkpoint.world_only_update_calls = world_only_update_calls
-    checkpoint.actor_critic_update_calls = actor_critic_update_calls
+    checkpoint.ppo_update_calls = ppo_update_calls
     checkpoint.first_learner_environment_step = first_learner_environment_step
-    checkpoint.first_actor_critic_environment_step = first_actor_critic_environment_step
+    checkpoint.first_ppo_environment_step = first_ppo_environment_step
     if checkpoint.exists():
         checkpoint.load()
 
@@ -238,23 +238,21 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
                     "agent_steps": int(step) * int(args.num_agents),
                     "learner_update_calls": int(learner_update_calls),
                     "world_only_update_calls": int(world_only_update_calls),
-                    "actor_critic_update_calls": int(actor_critic_update_calls),
+                    "ppo_update_calls": int(ppo_update_calls),
                 },
                 prefix="counters",
             )
             logger.add(
                 {
-                    "actor_critic_start_step": actor_critic_start_step,
+                    "ppo_start_step": ppo_start_step,
                     "minimum_replay_eligible_starts": minimum_replay_size,
                     "first_learner_environment_step": int(
                         first_learner_environment_step
                     ),
-                    "first_actor_critic_environment_step": int(
-                        first_actor_critic_environment_step
-                    ),
+                    "first_ppo_environment_step": int(first_ppo_environment_step),
                     "world_model_active": float(len(replay) >= minimum_replay_size),
-                    "actor_critic_active": float(
-                        int(step) >= actor_critic_start_step
+                    "ppo_active": float(
+                        int(step) >= ppo_start_step
                         and len(replay) >= minimum_replay_size
                     ),
                     "configured_train_ratio": float(args.train_ratio),

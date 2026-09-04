@@ -158,10 +158,9 @@ class MAJEPARunSpec:
             "--logger.filter",
             (
                 "score|return|length|fps|ratio|train/loss/|train/rand/|"
-                "train/dyn_ent|train/rep_ent|train/adv|train/ent/|train/opt/|"
+                "schedule/|train/ppo/|train/opt/|"
                 "train/posterior_jepa/|train/dynamics_jepa/|"
-                "train/ctde/|report/ctde/|train/critic/|"
-                "train/reploss/critic/|central_critic/|"
+                "train/ctde/|report/ctde/|central_critic/|"
                 "report/world_model/|report/openloop/|battle_won|win_rate|"
                 "legacy_|corrected_|enemy_|ally_|timeout|action_|"
                 "attack_target_|eval/"
@@ -206,8 +205,18 @@ class MAJEPARunSpec:
             "multi_step_jepa": True,
             "role_aware_peer_plan": True,
             "actor_units": 1024,
-            "actor_learning_rate": 1e-5,
-            "actor_critic_start_step": 0,
+            "actor_learning_rate": 3e-5,
+            "critic_learning_rate": 3e-5,
+            "ppo_start_step": 5000,
+            "ppo": {
+                "epochs": 5,
+                "clip_epsilon": 0.2,
+                "entropy_coefficient": 1e-2,
+                "lambda": 0.95,
+                "target_critic_rate": 1.0,
+                "world_update_before_imagination": True,
+                "frozen_imagined_batch": True,
+            },
             "action_counterfactuals": "all_legal_mean",
             "action_counterfactual_scale": 0.25,
         }
@@ -258,11 +267,17 @@ class MAJEPARunSpec:
                 in {"recent", "recent_world_uniform_behavior"}
                 else None
             ),
-            "actor_objective": "score_function_reinforce",
+            "actor_objective": "clipped_imagined_ppo",
             "optimizer_topology": self.optimizer_topology,
             "train_ratio": self.effective_train_ratio,
-            "optimizer_updates_per_environment_step": (
+            "learner_batches_per_environment_step": (
                 self.effective_train_ratio / (16 * 64)
+            ),
+            "actor_updates_per_environment_step": (
+                5 * self.effective_train_ratio / (16 * 64)
+            ),
+            "critic_updates_per_environment_step": (
+                5 * self.effective_train_ratio / (16 * 64)
             ),
             "execution": "strict decentralized parameter-shared actors",
             "policy_information": "one observation-local latent history per agent",

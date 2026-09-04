@@ -1,4 +1,4 @@
-"""World-model and actor-critic training orchestration."""
+"""World-model and imagined PPO training orchestration."""
 
 import elements
 import jax
@@ -7,8 +7,14 @@ import ninjax as nj
 import numpy as np
 
 from ..models.heads import binary_vector_loss
-from .common import concat, f32, prefix, sample, sg
-from .objectives import imag_loss, repl_loss
+from .common import concat, f32, sample, sg
+from .ppo import (
+    clipped_policy_objective,
+    generalized_advantage_estimate,
+    masked_weighted_mean,
+    normalize_advantage,
+    value_objective,
+)
 from .representation import (
     embedding_prediction_loss,
     embedding_std,
@@ -39,98 +45,75 @@ def masked_mean(value, valid, *, alignment="tail"):
     return (value * weight).mean() / jnp.maximum(weight.mean(), 1e-8)
 
 
-def value_fit_metrics(prediction, target, valid):
-    """Return live-sample calibration metrics for a value prediction."""
-
-    weight = jnp.ones_like(target) if valid is None else valid.astype(jnp.float32)
-    count = jnp.maximum(weight.sum(), 1.0)
-    error = prediction - target
-    selected = weight.astype(bool)
-    masked_error = jnp.where(selected, error, 0.0)
-    masked_target = jnp.where(selected, target, 0.0)
-    error_mean = masked_error.sum() / count
-    target_mean = masked_target.sum() / count
-    error_variance = (
-        jnp.where(selected, jnp.square(error - error_mean), 0.0).sum() / count
-    )
-    target_variance = (
-        jnp.where(selected, jnp.square(target - target_mean), 0.0).sum() / count
-    )
-    return {
-        "rmse": jnp.sqrt(jnp.where(selected, jnp.square(error), 0.0).sum() / count),
-        "bias": error_mean,
-        "explained_variance": 1.0 - error_variance / jnp.maximum(target_variance, 1e-8),
-    }
-
-
 class LearnerMixin:
     def train(self, carry, data, behavior_data=None):
-        if self.two_branch_replay:
-            if behavior_data is None:
-                raise ValueError(
-                    "recent_world_uniform_behavior requires a behavior replay batch"
-                )
-            if int(self.config.replay_context) < 1:
-                raise ValueError(
-                    "recent_world_uniform_behavior requires replay_context burn-in"
-                )
-        elif behavior_data is not None:
+        if not self.two_branch_replay or behavior_data is None:
             raise ValueError(
-                "behavior replay batch supplied outside recent_world_uniform_behavior"
+                "MA-JEPA PPO requires independent world and behavior replay batches"
             )
-        behavior_active = self._actor_critic_schedule(data)
+        if int(self.config.replay_context) < 1:
+            raise ValueError("MA-JEPA PPO requires replay_context burn-in")
+        if not hasattr(self.opt, "step_group"):
+            raise ValueError("MA-JEPA PPO requires the separated CTDE optimizer")
+
+        ppo_active = self._ppo_schedule(data)
         carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
-        if self.two_branch_replay:
-            optimizer_kwargs = {}
-            loss_kwargs = {}
-            if behavior_active is not None:
-                optimizer_kwargs["active_groups"] = {
-                    "actor": behavior_active,
-                    "critic": behavior_active,
-                }
-                loss_kwargs["behavior_active"] = behavior_active
-            metrics, (carry, entries, outs, mets) = self.opt(
-                self.two_branch_loss,
-                carry,
-                obs,
-                prevact,
-                behavior_data=behavior_data,
-                training=True,
-                has_aux=True,
-                **loss_kwargs,
-                **optimizer_kwargs,
-            )
-        else:
-            if behavior_active is not None:
-                raise ValueError(
-                    "actor/critic warm-start gating requires separated CTDE replay"
-                )
-            metrics, (carry, entries, outs, mets) = self.opt(
-                self.loss,
-                carry,
-                obs,
-                prevact,
-                training=True,
-                has_aux=True,
-            )
+        metrics, (carry, entries, outs, mets) = self.opt(
+            self.loss,
+            carry,
+            obs,
+            prevact,
+            training=True,
+            has_aux=True,
+            skip_groups=("actor", "critic"),
+        )
         metrics.update(mets)
-        self._update_slow_models(behavior_active)
+
+        # This is deliberately after the world-model optimizer step. PPO sees
+        # the newest JEPA dynamics, and its immutable behavior snapshot cannot
+        # be invalidated by a simultaneous teammate/world update.
+        ppo_batch, batch_metrics = self._prepare_ppo_batch(behavior_data)
+        metrics.update(batch_metrics)
+        actor_epochs = []
+        critic_epochs = []
+        for _ in range(int(self.config.ppo.epochs)):
+            actor_optimizer, actor_metrics = self.opt.step_group(
+                "actor",
+                self._ppo_actor_loss,
+                ppo_batch,
+                has_aux=True,
+                active=ppo_active,
+            )
+            critic_optimizer, critic_metrics = self.opt.step_group(
+                "critic",
+                self._ppo_critic_loss,
+                ppo_batch,
+                has_aux=True,
+                active=ppo_active,
+            )
+            actor_epochs.append(actor_metrics)
+            critic_epochs.append(critic_metrics)
+        metrics.update(actor_optimizer)
+        metrics.update(critic_optimizer)
+        metrics.update(self._ppo_epoch_metrics("actor", actor_epochs))
+        metrics.update(self._ppo_epoch_metrics("critic", critic_epochs))
+        metrics["ppo/epochs"] = jnp.asarray(self.config.ppo.epochs, jnp.float32)
+        metrics["ppo/active"] = ppo_active.astype(jnp.float32)
+
+        self._update_slow_models(ppo_active)
         if self.slowenc is not None:
             self.slowenc.update()
-        if behavior_active is not None:
+        if self.ppo_start_step:
             environment_step = data["_environment_step"].reshape(-1)[0]
             metrics.update(
                 {
                     "schedule/environment_step": environment_step,
-                    "schedule/actor_critic_start_step": jnp.asarray(
-                        self.actor_critic_start_step, jnp.int32
+                    "schedule/ppo_start_step": jnp.asarray(
+                        self.ppo_start_step, jnp.int32
                     ),
                     "schedule/world_model_active": jnp.asarray(1.0, jnp.float32),
-                    "schedule/actor_active": behavior_active.astype(jnp.float32),
-                    "schedule/critic_active": behavior_active.astype(jnp.float32),
-                    "schedule/world_only_active": (~behavior_active).astype(
-                        jnp.float32
-                    ),
+                    "schedule/ppo_active": ppo_active.astype(jnp.float32),
+                    "schedule/world_only_active": (~ppo_active).astype(jnp.float32),
                 }
             )
         outs = {}
@@ -147,14 +130,25 @@ class LearnerMixin:
         carry = (*carry, {key: data[key][:, -1] for key in self.act_space})
         return carry, outs, metrics
 
-    def _actor_critic_schedule(self, data):
-        """Return the dynamic behavior-group gate, or None for exact control."""
+    @staticmethod
+    def _ppo_epoch_metrics(group, epochs):
+        metrics = {
+            f"ppo/{group}/{key}": jnp.stack([epoch[key] for epoch in epochs]).mean()
+            for key in epochs[0]
+        }
+        metrics.update(
+            {f"ppo/{group}/final_{key}": value for key, value in epochs[-1].items()}
+        )
+        return metrics
 
-        start = int(self.actor_critic_start_step)
+    def _ppo_schedule(self, data):
+        """Return whether proximal behavior updates are past their warm-up."""
+
+        start = int(self.ppo_start_step)
         if not start:
-            return None
+            return jnp.asarray(True)
         if "_environment_step" not in data:
-            raise ValueError("warm-start training requires _environment_step")
+            raise ValueError("PPO warm-up requires _environment_step")
         environment_step = data["_environment_step"]
         if environment_step.ndim != 2:
             raise ValueError(
@@ -177,18 +171,6 @@ class LearnerMixin:
         enc_entries, dyn_entries, dec_entries = entries
         valid = self.validity(obs)
 
-        behavior_losses, behavior_metrics = self._behavior_terms(
-            dyn_carry,
-            dyn_entries,
-            repfeat,
-            obs,
-            prevact,
-            training,
-            detach_world=False,
-        )
-        losses.update(behavior_losses)
-        metrics.update(behavior_metrics)
-
         extra_losses, extra_metrics = self.additional_world_model_losses(
             tokens,
             repfeat,
@@ -201,159 +183,19 @@ class LearnerMixin:
         losses.update(extra_losses)
         metrics.update(extra_metrics)
 
-        metrics.update(
-            {
-                f"loss/{key}": masked_mean(
-                    value,
-                    valid,
-                    alignment="replay_value" if key == "repval" else "tail",
-                )
-                for key, value in losses.items()
-            }
+        reduced = {key: masked_mean(value, valid) for key, value in losses.items()}
+        metrics.update({f"loss/{key}": value for key, value in reduced.items()})
+        loss = sum(value * self.scales[key] for key, value in reduced.items())
+        metrics["replay_views/world_reward_mean"] = sg(
+            obs["reward"].astype(jnp.float32).mean()
         )
-        loss = sum(
-            masked_mean(
-                value,
-                valid,
-                alignment="replay_value" if key == "repval" else "tail",
-            )
-            * self.scales[key]
-            for key, value in losses.items()
-        )
+        metrics["replay_views/world_loss"] = sg(loss)
         carry = (enc_carry, dyn_carry, dec_carry)
         entries = (enc_entries, dyn_entries, dec_entries)
         outs = {"tokens": tokens, "repfeat": repfeat, "losses": losses}
         if target_tokens is not None:
             outs["target_tokens"] = target_tokens
         return loss, (carry, entries, outs, metrics)
-
-    def two_branch_loss(
-        self,
-        carry,
-        obs,
-        prevact,
-        behavior_data,
-        training,
-        behavior_active=None,
-    ):
-        """Train world and behavior modules from independent replay views."""
-
-        (
-            model_carry,
-            entries,
-            tokens,
-            repfeat,
-            world_losses,
-            metrics,
-            target_tokens,
-        ) = self._world_model_terms(carry, obs, prevact, training)
-        enc_carry, dyn_carry, dec_carry = model_carry
-        enc_entries, dyn_entries, dec_entries = entries
-        extra_losses, extra_metrics = self.additional_world_model_losses(
-            tokens,
-            repfeat,
-            dyn_entries,
-            target_tokens,
-            obs,
-            prevact,
-            training,
-        )
-        world_losses.update(extra_losses)
-        metrics.update(extra_metrics)
-
-        behavior_carry, behavior_obs, behavior_prevact, _ = (
-            self._apply_behavior_replay_context(behavior_data)
-        )
-        behavior_carry, behavior_entries, behavior_repfeat = (
-            self._behavior_model_states(
-                behavior_carry,
-                behavior_obs,
-                behavior_prevact,
-            )
-        )
-        _, behavior_dyn_carry, _ = behavior_carry
-        _, behavior_dyn_entries, _ = behavior_entries
-        behavior_losses, behavior_metrics = self._behavior_terms(
-            behavior_dyn_carry,
-            behavior_dyn_entries,
-            behavior_repfeat,
-            behavior_obs,
-            behavior_prevact,
-            training,
-            detach_world=True,
-            behavior_active=behavior_active,
-        )
-        overlap = set(world_losses).intersection(behavior_losses)
-        if overlap:
-            raise ValueError(
-                "world and behavior replay losses must have disjoint ownership: "
-                f"{sorted(overlap)}"
-            )
-        metrics.update(behavior_metrics)
-
-        world_valid = self.validity(obs)
-        behavior_valid = self.validity(behavior_obs)
-
-        def reduced(losses, valid):
-            return {
-                key: masked_mean(
-                    value,
-                    valid,
-                    alignment="replay_value" if key == "repval" else "tail",
-                )
-                for key, value in losses.items()
-            }
-
-        world_reduced = reduced(world_losses, world_valid)
-        behavior_reduced = reduced(behavior_losses, behavior_valid)
-        metrics.update({f"loss/{key}": value for key, value in world_reduced.items()})
-        metrics.update(
-            {f"loss/{key}": value for key, value in behavior_reduced.items()}
-        )
-        world_loss = sum(
-            value * self.scales[key] for key, value in world_reduced.items()
-        )
-        behavior_loss = sum(
-            value * self.scales[key] for key, value in behavior_reduced.items()
-        )
-        world_loss = jnp.asarray(world_loss, jnp.float32)
-        behavior_loss = jnp.asarray(behavior_loss, jnp.float32)
-        metrics.update(
-            {
-                "replay_views/world_reward_mean": sg(
-                    obs["reward"].astype(jnp.float32).mean()
-                ),
-                "replay_views/behavior_reward_mean": sg(
-                    behavior_obs["reward"].astype(jnp.float32).mean()
-                ),
-                "replay_views/world_rows": jnp.asarray(
-                    obs["is_first"].shape[0], jnp.float32
-                ),
-                "replay_views/behavior_rows": jnp.asarray(
-                    behavior_obs["is_first"].shape[0], jnp.float32
-                ),
-                "replay_views/world_length": jnp.asarray(
-                    obs["is_first"].shape[1], jnp.float32
-                ),
-                "replay_views/behavior_length": jnp.asarray(
-                    behavior_obs["is_first"].shape[1], jnp.float32
-                ),
-                "replay_views/world_loss": sg(world_loss),
-                "replay_views/behavior_loss": sg(behavior_loss),
-            }
-        )
-
-        carry = (enc_carry, dyn_carry, dec_carry)
-        entries = (enc_entries, dyn_entries, dec_entries)
-        outs = {
-            "tokens": tokens,
-            "repfeat": repfeat,
-            "world_losses": world_losses,
-            "behavior_losses": behavior_losses,
-        }
-        if target_tokens is not None:
-            outs["target_tokens"] = target_tokens
-        return world_loss + behavior_loss, (carry, entries, outs, metrics)
 
     def _apply_behavior_replay_context(self, data):
         """Burn in an independent replay prefix with current world weights."""
@@ -477,29 +319,22 @@ class LearnerMixin:
         del obs
         return entries
 
-    def _behavior_terms(
-        self,
-        dyn_carry,
-        dyn_entries,
-        repfeat,
-        obs,
-        prevact,
-        training,
-        *,
-        detach_world,
-        behavior_active=None,
-    ):
-        """Compute actor and critic objectives from one explicit replay view."""
+    def _prepare_ppo_batch(self, behavior_data):
+        """Create one immutable PPO batch after the JEPA model update."""
 
-        if detach_world:
-            dyn_carry, dyn_entries, repfeat = jax.tree.map(
-                sg, (dyn_carry, dyn_entries, repfeat)
-            )
-        batch, length = obs["is_first"].shape
-        losses = {}
-        metrics = {}
+        behavior_carry, obs, prevact, _ = self._apply_behavior_replay_context(
+            behavior_data
+        )
+        behavior_carry, behavior_entries, repfeat = self._behavior_model_states(
+            behavior_carry,
+            obs,
+            prevact,
+        )
+        _, dyn_carry, _ = behavior_carry
+        _, dyn_entries, _ = behavior_entries
+        _, length = obs["is_first"].shape
         starts_count = min(self.config.imag_last or length, length)
-        horizon = self.config.imag_length
+        horizon = int(self.config.imag_length)
         starts, first, imagination_context = self.imagination_starts(
             dyn_entries,
             dyn_carry,
@@ -509,191 +344,187 @@ class LearnerMixin:
             starts_count,
         )
 
-        def policyfn(feat):
-            tensor = self.feat2tensor(feat)
-            return sample(self.policy_distribution(tensor, 1))
+        def policyfn(features):
+            inputs = self.feat2tensor(features)
+            return sample(self.policy_distribution(inputs, 1))
 
-        _, imgfeat, imgprevact, imagination_aux = self.imagine_with_aux(
+        _, imagined_features, actions, auxiliary = self.imagine_with_aux(
             starts,
             policyfn,
             horizon,
-            training,
+            False,
             imagination_context,
         )
-        if detach_world:
-            first, imgfeat, imgprevact, imagination_aux = jax.tree.map(
-                sg, (first, imgfeat, imgprevact, imagination_aux)
-            )
-        imgfeat = concat(
-            [
-                sg(first, skip=self.config.ac_grads and not detach_world),
-                sg(imgfeat, skip=self.config.ac_grads and not detach_world),
-            ],
-            1,
+        first, imagined_features, actions, auxiliary = jax.tree.map(
+            sg, (first, imagined_features, actions, auxiliary)
         )
-        policyfeat = self.imagination_policy_features(imgfeat)
-        metrics.update(self.imagination_interface_metrics(imgfeat, policyfeat))
-        lastact = self.imagination_last_action(
-            policyfeat,
-            imagination_aux,
-            policyfn,
-        )
-        lastact = jax.tree.map(lambda value: value[:, None], lastact)
-        imgact = concat([imgprevact, lastact], 1)
-        local_inp = self.feat2tensor(imgfeat)
-        policy_inp = self.feat2tensor(policyfeat)
+        features = concat([first, imagined_features], 1)
+        policy_features = self.imagination_policy_features(features)
+        policy_inputs = self.feat2tensor(policy_features)
+        local_inputs = self.feat2tensor(features)
         critic_context, critic_metrics = self.imagination_critic_context(
-            imgfeat, imagination_context, imagination_aux
-        )
-        metrics.update(critic_metrics)
-        value = self.critic(imgfeat, 2, slow=False, context=critic_context)
-        slowvalue = self.critic(imgfeat, 2, slow=True, context=critic_context)
-        local_only_value = None
-        if critic_context is not None and not training:
-            local_only_value = self.critic(
-                imgfeat,
-                2,
-                slow=False,
-                context=jax.tree.map(jnp.zeros_like, critic_context),
-            )
-        imagination_valid = self.imagination_validity(
-            imagination_context, horizon, imagination_aux
-        )
-        if behavior_active is not None:
-            if imagination_valid is None:
-                imagination_valid = jnp.ones(
-                    imgprevact[next(iter(imgprevact))].shape[:2], bool
-                )
-            imagination_valid = jnp.where(
-                behavior_active,
-                imagination_valid,
-                jnp.zeros_like(imagination_valid),
-            )
-        metrics.update(
-            self.imagination_behavior_metrics(
-                imgprevact,
-                imagination_valid,
-                imagination_aux,
-            )
-        )
-        policy = self.imagination_policy_distribution(
-            policy_inp,
-            imagination_aux,
-        )
-        imagined_reward, imagined_continuation = self.imagination_reward_continuation(
-            local_inp,
-            imagination_aux,
-        )
-        if detach_world:
-            imagined_reward, imagined_continuation = jax.tree.map(
-                sg, (imagined_reward, imagined_continuation)
-            )
-        imagined_losses, imgloss_out, imagined_metrics = imag_loss(
-            imgact,
-            imagined_reward,
-            imagined_continuation,
-            policy,
-            value,
-            slowvalue,
-            self.retnorm,
-            self.valnorm,
-            self.advnorm,
-            update=training,
-            valid=imagination_valid,
-            contdisc=self.config.contdisc,
-            horizon=self.config.horizon,
-            **self.config.imag_loss,
-        )
-        if local_only_value is not None:
-            local_metrics = value_fit_metrics(
-                local_only_value.pred()[:, :-1],
-                imgloss_out["ret"],
-                None
-                if imagination_valid is None
-                else imagination_valid[:, : imgloss_out["ret"].shape[1]],
-            )
-            metrics.update(
-                {
-                    f"central_critic/local_only_imag_{key}": metric
-                    for key, metric in local_metrics.items()
-                }
-            )
-        imagined_losses, imgloss_out = self.restore_imagination_results(
-            imagined_losses,
-            imgloss_out,
+            features,
             imagination_context,
+            auxiliary,
         )
-        losses.update(
+        if critic_context is None:
+            raise ValueError("MA-JEPA PPO requires centralized critic context")
+
+        policy = self.imagination_policy_distribution(policy_inputs, auxiliary)
+        action_key = self.action_mask_key
+        if action_key is None or set(actions) != {action_key}:
+            raise ValueError("MA-JEPA PPO requires exactly one masked action")
+        old_logits = policy[action_key].logits[:, :-1]
+        action = actions[action_key].astype(jnp.int32)
+        if action.shape != old_logits.shape[:-1]:
+            raise ValueError(
+                "imagined actions and policy logits are misaligned: "
+                f"{action.shape} and {old_logits.shape}"
+            )
+
+        reward, continuation = self.imagination_reward_continuation(
+            local_inputs,
+            auxiliary,
+        )
+        state_valid = self.imagination_state_validity(
+            imagination_context,
+            horizon,
+            auxiliary,
+        )
+        # Build the live critic first. SlowModel initializes itself by copying
+        # its source parameters and therefore requires the source to exist.
+        current_value = self.critic(
+            features,
+            2,
+            slow=False,
+            context=critic_context,
+        ).pred()
+        target_value = self.critic(
+            features,
+            2,
+            slow=True,
+            context=critic_context,
+        ).pred()
+        predicted_action_mask = self.imagination_action_mask(auxiliary)
+        if predicted_action_mask.shape != old_logits.shape:
+            raise ValueError(
+                "PPO action mask and logits are misaligned: "
+                f"{predicted_action_mask.shape} and {old_logits.shape}"
+            )
+        # The applied policy is the source of truth because action masking has
+        # a deterministic nonempty fallback. Freezing this effective support
+        # guarantees that every PPO epoch assigns finite probability to every
+        # action that could have been sampled by the behavior snapshot.
+        action_mask = old_logits > -1e20
+        sampled_legal = jnp.take_along_axis(
+            action_mask,
+            action[..., None],
+            axis=-1,
+        )[..., 0]
+        target_return, advantage, valid, trajectory_weight = (
+            generalized_advantage_estimate(
+                reward,
+                continuation,
+                target_value,
+                state_valid,
+                lam=float(self.config.ppo.lam),
+            )
+        )
+        advantage = normalize_advantage(
+            advantage,
+            valid,
+            trajectory_weight,
+        )
+
+        def decisions(tree):
+            return jax.tree.map(lambda value: value[:, :-1], tree)
+
+        batch = sg(
             {
-                key: value.mean(1).reshape((batch, starts_count))
-                for key, value in imagined_losses.items()
+                "policy_inputs": policy_inputs[:, :-1],
+                "critic_features": decisions(features),
+                "critic_context": decisions(critic_context),
+                "action": action,
+                "action_mask": action_mask,
+                "old_logits": old_logits,
+                "advantage": advantage,
+                "target_return": target_return,
+                "valid": valid,
+                "trajectory_weight": trajectory_weight,
             }
         )
-        metrics.update(imagined_metrics)
+        metrics = {
+            **critic_metrics,
+            **self.imagination_interface_metrics(features, policy_features),
+            **self.imagination_behavior_metrics(actions, valid, auxiliary),
+            "replay_views/behavior_reward_mean": sg(
+                obs["reward"].astype(jnp.float32).mean()
+            ),
+            "replay_views/behavior_rows": jnp.asarray(
+                obs["is_first"].shape[0], jnp.float32
+            ),
+            "replay_views/behavior_length": jnp.asarray(length, jnp.float32),
+            "ppo/batch_reward": masked_weighted_mean(
+                reward[:, 1:], valid, trajectory_weight
+            ),
+            "ppo/batch_return": masked_weighted_mean(
+                target_return, valid, trajectory_weight
+            ),
+            "ppo/batch_target_value": masked_weighted_mean(
+                target_value[:, :-1], valid, trajectory_weight
+            ),
+            "ppo/batch_current_value": masked_weighted_mean(
+                current_value[:, :-1], valid, trajectory_weight
+            ),
+            "ppo/batch_valid_fraction": valid.astype(jnp.float32).mean(),
+            "ppo/batch_effective_weight": trajectory_weight.mean(),
+            "ppo/batch_illegal_action_fraction": (
+                valid.astype(jnp.float32) * (~sampled_legal).astype(jnp.float32)
+            ).sum()
+            / jnp.maximum(valid.astype(jnp.float32).sum(), 1.0),
+            "ppo/batch_support_fallback_fraction": (
+                action_mask != predicted_action_mask
+            )
+            .any(axis=-1)
+            .astype(jnp.float32)
+            .mean(),
+        }
+        return batch, metrics
 
-        if self.config.repval_loss:
-            feat = repfeat
-            last, term, rew = [obs[key] for key in ("is_last", "is_terminal", "reward")]
-            boot = imgloss_out["ret"][:, 0].reshape(batch, starts_count)
-            feat, last, term, rew, boot = jax.tree.map(
-                lambda value: value[:, -starts_count:],
-                (feat, last, term, rew, boot),
-            )
-            critic_context, critic_metrics = self.replay_critic_context(
-                feat, obs, starts_count
-            )
-            metrics.update(critic_metrics)
-            value = self.critic(feat, 2, slow=False, context=critic_context)
-            slowvalue = self.critic(feat, 2, slow=True, context=critic_context)
-            local_only_value = None
-            if critic_context is not None and not training:
-                local_only_value = self.critic(
-                    feat,
-                    2,
-                    slow=False,
-                    context=jax.tree.map(jnp.zeros_like, critic_context),
-                )
-            replay_valid = self.replay_value_validity(obs)[:, -starts_count:-1]
-            if behavior_active is not None:
-                replay_valid = jnp.where(
-                    behavior_active,
-                    replay_valid,
-                    jnp.zeros_like(replay_valid),
-                )
-            replay_losses, replay_out, replay_metrics = repl_loss(
-                last,
-                term,
-                rew,
-                boot,
-                value,
-                slowvalue,
-                self.valnorm,
-                update=training,
-                valid=replay_valid,
-                horizon=self.config.horizon,
-                **self.config.repl_loss,
-            )
-            losses.update(replay_losses)
-            metrics.update(prefix(replay_metrics, "reploss"))
-            if local_only_value is not None:
-                local_metrics = value_fit_metrics(
-                    local_only_value.pred()[:, :-1],
-                    replay_out["ret"],
-                    replay_valid[:, : replay_out["ret"].shape[1]],
-                )
-                metrics.update(
-                    {
-                        f"central_critic/local_only_replay_{key}": metric
-                        for key, metric in local_metrics.items()
-                    }
-                )
-        return losses, metrics
+    def _ppo_actor_loss(self, batch):
+        policy = self.policy_distribution(
+            batch["policy_inputs"],
+            2,
+            action_mask=batch["action_mask"],
+        )
+        new_logits = policy[self.action_mask_key].logits
+        return clipped_policy_objective(
+            new_logits,
+            batch["old_logits"],
+            batch["action"],
+            batch["advantage"],
+            batch["valid"],
+            batch["trajectory_weight"],
+            clip_epsilon=float(self.config.ppo.clip_epsilon),
+            entropy_coefficient=float(self.config.ppo.entropy_coefficient),
+        )
 
-    def _update_slow_models(self, behavior_active=None):
-        if behavior_active is None:
-            self.slowval.update()
-        else:
-            self._gated_slow_update(self.slowval, behavior_active)
+    def _ppo_critic_loss(self, batch):
+        value = self.critic(
+            batch["critic_features"],
+            2,
+            slow=False,
+            context=batch["critic_context"],
+        )
+        return value_objective(
+            value,
+            batch["target_return"],
+            batch["valid"],
+            batch["trajectory_weight"],
+        )
+
+    def _update_slow_models(self, ppo_active):
+        self._gated_slow_update(self.slowval, ppo_active)
 
     @staticmethod
     def _gated_slow_update(model, active):
@@ -760,21 +591,17 @@ class LearnerMixin:
         )
         return carry, features, actions, None
 
-    def imagination_last_action(self, policy_features, auxiliary, policyfn):
-        del auxiliary
-        return policyfn(jax.tree.map(lambda value: value[:, -1], policy_features))
-
     def imagination_policy_distribution(self, policy_inputs, auxiliary):
         del auxiliary
         return self.policy_distribution(policy_inputs, 2)
 
+    def imagination_action_mask(self, auxiliary):
+        del auxiliary
+        raise ValueError("PPO imagination requires an exact categorical action mask")
+
     def imagination_reward_continuation(self, local_inputs, auxiliary):
         del auxiliary
         return self.rew(local_inputs, 2).pred(), self.con(local_inputs, 2).prob(1)
-
-    def restore_imagination_results(self, losses, outputs, context=None):
-        del context
-        return losses, outputs
 
     def imagination_policy_features(self, features):
         return features
@@ -783,9 +610,9 @@ class LearnerMixin:
         del model_features, policy_features
         return {}
 
-    def imagination_validity(self, context, horizon, auxiliary=None):
-        del context, auxiliary
-        return None
+    def imagination_state_validity(self, context, horizon, auxiliary=None):
+        del context, horizon, auxiliary
+        raise ValueError("PPO imagination requires explicit state validity")
 
     def imagination_behavior_metrics(self, actions, validity, auxiliary=None):
         del actions, validity, auxiliary
@@ -795,10 +622,6 @@ class LearnerMixin:
         del features, context, auxiliary
         return None, {}
 
-    def replay_critic_context(self, features, obs, starts_count):
-        del features, obs, starts_count
-        return None, {}
-
     @staticmethod
     def validity(obs):
         valid = jnp.ones_like(obs["is_first"], dtype=jnp.float32)
@@ -806,9 +629,6 @@ class LearnerMixin:
             if key in obs:
                 valid *= obs[key].astype(jnp.float32)
         return valid
-
-    def replay_value_validity(self, obs):
-        return self.validity(obs)
 
     def _world_model_terms(self, carry, obs, prevact, training):
         enc_carry, dyn_carry, dec_carry = carry

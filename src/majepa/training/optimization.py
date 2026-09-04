@@ -57,12 +57,23 @@ class GroupedOptimizer(nj.Module):
         *args,
         has_aux=False,
         active_groups=None,
+        skip_groups=(),
         **kwargs,
     ):
         active_groups = dict(active_groups or {})
         unknown = set(active_groups).difference(self.groups)
         if unknown:
             raise ValueError(f"unknown optimizer activity groups: {sorted(unknown)}")
+        skip_groups = frozenset(skip_groups)
+        unknown = skip_groups.difference(self.groups)
+        if unknown:
+            raise ValueError(f"unknown optimizer groups to skip: {sorted(unknown)}")
+        overlap = skip_groups.intersection(active_groups)
+        if overlap:
+            raise ValueError(
+                "optimizer groups cannot be both skipped and dynamically gated: "
+                f"{sorted(overlap)}"
+            )
 
         def lossfn2(*inner_args, **inner_kwargs):
             outputs = lossfn(*inner_args, **inner_kwargs)
@@ -73,7 +84,15 @@ class GroupedOptimizer(nj.Module):
                 loss *= sg(self.grad_scale.read())
             return loss, aux
 
-        loss, params, grads, aux = nj.grad(lossfn2, self.modules, has_aux=True)(
+        grad_modules = tuple(
+            module
+            for key, (modules, _) in self.groups.items()
+            if key not in skip_groups
+            for module in modules
+        )
+        if not grad_modules:
+            raise ValueError("optimizer cannot skip every parameter group")
+        loss, params, grads, aux = nj.grad(lossfn2, grad_modules, has_aux=True)(
             *args, **kwargs
         )
         if self.scaling:
@@ -105,35 +124,54 @@ class GroupedOptimizer(nj.Module):
             }
             group_grads = {name: grads[name] for name in group_params}
             if not group_params:
-                raise ValueError(f"optimizer group {key!r} has no parameters")
+                if key not in skip_groups:
+                    raise ValueError(f"optimizer group {key!r} has no parameters")
+                metrics.update(
+                    {
+                        f"{self.name}/{key}/updates": self.step[key].read(),
+                        f"{self.name}/{key}/active": jnp.asarray(0.0, f32),
+                        f"{self.name}/{key}/skipped": jnp.asarray(1.0, f32),
+                        f"{self.name}/{key}/param_count": jnp.asarray(0.0, f32),
+                    }
+                )
+                continue
             overlap = assigned.intersection(group_params)
             if overlap:
                 raise ValueError(f"optimizer groups overlap at {sorted(overlap)}")
             assigned.update(group_params)
 
-            state = self.sub(f"{key}_state", nj.Tree, optimizer.init, group_params)
-            old_state = state.read()
-            updates, new_state = optimizer.update(group_grads, old_state, group_params)
             group_finite = jnp.isfinite(optax.global_norm(group_grads))
-            finite = finite & group_finite
-            # A disabled group is a literal optimizer freeze: parameters,
-            # moments, schedule counters, and update counters all stay fixed.
-            if gated:
-                state.write(
-                    jax.tree.map(
-                        lambda new, old: jnp.where(active, new, old),
-                        new_state,
-                        old_state,
-                    )
-                )
-                updates = jax.tree.map(
-                    lambda value: jnp.where(active, value, jnp.zeros_like(value)),
-                    updates,
-                )
+            if key in skip_groups:
+                # PPO owns these groups in separate proximal epochs. Skipping
+                # here must leave parameters, moments, and schedule counters
+                # completely untouched.
+                updates = jax.tree.map(jnp.zeros_like, group_params)
             else:
-                state.write(new_state)
+                state = self.sub(f"{key}_state", nj.Tree, optimizer.init, group_params)
+                old_state = state.read()
+                updates, new_state = optimizer.update(
+                    group_grads, old_state, group_params
+                )
+                finite = finite & group_finite
+                # A disabled group is a literal optimizer freeze: parameters,
+                # moments, schedule counters, and update counters all stay fixed.
+                if gated:
+                    state.write(
+                        jax.tree.map(
+                            lambda new, old: jnp.where(active, new, old),
+                            new_state,
+                            old_state,
+                        )
+                    )
+                    updates = jax.tree.map(
+                        lambda value: jnp.where(active, value, jnp.zeros_like(value)),
+                        updates,
+                    )
+                else:
+                    state.write(new_state)
             all_updates.update(updates)
-            self.step[key].write(self.step[key].read() + i32(active & group_finite))
+            if key not in skip_groups:
+                self.step[key].write(self.step[key].read() + i32(active & group_finite))
 
             counts = {
                 name: math.prod(value.shape) for name, value in group_params.items()
@@ -142,7 +180,8 @@ class GroupedOptimizer(nj.Module):
             metrics.update(
                 {
                     f"{prefix}/updates": self.step[key].read(),
-                    f"{prefix}/active": f32(active),
+                    f"{prefix}/active": f32(active & (key not in skip_groups)),
+                    f"{prefix}/skipped": jnp.asarray(key in skip_groups, f32),
                     f"{prefix}/grad_norm": optax.global_norm(group_grads),
                     f"{prefix}/grad_rms": nets.rms(group_grads),
                     f"{prefix}/update_rms": nets.rms(updates),
@@ -188,6 +227,98 @@ class GroupedOptimizer(nj.Module):
             metrics[f"{self.name}/grad_overflow"] = f32(~finite)
         return (metrics, aux) if has_aux else metrics
 
+    def step_group(
+        self,
+        key,
+        lossfn,
+        *args,
+        has_aux=False,
+        active=True,
+        **kwargs,
+    ):
+        """Optimize exactly one parameter group for one PPO epoch."""
+
+        if key not in self.groups:
+            raise ValueError(f"unknown optimizer group: {key!r}")
+        modules, optimizer = self.groups[key]
+        active = jnp.asarray(active, bool)
+        if active.shape:
+            raise ValueError(
+                f"optimizer group activity must be scalar, got {active.shape}"
+            )
+
+        def lossfn2(*inner_args, **inner_kwargs):
+            outputs = lossfn(*inner_args, **inner_kwargs)
+            loss, aux = outputs if has_aux else (outputs, None)
+            assert loss.dtype == f32, (self.name, key, loss.dtype)
+            assert loss.shape == (), (self.name, key, loss.shape)
+            if self.scaling:
+                loss *= sg(self.grad_scale.read())
+            return loss, aux
+
+        loss, params, grads, aux = nj.grad(lossfn2, modules, has_aux=True)(
+            *args, **kwargs
+        )
+        if self.scaling:
+            loss *= 1 / self.grad_scale.read()
+
+        axes = internal.get_data_axes()
+        if axes:
+            grads = jax.tree.map(lambda value: jax.lax.pmean(value, axes), grads)
+        if self.scaling:
+            invscale = 1 / self.grad_scale.read()
+            grads = jax.tree.map(lambda value: value * invscale, grads)
+
+        prefixes = tuple(f"{module.path}/" for module in modules)
+        unexpected = [name for name in params if not name.startswith(prefixes)]
+        if unexpected:
+            raise ValueError(
+                f"optimizer group {key!r} captured foreign parameters: {unexpected}"
+            )
+        if not params:
+            raise ValueError(f"optimizer group {key!r} has no parameters")
+
+        state = self.sub(f"{key}_state", nj.Tree, optimizer.init, params)
+        old_state = state.read()
+        updates, new_state = optimizer.update(grads, old_state, params)
+        grad_norm = optax.global_norm(grads)
+        finite = jnp.isfinite(grad_norm)
+        apply = active & finite
+        state.write(
+            jax.tree.map(
+                lambda new, old: jnp.where(apply, new, old),
+                new_state,
+                old_state,
+            )
+        )
+        updates = jax.tree.map(
+            lambda value: jnp.where(apply, value, jnp.zeros_like(value)),
+            updates,
+        )
+        nj.context().update(optax.apply_updates(params, updates))
+        self.step[key].write(self.step[key].read() + i32(apply))
+
+        counts = {name: math.prod(value.shape) for name, value in params.items()}
+        if nj.creating():
+            print(self._summarize_group(key, counts))
+        prefix = f"{self.name}/{key}"
+        metrics = {
+            f"{prefix}/loss": loss.mean(),
+            f"{prefix}/updates": self.step[key].read(),
+            f"{prefix}/active": f32(apply),
+            f"{prefix}/skipped": jnp.asarray(0.0, f32),
+            f"{prefix}/grad_norm": grad_norm,
+            f"{prefix}/grad_rms": nets.rms(grads),
+            f"{prefix}/update_rms": nets.rms(updates),
+            f"{prefix}/param_rms": nets.rms(params),
+            f"{prefix}/param_count": jnp.asarray(sum(counts.values()), f32),
+        }
+        if self.scaling:
+            self._update_scale(finite)
+            metrics[f"{self.name}/grad_scale"] = self.grad_scale.read()
+            metrics[f"{self.name}/grad_overflow"] = f32(~finite)
+        return (metrics, aux) if has_aux else metrics
+
     def _update_scale(self, finite):
         keep = finite & (self.good_steps.read() < 1000)
         incr = finite & (self.good_steps.read() >= 1000)
@@ -225,8 +356,13 @@ class OptimizationMixin:
         matched = self.config.opt
         joint = self.config.marl.ctde.opt
         actor = dict(matched)
-        actor["lr"] = float(self.config.marl.ctde.actor_lr)
-        actor["update_every"] = int(self.config.marl.ctde.actor_update_every)
+        actor["lr"] = float(self.config.ppo.actor_lr)
+        actor["warmup"] = int(self.config.ppo.optimizer_warmup)
+        actor["update_every"] = 1
+        critic = dict(matched)
+        critic["lr"] = float(self.config.ppo.critic_lr)
+        critic["warmup"] = int(self.config.ppo.optimizer_warmup)
+        critic["update_every"] = 1
         return GroupedOptimizer(
             {
                 "local_world": (
@@ -238,7 +374,7 @@ class OptimizationMixin:
                     self._make_opt(**joint),
                 ),
                 "actor": (actor_modules, self._make_opt(**actor)),
-                "critic": (critic_modules, self._make_opt(**matched)),
+                "critic": (critic_modules, self._make_opt(**critic)),
             },
             modules=modules,
             summary_depth=1,

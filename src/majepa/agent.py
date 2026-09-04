@@ -8,7 +8,6 @@ import numpy as np
 
 from .marl.axes import MODEL_EXCLUDED_FIELDS
 from .models.heads import MLPHead
-from .models.normalize import Normalize
 from .training.learner import LearnerMixin
 from .training.optimization import OptimizationMixin
 from .training.policy import PolicyMixin
@@ -38,17 +37,26 @@ class Agent(
         self.config = config
         self.replay_sampling = str(getattr(config, "replay_sampling", "uniform"))
         self.two_branch_replay = self.replay_sampling == "recent_world_uniform_behavior"
-        self.actor_critic_start_step = int(
-            getattr(config, "actor_critic_start_step", 0)
-        )
-        if self.actor_critic_start_step < 0:
-            raise ValueError("actor_critic_start_step must be nonnegative")
-        if self.actor_critic_start_step and not getattr(self, "ctde_enabled", False):
-            raise ValueError("actor/critic warm-start gating requires multi-agent CTDE")
-        if self.actor_critic_start_step and not self.two_branch_replay:
+        self.ppo_start_step = int(getattr(config, "ppo_start_step", 0))
+        if self.ppo_start_step < 0:
+            raise ValueError("ppo_start_step must be nonnegative")
+        if not getattr(self, "ctde_enabled", False):
+            raise ValueError("MA-JEPA PPO requires multi-agent CTDE")
+        if getattr(self, "ctde_mask_calibration", False):
             raise ValueError(
-                "actor/critic warm-start gating requires separated CTDE replay"
+                "MA-JEPA PPO requires fixed categorical support during each "
+                "proximal batch; probabilistic mask calibration is unsupported"
             )
+        if not self.two_branch_replay:
+            raise ValueError(
+                "MA-JEPA PPO requires separated world and behavior replay views"
+            )
+        if int(config.ppo.epochs) < 1:
+            raise ValueError("PPO requires at least one optimization epoch")
+        if not 0.0 < float(config.ppo.clip_epsilon) < 1.0:
+            raise ValueError("PPO clip_epsilon must be in (0, 1)")
+        if float(config.ppo.entropy_coefficient) < 0.0:
+            raise ValueError("PPO entropy_coefficient must be nonnegative")
         self.world_model = world_model_backend()
         self.objective = "embedding"
         self.embedding_target = "ema"
@@ -107,9 +115,6 @@ class Agent(
         else:
             self.actmask = None
         self.val, self.slowval = self._make_value_models(scalar, config)
-        self.retnorm = Normalize(**config.retnorm, name="retnorm")
-        self.valnorm = Normalize(**config.valnorm, name="valnorm")
-        self.advnorm = Normalize(**config.advnorm, name="advnorm")
 
         additional_modules = self.additional_modules()
         self.modules = [
@@ -185,7 +190,7 @@ class Agent(
             "consec": elements.Space(np.int32),
             "stepid": elements.Space(np.uint8, 20),
         }
-        if self.actor_critic_start_step:
+        if self.ppo_start_step:
             # Runtime-only control input. It is injected after replay sampling,
             # so it never becomes replay content or changes sampled sequences.
             spaces["_environment_step"] = elements.Space(np.int32)

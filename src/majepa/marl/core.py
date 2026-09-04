@@ -814,16 +814,6 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             )
         return metrics
 
-    def replay_critic_context(self, features, obs, starts_count):
-        if not self.ctde_enabled:
-            return super().replay_critic_context(features, obs, starts_count)
-        present = self._present(obs)[:, -starts_count:]
-        alive = self._controllable(obs)[:, -starts_count:]
-        return {
-            "present": self.team.unfold_sequence(present).astype(bool),
-            "controllable_alive": self.team.unfold_sequence(alive).astype(bool),
-        }, {}
-
     def additional_world_model_losses(
         self,
         tokens,
@@ -2829,30 +2819,6 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         }
         return local_carry, features, actions, auxiliary
 
-    def imagination_last_action(self, policy_features, auxiliary, policyfn):
-        if not self.ctde_enabled:
-            return super().imagination_last_action(policy_features, auxiliary, policyfn)
-        del policyfn
-        last_features = jax.tree.map(lambda value: value[:, -1], policy_features)
-        if self.ctde_mask_calibration:
-            last_alive = self.team.fold_batch(auxiliary["controllable_alive"][:, -1])
-            distribution, _ = self._ctde_probabilistic_policy(
-                self.feat2tensor(last_features),
-                1,
-                last_alive,
-                availability_logits=self.team.fold_batch(
-                    auxiliary["availability_logits"][:, -1]
-                ),
-            )
-            return sample(distribution)
-        last_mask = self.team.fold_batch(auxiliary["action_mask"][:, -1])
-        distribution = self.policy_distribution(
-            self.feat2tensor(last_features),
-            1,
-            action_mask=last_mask,
-        )
-        return sample(distribution)
-
     def imagination_policy_distribution(self, policy_inputs, auxiliary):
         if not self.ctde_enabled:
             return super().imagination_policy_distribution(policy_inputs, auxiliary)
@@ -2875,6 +2841,14 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             return distribution
         return self.policy_distribution(policy_inputs, 2, action_mask=action_mask)
 
+    def imagination_action_mask(self, auxiliary):
+        if not self.ctde_enabled:
+            return super().imagination_action_mask(auxiliary)
+        action_mask = self.team.fold_sequence(auxiliary["action_mask"]).astype(bool)
+        if action_mask.shape[1] < 2:
+            raise ValueError("CTDE PPO action mask must include at least one decision")
+        return action_mask[:, :-1]
+
     def imagination_reward_continuation(self, local_inputs, auxiliary):
         if not self.ctde_enabled:
             return super().imagination_reward_continuation(local_inputs, auxiliary)
@@ -2884,29 +2858,26 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             self.team.fold_sequence(auxiliary["continuation"]),
         )
 
-    def restore_imagination_results(self, losses, outputs, context=None):
-        starts_count = context["starts_count"] if self.ctde_enabled else context[0]
+    def imagination_state_validity(self, context, horizon, auxiliary=None):
+        """Mask PPO decisions and bootstraps after an agent becomes uncontrollable."""
 
-        def restore(value):
-            grouped = self.team.unfold_batch(value)
-            return self.team.ungroup_starts(grouped, starts_count)
-
-        return jax.tree.map(restore, (losses, outputs))
-
-    def imagination_validity(self, context, horizon, auxiliary=None):
-        if self.ctde_enabled:
-            if auxiliary is None:
-                raise ValueError("CTDE imagination requires predicted activity")
-            present = auxiliary["present"]
-            validity = present
-            if self.ctde_soft_liveness:
-                validity = validity.astype(jnp.float32) * auxiliary[
-                    "controllable_alive"
-                ].astype(jnp.float32)
-            folded = self.team.fold_sequence(validity)
-            return folded[:, :horizon]
-        _, active = context
-        return jnp.broadcast_to(active[:, None], (active.shape[0], horizon))
+        if not self.ctde_enabled:
+            return super().imagination_state_validity(context, horizon, auxiliary)
+        if auxiliary is None:
+            raise ValueError("CTDE PPO imagination requires predicted activity")
+        present = auxiliary["present"].astype(bool)
+        controllable = auxiliary["controllable_alive"]
+        if not jnp.issubdtype(controllable.dtype, jnp.bool_):
+            controllable = controllable >= 0.5
+        validity = present & controllable.astype(bool)
+        folded = self.team.fold_sequence(validity)
+        expected = horizon + 1
+        if folded.shape[1] != expected:
+            raise ValueError(
+                "CTDE PPO validity must include root and bootstrap states: "
+                f"expected {expected}, got {folded.shape[1]}"
+            )
+        return folded
 
     def imagination_behavior_metrics(self, actions, validity, auxiliary=None):
         """Summarize the actions that actually drive CTDE imagination."""

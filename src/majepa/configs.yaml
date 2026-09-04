@@ -18,7 +18,7 @@ defaults:
 
   logger:
     outputs: [jsonl, scope]
-    filter: 'score|return|length|fps|ratio|schedule/|train/opt/|train/loss/|train/rand/|train/posterior_jepa/|train/dynamics_jepa/|train/ctde/|report/ctde/|train/critic/|train/reploss/critic/|central_critic/|report/world_model/|report/openloop/|battle_won|win_rate|legacy_|corrected_|enemy_|ally_|timeout|action_|attack_target_|eval/|final_eval/'
+    filter: 'score|return|length|fps|ratio|schedule/|train/opt/|train/loss/|train/ppo/|train/rand/|train/posterior_jepa/|train/dynamics_jepa/|train/ctde/|report/ctde/|central_critic/|report/world_model/|report/openloop/|battle_won|win_rate|legacy_|corrected_|enemy_|ally_|timeout|action_|attack_target_|eval/|final_eval/'
     timer: True
     fps: 15
     user: ''
@@ -36,7 +36,7 @@ defaults:
   run:
     steps: 5e4
     train_ratio: 32.0
-    actor_critic_start_step: 0
+    ppo_start_step: 0
     log_every: 120
     report_every: 300
     save_every: 900
@@ -99,12 +99,8 @@ defaults:
       con: 1.0
       dyn: 1.0
       rep: 0.1
-      policy: 1.0
-      value: 1.0
-      repval: 0.3
     opt: {lr: 4e-5, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
     target_encoder: {rate: 0.01, every: 1}
-    ac_grads: False
     dyn:
       parallel_transformer: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, act: silu, norm: rms, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0, model: 512, layers: 2, heads: 8, context: 64, ffup: 4, posterior_context: history}
     enc:
@@ -122,14 +118,9 @@ defaults:
     imag_length: 15
     horizon: 333
     contdisc: True
-    imag_loss: {slowtar: False, lam: 0.95, actent: 3e-4, slowreg: 1.0}
-    repl_loss: {slowtar: False, lam: 0.95, slowreg: 1.0}
-    slowvalue: {rate: 0.02, every: 1}
-    retnorm: {impl: perc, rate: 0.01, limit: 1.0, perclo: 5.0, perchi: 95.0, debias: False}
-    valnorm: {impl: none, rate: 0.01, limit: 1e-8}
-    advnorm: {impl: none, rate: 0.01, limit: 1e-8}
+    ppo: {epochs: 5, clip_epsilon: 0.2, entropy_coefficient: 1e-2, lam: 0.95, actor_lr: 3e-5, critic_lr: 3e-5, optimizer_warmup: 0}
+    slowvalue: {rate: 1.0, every: 1}
     reward_grad: True
-    repval_loss: True
     report: True
     report_gradnorms: False
 
@@ -143,13 +134,12 @@ ma_jepa:
     recency_decay: 0.9998
   run:
     train_ratio: 256
-    actor_critic_start_step: 0
+    ppo_start_step: 5000
   agent:
     imag_length: 15
     action_mask_reduction: balanced
     policy: {units: 1024}
     collection_unimix: 0.05
-    imag_loss: {actent: 3e-4}
     opt: {lr: 4e-5}
     loss_scales:
       ctde_embedding: 2.0
@@ -181,8 +171,6 @@ ma_jepa:
         head: {layers: 2, units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
         critic: {width: 256, heads: 4, layers: 2, ffup: 4, dropout: 0.0, value_layers: 2, value_units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
         opt: {lr: 4e-5, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
-        actor_lr: 1e-5
-        actor_update_every: 1
         teammate_belief: {enabled: True, layers: 2, units: 512, outscale: 0.0, logit_clip: 5.0, adapter_layers: 1, adapter_units: 256, act: silu, norm: rms, winit: trunc_normal_in}
         multistep_jepa:
           enabled: True

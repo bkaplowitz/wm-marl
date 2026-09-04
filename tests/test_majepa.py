@@ -47,14 +47,18 @@ def test_locked_profile_values(tmp_path: Path) -> None:
     assert resolved.replay_context == 192
     assert resolved.replay.sampling == "recent_world_uniform_behavior"
     assert resolved.run.train_ratio == 256
-    assert resolved.run.actor_critic_start_step == 0
+    assert resolved.run.ppo_start_step == 5000
     assert resolved.agent.action_mask_reduction == "balanced"
     assert resolved.agent.policy.units == 1024
     assert resolved.agent.collection_unimix == pytest.approx(0.05)
-    assert resolved.agent.imag_loss.actent == pytest.approx(3e-4)
+    assert resolved.agent.ppo.epochs == 5
+    assert resolved.agent.ppo.clip_epsilon == pytest.approx(0.2)
+    assert resolved.agent.ppo.entropy_coefficient == pytest.approx(1e-2)
+    assert resolved.agent.ppo.lam == pytest.approx(0.95)
+    assert resolved.agent.ppo.actor_lr == pytest.approx(3e-5)
+    assert resolved.agent.ppo.critic_lr == pytest.approx(3e-5)
+    assert resolved.agent.slowvalue.rate == pytest.approx(1.0)
     ctde = resolved.agent.marl.ctde
-    assert ctde.actor_lr == pytest.approx(1e-5)
-    assert ctde.actor_update_every == 1
     assert ctde.teammate_belief.enabled
     assert tuple(ctde.multistep_jepa.horizons) == (1, 2, 4, 8)
     assert ctde.multistep_jepa.action_counterfactual_mode == "all_legal_mean"
@@ -69,7 +73,14 @@ def test_manifest_describes_the_locked_architecture(tmp_path: Path) -> None:
     assert manifest["train_ratio"] == 256.0
     assert manifest["replay_sampling"] == "recent_world_uniform_behavior"
     assert manifest["ctde"]["actor_units"] == 1024
-    assert manifest["ctde"]["actor_learning_rate"] == pytest.approx(1e-5)
+    assert manifest["ctde"]["actor_learning_rate"] == pytest.approx(3e-5)
+    assert manifest["ctde"]["critic_learning_rate"] == pytest.approx(3e-5)
+    assert manifest["ctde"]["ppo_start_step"] == 5000
+    assert manifest["ctde"]["ppo"]["epochs"] == 5
+    assert manifest["ctde"]["ppo"]["clip_epsilon"] == pytest.approx(0.2)
+    assert manifest["actor_objective"] == "clipped_imagined_ppo"
+    assert manifest["learner_batches_per_environment_step"] == pytest.approx(0.25)
+    assert manifest["actor_updates_per_environment_step"] == pytest.approx(1.25)
     assert manifest["ctde"]["action_counterfactuals"] == "all_legal_mean"
     assert manifest["ctde"]["action_counterfactual_scale"] == pytest.approx(0.25)
 

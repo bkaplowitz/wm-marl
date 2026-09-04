@@ -12,7 +12,7 @@ def verify_run_contract(spec: "MAJEPARunSpec") -> dict[str, object]:
     """Describe the local execution boundary and selected training model."""
 
     return {
-        "contract_version": 1,
+        "contract_version": 2,
         "algorithm": spec.algorithm,
         "num_agents": spec.num_agents,
         "foundation": "danijar/dreamerv3@e3f02248693a79dc8b0ebd62c93683888ddaccfe",
@@ -34,7 +34,11 @@ def verify_run_contract(spec: "MAJEPARunSpec") -> dict[str, object]:
         },
         "training": {
             "optimizer_topology": spec.optimizer_topology,
-            "actor_objective": "score_function_reinforce",
+            "actor_objective": "clipped_imagined_ppo",
+            "policy_batch": "post-world-update frozen JEPA imagination",
+            "policy_epochs": 5,
+            "clip_epsilon": 0.2,
+            "agent_mask": "present and controllable",
             "replay_sampling": spec.effective_replay_sampling,
             "train_ratio": spec.effective_train_ratio,
         },

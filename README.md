@@ -26,9 +26,10 @@ flowchart TB
         LAT --> LOCAL["Causal local world model"]
         ACTION --> LOCAL
         LOCAL --> IMAG["Imagined local trajectories"]
-        IMAG --> CRITIC["Centralized critic"]
-        IMAG --> ACTORLOSS["Actor objective"]
-        CRITIC --> ACTORLOSS
+        IMAG --> SNAPSHOT["Frozen actions, masks, and old policy logits"]
+        IMAG --> CRITIC["Centralized target critic and GAE"]
+        SNAPSHOT --> PPO["5-epoch clipped PPO"]
+        CRITIC --> PPO
 
         LAT --> SYNC["Synchronize agents, actions, and liveness"]
         ACTION --> SYNC
@@ -50,7 +51,7 @@ flowchart TB
         JEPA -.-> UPDATE["World-model update"]
         MARGIN -.-> UPDATE
         SIGREG -.-> UPDATE
-        ACTORLOSS -.-> POLICYUPDATE["Actor and critic update"]
+        PPO -.-> POLICYUPDATE["Separate actor and critic updates"]
     end
 
     UPDATE -.-> ENC
@@ -66,6 +67,10 @@ future step, making the latent dynamics sensitive to control. SIGReg preserves
 representation diversity.
 The joint predictor and centralized critic are training-only; execution keeps
 only the shared encoder, local state, legal-action mask, and shared actor.
+Each learner batch updates the world model first, then creates one detached
+JEPA imagination. PPO reuses that immutable batch for five clipped actor and
+critic epochs. Per-agent presence and controllability mask dead-agent actions
+and terminate their value bootstrap without ending the rest of the team rollout.
 
 ## Setup
 
