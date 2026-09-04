@@ -140,6 +140,20 @@ TREATMENTS = {
         "--agent.marl.ctde.multistep_jepa.plan_aggregation",
         "focal_attention",
     ),
+    "actor_lr_3em5_peer_attention": (
+        "--agent.marl.ctde.death_masking.enabled",
+        "True",
+        "--agent.entropy_schedule.enabled",
+        "True",
+        "--agent.collection_unimix",
+        "0.0",
+        "--agent.policy.unimix",
+        "0.0",
+        "--agent.marl.ctde.actor_lr",
+        "3e-5",
+        "--agent.marl.ctde.multistep_jepa.plan_aggregation",
+        "focal_attention",
+    ),
 }
 LOGGER_FILTER = (
     "score|return|length|fps|ratio|sample_age|replay/behavior_|schedule/|"
@@ -217,7 +231,12 @@ def validate_profile(args) -> dict[str, object]:
     if selected != expected:
         raise RuntimeError(f"treatment isolation failed: {selected} != {expected}")
     entropy = parsed.agent.entropy_schedule
-    new_treatments = {"actor_lr_3em5", "actor_lr_1em4", "peer_attention"}
+    new_treatments = {
+        "actor_lr_3em5",
+        "actor_lr_1em4",
+        "peer_attention",
+        "actor_lr_3em5_peer_attention",
+    }
     entropy_expected = args.treatment.startswith("entropy_") or (
         args.treatment in new_treatments
     )
@@ -254,11 +273,13 @@ def validate_profile(args) -> dict[str, object]:
     expected_actor_lr = {
         "actor_lr_3em5": 3e-5,
         "actor_lr_1em4": 1e-4,
+        "actor_lr_3em5_peer_attention": 3e-5,
     }.get(args.treatment, 1e-5)
     if float(ctde.actor_lr) != expected_actor_lr:
         raise RuntimeError("actor learning rate does not match treatment")
+    attention_treatments = {"peer_attention", "actor_lr_3em5_peer_attention"}
     expected_plan_aggregation = (
-        "focal_attention" if args.treatment == "peer_attention" else "mean"
+        "focal_attention" if args.treatment in attention_treatments else "mean"
     )
     if str(ctde.multistep_jepa.plan_aggregation) != expected_plan_aggregation:
         raise RuntimeError("teammate-plan aggregation does not match treatment")
