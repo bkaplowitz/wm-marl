@@ -16,6 +16,7 @@ from .ppo import (
     scheduled_entropy_coefficient,
     value_objective,
 )
+from .replay_value import replay_lambda_return
 from .representation import (
     embedding_prediction_loss,
     embedding_std,
@@ -108,7 +109,7 @@ class LearnerMixin:
 
         self._update_slow_models(ppo_active)
         if self.slowenc is not None:
-            self.slowenc.update()
+            self._gated_slow_update(self.slowenc, metrics["opt/finite"])
         if self.ppo_start_step:
             environment_step = data["_environment_step"].reshape(-1)[0]
             metrics.update(
@@ -412,7 +413,12 @@ class LearnerMixin:
             local_inputs,
             auxiliary,
         )
-        state_valid = self.imagination_state_validity(
+        decision_state_valid = self.imagination_state_validity(
+            imagination_context,
+            horizon,
+            auxiliary,
+        )
+        state_valid = self.imagination_bootstrap_validity(
             imagination_context,
             horizon,
             auxiliary,
@@ -453,6 +459,7 @@ class LearnerMixin:
                 continuation,
                 target_value,
                 state_valid,
+                decision_state_valid=decision_state_valid,
                 lam=float(self.config.ppo.lam),
             )
         )
@@ -476,10 +483,15 @@ class LearnerMixin:
                 "advantage": advantage,
                 "target_return": target_return,
                 "valid": valid,
+                "critic_valid": state_valid[:, :-1],
                 "trajectory_weight": trajectory_weight,
                 "entropy_coefficient": entropy_coefficient,
             }
         )
+        if float(self.config.ppo.replay_value_scale):
+            batch["replay_value"] = self._prepare_replay_value_batch(
+                repfeat, obs, target_return[:, 0], starts_count
+            )
         metrics = {
             **critic_metrics,
             **self.imagination_interface_metrics(features, policy_features),
@@ -518,6 +530,56 @@ class LearnerMixin:
         }
         return batch, metrics
 
+    def _prepare_replay_value_batch(self, features, obs, root_return, starts_count):
+        """Anchor the critic in real rewards with fresh imagined bootstraps.
+
+        Replay actions may be off policy. This is an auxiliary critic target,
+        never a PPO actor sample; its weight is configured independently. The
+        imagined root returns supply current-policy bootstraps, as in the
+        replay-value objective used before the PPO migration.
+        """
+
+        features = jax.tree.map(lambda value: value[:, -starts_count:], features)
+        selected = {
+            key: obs[key][:, -starts_count:]
+            for key in ("reward", "is_first", "is_last", "is_terminal", "agent_present")
+        }
+        # Imagination is ordered [team, start, agent]; replay is [team, agent,
+        # time]. A plain reshape silently assigns other agents' bootstraps.
+        bootstrap = self.team.ungroup_starts(
+            self.team.unfold_batch(root_return), starts_count
+        ).reshape(selected["reward"].shape)
+        context = {
+            "present": self.team.unfold_sequence(selected["agent_present"]),
+            "controllable_alive": self.team.unfold_sequence(
+                self._controllable(obs)[:, -starts_count:]
+            ),
+        }
+        # Imagination excludes all is_last roots. A nonterminal truncation
+        # must instead bootstrap from its real final observation and roster.
+        factual_value = self.critic(features, 2, slow=True, context=context).pred()
+        bootstrap = jnp.where(
+            selected["is_last"] & ~selected["is_terminal"], factual_value, bootstrap
+        )
+        targets, valid = replay_lambda_return(
+            selected["reward"],
+            selected["is_first"],
+            selected["is_last"],
+            selected["is_terminal"],
+            selected["agent_present"],
+            bootstrap,
+            discount=1.0 - 1.0 / float(self.config.horizon),
+            lam=float(self.config.ppo.replay_value_lam),
+        )
+        return sg(
+            {
+                "features": jax.tree.map(lambda value: value[:, :-1], features),
+                "context": jax.tree.map(lambda value: value[:, :-1], context),
+                "target_return": targets,
+                "valid": valid,
+            }
+        )
+
     def _ppo_actor_loss(self, batch):
         policy = self.policy_distribution(
             batch["policy_inputs"],
@@ -547,12 +609,29 @@ class LearnerMixin:
             slow=False,
             context=batch["critic_context"],
         )
-        return value_objective(
+        loss, metrics = value_objective(
             value,
             batch["target_return"],
-            batch["valid"],
+            batch["critic_valid"],
             batch["trajectory_weight"],
         )
+        if "replay_value" in batch:
+            replay = batch["replay_value"]
+            replay_value = self.critic(
+                replay["features"], 2, slow=False, context=replay["context"]
+            )
+            replay_loss, replay_metrics = value_objective(
+                replay_value,
+                replay["target_return"],
+                replay["valid"],
+                jnp.ones_like(replay["target_return"]),
+            )
+            loss += float(self.config.ppo.replay_value_scale) * replay_loss
+            metrics.update(
+                {f"replay_{key}": value for key, value in replay_metrics.items()}
+            )
+            metrics["total_loss"] = loss
+        return loss, metrics
 
     def _update_slow_models(self, ppo_active):
         self._gated_slow_update(self.slowval, ppo_active)
@@ -644,6 +723,9 @@ class LearnerMixin:
     def imagination_state_validity(self, context, horizon, auxiliary=None):
         del context, horizon, auxiliary
         raise ValueError("PPO imagination requires explicit state validity")
+
+    def imagination_bootstrap_validity(self, context, horizon, auxiliary=None):
+        return self.imagination_state_validity(context, horizon, auxiliary)
 
     def imagination_behavior_metrics(self, actions, validity, auxiliary=None):
         del actions, validity, auxiliary

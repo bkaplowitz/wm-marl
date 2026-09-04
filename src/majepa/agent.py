@@ -57,6 +57,14 @@ class Agent(
             raise ValueError("PPO clip_epsilon must be in (0, 1)")
         if float(config.ppo.entropy_coefficient) < 0.0:
             raise ValueError("PPO entropy_coefficient must be nonnegative")
+        if float(config.ppo.replay_value_scale) < 0.0:
+            raise ValueError("PPO replay_value_scale must be nonnegative")
+        if not 0.0 <= float(config.ppo.replay_value_lam) <= 1.0:
+            raise ValueError("PPO replay_value_lam must be in [0, 1]")
+        if float(config.ppo.replay_value_scale) and int(config.imag_last) == 1:
+            raise ValueError(
+                "replay value learning requires at least two imagination roots"
+            )
         entropy_schedule = config.ppo.entropy_schedule
         if float(entropy_schedule.initial) < 0.0:
             raise ValueError("PPO initial entropy coefficient must be nonnegative")

@@ -41,6 +41,7 @@ from ..training.ctde import (
     gather_anchors,
     predicted_controllable_alive,
     sample_two_step_anchors,
+    shared_team_outcomes,
     two_step_anchor_mask,
     two_step_objective,
 )
@@ -890,6 +891,13 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         weight = transition_valid.astype(jnp.float32)
         count = jnp.maximum(weight.sum(), 1.0)
         normalized_weight = weight / jnp.maximum(weight.mean(), 1e-8)
+        # SMAC broadcasts team reward and termination to its fixed roster.
+        # Dead units retain the surviving team's return; their shared-signal
+        # heads therefore need supervision after they become uncontrollable.
+        team_valid = source_present & grouped_present[:, 1:] & ~next_first[..., None]
+        team_weight = team_valid.astype(jnp.float32)
+        team_count = jnp.maximum(team_weight.sum(), 1.0)
+        normalized_team_weight = team_weight / jnp.maximum(team_weight.mean(), 1e-8)
 
         predicted_embedding = prediction["embedding"].astype(jnp.float32)
         ema_target = jax.lax.stop_gradient(grouped_target[:, 1:].astype(jnp.float32))
@@ -962,6 +970,9 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         def masked_metric(value):
             return (value.astype(jnp.float32) * weight).sum() / count
 
+        def team_metric(value):
+            return (value.astype(jnp.float32) * team_weight).sum() / team_count
+
         folded_prediction = self.team.fold_sequence(prediction["embedding"])
         folded_online = self.team.fold_sequence(grouped_online[:, 1:])
         folded_deter = self.team.fold_sequence(
@@ -986,8 +997,9 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         metrics = {
             "ctde/embedding_cosine": 1.0 - masked_metric(embedding_loss),
             "ctde/interface_smooth_l1": masked_metric(interface_loss),
-            "ctde/reward_loss": masked_metric(reward_loss),
-            "ctde/continuation_loss": masked_metric(continuation_loss),
+            "ctde/reward_loss": team_metric(reward_loss),
+            "ctde/continuation_loss": team_metric(continuation_loss),
+            "ctde/team_signal_valid_fraction": team_weight.mean(),
             "ctde/action_mask_loss": masked_metric(mask_loss),
             "ctde/action_mask_positive_recall": mask_positive_recall,
             "ctde/action_mask_negative_specificity": mask_negative_specificity,
@@ -1013,11 +1025,17 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             value *= value.shape[1] / max(value.shape[1] - 1, 1)
             return self.team.fold_sequence(value)
 
+        def folded_team(value):
+            value = value * normalized_team_weight
+            value = jnp.pad(value, ((0, 0), (0, 1), (0, 0)))
+            value *= value.shape[1] / max(value.shape[1] - 1, 1)
+            return self.team.fold_sequence(value)
+
         losses = {
             "ctde_embedding": folded(embedding_loss),
             "ctde_interface": folded(interface_loss),
-            "ctde_reward": folded(reward_loss),
-            "ctde_continuation": folded(continuation_loss),
+            "ctde_reward": folded_team(reward_loss),
+            "ctde_continuation": folded_team(continuation_loss),
             "ctde_action_mask": folded(mask_loss),
             "ctde_alive": folded_alive(alive_loss),
         }
@@ -1080,7 +1098,236 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             )
             losses.update(multistep_losses)
             metrics.update(multistep_metrics)
+        if not training:
+            metrics.update(
+                self._ctde_self_fed_report(
+                    repfeat,
+                    dyn_entries,
+                    snapshots,
+                    online_tokens,
+                    target_tokens,
+                    obs,
+                    prevact,
+                )
+            )
         return losses, metrics
+
+    def _ctde_self_fed_report(
+        self,
+        repfeat,
+        dyn_entries,
+        joint_snapshots,
+        online_tokens,
+        target_tokens,
+        obs,
+        prevact,
+    ):
+        """Check PPO's actual joint/posterior simulator along factual actions.
+
+        A single current-weight factual root per team is rolled forward without
+        observation feedback. This differs from the local-prior open-loop and
+        direct multi-horizon JEPA reports, neither of which runs this simulator.
+        Episode-reset crossings are excluded, while terminal-transition rewards
+        and after-death team outcomes remain in the diagnostics.
+        """
+
+        length = online_tokens.shape[1]
+        horizon = min(8, length - 1)
+        if horizon < 1:
+            return {}
+        teams = min(4, online_tokens.shape[0] // self.team.size)
+        rows = teams * self.team.size
+        root = min(length // 2, length - horizon - 1)
+        selected = (1, 2, 4, 5, 8)
+
+        def grouped(value):
+            return self.team.unfold_sequence(value[:rows])
+
+        def targets(value):
+            return grouped(value)[:, root + 1 : root + horizon + 1]
+
+        present_history = grouped(self._present(obs)).astype(bool)
+        alive_history = grouped(self._controllable(obs)).astype(bool)
+        first_history = grouped(obs["is_first"]).any(axis=-1)
+        local_carry = {
+            key: value[:rows, root]
+            for key, value in dyn_entries.items()
+            if key in {"deter", "stoch", "keys", "values", "valid", "position"}
+        }
+        joint_carry = {
+            key: (joint_snapshots[key][:rows, root - 1] if root else value[:rows])
+            for key, value in dyn_entries["ctde_joint_carry"].items()
+        }
+        source_present = present_history[:, root]
+        source_alive = alive_history[:, root]
+        if self.ctde_soft_liveness:
+            source_alive = source_alive.astype(jnp.float32)
+        actions = grouped(prevact[self.ctde_action_key])[
+            :, root + 1 : root + horizon + 1
+        ]
+
+        def transition(state, action):
+            local, joint, present, alive, reset = state
+            local_features = {"deter": local["deter"], "stoch": local["stoch"]}
+            local_state = self.team.unfold_batch(self.feat2tensor(local_features))
+            joint, prediction = self.ctde_joint.step(
+                joint, local_state, action, present, alive, reset, training=False
+            )
+            cache, deter = self.dyn.advance(
+                local,
+                {self.ctde_action_key: self.team.fold_batch(action)},
+                training=False,
+                active=self.team.fold_batch(present),
+            )
+            local, next_features = self.dyn.complete_from_observation(
+                cache,
+                deter,
+                self.team.fold_batch(prediction["embedding"]),
+                sample=True,
+            )
+            hidden = prediction["hidden"]
+            alive_probability = self.ctde_alive(hidden, 2).prob(1)
+            if self.ctde_soft_liveness:
+                next_alive = alive * present.astype(jnp.float32) * alive_probability
+            else:
+                next_alive = alive & present & (alive_probability >= 0.5)
+            reward, continuation = shared_team_outcomes(
+                self.ctde_rew(hidden, 2).pred(),
+                self.ctde_con(hidden, 2).prob(1),
+                present,
+                alive,
+                next_alive,
+            )
+            if self.ctde_mask_calibration:
+                mask_output = self.actmask(self.feat2tensor(next_features), 1)
+                binary = (
+                    mask_output.output
+                    if hasattr(mask_output, "output")
+                    else mask_output
+                )
+                mask_probability = self.team.unfold_batch(jax.nn.sigmoid(binary.logit))
+            else:
+                mask_output = self.ctde_mask(hidden, 2)
+                binary = (
+                    mask_output.output
+                    if hasattr(mask_output, "output")
+                    else mask_output
+                )
+                mask_probability = jax.nn.sigmoid(binary.logit)
+            mask_prediction = mask_probability >= 0.5
+            noop = jnp.zeros_like(mask_prediction).at[..., 0].set(True)
+            mask_prediction = jnp.where(
+                mask_prediction.any(axis=-1, keepdims=True), mask_prediction, noop
+            )
+            mask_prediction = jnp.where(
+                (next_alive >= 0.5)[..., None], mask_prediction, noop
+            )
+            outputs = {
+                "embedding": prediction["embedding"],
+                "posterior": self.team.unfold_batch(next_features["logit"]),
+                "reward": reward,
+                "continuation": continuation,
+                "action_mask": mask_prediction,
+                "alive_probability": alive.astype(jnp.float32) * alive_probability,
+            }
+            return (local, joint, present, next_alive, jnp.zeros_like(reset)), outputs
+
+        initial = (
+            nn.cast(jax.lax.stop_gradient(local_carry)),
+            nn.cast(jax.lax.stop_gradient(joint_carry)),
+            source_present,
+            source_alive,
+            first_history[:, root],
+        )
+        _, prediction = nj.scan(transition, initial, actions, axis=1)
+        prediction = jax.lax.stop_gradient(prediction)
+        path_valid = jnp.cumprod(
+            (~first_history[:, root + 1 : root + horizon + 1]).astype(jnp.int32),
+            axis=1,
+        ).astype(bool)
+        # Shared reward/continuation remain valid for a dead focal roster slot.
+        valid = source_present[:, None] & targets(self._present(obs)).astype(bool)
+        valid &= path_valid[..., None]
+        local_valid = valid & alive_history[:, root : root + horizon]
+        target_reward = targets(obs["reward"])
+        target_continuation = (~targets(obs["is_terminal"])).astype(jnp.float32)
+        if self.config.contdisc:
+            target_continuation *= 1.0 - 1.0 / float(self.config.horizon)
+        target_mask = targets(obs["action_mask"]).astype(bool)
+        target_alive = targets(self._controllable(obs)).astype(jnp.float32)
+        ema = targets(target_tokens).astype(jnp.float32)
+        predicted_embedding = prediction["embedding"].astype(jnp.float32)
+        ema_unit = ema / jnp.maximum(jnp.linalg.norm(ema, axis=-1, keepdims=True), 1e-8)
+        pred_unit = predicted_embedding / jnp.maximum(
+            jnp.linalg.norm(predicted_embedding, axis=-1, keepdims=True), 1e-8
+        )
+        cosine = (ema_unit * pred_unit).sum(axis=-1)
+        factual_logits = self.dyn.posterior(
+            online_tokens[:rows, root + 1 : root + horizon + 1],
+            repfeat["deter"][:rows, root + 1 : root + horizon + 1],
+        )
+        factual_logprob = jax.nn.log_softmax(
+            grouped(factual_logits).astype(jnp.float32), axis=-1
+        )
+        predicted_logprob = jax.nn.log_softmax(
+            prediction["posterior"].astype(jnp.float32), axis=-1
+        )
+        posterior_kl = (
+            jnp.exp(factual_logprob) * (factual_logprob - predicted_logprob)
+        ).sum(axis=(-1, -2))
+        reward_error = prediction["reward"] - target_reward
+        metrics = {}
+
+        for step in selected:
+            if step > horizon:
+                continue
+            index = step - 1
+            weight = valid[:, index].astype(jnp.float32)
+            local_weight = local_valid[:, index].astype(jnp.float32)
+
+            def mean(value, selected_weight=weight):
+                return (
+                    value.astype(jnp.float32) * selected_weight
+                ).sum() / jnp.maximum(selected_weight.sum(), 1.0)
+
+            mask_predicted = prediction["action_mask"][:, index]
+            mask_actual = target_mask[:, index]
+            positive = local_weight[..., None] * mask_actual.astype(jnp.float32)
+            negative = local_weight[..., None] * (~mask_actual).astype(jnp.float32)
+            prefix = f"ctde/self_fed_h{step}"
+            metrics.update(
+                {
+                    f"{prefix}/valid_count": weight.sum(),
+                    f"{prefix}/local_valid_count": local_weight.sum(),
+                    f"{prefix}/reward_rmse": jnp.sqrt(
+                        mean(jnp.square(reward_error[:, index]))
+                    ),
+                    f"{prefix}/reward_bias": mean(reward_error[:, index]),
+                    f"{prefix}/continuation_brier": mean(
+                        jnp.square(
+                            prediction["continuation"][:, index]
+                            - target_continuation[:, index]
+                        )
+                    ),
+                    f"{prefix}/alive_brier": mean(
+                        jnp.square(
+                            prediction["alive_probability"][:, index]
+                            - target_alive[:, index]
+                        )
+                    ),
+                    f"{prefix}/action_mask_false_positive": mean(
+                        mask_predicted, negative
+                    ),
+                    f"{prefix}/action_mask_false_negative": mean(
+                        ~mask_predicted, positive
+                    ),
+                    f"{prefix}/embedding_cosine": mean(cosine[:, index], local_weight),
+                    f"{prefix}/posterior_kl": mean(
+                        posterior_kl[:, index], local_weight
+                    ),
+                }
+            )
+        return jax.lax.stop_gradient(metrics)
 
     def _ctde_teammate_belief_loss(
         self,
@@ -2055,7 +2302,11 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             anchors,
             standard_valid,
             learner_valid,
-            auxiliary_valid={"alive": alive_valid},
+            auxiliary_valid={
+                "reward": alive_valid,
+                "continuation": alive_valid,
+                "alive": alive_valid,
+            },
         )
 
         target_deter = jax.lax.stop_gradient(
@@ -2494,12 +2745,17 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             next_features = self.team.unfold_tree_batch(next_features)
 
             hidden = prediction["hidden"]
-            reward = self.ctde_rew(hidden, 2).pred()
-            continuation = self.ctde_con(hidden, 2).prob(1)
             alive_probability = self.ctde_alive(hidden, 2).prob(1)
             next_present = current_present
             next_alive = jax.lax.stop_gradient(
                 current_alive & next_present & (alive_probability >= 0.5)
+            )
+            reward, continuation = shared_team_outcomes(
+                self.ctde_rew(hidden, 2).pred(),
+                self.ctde_con(hidden, 2).prob(1),
+                current_present,
+                current_alive,
+                next_alive,
             )
             mask_output = self.ctde_mask(hidden, 2)
             mask_probability = jax.nn.sigmoid(mask_output.output.logit)
@@ -2726,8 +2982,6 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             next_features = self.team.unfold_tree_batch(folded_next_features)
 
             hidden = prediction["hidden"]
-            reward = self.ctde_rew(hidden, 2).pred()
-            continuation = self.ctde_con(hidden, 2).prob(1)
             alive_probability = self.ctde_alive(hidden, 2).prob(1)
             next_present = current_present
             if self.ctde_soft_liveness:
@@ -2738,6 +2992,13 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 next_alive = jax.lax.stop_gradient(
                     current_alive & next_present & (alive_probability >= 0.5)
                 )
+            reward, continuation = shared_team_outcomes(
+                self.ctde_rew(hidden, 2).pred(),
+                self.ctde_con(hidden, 2).prob(1),
+                current_present,
+                current_alive,
+                next_alive,
+            )
             noop = jnp.zeros_like(current_mask).at[..., 0].set(True)
             next_mask = jnp.ones_like(current_mask)
             if not self.ctde_soft_liveness:
@@ -2864,7 +3125,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         )
 
     def imagination_state_validity(self, context, horizon, auxiliary=None):
-        """Mask PPO decisions and bootstraps after an agent becomes uncontrollable."""
+        """Mask PPO decisions after an agent becomes uncontrollable."""
 
         if not self.ctde_enabled:
             return super().imagination_state_validity(context, horizon, auxiliary)
@@ -2883,6 +3144,18 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 f"expected {expected}, got {folded.shape[1]}"
             )
         return folded
+
+    def imagination_bootstrap_validity(self, context, horizon, auxiliary=None):
+        """Keep shared team returns alive after a focal unit dies in SMAC."""
+
+        if not self.ctde_enabled:
+            return self.imagination_state_validity(context, horizon, auxiliary)
+        if auxiliary is None:
+            raise ValueError("CTDE PPO imagination requires predicted roster")
+        present = self.team.fold_sequence(auxiliary["present"].astype(bool))
+        if present.shape[1] != horizon + 1:
+            raise ValueError("CTDE bootstrap roster must include root and final state")
+        return present
 
     def imagination_behavior_metrics(self, actions, validity, auxiliary=None):
         """Summarize the actions that actually drive CTDE imagination."""

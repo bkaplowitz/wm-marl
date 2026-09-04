@@ -105,12 +105,31 @@ class GroupedOptimizer(nj.Module):
             invscale = 1 / self.grad_scale.read()
             grads = jax.tree.map(lambda value: value * invscale, grads)
 
+        # These groups jointly fit one world-model objective. Commit the
+        # update transaction only when every active group's gradient is
+        # finite, so an overflow cannot leave half of the model updated or
+        # permanently poison its optimizer moments.
+        finite = jnp.isfinite(loss)
+        for key, (modules, _) in self.groups.items():
+            if key in skip_groups:
+                continue
+            active = jnp.asarray(active_groups.get(key, True), bool)
+            prefixes = tuple(f"{module.path}/" for module in modules)
+            group_grads = {
+                name: value
+                for name, value in grads.items()
+                if name.startswith(prefixes)
+            }
+            group_finite = jnp.isfinite(optax.global_norm(group_grads))
+            finite &= ~active | group_finite
+
         all_updates = {}
-        metrics = {f"{self.name}/loss": loss.mean()}
+        metrics = {
+            f"{self.name}/loss": loss.mean(),
+            f"{self.name}/finite": f32(finite),
+        }
         assigned = set()
-        finite = True
         for key, (modules, optimizer) in self.groups.items():
-            gated = key in active_groups
             active = jnp.asarray(active_groups.get(key, True), bool)
             if active.shape:
                 raise ValueError(
@@ -140,7 +159,7 @@ class GroupedOptimizer(nj.Module):
                 raise ValueError(f"optimizer groups overlap at {sorted(overlap)}")
             assigned.update(group_params)
 
-            group_finite = jnp.isfinite(optax.global_norm(group_grads))
+            apply = active & finite & (key not in skip_groups)
             if key in skip_groups:
                 # PPO owns these groups in separate proximal epochs. Skipping
                 # here must leave parameters, moments, and schedule counters
@@ -152,26 +171,22 @@ class GroupedOptimizer(nj.Module):
                 updates, new_state = optimizer.update(
                     group_grads, old_state, group_params
                 )
-                finite = finite & group_finite
-                # A disabled group is a literal optimizer freeze: parameters,
-                # moments, schedule counters, and update counters all stay fixed.
-                if gated:
-                    state.write(
-                        jax.tree.map(
-                            lambda new, old: jnp.where(active, new, old),
-                            new_state,
-                            old_state,
-                        )
+                # Disabled or nonfinite transactions freeze parameters,
+                # moments, learning-rate schedules, and update counters.
+                state.write(
+                    jax.tree.map(
+                        lambda new, old: jnp.where(apply, new, old),
+                        new_state,
+                        old_state,
                     )
-                    updates = jax.tree.map(
-                        lambda value: jnp.where(active, value, jnp.zeros_like(value)),
-                        updates,
-                    )
-                else:
-                    state.write(new_state)
+                )
+                updates = jax.tree.map(
+                    lambda value: jnp.where(apply, value, jnp.zeros_like(value)),
+                    updates,
+                )
             all_updates.update(updates)
             if key not in skip_groups:
-                self.step[key].write(self.step[key].read() + i32(active & group_finite))
+                self.step[key].write(self.step[key].read() + i32(apply))
 
             counts = {
                 name: math.prod(value.shape) for name, value in group_params.items()
@@ -180,7 +195,7 @@ class GroupedOptimizer(nj.Module):
             metrics.update(
                 {
                     f"{prefix}/updates": self.step[key].read(),
-                    f"{prefix}/active": f32(active & (key not in skip_groups)),
+                    f"{prefix}/active": f32(apply),
                     f"{prefix}/skipped": jnp.asarray(key in skip_groups, f32),
                     f"{prefix}/grad_norm": optax.global_norm(group_grads),
                     f"{prefix}/grad_rms": nets.rms(group_grads),

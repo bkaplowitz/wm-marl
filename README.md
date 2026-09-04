@@ -69,8 +69,13 @@ The joint predictor and centralized critic are training-only; execution keeps
 only the shared encoder, local state, legal-action mask, and shared actor.
 Each learner batch updates the world model first, then creates one detached
 JEPA imagination. PPO reuses that immutable batch for five clipped actor and
-critic epochs. Per-agent presence and controllability mask dead-agent actions
-and terminate their value bootstrap without ending the rest of the team rollout.
+critic epochs. Dead agents stop acting, but their earlier actions keep credit
+for the surviving team's future rewards. Reward and continuation predictions
+are shared across the present roster; value bootstrapping stops at team
+termination. An auxiliary critic loss uses real replay rewards with detached
+current-policy imagined bootstraps (`agent.ppo.replay_value_scale`, default
+0.3), restoring the grounding removed in the initial PPO migration. Replay
+actions are never used as on-policy PPO actor samples.
 
 ## Setup
 

@@ -37,6 +37,45 @@ class TwoStepAnchors(NamedTuple):
     valid: jax.Array
 
 
+def broadcast_team_mean(values, present):
+    """Broadcast a shared SMAC signal over the fixed, present agent roster.
+
+    Reward and episode continuation belong to the team, including units that
+    have died. Averaging present-slot predictions prevents their approximation
+    errors from creating different objectives for agents in the same rollout.
+    Absent padding has no contribution and receives a zero output.
+    """
+
+    values = jnp.asarray(values, f32)
+    present = jnp.asarray(present, bool)
+    if values.shape != present.shape:
+        raise ValueError("team signals and roster must share [...,A] axes")
+    total = jnp.where(present, values, 0.0).sum(axis=-1, keepdims=True)
+    count = present.sum(axis=-1, keepdims=True)
+    mean = total / jnp.maximum(count, 1)
+    return jnp.where(present, mean, 0.0)
+
+
+def shared_team_outcomes(reward, continuation, present, source_alive, next_alive):
+    """Apply shared SMAC outcomes and the absorbing all-dead team boundary."""
+
+    def any_alive(alive):
+        alive = jnp.asarray(alive)
+        if jnp.issubdtype(alive.dtype, jnp.bool_):
+            return (alive & present).any(axis=-1, keepdims=True).astype(f32)
+        probability = jnp.where(present, jnp.clip(alive, 0.0, 1.0), 0.0)
+        return 1.0 - jnp.prod(1.0 - probability, axis=-1, keepdims=True)
+
+    # Preserve the final reward on a transition out of a live team. Once the
+    # source is absorbing, there can be no further reward or continuation.
+    source_live = any_alive(source_alive)
+    reward = broadcast_team_mean(reward, present) * source_live
+    continuation = (
+        broadcast_team_mean(continuation, present) * source_live * any_alive(next_alive)
+    )
+    return reward, continuation
+
+
 def two_step_anchor_mask(is_first, source_valid):
     """Return sources whose complete ``t -> t+1 -> t+2`` path is in one episode.
 
@@ -233,10 +272,12 @@ def _masked_mean(value, valid):
 
 __all__ = [
     "TwoStepAnchors",
+    "broadcast_team_mean",
     "detach_self_feed",
     "gather_anchors",
     "predicted_controllable_alive",
     "sample_two_step_anchors",
+    "shared_team_outcomes",
     "two_step_anchor_mask",
     "two_step_objective",
 ]
