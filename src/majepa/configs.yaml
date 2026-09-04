@@ -35,7 +35,7 @@ defaults:
 
   run:
     steps: 5e4
-    train_ratio: 32.0
+    train_ratio: 128.0
     ppo_start_step: 0
     log_every: 120
     report_every: 300
@@ -115,7 +115,7 @@ defaults:
     policy_dist_disc: categorical
     policy_dist_cont: bounded_normal
     imag_last: 0
-    imag_length: 15
+    imag_length: 5
     horizon: 333
     contdisc: True
     ppo: {epochs: 5, clip_epsilon: 0.2, entropy_coefficient: 1e-2, lam: 0.95, actor_lr: 3e-5, critic_lr: 3e-5, optimizer_warmup: 0}
@@ -133,10 +133,10 @@ ma_jepa:
     sampling: recent_world_uniform_behavior
     recency_decay: 0.9998
   run:
-    train_ratio: 256
+    train_ratio: 128
     ppo_start_step: 5000
   agent:
-    imag_length: 15
+    imag_length: 5
     action_mask_reduction: balanced
     policy: {units: 1024}
     collection_unimix: 0.05
@@ -192,7 +192,7 @@ ma_jepa:
 smac_vector:
   task: smac_3m
   agent: {num_agents: 3}
-  run: {steps: 1e5, train_ratio: 256, envs: 1, eval_envs: 1, curve_eval_eps: 32, curve_eval_seed_offset: 50000}
+  run: {steps: 1e5, train_ratio: 128, envs: 1, eval_envs: 1, curve_eval_eps: 32, curve_eval_seed_offset: 50000}
 
 debug:
   batch_size: 8

@@ -124,7 +124,7 @@ class MAJEPARunSpec:
 
     @property
     def effective_train_ratio(self) -> float:
-        return 256.0
+        return 128.0
 
     @property
     def effective_replay_sampling(self) -> str:
@@ -208,6 +208,7 @@ class MAJEPARunSpec:
             "actor_learning_rate": 3e-5,
             "critic_learning_rate": 3e-5,
             "ppo_start_step": 5000,
+            "imagination_horizon": 5,
             "ppo": {
                 "epochs": 5,
                 "clip_epsilon": 0.2,

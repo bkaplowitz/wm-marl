@@ -46,8 +46,9 @@ def test_locked_profile_values(tmp_path: Path) -> None:
     assert spec.configs == ["smac_vector", "ma_jepa"]
     assert resolved.replay_context == 192
     assert resolved.replay.sampling == "recent_world_uniform_behavior"
-    assert resolved.run.train_ratio == 256
+    assert resolved.run.train_ratio == 128
     assert resolved.run.ppo_start_step == 5000
+    assert resolved.agent.imag_length == 5
     assert resolved.agent.action_mask_reduction == "balanced"
     assert resolved.agent.policy.units == 1024
     assert resolved.agent.collection_unimix == pytest.approx(0.05)
@@ -70,17 +71,18 @@ def test_manifest_describes_the_locked_architecture(tmp_path: Path) -> None:
     manifest = _spec(tmp_path, task="smac_8m", num_agents=8).to_dict()
     assert manifest["implementation"] == "MA-JEPA"
     assert manifest["algorithm"] == "ma-jepa"
-    assert manifest["train_ratio"] == 256.0
+    assert manifest["train_ratio"] == 128.0
     assert manifest["replay_sampling"] == "recent_world_uniform_behavior"
     assert manifest["ctde"]["actor_units"] == 1024
     assert manifest["ctde"]["actor_learning_rate"] == pytest.approx(3e-5)
     assert manifest["ctde"]["critic_learning_rate"] == pytest.approx(3e-5)
     assert manifest["ctde"]["ppo_start_step"] == 5000
+    assert manifest["ctde"]["imagination_horizon"] == 5
     assert manifest["ctde"]["ppo"]["epochs"] == 5
     assert manifest["ctde"]["ppo"]["clip_epsilon"] == pytest.approx(0.2)
     assert manifest["actor_objective"] == "clipped_imagined_ppo"
-    assert manifest["learner_batches_per_environment_step"] == pytest.approx(0.25)
-    assert manifest["actor_updates_per_environment_step"] == pytest.approx(1.25)
+    assert manifest["learner_batches_per_environment_step"] == pytest.approx(0.125)
+    assert manifest["actor_updates_per_environment_step"] == pytest.approx(0.625)
     assert manifest["ctde"]["action_counterfactuals"] == "all_legal_mean"
     assert manifest["ctde"]["action_counterfactual_scale"] == pytest.approx(0.25)
 
