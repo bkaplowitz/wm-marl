@@ -17,7 +17,7 @@ import elements
 from majepa.main import _load_configs, _resolve_config_profiles
 
 
-ALGORITHM_COMMIT = "3583b59dee145a1854c91e92e57063844e7ca500"
+ALGORITHM_COMMIT = "e43e53eb0a4ace94cfe7307c90f8ad8a02c344de"
 TREATMENTS = {
     "death_masking": ("--agent.marl.ctde.death_masking.enabled", "True"),
     "action_binding": (
@@ -104,6 +104,42 @@ TREATMENTS = {
         "--agent.imag_length",
         "8",
     ),
+    "actor_lr_3em5": (
+        "--agent.marl.ctde.death_masking.enabled",
+        "True",
+        "--agent.entropy_schedule.enabled",
+        "True",
+        "--agent.collection_unimix",
+        "0.0",
+        "--agent.policy.unimix",
+        "0.0",
+        "--agent.marl.ctde.actor_lr",
+        "3e-5",
+    ),
+    "actor_lr_1em4": (
+        "--agent.marl.ctde.death_masking.enabled",
+        "True",
+        "--agent.entropy_schedule.enabled",
+        "True",
+        "--agent.collection_unimix",
+        "0.0",
+        "--agent.policy.unimix",
+        "0.0",
+        "--agent.marl.ctde.actor_lr",
+        "1e-4",
+    ),
+    "peer_attention": (
+        "--agent.marl.ctde.death_masking.enabled",
+        "True",
+        "--agent.entropy_schedule.enabled",
+        "True",
+        "--agent.collection_unimix",
+        "0.0",
+        "--agent.policy.unimix",
+        "0.0",
+        "--agent.marl.ctde.multistep_jepa.plan_aggregation",
+        "focal_attention",
+    ),
 }
 LOGGER_FILTER = (
     "score|return|length|fps|ratio|sample_age|replay/behavior_|schedule/|"
@@ -181,7 +217,10 @@ def validate_profile(args) -> dict[str, object]:
     if selected != expected:
         raise RuntimeError(f"treatment isolation failed: {selected} != {expected}")
     entropy = parsed.agent.entropy_schedule
-    entropy_expected = args.treatment.startswith("entropy_")
+    new_treatments = {"actor_lr_3em5", "actor_lr_1em4", "peer_attention"}
+    entropy_expected = args.treatment.startswith("entropy_") or (
+        args.treatment in new_treatments
+    )
     if bool(entropy.enabled) != entropy_expected:
         raise RuntimeError("entropy schedule does not match the selected treatment")
     expected_initial = 0.003 if args.treatment == "entropy_aggressive" else 0.001
@@ -194,6 +233,7 @@ def validate_profile(args) -> dict[str, object]:
         "entropy_no_action_h4",
         "entropy_no_action_h6",
         "entropy_no_action_h8",
+        *new_treatments,
     }
     no_policy_unimix = no_collection - {"entropy_no_collection"}
     expected_collection = 0.0 if args.treatment in no_collection else 0.05
@@ -211,6 +251,17 @@ def validate_profile(args) -> dict[str, object]:
     }.get(args.treatment, 5)
     if int(parsed.agent.imag_length) != expected_horizon:
         raise RuntimeError("imagination horizon does not match treatment")
+    expected_actor_lr = {
+        "actor_lr_3em5": 3e-5,
+        "actor_lr_1em4": 1e-4,
+    }.get(args.treatment, 1e-5)
+    if float(ctde.actor_lr) != expected_actor_lr:
+        raise RuntimeError("actor learning rate does not match treatment")
+    expected_plan_aggregation = (
+        "focal_attention" if args.treatment == "peer_attention" else "mean"
+    )
+    if str(ctde.multistep_jepa.plan_aggregation) != expected_plan_aggregation:
+        raise RuntimeError("teammate-plan aggregation does not match treatment")
     return {
         **selected,
         "seed": int(parsed.seed),
@@ -218,6 +269,8 @@ def validate_profile(args) -> dict[str, object]:
         "collection_unimix": float(parsed.agent.collection_unimix),
         "policy_unimix": float(parsed.agent.policy.unimix),
         "world_model_unimix": float(parsed.agent.dyn.parallel_transformer.unimix),
+        "actor_lr": float(ctde.actor_lr),
+        "plan_aggregation": str(ctde.multistep_jepa.plan_aggregation),
         "entropy_schedule": {
             "enabled": bool(entropy.enabled),
             "initial": float(entropy.initial),
