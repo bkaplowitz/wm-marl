@@ -1534,19 +1534,21 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             )
             plan_context = self._teammate_plan_context(plan_logits)
             peer_indices = self._teammate_peer_indices()
-            plan_active = jnp.stack(
-                [
-                    jnp.take(
-                        (
-                            grouped_present[:, step : step + roots]
-                            & grouped_alive[:, step : step + roots]
-                        ),
-                        peer_indices,
-                        axis=2,
-                    )
-                    for step in range(1, max_horizon)
-                ],
-                axis=3,
+            # Future replay liveness would leak outcomes into both factual and
+            # counterfactual queries. Mask peers that are dead at the causal root
+            # and let their predicted plans represent any later death.
+            root_peer_active = jnp.take(
+                grouped_present[:, :roots] & grouped_alive[:, :roots],
+                peer_indices,
+                axis=2,
+            )
+            plan_active = jnp.broadcast_to(
+                root_peer_active[..., None, :],
+                (
+                    *root_peer_active.shape[:-1],
+                    max_horizon - 1,
+                    root_peer_active.shape[-1],
+                ),
             )
             plan_loss, plan_metrics = self._ctde_teammate_plan_loss(
                 plan_logits,
