@@ -236,6 +236,53 @@ def test_focal_attention_is_peer_permutation_invariant_and_root_conditioned() ->
         np.asarray(changed[..., 0, :, :], np.float32),
     )
 
+    active = jnp.ones(peer.shape[:-1], bool).at[..., 1].set(False)
+    masked = nj.pure(lambda: model(hidden, actions, peer, active))(params, seed=41)[1]
+    changed_inactive_peer = peer.at[..., 1, :].add(1_000.0)
+    changed_masked = nj.pure(
+        lambda: model(hidden, actions, changed_inactive_peer, active)
+    )(params, seed=41)[1]
+    for horizon in (1, 2, 4):
+        np.testing.assert_array_equal(masked[horizon], changed_masked[horizon])
+
+
+def test_focal_attention_parameters_train_but_peer_plan_stays_stopped() -> None:
+    model = ActionConditionedMultiStepJEPA(
+        4,
+        0,
+        5,
+        (1, 2, 4),
+        4,
+        width=8,
+        layers=1,
+        units=8,
+        plan_aggregation="focal_attention",
+        plan_attention_heads=2,
+        name="multistep",
+    )
+    hidden = jax.random.normal(jax.random.key(44), (1, 2, 3, 8))
+    actions = jnp.zeros((1, 2, 3, 4), jnp.int32)
+    peer = jax.random.normal(jax.random.key(45), (1, 2, 3, 3, 2, 4))
+    params = nj.init(lambda: model(hidden, actions, peer))({}, seed=46)
+    gate = next(key for key in params if key.endswith("h4_belief_prediction/kernel"))
+    params = dict(params, **{gate: jnp.ones_like(params[gate])})
+
+    def objective(parameters, plan):
+        prediction = nj.pure(lambda: model(hidden, actions, plan))(
+            parameters, seed=47
+        )[1][4]
+        return jnp.square(prediction.astype(jnp.float32)).mean()
+
+    parameter_grad, plan_grad = jax.grad(objective, (0, 1))(params, peer)
+    attention_grad = {
+        key: float(jnp.linalg.norm(value.astype(jnp.float32)))
+        for key, value in parameter_grad.items()
+        if "belief_attention" in key and key.endswith("kernel")
+    }
+    assert attention_grad
+    assert all(value > 0.0 for value in attention_grad.values())
+    np.testing.assert_array_equal(plan_grad, jnp.zeros_like(plan_grad))
+
 
 def test_each_ms_head_sees_only_its_causal_plan_prefix() -> None:
     model = ActionConditionedMultiStepJEPA(

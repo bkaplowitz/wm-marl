@@ -201,13 +201,19 @@ class ActionConditionedMultiStepJEPA(nj.Module):
     def _belief_residual(self, root, action, belief_context, horizon):
         """Return a zero-initialized per-head belief-conditioned correction."""
 
+        belief_context = nn.cast(belief_context)
+        if self.plan_aggregation == "mean":
+            # Preserve the locked mean-pool baseline exactly. The focal-attention
+            # treatment instead learns its query/key/value projections while its
+            # already-stopped peer-plan inputs remain detached.
+            belief_context = sg(belief_context)
         belief = self.sub(
             f"h{horizon}_belief_projection",
             nn.Linear,
             self.width,
             bias=False,
             winit=self.winit,
-        )(nn.cast(sg(belief_context)))
+        )(belief_context)
         belief = nn.act(self.act)(
             self.sub(f"h{horizon}_belief_norm", nn.Norm, self.norm)(belief)
         )
@@ -234,7 +240,7 @@ class ActionConditionedMultiStepJEPA(nj.Module):
             outscale=0.0,
         )(value)
 
-    def _aggregate_belief_plan(self, root, belief_plan):
+    def _aggregate_belief_plan(self, root, belief_plan, belief_plan_active=None):
         """Aggregate stopped peer-plan tokens without fixed peer identities."""
 
         peer_plan = self.sub(
@@ -249,6 +255,15 @@ class ActionConditionedMultiStepJEPA(nj.Module):
         )
         if self.plan_aggregation == "mean":
             return peer_plan.mean(axis=-2)
+
+        if belief_plan_active is None:
+            belief_plan_active = jnp.ones(belief_plan.shape[:-1], bool)
+        elif belief_plan_active.shape != belief_plan.shape[:-1]:
+            raise ValueError(
+                "multi-step peer activity must be [B,R,A,K-1,P], got "
+                f"{belief_plan_active.shape} for plan {belief_plan.shape}"
+            )
+        belief_plan_active = belief_plan_active.astype(bool)
 
         heads = self.plan_attention_heads
         head_width = self.width // heads
@@ -279,7 +294,11 @@ class ActionConditionedMultiStepJEPA(nj.Module):
         logits = jnp.einsum(
             "...hd,...sphd->...shp", f32(query), f32(key)
         ) / math.sqrt(head_width)
-        weights = jax.nn.softmax(logits, axis=-1).astype(value.dtype)
+        valid = belief_plan_active[..., None, :]
+        weights = jax.nn.softmax(jnp.where(valid, logits, -1e30), axis=-1)
+        weights *= valid.astype(weights.dtype)
+        weights /= jnp.maximum(weights.sum(axis=-1, keepdims=True), 1e-8)
+        weights = weights.astype(value.dtype)
         attended = jnp.einsum("...shp,...sphd->...shd", weights, value)
         attended = attended.reshape((*attended.shape[:-2], self.width))
         attended = self.sub(
@@ -296,6 +315,7 @@ class ActionConditionedMultiStepJEPA(nj.Module):
         joint_hidden,
         action_windows,
         belief_plan=None,
+        belief_plan_active=None,
         *,
         selected_horizon=None,
     ):
@@ -323,6 +343,13 @@ class ActionConditionedMultiStepJEPA(nj.Module):
                     "multi-step belief plan must be [B,R,A,K-1,P,C], got "
                     f"{belief_plan.shape} for roots {joint_hidden.shape}"
                 )
+        if belief_plan_active is not None and (
+            belief_plan is None or belief_plan_active.shape != belief_plan.shape[:-1]
+        ):
+            raise ValueError(
+                "multi-step peer activity must match the belief plan without its "
+                "action-class axis"
+            )
         if selected_horizon is not None:
             selected_horizon = int(selected_horizon)
             if selected_horizon not in self.horizons:
@@ -347,6 +374,7 @@ class ActionConditionedMultiStepJEPA(nj.Module):
                 0x4D534250,
                 root,
                 belief_plan,
+                belief_plan_active,
             )
             if belief_plan is not None
             else None

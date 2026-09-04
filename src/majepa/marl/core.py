@@ -1515,6 +1515,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         q0_context = None
         plan_logits = None
         plan_context = None
+        plan_active = None
         plan_loss = None
         plan_metrics = {}
         if self.ctde_multistep_jepa_belief_context:
@@ -1532,6 +1533,21 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 q0_context,
             )
             plan_context = self._teammate_plan_context(plan_logits)
+            peer_indices = self._teammate_peer_indices()
+            plan_active = jnp.stack(
+                [
+                    jnp.take(
+                        (
+                            grouped_present[:, step : step + roots]
+                            & grouped_alive[:, step : step + roots]
+                        ),
+                        peer_indices,
+                        axis=2,
+                    )
+                    for step in range(1, max_horizon)
+                ],
+                axis=3,
+            )
             plan_loss, plan_metrics = self._ctde_teammate_plan_loss(
                 plan_logits,
                 q0_logits,
@@ -1551,6 +1567,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             root_hidden,
             action_windows,
             plan_context,
+            plan_active,
         )
         if self.ctde_multistep_jepa_action_scale > 0.0:
             counterfactual_windows, distinct_tail = (
@@ -1577,6 +1594,14 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 if plan_context is not None
                 else None
             )
+            expanded_plan_active = (
+                jnp.broadcast_to(
+                    plan_active[:, None],
+                    (batch, classes, *plan_active.shape[1:]),
+                ).reshape((batch * classes, *plan_active.shape[1:]))
+                if plan_active is not None
+                else None
+            )
             for horizon in horizons:
                 candidate_valid = valid[horizon][..., None] & distinct_tail[horizon]
                 counterfactual_valid[horizon] = candidate_valid
@@ -1598,6 +1623,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                     expanded_root,
                     flat_window,
                     expanded_plan,
+                    expanded_plan_active,
                     selected_horizon=horizon,
                 )[horizon]
                 counterfactual_predictions[horizon] = jnp.transpose(
@@ -1690,6 +1716,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 root_hidden,
                 action_windows,
                 zero_plan,
+                plan_active,
             )
             for horizon in horizons:
                 weight = valid[horizon].astype(jnp.float32)
