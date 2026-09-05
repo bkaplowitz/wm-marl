@@ -1,0 +1,531 @@
+{
+  "launcher_commit": "5c796fe3a6c43723858b7194afdb120b82a2fb25",
+  "launcher_archive_sha256": "7224e0077d9a396fa6e2e5fc137c27e6f3eb3ea26bd0895ae2b6f0c6eb332b15",
+  "source_commit": "f2273e9",
+  "source_sha256": "af6e6d23ab98e60d893071054942889ca73c14d0d9071505c4a9ee886df46b5a",
+  "group": "ma-jepa-recurrent-capacity-20260905",
+  "runs": [
+    {
+      "slot": 0,
+      "gpu": 5,
+      "pid": 113030,
+      "wait_pid": 96203,
+      "command": [
+        "/workspace/majepa-runtime/bin/python",
+        "/workspace/majepa_recurrent_capacity_launcher_5c796fe/scripts/run_ppo_recurrent_capacity_screen.py",
+        "--slot",
+        "0",
+        "--source",
+        "/workspace/ma_jepa_recurrent_extensions_f2273e9",
+        "--expected-source-sha256",
+        "af6e6d23ab98e60d893071054942889ca73c14d0d9071505c4a9ee886df46b5a",
+        "--experiment-root",
+        "/workspace/majepa_recurrent_capacity_20260905",
+        "--python",
+        "/workspace/majepa-runtime/bin/python",
+        "--external",
+        "/workspace/external/dreamerv3",
+        "--sc2",
+        "/workspace/StarCraftII",
+        "--portserver-script",
+        "/workspace/majepa-runtime/bin/portserver.py",
+        "--portserver-address",
+        "@majepa-rec-cap-s0",
+        "--portserver-pool",
+        "36400-36799",
+        "--gpu",
+        "5",
+        "--wait-pid",
+        "96203",
+        "--idle-seconds",
+        "5",
+        "--poll-seconds",
+        "5",
+        "--wandb-project",
+        "majepa-ppo-treatments",
+        "--wandb-entity",
+        "osaze-obahor",
+        "--wandb-group",
+        "ma-jepa-recurrent-capacity-20260905",
+        "--wandb-run-prefix",
+        "rec-cap-20260905"
+      ],
+      "launched_at": 1788608278.0885582,
+      "wandb_url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/rec-cap-20260905-s0-train",
+      "previous_queue": {
+        "slot": 0,
+        "gpu": 2,
+        "pid": 110373,
+        "wait_pid": 92848,
+        "command": [
+          "/workspace/majepa-runtime/bin/python",
+          "/workspace/majepa_recurrent_capacity_launcher_5c796fe/scripts/run_ppo_recurrent_capacity_screen.py",
+          "--slot",
+          "0",
+          "--source",
+          "/workspace/ma_jepa_recurrent_extensions_f2273e9",
+          "--expected-source-sha256",
+          "af6e6d23ab98e60d893071054942889ca73c14d0d9071505c4a9ee886df46b5a",
+          "--experiment-root",
+          "/workspace/majepa_recurrent_capacity_20260905",
+          "--python",
+          "/workspace/majepa-runtime/bin/python",
+          "--external",
+          "/workspace/external/dreamerv3",
+          "--sc2",
+          "/workspace/StarCraftII",
+          "--portserver-script",
+          "/workspace/majepa-runtime/bin/portserver.py",
+          "--portserver-address",
+          "@majepa-rec-cap-s0",
+          "--portserver-pool",
+          "36400-36799",
+          "--gpu",
+          "2",
+          "--wait-pid",
+          "92848",
+          "--idle-seconds",
+          "5",
+          "--poll-seconds",
+          "5",
+          "--wandb-project",
+          "majepa-ppo-treatments",
+          "--wandb-entity",
+          "osaze-obahor",
+          "--wandb-group",
+          "ma-jepa-recurrent-capacity-20260905",
+          "--wandb-run-prefix",
+          "rec-cap-20260905"
+        ],
+        "launched_at": 1788608147.3983047,
+        "wandb_url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/rec-cap-20260905-s0-train"
+      },
+      "status": {
+        "status": "train",
+        "updated_at": 1788608291.3599362
+      },
+      "configuration": {
+        "actor_layers": 3,
+        "actor_lr": 3e-05,
+        "actor_units": 1024,
+        "capacity": {
+          "final128": {
+            "actor_layers": 3,
+            "actor_lr": 3e-05,
+            "actor_units": 1024,
+            "critic_lr": 3e-05,
+            "joint_lr": 0.0001,
+            "local_lr": 0.0001
+          },
+          "train": {
+            "actor_layers": 3,
+            "actor_lr": 3e-05,
+            "actor_units": 1024,
+            "critic_lr": 3e-05,
+            "joint_lr": 0.0001,
+            "local_lr": 0.0001
+          }
+        },
+        "collection_unimix": 0.05,
+        "critic_lr": 3e-05,
+        "entropy_coefficient": 0.01,
+        "entropy_schedule_enabled": false,
+        "envs": 1,
+        "joint_world_warmup": 0,
+        "local_world_warmup": 0,
+        "phases": {
+          "final128": {
+            "envs": 4,
+            "episodes": 128,
+            "imag_length": 5,
+            "num_agents": 5,
+            "policy_mode": "eval",
+            "seed_offset": 100000,
+            "self_fed": {
+              "anchors": 8,
+              "bptt_steps": 1,
+              "consumer_kl_scale": 0.0,
+              "enabled": true,
+              "fresh_history": false,
+              "horizons": [
+                2,
+                4,
+                5
+              ],
+              "scale": 0.1
+            },
+            "slowvalue_rate": 1.0
+          },
+          "train": {
+            "checkpoint_at_curve_eval": false,
+            "curve_eps": 32,
+            "curve_interval": 5000,
+            "curve_seed_offset": 50000,
+            "envs": 1,
+            "imag_length": 5,
+            "num_agents": 5,
+            "self_fed": {
+              "anchors": 8,
+              "bptt_steps": 1,
+              "consumer_kl_scale": 0.0,
+              "enabled": true,
+              "fresh_history": false,
+              "horizons": [
+                2,
+                4,
+                5
+              ],
+              "scale": 0.1
+            },
+            "slowvalue_rate": 1.0,
+            "steps": 50000
+          }
+        },
+        "ppo_start_step": 5000,
+        "replay_value_scale": 0.3,
+        "seed": 0,
+        "task": "smac_2s3z",
+        "train_ratio": 128.0,
+        "world_model_start_step": 5000
+      },
+      "train_pid": 113698,
+      "outcome": null,
+      "log_tail": "id Space(uint8, shape=(20,), low=0, high=255)\n  _behavior_replay/dyn/stoch Space(float32, shape=(5, 32, 64), low=-inf, high=inf)\n  _behavior_replay/dyn/pair Space(float32, shape=(5, 2059), low=-inf, high=inf)\n  _behavior_replay/dyn/reset Space(bool, shape=(5,), low=False, high=True)\n  _behavior_replay/dyn/position Space(int32, shape=(5,), low=-2147483648, high=2147483647)\n  _behavior_replay/dyn/active Space(bool, shape=(5,), low=False, high=True)\nJAX devices (1): [cuda:0]\nPolicy devices: cuda:0\nTrain devices:  cuda:0\nInitializing parameters...\nOptimizer opt/local_world has 89,539,851 parameters\nOptimizer opt/joint_world has 34,755,929 parameters\nOptimizer opt/actor has 15,367,947 parameters\n"
+    },
+    {
+      "slot": 1,
+      "gpu": 1,
+      "pid": 110374,
+      "wait_pid": 92847,
+      "command": [
+        "/workspace/majepa-runtime/bin/python",
+        "/workspace/majepa_recurrent_capacity_launcher_5c796fe/scripts/run_ppo_recurrent_capacity_screen.py",
+        "--slot",
+        "1",
+        "--source",
+        "/workspace/ma_jepa_recurrent_extensions_f2273e9",
+        "--expected-source-sha256",
+        "af6e6d23ab98e60d893071054942889ca73c14d0d9071505c4a9ee886df46b5a",
+        "--experiment-root",
+        "/workspace/majepa_recurrent_capacity_20260905",
+        "--python",
+        "/workspace/majepa-runtime/bin/python",
+        "--external",
+        "/workspace/external/dreamerv3",
+        "--sc2",
+        "/workspace/StarCraftII",
+        "--portserver-script",
+        "/workspace/majepa-runtime/bin/portserver.py",
+        "--portserver-address",
+        "@majepa-rec-cap-s1",
+        "--portserver-pool",
+        "36800-37199",
+        "--gpu",
+        "1",
+        "--wait-pid",
+        "92847",
+        "--idle-seconds",
+        "5",
+        "--poll-seconds",
+        "5",
+        "--wandb-project",
+        "majepa-ppo-treatments",
+        "--wandb-entity",
+        "osaze-obahor",
+        "--wandb-group",
+        "ma-jepa-recurrent-capacity-20260905",
+        "--wandb-run-prefix",
+        "rec-cap-20260905"
+      ],
+      "launched_at": 1788608147.3999183,
+      "wandb_url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/rec-cap-20260905-s1-train",
+      "status": {
+        "compute_pids": [
+          93400
+        ],
+        "gpu": 1,
+        "idle_seconds": 0,
+        "predecessor_pids": [
+          92847
+        ],
+        "status": "waiting_for_gpu",
+        "updated_at": 1788608310.4886951
+      },
+      "configuration": {
+        "actor_layers": 2,
+        "actor_lr": 3e-05,
+        "actor_units": 256,
+        "capacity": {
+          "final128": {
+            "actor_layers": 2,
+            "actor_lr": 3e-05,
+            "actor_units": 256,
+            "critic_lr": 3e-05,
+            "joint_lr": 4e-05,
+            "local_lr": 4e-05
+          },
+          "train": {
+            "actor_layers": 2,
+            "actor_lr": 3e-05,
+            "actor_units": 256,
+            "critic_lr": 3e-05,
+            "joint_lr": 4e-05,
+            "local_lr": 4e-05
+          }
+        },
+        "collection_unimix": 0.05,
+        "critic_lr": 3e-05,
+        "entropy_coefficient": 0.01,
+        "entropy_schedule_enabled": false,
+        "envs": 1,
+        "joint_world_warmup": 0,
+        "local_world_warmup": 0,
+        "phases": {
+          "final128": {
+            "envs": 4,
+            "episodes": 128,
+            "imag_length": 5,
+            "num_agents": 5,
+            "policy_mode": "eval",
+            "seed_offset": 100000,
+            "self_fed": {
+              "anchors": 8,
+              "bptt_steps": 1,
+              "consumer_kl_scale": 0.0,
+              "enabled": true,
+              "fresh_history": false,
+              "horizons": [
+                2,
+                4,
+                5
+              ],
+              "scale": 0.1
+            },
+            "slowvalue_rate": 1.0
+          },
+          "train": {
+            "checkpoint_at_curve_eval": false,
+            "curve_eps": 32,
+            "curve_interval": 5000,
+            "curve_seed_offset": 50000,
+            "envs": 1,
+            "imag_length": 5,
+            "num_agents": 5,
+            "self_fed": {
+              "anchors": 8,
+              "bptt_steps": 1,
+              "consumer_kl_scale": 0.0,
+              "enabled": true,
+              "fresh_history": false,
+              "horizons": [
+                2,
+                4,
+                5
+              ],
+              "scale": 0.1
+            },
+            "slowvalue_rate": 1.0,
+            "steps": 50000
+          }
+        },
+        "ppo_start_step": 5000,
+        "replay_value_scale": 0.3,
+        "seed": 0,
+        "task": "smac_2s3z",
+        "train_ratio": 128.0,
+        "world_model_start_step": 5000
+      },
+      "train_pid": null,
+      "outcome": null,
+      "log_tail": ""
+    },
+    {
+      "slot": 2,
+      "gpu": 3,
+      "pid": 110375,
+      "wait_pid": 92849,
+      "command": [
+        "/workspace/majepa-runtime/bin/python",
+        "/workspace/majepa_recurrent_capacity_launcher_5c796fe/scripts/run_ppo_recurrent_capacity_screen.py",
+        "--slot",
+        "2",
+        "--source",
+        "/workspace/ma_jepa_recurrent_extensions_f2273e9",
+        "--expected-source-sha256",
+        "af6e6d23ab98e60d893071054942889ca73c14d0d9071505c4a9ee886df46b5a",
+        "--experiment-root",
+        "/workspace/majepa_recurrent_capacity_20260905",
+        "--python",
+        "/workspace/majepa-runtime/bin/python",
+        "--external",
+        "/workspace/external/dreamerv3",
+        "--sc2",
+        "/workspace/StarCraftII",
+        "--portserver-script",
+        "/workspace/majepa-runtime/bin/portserver.py",
+        "--portserver-address",
+        "@majepa-rec-cap-s2",
+        "--portserver-pool",
+        "37200-37599",
+        "--gpu",
+        "3",
+        "--wait-pid",
+        "92849",
+        "--idle-seconds",
+        "5",
+        "--poll-seconds",
+        "5",
+        "--wandb-project",
+        "majepa-ppo-treatments",
+        "--wandb-entity",
+        "osaze-obahor",
+        "--wandb-group",
+        "ma-jepa-recurrent-capacity-20260905",
+        "--wandb-run-prefix",
+        "rec-cap-20260905"
+      ],
+      "launched_at": 1788608147.4044876,
+      "wandb_url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/rec-cap-20260905-s2-train",
+      "status": {
+        "status": "train",
+        "updated_at": 1788608228.5876365
+      },
+      "configuration": {
+        "actor_layers": 2,
+        "actor_lr": 3e-05,
+        "actor_units": 256,
+        "capacity": {
+          "final128": {
+            "actor_layers": 2,
+            "actor_lr": 3e-05,
+            "actor_units": 256,
+            "critic_lr": 3e-05,
+            "joint_lr": 0.0001,
+            "local_lr": 0.0001
+          },
+          "train": {
+            "actor_layers": 2,
+            "actor_lr": 3e-05,
+            "actor_units": 256,
+            "critic_lr": 3e-05,
+            "joint_lr": 0.0001,
+            "local_lr": 0.0001
+          }
+        },
+        "collection_unimix": 0.05,
+        "critic_lr": 3e-05,
+        "entropy_coefficient": 0.01,
+        "entropy_schedule_enabled": false,
+        "envs": 1,
+        "joint_world_warmup": 0,
+        "local_world_warmup": 0,
+        "phases": {
+          "final128": {
+            "envs": 4,
+            "episodes": 128,
+            "imag_length": 5,
+            "num_agents": 5,
+            "policy_mode": "eval",
+            "seed_offset": 100000,
+            "self_fed": {
+              "anchors": 8,
+              "bptt_steps": 1,
+              "consumer_kl_scale": 0.0,
+              "enabled": true,
+              "fresh_history": false,
+              "horizons": [
+                2,
+                4,
+                5
+              ],
+              "scale": 0.1
+            },
+            "slowvalue_rate": 1.0
+          },
+          "train": {
+            "checkpoint_at_curve_eval": false,
+            "curve_eps": 32,
+            "curve_interval": 5000,
+            "curve_seed_offset": 50000,
+            "envs": 1,
+            "imag_length": 5,
+            "num_agents": 5,
+            "self_fed": {
+              "anchors": 8,
+              "bptt_steps": 1,
+              "consumer_kl_scale": 0.0,
+              "enabled": true,
+              "fresh_history": false,
+              "horizons": [
+                2,
+                4,
+                5
+              ],
+              "scale": 0.1
+            },
+            "slowvalue_rate": 1.0,
+            "steps": 50000
+          }
+        },
+        "ppo_start_step": 5000,
+        "replay_value_scale": 0.3,
+        "seed": 0,
+        "task": "smac_2s3z",
+        "train_ratio": 128.0,
+        "world_model_start_step": 5000
+      },
+      "train_pid": 112023,
+      "outcome": null,
+      "log_tail": "\nInitializing parameters...\nOptimizer opt/local_world has 89,539,851 parameters\nOptimizer opt/joint_world has 34,755,929 parameters\nOptimizer opt/actor has 5,458,443 parameters\nOptimizer opt/critic has 4,398,847 parameters\nOptimizer opt/actor has 5,458,443 parameters\nOptimizer opt/critic has 4,398,847 parameters\nOptimizer opt/actor has 5,458,443 parameters\nOptimizer opt/critic has 4,398,847 parameters\nOptimizer opt/actor has 5,458,443 parameters\nOptimizer opt/critic has 4,398,847 parameters\nOptimizer opt/actor has 5,458,443 parameters\nOptimizer opt/critic has 4,398,847 parameters\nDone initializing!\nCompiling 1 checkpoint groups...\nLargest checkpoint group: 2 GB\nCompiling train and report...\n"
+    }
+  ],
+  "watchers": {
+    "mirror": {
+      "pid": 41985,
+      "command": [
+        "/Users/osaze/MARL/world_marl/.venv/bin/python",
+        "/Users/osaze/MARL/worktrees/ma_jepa_ppo/analysis/ppo_audit/mirror_remote_results.py",
+        "--host",
+        "root@154.54.102.56",
+        "--port",
+        "14808",
+        "--remote-root",
+        "/workspace/majepa_recurrent_capacity_20260905",
+        "--expected-runs",
+        "3",
+        "--local-root",
+        "/Users/osaze/MARL/worktrees/ma_jepa_ppo/analysis/ppo_audit/recurrent_capacity_20260905_mirror",
+        "--watch",
+        "--interval",
+        "120"
+      ],
+      "started_at": 1788608177.600383
+    },
+    "backup": {
+      "pid": 41986,
+      "command": [
+        "/Users/osaze/MARL/world_marl/.venv/bin/python",
+        "/Users/osaze/MARL/worktrees/ma_jepa_ppo/analysis/ppo_audit/watch_final_backups.py",
+        "--host",
+        "root@154.54.102.56",
+        "--port",
+        "14808",
+        "--remote-root",
+        "/workspace/majepa_recurrent_capacity_20260905",
+        "--expected-runs",
+        "3",
+        "--mirror",
+        "/Users/osaze/MARL/worktrees/ma_jepa_ppo/analysis/ppo_audit/recurrent_capacity_20260905_mirror",
+        "--destination",
+        "/Users/osaze/MARL/remote_archives/majepa_recurrent_capacity_20260905",
+        "--bandwidth-kbps",
+        "64000"
+      ],
+      "started_at": 1788608177.602953
+    }
+  },
+  "stopped_ema_supervisors": [
+    92849,
+    96203
+  ]
+}
