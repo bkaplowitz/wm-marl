@@ -24,3 +24,5 @@ analysis/ppo_audit/corrected_2s3z_first_checkpoint/
 analysis/ppo_audit/historical_2s3z_seed234_simulator.json
 
 analysis/ppo_audit/prefill_recurrent_ema_20260905_mirror/
+analysis/ppo_audit/recurrent_extensions_20260905_mirror/
+analysis/ppo_audit/recurrent_combinations_20260905_mirror/

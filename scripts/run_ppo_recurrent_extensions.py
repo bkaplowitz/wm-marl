@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Four separately controlled extensions of recurrent PPO on 2s3z seed0."""
+"""Four individual recurrent extensions and two paired combinations on 2s3z."""
 
 from dataclasses import dataclass
 import json
@@ -32,6 +32,8 @@ def run_spec(slot):
         1: ("recurrent_bptt2", {"bptt_steps": 2}),
         2: ("recurrent_env16", {"envs": 16}),
         3: ("recurrent_ema05", {"slowvalue_rate": 0.5}),
+        4: ("recurrent_fresh_bptt2", {"fresh_history": True, "bptt_steps": 2}),
+        5: ("recurrent_env16_ema05", {"envs": 16, "slowvalue_rate": 0.5}),
     }
     arm, changes = options[slot]
     values = dict(
@@ -104,8 +106,8 @@ def validate_profile(args, run, env):
 def main():
     parser = base.argument_parser()
     args = parser.parse_args()
-    if args.slot not in range(4):
-        parser.error("Only four extension slots exist")
+    if args.slot not in range(6):
+        parser.error("Only six extension slots exist")
     args.screen_label = "Recurrent extensions"
     base.run_screen(
         args,
@@ -114,7 +116,7 @@ def main():
         extra_manifest={
             "screen": "recurrent_extensions_20260905",
             "reference_run": "pre-rec-ema-20260905-s1-train",
-            "interpretation": "One modification per arm; 2s3z seed0 screening only.",
+            "interpretation": "Individual changes in slots0-3; paired combinations in slots4-5. 2s3z seed0 screening only.",
         },
     )
 
