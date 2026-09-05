@@ -111,7 +111,7 @@ def train_command(args, run, logdir):
         "--script",
         "train",
         "--run.steps",
-        "50000",
+        str(getattr(run, "steps", 50000)),
         "--run.envs",
         str(getattr(run, "envs", 1)),
         "--run.world_model_start_step",
@@ -192,19 +192,23 @@ def execution_environment(args):
 def phase_environment(args, phase_root, phase, env):
     env = env.copy()
     if getattr(args, "wandb_project", ""):
-        run = getattr(args, "run_spec", SLOTS[args.slot])
+        run = getattr(args, "run_spec", None) or SLOTS[args.slot]
+        run_id = (
+            getattr(args, "wandb_job_id", None)
+            or f"{args.wandb_run_prefix}-s{args.slot}"
+        )
         env.update(
             WANDB_ENTITY=args.wandb_entity,
             WANDB_PROJECT=args.wandb_project,
             WANDB_RUN_GROUP=args.wandb_group,
-            WANDB_RUN_ID=f"{args.wandb_run_prefix}-s{args.slot}-{phase}",
+            WANDB_RUN_ID=f"{run_id}-{phase}",
             WANDB_NAME=f"{args.wandb_run_prefix}-{run.name}-{phase}",
             WANDB_JOB_TYPE=phase,
             WANDB_DIR=str(phase_root),
             WANDB_RESUME="never",
             WANDB_NOTES=(
                 f"{getattr(args, 'screen_label', 'Correction screen')} {run.name}; package SHA256 "
-                f"{args.expected_source_sha256}; 50k total environment transitions."
+                f"{args.expected_source_sha256}; {getattr(run, 'steps', 50000)} total environment transitions."
             ),
         )
     return env
@@ -261,15 +265,15 @@ def wait_for_gpu(args, run_root):
         time.sleep(args.poll_seconds)
 
 
-def latest_checkpoint(train_root):
+def latest_checkpoint(train_root, expected_steps=50000):
     root = train_root / "run" / "ckpt"
     checkpoint = root / (root / "latest").read_text().strip()
     if not (checkpoint / "done").is_file():
         raise RuntimeError("Final checkpoint is incomplete")
     with (checkpoint / "step.pkl").open("rb") as file:
         step = int(pickle.load(file))
-    if step != 50000:
-        raise RuntimeError(f"Expected final checkpoint at 50000, got {step}")
+    if step != expected_steps:
+        raise RuntimeError(f"Expected final checkpoint at {expected_steps}, got {step}")
     return checkpoint
 
 
@@ -463,7 +467,7 @@ def run_screen(args, run=None, profile_validator=validate_profile, extra_manifes
             },
             "created_at": time.time(),
             "protocol": {
-                "train_steps": 50000,
+                "train_steps": getattr(run, "steps", 50000),
                 "curve_interval": 5000,
                 "curve_episodes": 32,
                 "curve_seed_offset": 50000,
@@ -509,7 +513,9 @@ def run_screen(args, run=None, profile_validator=validate_profile, extra_manifes
                 train_command(args, run, run_root / "train/run"),
                 env,
             )
-            checkpoint = latest_checkpoint(run_root / "train")
+            checkpoint = latest_checkpoint(
+                run_root / "train", getattr(run, "steps", 50000)
+            )
             run_child(
                 args,
                 children,

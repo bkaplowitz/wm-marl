@@ -1,0 +1,771 @@
+{
+  "launched_at": 1788614286.4418452,
+  "workers": [
+    {
+      "gpu": 0,
+      "pid": 163422,
+      "command": [
+        "/workspace/majepa-runtime/bin/python",
+        "/workspace/majepa_bptt2_matrix_launcher_20260905/scripts/run_ppo_bptt2_matrix.py",
+        "worker",
+        "--gpu",
+        "0"
+      ]
+    },
+    {
+      "gpu": 1,
+      "pid": 163423,
+      "command": [
+        "/workspace/majepa-runtime/bin/python",
+        "/workspace/majepa_bptt2_matrix_launcher_20260905/scripts/run_ppo_bptt2_matrix.py",
+        "worker",
+        "--gpu",
+        "1"
+      ]
+    },
+    {
+      "gpu": 2,
+      "pid": 163424,
+      "command": [
+        "/workspace/majepa-runtime/bin/python",
+        "/workspace/majepa_bptt2_matrix_launcher_20260905/scripts/run_ppo_bptt2_matrix.py",
+        "worker",
+        "--gpu",
+        "2"
+      ]
+    },
+    {
+      "gpu": 3,
+      "pid": 163425,
+      "command": [
+        "/workspace/majepa-runtime/bin/python",
+        "/workspace/majepa_bptt2_matrix_launcher_20260905/scripts/run_ppo_bptt2_matrix.py",
+        "worker",
+        "--gpu",
+        "3"
+      ]
+    },
+    {
+      "gpu": 4,
+      "pid": 163426,
+      "command": [
+        "/workspace/majepa-runtime/bin/python",
+        "/workspace/majepa_bptt2_matrix_launcher_20260905/scripts/run_ppo_bptt2_matrix.py",
+        "worker",
+        "--gpu",
+        "4"
+      ]
+    },
+    {
+      "gpu": 5,
+      "pid": 163427,
+      "command": [
+        "/workspace/majepa-runtime/bin/python",
+        "/workspace/majepa_bptt2_matrix_launcher_20260905/scripts/run_ppo_bptt2_matrix.py",
+        "worker",
+        "--gpu",
+        "5"
+      ]
+    }
+  ],
+  "launcher": "/workspace/majepa_bptt2_matrix_launcher_20260905",
+  "source": "/workspace/ma_jepa_recurrent_extensions_f2273e9",
+  "source_sha256": "af6e6d23ab98e60d893071054942889ca73c14d0d9071505c4a9ee886df46b5a",
+  "launcher_sha256": {
+    "scripts/run_ppo_self_fed_screen.py": "bb8bdf3b5f801ee3f34e517dfc3ca52135c3f1ec77303d96f5691be286932064",
+    "scripts/run_ppo_prefill_recurrent_ema_screen.py": "2659c486f0cd55aec67150ca125c8b1f3855b3a80d51f368d968eb6f22175460",
+    "scripts/run_ppo_recurrent_extensions.py": "015c35c8267689d775e3f1318033d2ebb27607c2306bbb778cd2cc7e5d09edf2",
+    "scripts/run_ppo_correction_screen.py": "99a016b4cb6bc681e280ed212a102f95fc07ca639952289b286b8c9caf9d041c",
+    "scripts/run_ppo_bptt2_matrix.py": "adc8382b214c4687cc4972697b7e08f8cdbf7eb6d394d7d27aba5a0334196f76"
+  },
+  "wandb_group": "ma-jepa-bptt2-matrix-20260905",
+  "queue": {
+    "created_at": 1788614214.2375088,
+    "jobs": [
+      {
+        "gpu": 0,
+        "index": 0,
+        "map": "3m",
+        "name": "bptt2-3m-seed0",
+        "seed": 0,
+        "stage": 0,
+        "started_at": 1788614286.5194728,
+        "status": "running",
+        "steps": 50000,
+        "supervisor_pid": 163428,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3m-s0-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3m-s0-train",
+        "worker_pid": 163422
+      },
+      {
+        "gpu": 1,
+        "index": 1,
+        "map": "8m",
+        "name": "bptt2-8m-seed0",
+        "seed": 0,
+        "stage": 0,
+        "started_at": 1788614286.52537,
+        "status": "running",
+        "steps": 50000,
+        "supervisor_pid": 163429,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-8m-s0-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-8m-s0-train",
+        "worker_pid": 163423
+      },
+      {
+        "gpu": 3,
+        "index": 2,
+        "map": "2s3z",
+        "name": "bptt2-2s3z-seed0",
+        "seed": 0,
+        "stage": 0,
+        "started_at": 1788614286.531014,
+        "status": "running",
+        "steps": 50000,
+        "supervisor_pid": 163430,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2s3z-s0-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2s3z-s0-train",
+        "worker_pid": 163425
+      },
+      {
+        "gpu": 4,
+        "index": 3,
+        "map": "MMM",
+        "name": "bptt2-MMM-seed0",
+        "seed": 0,
+        "stage": 0,
+        "started_at": 1788614286.5417893,
+        "status": "running",
+        "steps": 50000,
+        "supervisor_pid": 163431,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-MMM-s0-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-MMM-s0-train",
+        "worker_pid": 163426
+      },
+      {
+        "gpu": 5,
+        "index": 4,
+        "map": "2c_vs_64zg",
+        "name": "bptt2-2c_vs_64zg-seed0",
+        "seed": 0,
+        "stage": 0,
+        "started_at": 1788614286.5477061,
+        "status": "running",
+        "steps": 200000,
+        "supervisor_pid": 163432,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2c_vs_64zg-s0-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2c_vs_64zg-s0-train",
+        "worker_pid": 163427
+      },
+      {
+        "gpu": 2,
+        "index": 5,
+        "map": "MMM2",
+        "name": "bptt2-MMM2-seed0",
+        "seed": 0,
+        "stage": 0,
+        "started_at": 1788614286.55316,
+        "status": "running",
+        "steps": 200000,
+        "supervisor_pid": 163433,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-MMM2-s0-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-MMM2-s0-train",
+        "worker_pid": 163424
+      },
+      {
+        "index": 6,
+        "map": "3s_vs_3z",
+        "name": "bptt2-3s_vs_3z-seed0",
+        "seed": 0,
+        "stage": 0,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3s_vs_3z-s0-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3s_vs_3z-s0-train"
+      },
+      {
+        "index": 7,
+        "map": "3s_vs_4z",
+        "name": "bptt2-3s_vs_4z-seed0",
+        "seed": 0,
+        "stage": 0,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3s_vs_4z-s0-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3s_vs_4z-s0-train"
+      },
+      {
+        "index": 8,
+        "map": "so_many_baneling",
+        "name": "bptt2-so_many_baneling-seed0",
+        "seed": 0,
+        "stage": 0,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-so_many_baneling-s0-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-so_many_baneling-s0-train"
+      },
+      {
+        "index": 9,
+        "map": "2s_vs_1sc",
+        "name": "bptt2-2s_vs_1sc-seed0",
+        "seed": 0,
+        "stage": 0,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2s_vs_1sc-s0-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2s_vs_1sc-s0-train"
+      },
+      {
+        "index": 10,
+        "map": "2m_vs_1z",
+        "name": "bptt2-2m_vs_1z-seed0",
+        "seed": 0,
+        "stage": 0,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2m_vs_1z-s0-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2m_vs_1z-s0-train"
+      },
+      {
+        "index": 11,
+        "map": "3s_vs_5z",
+        "name": "bptt2-3s_vs_5z-seed0",
+        "seed": 0,
+        "stage": 0,
+        "status": "pending",
+        "steps": 200000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3s_vs_5z-s0-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3s_vs_5z-s0-train"
+      },
+      {
+        "index": 12,
+        "map": "5m_vs_6m",
+        "name": "bptt2-5m_vs_6m-seed0",
+        "seed": 0,
+        "stage": 0,
+        "status": "pending",
+        "steps": 200000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-5m_vs_6m-s0-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-5m_vs_6m-s0-train"
+      },
+      {
+        "index": 13,
+        "map": "corridor",
+        "name": "bptt2-corridor-seed0",
+        "seed": 0,
+        "stage": 0,
+        "status": "pending",
+        "steps": 200000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-corridor-s0-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-corridor-s0-train"
+      },
+      {
+        "index": 14,
+        "map": "3m",
+        "name": "bptt2-3m-seed1",
+        "seed": 1,
+        "stage": 0,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3m-s1-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3m-s1-train"
+      },
+      {
+        "index": 15,
+        "map": "8m",
+        "name": "bptt2-8m-seed1",
+        "seed": 1,
+        "stage": 0,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-8m-s1-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-8m-s1-train"
+      },
+      {
+        "index": 16,
+        "map": "2s3z",
+        "name": "bptt2-2s3z-seed1",
+        "seed": 1,
+        "stage": 0,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2s3z-s1-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2s3z-s1-train"
+      },
+      {
+        "index": 17,
+        "map": "MMM",
+        "name": "bptt2-MMM-seed1",
+        "seed": 1,
+        "stage": 0,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-MMM-s1-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-MMM-s1-train"
+      },
+      {
+        "index": 18,
+        "map": "2c_vs_64zg",
+        "name": "bptt2-2c_vs_64zg-seed1",
+        "seed": 1,
+        "stage": 0,
+        "status": "pending",
+        "steps": 200000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2c_vs_64zg-s1-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2c_vs_64zg-s1-train"
+      },
+      {
+        "index": 19,
+        "map": "MMM2",
+        "name": "bptt2-MMM2-seed1",
+        "seed": 1,
+        "stage": 0,
+        "status": "pending",
+        "steps": 200000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-MMM2-s1-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-MMM2-s1-train"
+      },
+      {
+        "index": 20,
+        "map": "3s_vs_3z",
+        "name": "bptt2-3s_vs_3z-seed1",
+        "seed": 1,
+        "stage": 0,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3s_vs_3z-s1-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3s_vs_3z-s1-train"
+      },
+      {
+        "index": 21,
+        "map": "3s_vs_4z",
+        "name": "bptt2-3s_vs_4z-seed1",
+        "seed": 1,
+        "stage": 0,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3s_vs_4z-s1-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3s_vs_4z-s1-train"
+      },
+      {
+        "index": 22,
+        "map": "so_many_baneling",
+        "name": "bptt2-so_many_baneling-seed1",
+        "seed": 1,
+        "stage": 0,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-so_many_baneling-s1-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-so_many_baneling-s1-train"
+      },
+      {
+        "index": 23,
+        "map": "2s_vs_1sc",
+        "name": "bptt2-2s_vs_1sc-seed1",
+        "seed": 1,
+        "stage": 0,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2s_vs_1sc-s1-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2s_vs_1sc-s1-train"
+      },
+      {
+        "index": 24,
+        "map": "2m_vs_1z",
+        "name": "bptt2-2m_vs_1z-seed1",
+        "seed": 1,
+        "stage": 0,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2m_vs_1z-s1-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2m_vs_1z-s1-train"
+      },
+      {
+        "index": 25,
+        "map": "3s_vs_5z",
+        "name": "bptt2-3s_vs_5z-seed1",
+        "seed": 1,
+        "stage": 0,
+        "status": "pending",
+        "steps": 200000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3s_vs_5z-s1-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3s_vs_5z-s1-train"
+      },
+      {
+        "index": 26,
+        "map": "5m_vs_6m",
+        "name": "bptt2-5m_vs_6m-seed1",
+        "seed": 1,
+        "stage": 0,
+        "status": "pending",
+        "steps": 200000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-5m_vs_6m-s1-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-5m_vs_6m-s1-train"
+      },
+      {
+        "index": 27,
+        "map": "corridor",
+        "name": "bptt2-corridor-seed1",
+        "seed": 1,
+        "stage": 0,
+        "status": "pending",
+        "steps": 200000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-corridor-s1-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-corridor-s1-train"
+      },
+      {
+        "index": 28,
+        "map": "3m",
+        "name": "bptt2-3m-seed2",
+        "seed": 2,
+        "stage": 1,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3m-s2-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3m-s2-train"
+      },
+      {
+        "index": 29,
+        "map": "8m",
+        "name": "bptt2-8m-seed2",
+        "seed": 2,
+        "stage": 1,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-8m-s2-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-8m-s2-train"
+      },
+      {
+        "index": 30,
+        "map": "2s3z",
+        "name": "bptt2-2s3z-seed2",
+        "seed": 2,
+        "stage": 1,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2s3z-s2-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2s3z-s2-train"
+      },
+      {
+        "index": 31,
+        "map": "MMM",
+        "name": "bptt2-MMM-seed2",
+        "seed": 2,
+        "stage": 1,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-MMM-s2-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-MMM-s2-train"
+      },
+      {
+        "index": 32,
+        "map": "2c_vs_64zg",
+        "name": "bptt2-2c_vs_64zg-seed2",
+        "seed": 2,
+        "stage": 1,
+        "status": "pending",
+        "steps": 200000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2c_vs_64zg-s2-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2c_vs_64zg-s2-train"
+      },
+      {
+        "index": 33,
+        "map": "MMM2",
+        "name": "bptt2-MMM2-seed2",
+        "seed": 2,
+        "stage": 1,
+        "status": "pending",
+        "steps": 200000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-MMM2-s2-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-MMM2-s2-train"
+      },
+      {
+        "index": 34,
+        "map": "3s_vs_3z",
+        "name": "bptt2-3s_vs_3z-seed2",
+        "seed": 2,
+        "stage": 1,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3s_vs_3z-s2-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3s_vs_3z-s2-train"
+      },
+      {
+        "index": 35,
+        "map": "3s_vs_4z",
+        "name": "bptt2-3s_vs_4z-seed2",
+        "seed": 2,
+        "stage": 1,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3s_vs_4z-s2-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3s_vs_4z-s2-train"
+      },
+      {
+        "index": 36,
+        "map": "so_many_baneling",
+        "name": "bptt2-so_many_baneling-seed2",
+        "seed": 2,
+        "stage": 1,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-so_many_baneling-s2-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-so_many_baneling-s2-train"
+      },
+      {
+        "index": 37,
+        "map": "2s_vs_1sc",
+        "name": "bptt2-2s_vs_1sc-seed2",
+        "seed": 2,
+        "stage": 1,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2s_vs_1sc-s2-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2s_vs_1sc-s2-train"
+      },
+      {
+        "index": 38,
+        "map": "2m_vs_1z",
+        "name": "bptt2-2m_vs_1z-seed2",
+        "seed": 2,
+        "stage": 1,
+        "status": "pending",
+        "steps": 50000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2m_vs_1z-s2-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-2m_vs_1z-s2-train"
+      },
+      {
+        "index": 39,
+        "map": "3s_vs_5z",
+        "name": "bptt2-3s_vs_5z-seed2",
+        "seed": 2,
+        "stage": 1,
+        "status": "pending",
+        "steps": 200000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3s_vs_5z-s2-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-3s_vs_5z-s2-train"
+      },
+      {
+        "index": 40,
+        "map": "5m_vs_6m",
+        "name": "bptt2-5m_vs_6m-seed2",
+        "seed": 2,
+        "stage": 1,
+        "status": "pending",
+        "steps": 200000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-5m_vs_6m-s2-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-5m_vs_6m-s2-train"
+      },
+      {
+        "index": 41,
+        "map": "corridor",
+        "name": "bptt2-corridor-seed2",
+        "seed": 2,
+        "stage": 1,
+        "status": "pending",
+        "steps": 200000,
+        "wandb_final": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-corridor-s2-final128",
+        "wandb_train": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bptt2-20260905-corridor-s2-train"
+      }
+    ],
+    "rule": "All 28 seed-0/1 jobs finish before any seed-2 job starts; failed jobs pause seed 2.",
+    "source": "/workspace/ma_jepa_recurrent_extensions_f2273e9",
+    "source_sha256": "af6e6d23ab98e60d893071054942889ca73c14d0d9071505c4a9ee886df46b5a",
+    "updated_at": 1788614286.5829322,
+    "wandb_group": "ma-jepa-bptt2-matrix-20260905"
+  },
+  "map_checks": [
+    {
+      "map": "3m",
+      "agents": 3,
+      "observation_shape": [
+        3,
+        30
+      ],
+      "actions": 9,
+      "reset_and_legal_step": true
+    },
+    {
+      "map": "8m",
+      "agents": 8,
+      "observation_shape": [
+        8,
+        80
+      ],
+      "actions": 14,
+      "reset_and_legal_step": true
+    },
+    {
+      "map": "2s3z",
+      "agents": 5,
+      "observation_shape": [
+        5,
+        80
+      ],
+      "actions": 11,
+      "reset_and_legal_step": true
+    },
+    {
+      "map": "MMM",
+      "agents": 10,
+      "observation_shape": [
+        10,
+        160
+      ],
+      "actions": 16,
+      "reset_and_legal_step": true
+    },
+    {
+      "map": "3s_vs_3z",
+      "agents": 3,
+      "observation_shape": [
+        3,
+        36
+      ],
+      "actions": 9,
+      "reset_and_legal_step": true
+    },
+    {
+      "map": "3s_vs_4z",
+      "agents": 3,
+      "observation_shape": [
+        3,
+        42
+      ],
+      "actions": 10,
+      "reset_and_legal_step": true
+    },
+    {
+      "map": "so_many_baneling",
+      "agents": 7,
+      "observation_shape": [
+        7,
+        202
+      ],
+      "actions": 38,
+      "reset_and_legal_step": true
+    },
+    {
+      "map": "2s_vs_1sc",
+      "agents": 2,
+      "observation_shape": [
+        2,
+        17
+      ],
+      "actions": 7,
+      "reset_and_legal_step": true
+    },
+    {
+      "map": "2m_vs_1z",
+      "agents": 2,
+      "observation_shape": [
+        2,
+        16
+      ],
+      "actions": 7,
+      "reset_and_legal_step": true
+    },
+    {
+      "map": "3s_vs_5z",
+      "agents": 3,
+      "observation_shape": [
+        3,
+        48
+      ],
+      "actions": 11,
+      "reset_and_legal_step": true
+    },
+    {
+      "map": "2c_vs_64zg",
+      "agents": 2,
+      "observation_shape": [
+        2,
+        332
+      ],
+      "actions": 70,
+      "reset_and_legal_step": true
+    },
+    {
+      "map": "5m_vs_6m",
+      "agents": 5,
+      "observation_shape": [
+        5,
+        55
+      ],
+      "actions": 12,
+      "reset_and_legal_step": true
+    },
+    {
+      "map": "corridor",
+      "agents": 6,
+      "observation_shape": [
+        6,
+        156
+      ],
+      "actions": 30,
+      "reset_and_legal_step": true
+    },
+    {
+      "map": "MMM2",
+      "agents": 10,
+      "observation_shape": [
+        10,
+        176
+      ],
+      "actions": 18,
+      "reset_and_legal_step": true
+    }
+  ],
+  "watchers": {
+    "mirror": {
+      "pid": 50711,
+      "command": [
+        "/Users/osaze/MARL/world_marl/.venv/bin/python",
+        "/Users/osaze/MARL/worktrees/ma_jepa_ppo/analysis/ppo_audit/mirror_remote_results.py",
+        "--host",
+        "root@154.54.102.56",
+        "--port",
+        "14808",
+        "--remote-root",
+        "/workspace/majepa_bptt2_matrix_20260905",
+        "--expected-runs",
+        "42",
+        "--local-root",
+        "/Users/osaze/MARL/worktrees/ma_jepa_ppo/analysis/ppo_audit/bptt2_matrix_20260905_mirror",
+        "--watch",
+        "--interval",
+        "120"
+      ],
+      "started_at": 1788614272.71327
+    },
+    "backup": {
+      "pid": 50712,
+      "command": [
+        "/Users/osaze/MARL/world_marl/.venv/bin/python",
+        "/Users/osaze/MARL/worktrees/ma_jepa_ppo/analysis/ppo_audit/watch_final_backups.py",
+        "--host",
+        "root@154.54.102.56",
+        "--port",
+        "14808",
+        "--remote-root",
+        "/workspace/majepa_bptt2_matrix_20260905",
+        "--expected-runs",
+        "42",
+        "--mirror",
+        "/Users/osaze/MARL/worktrees/ma_jepa_ppo/analysis/ppo_audit/bptt2_matrix_20260905_mirror",
+        "--destination",
+        "/Users/osaze/MARL/remote_archives/majepa_bptt2_matrix_20260905",
+        "--bandwidth-kbps",
+        "64000"
+      ],
+      "started_at": 1788614272.714695
+    }
+  },
+  "stopped_supervisors": [
+    133225,
+    133224,
+    113030
+  ],
+  "already_finished_supervisor": 110375
+}
