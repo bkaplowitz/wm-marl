@@ -5,6 +5,8 @@ Reconstructs raw complete episodes with current parameters. Factual, self-fed,
 and oracle-observation paths share categorical randomness at each target time.
 One root-live factual cohort is used at every horizon, including unit deaths.
 No environment, optimizer, actor update, or checkpoint write is performed.
+Outcome semantics must match the evaluated policy's simulator: corrected team
+pooling is the default; original_slots preserves the older raw per-slot heads.
 """
 
 from __future__ import annotations
@@ -41,7 +43,20 @@ def select_roots(episodes, horizon, count, seed):
     return sorted(candidates[int(index)] for index in selected)
 
 
-def make_auditor(config, observation_dim, action_count, horizon):
+def outcome_predictions(reward, continuation, present, source_alive, next_alive, mode):
+    """Apply only the selected deployed simulator's reward/continuation rules."""
+    if mode == "original_slots":
+        return reward, continuation
+    if mode != "corrected_team":
+        raise ValueError(f"Unknown outcome semantics: {mode}")
+    from majepa.training.ctde import shared_team_outcomes
+
+    return shared_team_outcomes(reward, continuation, present, source_alive, next_alive)
+
+
+def make_auditor(
+    config, observation_dim, action_count, horizon, outcome_semantics="corrected_team"
+):
     """Build checkpoint-compatible local and joint modules, without a learner."""
     import elements
     import embodied.jax
@@ -51,7 +66,6 @@ def make_auditor(config, observation_dim, action_count, horizon):
     import ninjax as nj
     from majepa.models.visual import Encoder
     from majepa.models.ctde import JointObservationJEPA
-    from majepa.training.ctde import shared_team_outcomes
     from majepa.world_model.transformer import (
         ParallelTransformerDynamics,
         _where_active,
@@ -127,12 +141,13 @@ def make_auditor(config, observation_dim, action_count, horizon):
         hidden = prediction["hidden"]
         probability = alive_head(hidden, 2).prob(1)
         next_alive = source_alive & present & (probability >= 0.5)
-        reward, continuation = shared_team_outcomes(
+        reward, continuation = outcome_predictions(
             rew(hidden, 2).pred(),
             con(hidden, 2).prob(1),
             present,
             source_alive,
             next_alive,
+            outcome_semantics,
         )
         output = mask(hidden, 2)
         binary = output.output if hasattr(output, "output") else output
@@ -424,6 +439,13 @@ def main(argv=None):
     parser.add_argument("--replay", type=Path)
     parser.add_argument("--external", type=Path)
     parser.add_argument("--platform", choices=("cpu", "cuda"), default="cpu")
+    parser.add_argument(
+        "--outcome-semantics",
+        choices=("corrected_team", "original_slots"),
+        default="corrected_team",
+        help="Match the checkpoint's deployed simulator: team pooling/absorbing guards "
+        "or original unpooled per-slot reward and continuation heads.",
+    )
     parser.add_argument("--roots", type=int, default=64)
     parser.add_argument("--max-episodes", type=int, default=128)
     parser.add_argument("--max-chunks", type=int, default=64)
@@ -463,7 +485,9 @@ def main(argv=None):
     nets.COMPUTE_DTYPE = getattr(jnp, config["jax"].get("compute_dtype", "bfloat16"))
     observation_dim = episodes[0].data["observation"].shape[-1]
     action_count = episodes[0].data["action_mask"].shape[-1]
-    forward, initialize = make_auditor(config, observation_dim, action_count, horizon)
+    forward, initialize = make_auditor(
+        config, observation_dim, action_count, horizon, args.outcome_semantics
+    )
     padded_length = 64 * (
         (max(len(episode.data["observation"]) for episode in episodes) + 63) // 64
     )
@@ -507,6 +531,20 @@ def main(argv=None):
         "config_sha256": hashlib.sha256(config_text.encode()).hexdigest(),
         "horizons": args.horizons,
         "seed": args.seed,
+        "outcome_semantics": args.outcome_semantics,
+        "outcome_semantics_description": (
+            "Present-slot team pooling; zero reward for all-dead sources and zero "
+            "continuation when no next controllable agent remains."
+            if args.outcome_semantics == "corrected_team"
+            else "Raw per-slot reward and continuation heads, matching the original "
+            "92014f1 imagination path; no team pooling or all-dead absorbing guards."
+        ),
+        "cumulative_return_definition": "Finite model rollout sum of predicted rewards "
+        "weighted by preceding predicted continuation products; factual sum uses "
+        "configured discount and includes terminal reward. No critic bootstrap, "
+        "lambda mixing, GAE, or focal-death actor mask is applied. In particular, "
+        "original_slots does not reproduce the old GAE's separate focal-death "
+        "credit truncation; this is simulator-return accuracy, not PPO advantage accuracy.",
         "team_roots": len(roots),
         "unique_episodes": len({record["episode"] for record in records}),
         "protocol": "Raw complete-episode reconstruction; identical target-step categorical keys across factual/self-fed/oracle paths; fixed root-live cohort and complete factual future; KL includes configured unimix and sums categorical variables. Oracle feeds actual online embeddings and factual liveness. Teacher-factual and oracle predicted outcomes should agree up to numerical sequence/step parity; oracle injected posterior KL should be zero.",

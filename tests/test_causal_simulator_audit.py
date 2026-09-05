@@ -8,7 +8,12 @@ import jax.numpy as jnp
 import numpy as np
 
 from majepa.main import _load_configs, _resolve_config_profiles
-from scripts.audit_causal_simulator import main, make_auditor, select_roots
+from scripts.audit_causal_simulator import (
+    main,
+    make_auditor,
+    outcome_predictions,
+    select_roots,
+)
 from scripts.probe_control_sufficiency import Episode
 
 
@@ -25,6 +30,24 @@ def tiny_inputs():
         jnp.zeros((length, agents), bool).at[-1].set(True),
         jnp.asarray(1, jnp.int32),
     )
+
+
+def test_outcome_semantics_preserves_original_slots_and_corrected_terminal_reward():
+    reward = jnp.asarray([[2.0, 4.0], [6.0, 8.0], [10.0, 12.0]])
+    continuation = jnp.asarray([[0.2, 0.8], [0.3, 0.9], [0.4, 1.0]])
+    present = jnp.ones_like(reward, bool)
+    source_alive = jnp.asarray([[True, False], [True, False], [False, False]])
+    next_alive = jnp.asarray([[True, False], [False, False], [False, False]])
+    original = outcome_predictions(
+        reward, continuation, present, source_alive, next_alive, "original_slots"
+    )
+    np.testing.assert_array_equal(original[0], reward)
+    np.testing.assert_array_equal(original[1], continuation)
+    corrected = outcome_predictions(
+        reward, continuation, present, source_alive, next_alive, "corrected_team"
+    )
+    np.testing.assert_allclose(corrected[0], [[3, 3], [7, 7], [0, 0]])
+    np.testing.assert_allclose(corrected[1], [[0.5, 0.5], [0, 0], [0, 0]])
 
 
 def test_paired_simulator_couples_factual_oracle_draws_and_keeps_alignment():
@@ -130,6 +153,8 @@ def test_offline_audit_end_to_end_outputs_paired_records(tmp_path):
                 str(output),
                 "--platform",
                 "cpu",
+                "--outcome-semantics",
+                "original_slots",
                 "--roots",
                 "8",
                 "--max-episodes",
@@ -143,6 +168,9 @@ def test_offline_audit_end_to_end_outputs_paired_records(tmp_path):
         == 0
     )
     result = json.loads(output.read_text())
+    assert result["outcome_semantics"] == "original_slots"
+    assert "Raw per-slot" in result["outcome_semantics_description"]
+    assert "not PPO advantage accuracy" in result["cumulative_return_definition"]
     assert len(result["records"]) == 8
     for horizon in (1, 2, 4):
         actual = result["summary"]["oracle_observation_alive"][f"h{horizon}"]
