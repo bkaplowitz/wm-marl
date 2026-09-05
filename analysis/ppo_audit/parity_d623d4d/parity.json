@@ -1,0 +1,22 @@
+{
+  "baseline_seconds": 41.831962208030745,
+  "baseline_source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+  "baseline_training_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+  "comparison": "Exact pytree paths, shapes, dtypes and tensor-byte SHA256; no differing tensors. Full initialized model/optimizers, then one full active-PPO learner update, returned carry, replay updates and metrics.",
+  "executed_probe_sha256": "4d791308b4be622a9599341508706b6f6830c39fad36535c168c2f077a94348d",
+  "executed_probe_source": "import hashlib\nimport json\nfrom pathlib import Path\nimport sys\nimport time\nimport jax\nimport jax.numpy as jnp\nimport ninjax as nj\nimport numpy as np\nfrom test_majepa_learner_smoke import _tiny_learner, _synthetic_replay\n\nstarted = time.monotonic()\nsource, output = Path(sys.argv[1]).resolve(), Path(sys.argv[2])\nfiles = sorted(path for path in (source / 'src/majepa').rglob('*') if path.suffix in ('.py', '.yaml'))\nfingerprint = hashlib.sha256()\nfor path in files:\n    fingerprint.update(str(path.relative_to(source)).encode())\n    fingerprint.update(path.read_bytes())\nlearner, observations, actions = _tiny_learner()\ndata = _synthetic_replay(learner, observations, actions)\ndata = dict(data, _environment_step=jnp.full((2, 8), 10, jnp.int32))\ncarry = learner.init_train(2)\nstate = nj.init(learner.train)({}, carry, data, seed=988)\nresult = jax.jit(nj.pure(learner.train))(state, carry, data, seed=989)\n\ndef describe(tree):\n    records = []\n    for path, value in jax.tree_util.tree_flatten_with_path(tree)[0]:\n        array = np.asarray(jax.device_get(value))\n        if not np.isfinite(array.astype(np.float32)).all():\n            raise ValueError('Nonfinite parity tensor')\n        records.append({'path': jax.tree_util.keystr(path), 'shape': list(array.shape), 'dtype': str(array.dtype), 'sha256': hashlib.sha256(array.tobytes()).hexdigest()})\n    return records\n\nrecord = {'source': str(source), 'source_sha256': fingerprint.hexdigest(),\n          'fixture_sha256': hashlib.sha256((source / 'tests/test_majepa_learner_smoke.py').read_bytes()).hexdigest(),\n          'jax_version': jax.__version__, 'initialization': describe(state), 'update': describe(result),\n          'ppo_active': float(result[1][2]['ppo/active']), 'wall_seconds': time.monotonic() - started}\noutput.write_text(json.dumps(record, indent=2, sort_keys=True) + '\\n')\nprint(json.dumps({key: record[key] for key in ['source', 'source_sha256', 'ppo_active', 'wall_seconds']}))\n",
+  "fingerprint_note": "Top-level source hashes use the screen canonical path-NUL-content-NUL formula. Raw tensor records use an unseparated path-content hash; both were recomputed after execution and matched the package files, confirming no package edits during the comparison.",
+  "fixture_sha256": "323e80881a766ea9a4e73a51961a29cbb0f5d9c74c4a341b955a5d597ad05b7f",
+  "initialization_tensors_compared": 624,
+  "jax_version": "0.4.36",
+  "limitations": "Production-shape GPU parity is not claimed. The common tiny fixture uses the maintained default-disabled self-fed setting.",
+  "optional_commit": "d623d4d34fcbebb8e345a1f038f71a988940235b",
+  "optional_seconds": 41.283610124955885,
+  "optional_source_sha256": "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc",
+  "parity_kind": "cross_source_executed_train",
+  "passed": true,
+  "platform": "cpu",
+  "ppo_active": 1.0,
+  "test_command": "In each source directory: JAX_PLATFORMS=cpu OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 PYTHONPATH=src:tests:/Users/osaze/MARL/worktrees/ma_jepa_paper/external/dreamerv3 /Users/osaze/MARL/worktrees/ma_jepa_paper/.venv/bin/python /tmp/majepa_cross_source_parity.py . OUTPUT.json; then assert equality of all initialization and update tensor descriptions.",
+  "update_tensors_compared": 922
+}

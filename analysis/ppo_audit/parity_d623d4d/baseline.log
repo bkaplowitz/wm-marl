@@ -1,0 +1,7 @@
+Optimizer opt/local_world has 2,246 parameters
+Optimizer opt/joint_world has 4,839 parameters
+Optimizer opt/actor has 140,504 parameters
+Optimizer opt/critic has 877 parameters
+Optimizer opt/actor has 140,504 parameters
+Optimizer opt/critic has 877 parameters
+{"source": "/Users/osaze/MARL/worktrees/ma_jepa_ppo", "source_sha256": "bb1f241e5e12a19841c083ef00b251ffcf25d4e57f61a3230678d6640c9f9b0b", "ppo_active": 1.0, "wall_seconds": 41.831962208030745}
