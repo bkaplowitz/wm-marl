@@ -1,0 +1,11 @@
+{
+  "user_seconds": 459.192973,
+  "system_seconds": 18.677211,
+  "maximum_rss_kib": 2068332,
+  "major_page_faults": 589,
+  "minor_page_faults": 1311584,
+  "filesystem_blocks_read": 0,
+  "filesystem_blocks_written": 189,
+  "voluntary_context_switches": 2009054,
+  "involuntary_context_switches": 1593
+}

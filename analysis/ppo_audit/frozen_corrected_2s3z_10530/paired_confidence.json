@@ -1,0 +1,688 @@
+{
+  "historical_2s3z_seed234_simulator": {
+    "agent_roots": 207,
+    "bootstrap_draws": 4000,
+    "bootstrap_seed": 86420,
+    "episodes": 29,
+    "file": "/Users/osaze/MARL/worktrees/ma_jepa_ppo/analysis/ppo_audit/historical_2s3z_seed234_simulator.json.gz",
+    "horizons": {
+      "h1": {
+        "model_return_bias": {
+          "episode_cluster_percentile_95": [
+            -0.03947508789355727,
+            0.01889455300473991
+          ],
+          "point": -0.006928908870854091
+        },
+        "oracle_numerical_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            -2.3220028248409112e-08,
+            3.975484117694187e-06
+          ],
+          "point": 1.2198063162963417e-06
+        },
+        "self_feed_excess_alive_brier": {
+          "episode_cluster_percentile_95": [
+            -1.311931311458157e-11,
+            3.0662198187954764e-09
+          ],
+          "point": 1.180053585711802e-09
+        },
+        "self_feed_excess_mask_false_negative": {
+          "episode_cluster_percentile_95": [
+            -0.0022727272727272726,
+            0.0
+          ],
+          "point": -0.0006285355122564425
+        },
+        "self_feed_excess_mask_false_positive": {
+          "episode_cluster_percentile_95": [
+            0.0,
+            0.0
+          ],
+          "point": 0.0
+        },
+        "self_feed_excess_return_bias": {
+          "episode_cluster_percentile_95": [
+            -3.5132161532797027e-06,
+            3.284929476093526e-05
+          ],
+          "point": 1.0192202199430425e-05
+        },
+        "self_feed_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            -2.3220028248409112e-08,
+            3.975484117694187e-06
+          ],
+          "point": 1.2198063162963417e-06
+        },
+        "self_feed_vs_oracle_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            0.0,
+            0.0
+          ],
+          "point": 0.0
+        },
+        "teacher_return_bias": {
+          "episode_cluster_percentile_95": [
+            -0.03949073744307606,
+            0.018890125977642735
+          ],
+          "point": -0.006939101073053521
+        }
+      },
+      "h2": {
+        "model_return_bias": {
+          "episode_cluster_percentile_95": [
+            -0.09302187334686775,
+            0.0036656208405820754
+          ],
+          "point": -0.0426343073527124
+        },
+        "oracle_numerical_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            -4.515177953218787e-06,
+            4.757703578751789e-05
+          ],
+          "point": 1.580185551527152e-05
+        },
+        "self_feed_excess_alive_brier": {
+          "episode_cluster_percentile_95": [
+            -0.0023111559973045307,
+            0.005129477249766822
+          ],
+          "point": 0.0008903130993194712
+        },
+        "self_feed_excess_mask_false_negative": {
+          "episode_cluster_percentile_95": [
+            0.0018425546063160743,
+            0.021276928815998082
+          ],
+          "point": 0.009529860228716646
+        },
+        "self_feed_excess_mask_false_positive": {
+          "episode_cluster_percentile_95": [
+            -0.010854246644880865,
+            0.011200898876404498
+          ],
+          "point": 0.001422475106685633
+        },
+        "self_feed_excess_return_bias": {
+          "episode_cluster_percentile_95": [
+            -0.04963770472749005,
+            -0.0015963746480233997
+          ],
+          "point": -0.018733718317898513
+        },
+        "self_feed_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            -0.000998987674234211,
+            0.030845189074247152
+          ],
+          "point": 0.009577667613168346
+        },
+        "self_feed_vs_oracle_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            -0.0010123474801849118,
+            0.030854646699667858
+          ],
+          "point": 0.009561865757653073
+        },
+        "teacher_return_bias": {
+          "episode_cluster_percentile_95": [
+            -0.06735404508077256,
+            0.014948453553089996
+          ],
+          "point": -0.023900589034813884
+        }
+      },
+      "h4": {
+        "model_return_bias": {
+          "episode_cluster_percentile_95": [
+            -0.08925642072695449,
+            0.04323107237035952
+          ],
+          "point": -0.02017372222417619
+        },
+        "oracle_numerical_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            -2.8286616488744616e-05,
+            8.163260432717757e-05
+          ],
+          "point": 2.1786636780706894e-05
+        },
+        "self_feed_excess_alive_brier": {
+          "episode_cluster_percentile_95": [
+            0.00813227733859204,
+            0.041547439198147976
+          ],
+          "point": 0.02266670493383321
+        },
+        "self_feed_excess_mask_false_negative": {
+          "episode_cluster_percentile_95": [
+            0.008244388929119056,
+            0.03299492385786802
+          ],
+          "point": 0.019442644199611146
+        },
+        "self_feed_excess_mask_false_positive": {
+          "episode_cluster_percentile_95": [
+            0.0133855421686747,
+            0.09618398873022371
+          ],
+          "point": 0.05040871934604905
+        },
+        "self_feed_excess_return_bias": {
+          "episode_cluster_percentile_95": [
+            -0.0803230687541302,
+            0.002580423203022551
+          ],
+          "point": -0.03488409149787807
+        },
+        "self_feed_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            0.00026900040315124517,
+            0.038509762065961385
+          ],
+          "point": 0.015761291755957932
+        },
+        "self_feed_vs_oracle_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            0.0002798953501459033,
+            0.03852805675674512
+          ],
+          "point": 0.015739505119177225
+        },
+        "teacher_return_bias": {
+          "episode_cluster_percentile_95": [
+            -0.032225721855165326,
+            0.06356885322618404
+          ],
+          "point": 0.01471036927370188
+        }
+      },
+      "h5": {
+        "model_return_bias": {
+          "episode_cluster_percentile_95": [
+            -0.14232237807881734,
+            0.029495702313259736
+          ],
+          "point": -0.05126983656577208
+        },
+        "oracle_numerical_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            -7.831889395363085e-05,
+            0.00010480719902988945
+          ],
+          "point": 8.802476853047835e-06
+        },
+        "self_feed_excess_alive_brier": {
+          "episode_cluster_percentile_95": [
+            0.014938515251638508,
+            0.06418689631046169
+          ],
+          "point": 0.03696740829302313
+        },
+        "self_feed_excess_mask_false_negative": {
+          "episode_cluster_percentile_95": [
+            0.023024594424108886,
+            0.09209530135938387
+          ],
+          "point": 0.052110817941952506
+        },
+        "self_feed_excess_mask_false_positive": {
+          "episode_cluster_percentile_95": [
+            0.019096553509724064,
+            0.09492868430149298
+          ],
+          "point": 0.052562417871222074
+        },
+        "self_feed_excess_return_bias": {
+          "episode_cluster_percentile_95": [
+            -0.08030577815048119,
+            0.007783050443244464
+          ],
+          "point": -0.03384232580755131
+        },
+        "self_feed_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            0.00868479163550697,
+            0.06660106263045774
+          ],
+          "point": 0.03324617035008231
+        },
+        "self_feed_vs_oracle_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            0.008684145076624274,
+            0.06659771796441341
+          ],
+          "point": 0.033237367873229264
+        },
+        "teacher_return_bias": {
+          "episode_cluster_percentile_95": [
+            -0.08213023649782264,
+            0.04334162434739503
+          ],
+          "point": -0.01742751075822077
+        }
+      },
+      "h8": {
+        "model_return_bias": {
+          "episode_cluster_percentile_95": [
+            -0.09445880771869329,
+            0.10599625286012733
+          ],
+          "point": 0.008664596560951053
+        },
+        "oracle_numerical_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            -0.0001741581794537845,
+            0.0001060799459449829
+          ],
+          "point": -2.5281034907536054e-05
+        },
+        "self_feed_excess_alive_brier": {
+          "episode_cluster_percentile_95": [
+            0.0400363721392167,
+            0.11945916936891694
+          ],
+          "point": 0.07701316088443995
+        },
+        "self_feed_excess_mask_false_negative": {
+          "episode_cluster_percentile_95": [
+            0.035950351010208006,
+            0.10485857057651184
+          ],
+          "point": 0.06766381766381767
+        },
+        "self_feed_excess_mask_false_positive": {
+          "episode_cluster_percentile_95": [
+            0.05895790490217875,
+            0.1467266636384284
+          ],
+          "point": 0.09851088201603665
+        },
+        "self_feed_excess_return_bias": {
+          "episode_cluster_percentile_95": [
+            -0.050614315687390714,
+            0.0760640763832217
+          ],
+          "point": 0.01451393525377096
+        },
+        "self_feed_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            0.009255641957195547,
+            0.07085011975257342
+          ],
+          "point": 0.039382100996687666
+        },
+        "self_feed_vs_oracle_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            0.009325227473058207,
+            0.0709063930704749
+          ],
+          "point": 0.0394073820315952
+        },
+        "teacher_return_bias": {
+          "episode_cluster_percentile_95": [
+            -0.08009900992562687,
+            0.06516016123649558
+          ],
+          "point": -0.005849338692819906
+        }
+      }
+    },
+    "limits": "Conditional uncertainty for this frozen checkpoint and replay cohort only; episode-cluster resampling preserves correlated roots/agents. Not training-seed uncertainty or evidence of a causal difference between historical 50k and corrected 10.5k checkpoints.",
+    "max_oracle_posterior_kl": 0.0,
+    "max_teacher_oracle_outcome_difference": {
+      "alive_probability": 0.0042057037353515625,
+      "continuation": 0.007082343101501465,
+      "reward": 0.010625213384628296
+    },
+    "outcome_semantics": "original_slots",
+    "team_roots": 64
+  },
+  "paired_simulator": {
+    "agent_roots": 209,
+    "bootstrap_draws": 4000,
+    "bootstrap_seed": 86420,
+    "episodes": 42,
+    "file": "/Users/osaze/MARL/worktrees/ma_jepa_ppo/analysis/ppo_audit/frozen_corrected_2s3z_10530/diagnostic_outputs.tar.gz",
+    "horizons": {
+      "h1": {
+        "model_return_bias": {
+          "episode_cluster_percentile_95": [
+            -0.028990951692939443,
+            0.043017058563944055
+          ],
+          "point": 0.008089871176977476
+        },
+        "oracle_numerical_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            -3.6668811536859206e-05,
+            0.0
+          ],
+          "point": -1.161548923990368e-05
+        },
+        "self_feed_excess_alive_brier": {
+          "episode_cluster_percentile_95": [
+            -5.534862077461741e-06,
+            2.9153327571862715e-05
+          ],
+          "point": 6.990540247972003e-06
+        },
+        "self_feed_excess_mask_false_negative": {
+          "episode_cluster_percentile_95": [
+            0.0,
+            0.0
+          ],
+          "point": 0.0
+        },
+        "self_feed_excess_mask_false_positive": {
+          "episode_cluster_percentile_95": [
+            0.0,
+            0.0
+          ],
+          "point": 0.0
+        },
+        "self_feed_excess_return_bias": {
+          "episode_cluster_percentile_95": [
+            -0.00011455916081674412,
+            2.0380859351276757e-06
+          ],
+          "point": -3.668626672343204e-05
+        },
+        "self_feed_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            -3.6668811536859206e-05,
+            0.0
+          ],
+          "point": -1.161548923990368e-05
+        },
+        "self_feed_vs_oracle_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            0.0,
+            0.0
+          ],
+          "point": 0.0
+        },
+        "teacher_return_bias": {
+          "episode_cluster_percentile_95": [
+            -0.028955853462653437,
+            0.043090815333912194
+          ],
+          "point": 0.008126557443700909
+        }
+      },
+      "h2": {
+        "model_return_bias": {
+          "episode_cluster_percentile_95": [
+            -0.041781357847990724,
+            0.05641387608290672
+          ],
+          "point": 0.00657146766282725
+        },
+        "oracle_numerical_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            -3.3794318081432817e-07,
+            1.527523611607744e-05
+          ],
+          "point": 6.453026021162728e-06
+        },
+        "self_feed_excess_alive_brier": {
+          "episode_cluster_percentile_95": [
+            0.006439872438929692,
+            0.037647876187151826
+          ],
+          "point": 0.020632336085728176
+        },
+        "self_feed_excess_mask_false_negative": {
+          "episode_cluster_percentile_95": [
+            0.0006783687133207281,
+            0.007709021033467104
+          ],
+          "point": 0.004054054054054054
+        },
+        "self_feed_excess_mask_false_positive": {
+          "episode_cluster_percentile_95": [
+            0.022368315957625694,
+            0.11222311827956989
+          ],
+          "point": 0.06471306471306472
+        },
+        "self_feed_excess_return_bias": {
+          "episode_cluster_percentile_95": [
+            0.0007929642951831449,
+            0.00390543861717161
+          ],
+          "point": 0.0021593887626269216
+        },
+        "self_feed_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            -0.0002896393212801966,
+            0.001218910245918527
+          ],
+          "point": 0.00035731316191156255
+        },
+        "self_feed_vs_oracle_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            -0.0002993791457076469,
+            0.0012131154664451556
+          ],
+          "point": 0.00035086013589039983
+        },
+        "teacher_return_bias": {
+          "episode_cluster_percentile_95": [
+            -0.04350585415509123,
+            0.05347926267063777
+          ],
+          "point": 0.004412078900200328
+        }
+      },
+      "h4": {
+        "model_return_bias": {
+          "episode_cluster_percentile_95": [
+            0.034025850799319884,
+            0.15421018105557419
+          ],
+          "point": 0.09251049021927364
+        },
+        "oracle_numerical_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            -0.00017158612706640681,
+            6.660388668462991e-05
+          ],
+          "point": -3.9194849352197e-05
+        },
+        "self_feed_excess_alive_brier": {
+          "episode_cluster_percentile_95": [
+            0.02211380563089015,
+            0.053995553997892076
+          ],
+          "point": 0.03795612127964289
+        },
+        "self_feed_excess_mask_false_negative": {
+          "episode_cluster_percentile_95": [
+            -0.00575136152760035,
+            0.009259617035892153
+          ],
+          "point": 0.0014144271570014145
+        },
+        "self_feed_excess_mask_false_positive": {
+          "episode_cluster_percentile_95": [
+            0.12471607286982589,
+            0.23809646539027982
+          ],
+          "point": 0.18305084745762712
+        },
+        "self_feed_excess_return_bias": {
+          "episode_cluster_percentile_95": [
+            0.015575507230730057,
+            0.024883735232666286
+          ],
+          "point": 0.020053410252030387
+        },
+        "self_feed_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            0.0005650695078985381,
+            0.010193739723135881
+          ],
+          "point": 0.0047273473641828365
+        },
+        "self_feed_vs_oracle_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            0.0006341905171493709,
+            0.01021888738765799
+          ],
+          "point": 0.004766542213535033
+        },
+        "teacher_return_bias": {
+          "episode_cluster_percentile_95": [
+            0.014925755896372205,
+            0.13258052412166696
+          ],
+          "point": 0.07245707996724325
+        }
+      },
+      "h5": {
+        "model_return_bias": {
+          "episode_cluster_percentile_95": [
+            0.034660481059502424,
+            0.15802320103147754
+          ],
+          "point": 0.0965528488872154
+        },
+        "oracle_numerical_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            -8.916221168620712e-05,
+            9.189434486626411e-05
+          ],
+          "point": -3.873250622838336e-06
+        },
+        "self_feed_excess_alive_brier": {
+          "episode_cluster_percentile_95": [
+            0.034670833179724136,
+            0.07430127554785793
+          ],
+          "point": 0.053835264755940644
+        },
+        "self_feed_excess_mask_false_negative": {
+          "episode_cluster_percentile_95": [
+            -0.013000485501908523,
+            0.015447374373280056
+          ],
+          "point": 0.0007062146892655367
+        },
+        "self_feed_excess_mask_false_positive": {
+          "episode_cluster_percentile_95": [
+            0.2026259082512701,
+            0.3126523188207711
+          ],
+          "point": 0.2582106455266138
+        },
+        "self_feed_excess_return_bias": {
+          "episode_cluster_percentile_95": [
+            0.02623011454344299,
+            0.03850110587164722
+          ],
+          "point": 0.03218765613850224
+        },
+        "self_feed_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            0.0013269419685597568,
+            0.011834636570288286
+          ],
+          "point": 0.006205511350296921
+        },
+        "self_feed_vs_oracle_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            0.0013265599689200758,
+            0.01182791381601851
+          ],
+          "point": 0.006209384600919759
+        },
+        "teacher_return_bias": {
+          "episode_cluster_percentile_95": [
+            0.002743849306821671,
+            0.12494306901963281
+          ],
+          "point": 0.06436519274871315
+        }
+      },
+      "h8": {
+        "model_return_bias": {
+          "episode_cluster_percentile_95": [
+            0.030369121183616437,
+            0.18527614791699995
+          ],
+          "point": 0.10857662843745292
+        },
+        "oracle_numerical_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            -0.00017932369421776073,
+            0.00013300843526564755
+          ],
+          "point": -1.9656640437776978e-05
+        },
+        "self_feed_excess_alive_brier": {
+          "episode_cluster_percentile_95": [
+            0.046928765919456314,
+            0.09345503620542957
+          ],
+          "point": 0.06922898053386489
+        },
+        "self_feed_excess_mask_false_negative": {
+          "episode_cluster_percentile_95": [
+            0.0,
+            0.025423902615369642
+          ],
+          "point": 0.0121765601217656
+        },
+        "self_feed_excess_mask_false_positive": {
+          "episode_cluster_percentile_95": [
+            0.2005923898886712,
+            0.32944081281113224
+          ],
+          "point": 0.267005076142132
+        },
+        "self_feed_excess_return_bias": {
+          "episode_cluster_percentile_95": [
+            0.05703804399116626,
+            0.08194275639645945
+          ],
+          "point": 0.0696878429662668
+        },
+        "self_feed_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            0.0006785235589185787,
+            0.024956501966108463
+          ],
+          "point": 0.012515751911264226
+        },
+        "self_feed_vs_oracle_excess_return_mse": {
+          "episode_cluster_percentile_95": [
+            0.0006629597299798429,
+            0.024970806833387635
+          ],
+          "point": 0.012535408551702003
+        },
+        "teacher_return_bias": {
+          "episode_cluster_percentile_95": [
+            -0.03991473355667937,
+            0.11790130743709618
+          ],
+          "point": 0.03888878547118611
+        }
+      }
+    },
+    "limits": "Conditional uncertainty for this frozen checkpoint and replay cohort only; episode-cluster resampling preserves correlated roots/agents. Not training-seed uncertainty or evidence of a causal difference between historical 50k and corrected 10.5k checkpoints.",
+    "max_oracle_posterior_kl": 0.0,
+    "max_teacher_oracle_outcome_difference": {
+      "alive_probability": 0.004788756370544434,
+      "continuation": 0.0011717677116394043,
+      "reward": 0.0021599531173706055
+    },
+    "outcome_semantics": "corrected_team",
+    "team_roots": 64
+  }
+}

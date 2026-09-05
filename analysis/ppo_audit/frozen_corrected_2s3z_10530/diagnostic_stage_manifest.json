@@ -1,0 +1,31 @@
+{
+  "/workspace/ma_jepa_ppo_2663ae5": {
+    "files": 40,
+    "sha256": "128815afb028d47c14f8cbeef3ce7d759f8cb7b35a347921165ed1180ccf418a"
+  },
+  "/workspace/ma_jepa_diagnostics_1595455": {
+    "files": 40,
+    "sha256": "128815afb028d47c14f8cbeef3ce7d759f8cb7b35a347921165ed1180ccf418a"
+  },
+  "created_utc": "2026-09-05T07:30:02.293393+00:00",
+  "diagnostic_commit": "1595455",
+  "archive_sha256": "bddcaaf31238ac4a98d12498f1232ad15c5e297647d35ce1070af6ddb174570c",
+  "all_majepa_package_files_excluding_generated_bytecode": {
+    "/workspace/ma_jepa_ppo_2663ae5": {
+      "files": 42,
+      "sha256": "ca3dd84c2c3e938f170a05ab31c3ea49ec1a5c201802bb42de77f5b44b348cb1"
+    },
+    "/workspace/ma_jepa_diagnostics_1595455": {
+      "files": 42,
+      "sha256": "ca3dd84c2c3e938f170a05ab31c3ea49ec1a5c201802bb42de77f5b44b348cb1"
+    }
+  },
+  "training_only_generated_metadata": [
+    "src/majepa.egg-info/PKG-INFO",
+    "src/majepa.egg-info/SOURCES.txt",
+    "src/majepa.egg-info/dependency_links.txt",
+    "src/majepa.egg-info/entry_points.txt",
+    "src/majepa.egg-info/requires.txt",
+    "src/majepa.egg-info/top_level.txt"
+  ]
+}
