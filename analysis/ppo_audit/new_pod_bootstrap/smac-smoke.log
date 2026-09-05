@@ -1,0 +1,67 @@
+Version: B75689 (SC2.4.10)
+Build: Aug 12 2019 17:16:57
+Command Line: '"/workspace/StarCraftII/Versions/Base75689/SC2_x64" -listen 127.0.0.1 -port 42261 -dataDir /workspace/StarCraftII/ -tempDir /tmp/sc-ao5_wbx_/'
+Starting up...
+Startup Phase 1 complete
+Startup Phase 2 complete
+Creating stub renderer...
+Listening on: 127.0.0.1:42261
+Startup Phase 3 complete. Ready for commands.
+ConnectHandler: Request from 127.0.0.1:52206 accepted
+ReadyHandler: 127.0.0.1:52206 ready
+Requesting to join a single player game
+Configuring interface options
+Configure: raw interface enabled
+Configure: feature layer interface disabled
+Configure: score interface disabled
+Configure: render interface disabled
+Launching next game.
+Next launch phase started: 2
+Next launch phase started: 3
+Next launch phase started: 4
+Next launch phase started: 5
+Next launch phase started: 6
+Next launch phase started: 7
+Next launch phase started: 8
+Game has started.
+Using default stable ids, none found at: /workspace/StarCraftII/stableid.json
+Successfully loaded stable ids: GameData\stableid.json
+Sending ResponseJoinGame
+RequestQuit command received.
+Closing Application...
+DataHandler: unable to parse websocket frame.
+CloseHandler: 127.0.0.1:52206 disconnected
+Version: B75689 (SC2.4.10)
+Build: Aug 12 2019 17:16:57
+Command Line: '"/workspace/StarCraftII/Versions/Base75689/SC2_x64" -listen 127.0.0.1 -port 36601 -dataDir /workspace/StarCraftII/ -tempDir /tmp/sc-7rf1j0p9/'
+Starting up...
+Startup Phase 1 complete
+Startup Phase 2 complete
+Creating stub renderer...
+Listening on: 127.0.0.1:36601
+Startup Phase 3 complete. Ready for commands.
+ConnectHandler: Request from 127.0.0.1:41368 accepted
+ReadyHandler: 127.0.0.1:41368 ready
+Requesting to join a single player game
+Configuring interface options
+Configure: raw interface enabled
+Configure: feature layer interface disabled
+Configure: score interface disabled
+Configure: render interface disabled
+Launching next game.
+Next launch phase started: 2
+Next launch phase started: 3
+Next launch phase started: 4
+Next launch phase started: 5
+Next launch phase started: 6
+Next launch phase started: 7
+Next launch phase started: 8
+Game has started.
+Using default stable ids, none found at: /workspace/StarCraftII/stableid.json
+Successfully loaded stable ids: GameData\stableid.json
+Sending ResponseJoinGame
+RequestQuit command received.
+Closing Application...
+DataHandler: unable to parse websocket frame.
+CloseHandler: 127.0.0.1:41368 disconnected
+SMAC_RUNTIME_OK [{"map": "3m", "steps": 24, "return": 0.9863013625144958}, {"map": "2s3z", "steps": 58, "return": 2.3946079222951084}]

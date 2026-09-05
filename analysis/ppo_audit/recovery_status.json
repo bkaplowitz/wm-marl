@@ -1,0 +1,134 @@
+{
+  "assessed_utc": "2026-09-05T07:13:03.525516+00:00",
+  "correction_actual_completion": "unknown; no post-queue evidence recovered",
+  "correction_completion_verified": 0,
+  "last_local_correction_capture_utc": "2026-09-04T20:47:24Z",
+  "missing_correction_runs": [
+    {
+      "host": "jinn",
+      "last_observed_status": "waiting_for_gpu",
+      "last_observed_step": 0,
+      "recovery_root": "/workspace/majepa_ppo_correction_2663ae5_20260904/runs/original_base-2s3z-seed1",
+      "required_files": [
+        "manifest.json",
+        "status.json",
+        "outcome.json",
+        "train/launch.json",
+        "train/run/metrics.jsonl",
+        "train/run/ckpt/latest",
+        "final128/run/evaluation_summary.json",
+        "final128/run/evaluation_episodes.jsonl"
+      ],
+      "run": "original_base-2s3z-seed1",
+      "source_commit": "92014f1dd35f946816c350906af85370a434de40",
+      "source_sha256": "7c0b50cbcf7fd701a57b1c64a2ed5fa1ba4a48a77def91e8781054b1cee40891"
+    },
+    {
+      "host": "jinn",
+      "last_observed_status": "waiting_for_gpu",
+      "last_observed_step": 0,
+      "recovery_root": "/workspace/majepa_ppo_correction_2663ae5_20260904/runs/team_return_anchor-3m-seed0",
+      "required_files": [
+        "manifest.json",
+        "status.json",
+        "outcome.json",
+        "train/launch.json",
+        "train/run/metrics.jsonl",
+        "train/run/ckpt/latest",
+        "final128/run/evaluation_summary.json",
+        "final128/run/evaluation_episodes.jsonl"
+      ],
+      "run": "team_return_anchor-3m-seed0",
+      "source_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+      "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+    },
+    {
+      "host": "jnin",
+      "last_observed_status": "waiting_for_gpu",
+      "last_observed_step": 0,
+      "recovery_root": "/workspace/majepa_ppo_correction_2663ae5_20260904/runs/team_return-2s3z-seed0",
+      "required_files": [
+        "manifest.json",
+        "status.json",
+        "outcome.json",
+        "train/launch.json",
+        "train/run/metrics.jsonl",
+        "train/run/ckpt/latest",
+        "final128/run/evaluation_summary.json",
+        "final128/run/evaluation_episodes.jsonl"
+      ],
+      "run": "team_return-2s3z-seed0",
+      "source_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+      "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+    },
+    {
+      "host": "jnin",
+      "last_observed_status": "waiting_for_gpu",
+      "last_observed_step": 0,
+      "recovery_root": "/workspace/majepa_ppo_correction_2663ae5_20260904/runs/team_return-2s3z-seed1",
+      "required_files": [
+        "manifest.json",
+        "status.json",
+        "outcome.json",
+        "train/launch.json",
+        "train/run/metrics.jsonl",
+        "train/run/ckpt/latest",
+        "final128/run/evaluation_summary.json",
+        "final128/run/evaluation_episodes.jsonl"
+      ],
+      "run": "team_return-2s3z-seed1",
+      "source_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+      "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+    },
+    {
+      "host": "jnin",
+      "last_observed_status": "waiting_for_gpu",
+      "last_observed_step": 0,
+      "recovery_root": "/workspace/majepa_ppo_correction_2663ae5_20260904/runs/team_return_anchor-2s3z-seed0",
+      "required_files": [
+        "manifest.json",
+        "status.json",
+        "outcome.json",
+        "train/launch.json",
+        "train/run/metrics.jsonl",
+        "train/run/ckpt/latest",
+        "final128/run/evaluation_summary.json",
+        "final128/run/evaluation_episodes.jsonl"
+      ],
+      "run": "team_return_anchor-2s3z-seed0",
+      "source_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+      "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+    },
+    {
+      "host": "jnin",
+      "last_observed_status": "waiting_for_gpu",
+      "last_observed_step": 0,
+      "recovery_root": "/workspace/majepa_ppo_correction_2663ae5_20260904/runs/team_return_anchor-2s3z-seed1",
+      "required_files": [
+        "manifest.json",
+        "status.json",
+        "outcome.json",
+        "train/launch.json",
+        "train/run/metrics.jsonl",
+        "train/run/ckpt/latest",
+        "final128/run/evaluation_summary.json",
+        "final128/run/evaluation_episodes.jsonl"
+      ],
+      "run": "team_return_anchor-2s3z-seed1",
+      "source_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+      "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+    }
+  ],
+  "new_workspace_contains_old_logs": false,
+  "old_hosts_contacted_after_stop": false,
+  "reason": "Correction launcher used JSONL-only with WANDB_MODE=disabled. Original persistent /workspace storage is required.",
+  "recovered_second_wave": {
+    "completed_final128_runs": 6,
+    "completed_training_runs": 6,
+    "curve_points_per_run": 10,
+    "file": "second_wave_recovered.json",
+    "group": "ma-jepa-ppo-treatments-92014f1",
+    "project": "osaze-obahor/majepa-ppo-treatments"
+  },
+  "wandb_recoverable_correction_runs": false
+}

@@ -1,0 +1,41 @@
+{
+  "protocol": "Episode-cluster percentile bootstrap,2000 resamples,seed505; diagnostic uncertainty for fixed checkpoints and selected roots, not training-seed uncertainty",
+  "episodes": 29,
+  "results": {
+    "h1": {
+      "paired_excess_return_mse": 1.2198063162963417e-06,
+      "cluster_bootstrap_95_percentile": [
+        -2.2302486132594577e-08,
+        4.139024697081677e-06
+      ]
+    },
+    "h2": {
+      "paired_excess_return_mse": 0.009577667613168346,
+      "cluster_bootstrap_95_percentile": [
+        -0.000918657151638305,
+        0.031081438882964413
+      ]
+    },
+    "h4": {
+      "paired_excess_return_mse": 0.015761291755957932,
+      "cluster_bootstrap_95_percentile": [
+        1.9452024345801446e-05,
+        0.039445406944379605
+      ]
+    },
+    "h5": {
+      "paired_excess_return_mse": 0.03324617035008231,
+      "cluster_bootstrap_95_percentile": [
+        0.008680159376492587,
+        0.06709193424970993
+      ]
+    },
+    "h8": {
+      "paired_excess_return_mse": 0.039382100996687666,
+      "cluster_bootstrap_95_percentile": [
+        0.007913738565785065,
+        0.07289495955109139
+      ]
+    }
+  }
+}

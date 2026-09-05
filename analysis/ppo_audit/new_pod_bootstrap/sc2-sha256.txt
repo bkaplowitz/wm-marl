@@ -1,0 +1,1 @@
+1052f249f30a242bf5e17cc3315324919f9689307ca6dbcdb30bb41ea3004884  /workspace/bootstrap/SC2.4.10.zip

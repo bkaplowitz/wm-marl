@@ -83,3 +83,46 @@ def test_gpu_process_filter_selects_assigned_gpu_only(monkeypatch):
 
     monkeypatch.setattr(screen.subprocess, "check_output", output)
     assert screen.gpu_processes(1) == [22]
+
+
+def test_optional_wandb_logging_has_unique_ids_for_train_and_evaluation():
+    args = SimpleNamespace(
+        python=Path("/runtime/python"),
+        slot=1,
+        wandb_project="majepa-ppo-treatments",
+        wandb_entity="osaze-obahor",
+        wandb_group="ma-jepa-ppo-correction-2663ae5-20260905",
+        wandb_run_prefix="corr-2663-20260905",
+        expected_source_sha256="a" * 64,
+    )
+    train = screen.train_command(args, screen.SLOTS[1], Path("/results/train"))
+    final = screen.eval_command(
+        args, screen.SLOTS[1], Path("/results/final"), Path("/checkpoint")
+    )
+    for command in (train, final):
+        start = command.index("--logger.outputs")
+        assert command[start + 1 : start + 3] == ["jsonl", "wandb"]
+    before = {"WANDB_MODE": "online", "OTHER": "preserved"}
+    train_env = screen.phase_environment(args, Path("/results/train"), "train", before)
+    final_env = screen.phase_environment(
+        args, Path("/results/final"), "final128", before
+    )
+    assert train_env["WANDB_RUN_ID"] == "corr-2663-20260905-s1-train"
+    assert final_env["WANDB_RUN_ID"] == "corr-2663-20260905-s1-final128"
+    assert train_env["WANDB_RESUME"] == "never"
+    assert train_env["WANDB_RUN_GROUP"] == args.wandb_group
+    assert before == {"WANDB_MODE": "online", "OTHER": "preserved"}
+
+
+def test_disabled_logging_does_not_inherit_another_run_id(monkeypatch):
+    args = SimpleNamespace(
+        source=Path("/source"),
+        external=Path("/external"),
+        sc2=Path("/sc2"),
+        gpu=0,
+        portserver_address="@local",
+    )
+    monkeypatch.setenv("WANDB_RUN_ID", "unrelated")
+    env = screen.execution_environment(args)
+    assert env["WANDB_MODE"] == "disabled"
+    assert "WANDB_RUN_ID" not in env

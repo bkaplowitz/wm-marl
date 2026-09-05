@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import pickle
+import re
 import signal
 import subprocess
 import time
@@ -101,6 +102,10 @@ def common_command(args, run, logdir):
     return command
 
 
+def logger_outputs(args):
+    return ["jsonl", "wandb"] if getattr(args, "wandb_project", "") else ["jsonl"]
+
+
 def train_command(args, run, logdir):
     return common_command(args, run, logdir) + [
         "--script",
@@ -136,7 +141,7 @@ def train_command(args, run, logdir):
         "--jax.platform",
         "cuda",
         "--logger.outputs",
-        "jsonl",
+        *logger_outputs(args),
         "--logger.filter",
         LOGGER_FILTER,
     ]
@@ -161,7 +166,7 @@ def eval_command(args, run, logdir, checkpoint):
         "--jax.platform",
         "cuda",
         "--logger.outputs",
-        "jsonl",
+        *logger_outputs(args),
         "--logger.filter",
         LOGGER_FILTER,
     ]
@@ -177,8 +182,31 @@ def execution_environment(args):
         PYTHONUNBUFFERED="1",
         PYTHONPATH=f"{args.source}/src:{args.external}",
         SC2PATH=str(args.sc2),
-        WANDB_MODE="disabled",
+        WANDB_MODE="online" if getattr(args, "wandb_project", "") else "disabled",
     )
+    for key in ("WANDB_RUN_ID", "WANDB_NAME", "WANDB_FORK_FROM", "WANDB_RESUME"):
+        env.pop(key, None)
+    return env
+
+
+def phase_environment(args, phase_root, phase, env):
+    env = env.copy()
+    if getattr(args, "wandb_project", ""):
+        run = SLOTS[args.slot]
+        env.update(
+            WANDB_ENTITY=args.wandb_entity,
+            WANDB_PROJECT=args.wandb_project,
+            WANDB_RUN_GROUP=args.wandb_group,
+            WANDB_RUN_ID=f"{args.wandb_run_prefix}-s{args.slot}-{phase}",
+            WANDB_NAME=f"{args.wandb_run_prefix}-{run.name}-{phase}",
+            WANDB_JOB_TYPE=phase,
+            WANDB_DIR=str(phase_root),
+            WANDB_RESUME="never",
+            WANDB_NOTES=(
+                f"Correction screen {run.name}; package SHA256 "
+                f"{args.expected_source_sha256}; 50k total environment transitions."
+            ),
+        )
     return env
 
 
@@ -331,6 +359,7 @@ class OwnedChildren:
 def run_child(args, children, run_root, phase, command, env):
     phase_root = run_root / phase
     phase_root.mkdir()
+    env = phase_environment(args, phase_root, phase, env)
     atomic_json(
         phase_root / "launch.json", {"command": command, "started_at": time.time()}
     )
@@ -366,6 +395,10 @@ def main():
     parser.add_argument("--wait-pid", action="append", type=int, default=[])
     parser.add_argument("--idle-seconds", type=float, default=60)
     parser.add_argument("--poll-seconds", type=float, default=15)
+    parser.add_argument("--wandb-project", default="")
+    parser.add_argument("--wandb-entity", default="osaze-obahor")
+    parser.add_argument("--wandb-group", default="")
+    parser.add_argument("--wandb-run-prefix", default="")
     parser.add_argument("--validate-only", action="store_true")
     args = parser.parse_args()
     for field in ("source", "python", "external", "sc2", "portserver_script"):
@@ -375,6 +408,11 @@ def main():
         setattr(args, field, path)
     if args.idle_seconds < 0 or not 0 < args.poll_seconds <= 60:
         raise ValueError("Require idle_seconds >= 0 and poll_seconds in (0, 60]")
+    if args.wandb_project and (
+        not args.wandb_group
+        or not re.fullmatch(r"[A-Za-z0-9_-]{1,45}", args.wandb_run_prefix)
+    ):
+        raise ValueError("W&B logging requires a group and a 1–45 character run prefix")
     actual = source_fingerprint(args.source)
     if actual != args.expected_source_sha256:
         raise RuntimeError(f"Source fingerprint mismatch: {actual}")
@@ -410,6 +448,13 @@ def main():
             "gpu": args.gpu,
             "configuration": resolved,
             "wait_pids": args.wait_pid,
+            "logging": {
+                "outputs": logger_outputs(args),
+                "wandb_entity": args.wandb_entity if args.wandb_project else None,
+                "wandb_project": args.wandb_project or None,
+                "wandb_group": args.wandb_group or None,
+                "wandb_run_prefix": args.wandb_run_prefix or None,
+            },
             "created_at": time.time(),
             "protocol": {
                 "train_steps": 50000,

@@ -1,0 +1,19 @@
+run,evidence_source,source_location,wins,episodes,win_rate,return_mean
+actor2x256_nopeerres-2s3z-seed0,local preserved final128,/workspace/majepa_ppo_treatments_cf97200/runs/actor2x256_nopeerres-2s3z-seed0,26,128,0.203125,13.454389572143555
+actor2x256_nopeerres-3m-seed0,local preserved final128,/workspace/majepa_ppo_treatments_cf97200/runs/actor2x256_nopeerres-3m-seed0,121,128,0.9453125,19.348886489868164
+base-2s3z-seed0,local preserved final128,/workspace/majepa_ppo_treatments_cf97200/runs/base-2s3z-seed0,14,128,0.109375,12.629901885986328
+base-3m-seed0,local preserved final128,/workspace/majepa_ppo_treatments_cf97200/runs/base-3m-seed0,120,128,0.9375,19.197345733642578
+critic1l8h-2s3z-seed0,local preserved final128,/workspace/majepa_ppo_treatments_cf97200/runs/critic1l8h-2s3z-seed0,1,128,0.0078125,10.825119018554688
+critic1l8h-3m-seed0,local preserved final128,/workspace/majepa_ppo_treatments_cf97200/runs/critic1l8h-3m-seed0,113,128,0.8828125,18.526540756225586
+entropy_annealed-2s3z-seed0,local preserved final128,/workspace/majepa_ppo_treatments_cf97200/runs/entropy_annealed-2s3z-seed0,2,128,0.015625,10.448165893554688
+entropy_annealed-3m-seed0,local preserved final128,/workspace/majepa_ppo_treatments_cf97200/runs/entropy_annealed-3m-seed0,123,128,0.9609375,19.533817291259766
+env16_total50k-2s3z-seed0,local preserved final128,/workspace/majepa_ppo_treatments_cf97200/runs/env16_total50k-2s3z-seed0,23,128,0.1796875,13.118547439575195
+env16_total50k-3m-seed0,local preserved final128,/workspace/majepa_ppo_treatments_cf97200/runs/env16_total50k-3m-seed0,117,128,0.9140625,18.911388397216797
+wm_start5k_env16_actor2x256_nopeerres-2s3z-seed0,recovered W&B final128,https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/f-mppo-9201-wm_start5k_env16_actor2x256_nopeerres-2s3z-s0,0,128,0,9.788124084472656
+wm_start5k_env16_critic1l8h-2s3z-seed0,recovered W&B final128,https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/f-mppo-9201-wm_start5k_env16_critic1l8h-2s3z-s0,15,128,0.1171875,13.061466217041016
+wm_start5k_env16_entropy-2s3z-seed0,recovered W&B final128,https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/f-mppo-9201-wm_start5k_env16_entropy-2s3z-s0,7,128,0.0546875,10.926337242126465
+wm_start5k_env16_entropy_actor2x256_nopeerres-2s3z-seed0,recovered W&B final128,https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/f-mppo-9201-wm_start5k_env16_entropy_actor2x256_nopeerres-2s3z-s0,9,128,0.0703125,11.726160049438477
+wm_start5k_env16_entropy_critic1l8h-2s3z-seed0,recovered W&B final128,https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/f-mppo-9201-wm_start5k_env16_entropy_critic1l8h-2s3z-s0,0,128,0,8.461435317993164
+wm_start5k_env16_total50k-2s3z-seed0,recovered W&B final128,https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/f-mppo-9201-wm_start5k_env16_total50k-2s3z-s0,15,128,0.1171875,12.3916597366333
+wm_start5k_nowarmup-2s3z-seed0,local preserved final128,/workspace/majepa_ppo_treatments_cf97200/runs/wm_start5k_nowarmup-2s3z-seed0,35,128,0.2734375,13.347618103027344
+wm_start5k_nowarmup-3m-seed0,local preserved final128,/workspace/majepa_ppo_treatments_cf97200/runs/wm_start5k_nowarmup-3m-seed0,124,128,0.96875,19.61472511291504

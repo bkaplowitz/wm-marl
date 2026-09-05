@@ -1,0 +1,18 @@
+{
+  "run": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/mppo-9201-wm_start5k_env16_total50k-2s3z-s0",
+  "files": [
+    {
+      "name": "output.log",
+      "bytes": 261755
+    },
+    {
+      "name": "wandb-metadata.json",
+      "bytes": 2446
+    },
+    {
+      "name": "config.yaml",
+      "bytes": 3984
+    }
+  ],
+  "evidence": []
+}

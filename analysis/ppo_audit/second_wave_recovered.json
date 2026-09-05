@@ -1,0 +1,763 @@
+{
+  "group": "ma-jepa-ppo-treatments-92014f1",
+  "project": "osaze-obahor/majepa-ppo-treatments",
+  "recovered_utc": "2026-09-05T07:11:20.761463+00:00",
+  "runs": [
+    {
+      "curve": [
+        {
+          "_step": 5008,
+          "eval/return_mean": 3.6911001205444336,
+          "eval/timeout_rate": 0.375,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 10000,
+          "eval/return_mean": 0.842524528503418,
+          "eval/timeout_rate": 0.0625,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 15008,
+          "eval/return_mean": 8.401884078979492,
+          "eval/timeout_rate": 0.03125,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 20000,
+          "eval/return_mean": 11.602712631225586,
+          "eval/timeout_rate": 0.03125,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 25008,
+          "eval/return_mean": 11.038067817687988,
+          "eval/timeout_rate": 0.0625,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 30000,
+          "eval/return_mean": 11.646905899047852,
+          "eval/timeout_rate": 0,
+          "eval/win_rate": 0.03125
+        },
+        {
+          "_step": 35008,
+          "eval/return_mean": 11.128907203674316,
+          "eval/timeout_rate": 0.09375,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 40000,
+          "eval/return_mean": 4.705575942993164,
+          "eval/timeout_rate": 0.5625,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 45008,
+          "eval/return_mean": 11.12132453918457,
+          "eval/timeout_rate": 0.53125,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 50000,
+          "eval/return_mean": 9.510953903198242,
+          "eval/timeout_rate": 0.6875,
+          "eval/win_rate": 0
+        }
+      ],
+      "final": {
+        "action_attack_fraction": 0.21284837033538023,
+        "action_move_fraction": 0.2213352227995591,
+        "action_target_switch_count_mean": 13.1796875,
+        "ally_deaths_mean": 4.03125,
+        "corrected_return_mean": 8.832164764404297,
+        "enemy_deaths_mean": 1.96875,
+        "episodes": 128,
+        "return_mean": 9.788124084472656,
+        "return_std": 1.4537314176559448,
+        "timeout_rate": 0.6328125,
+        "win_rate": 0,
+        "wins": 0
+      },
+      "final_created_utc": "2026-09-04T20:53:23Z",
+      "final_id": "f-mppo-9201-wm_start5k_env16_actor2x256_nopeerres-2s3z-s0",
+      "final_state": "finished",
+      "final_url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/f-mppo-9201-wm_start5k_env16_actor2x256_nopeerres-2s3z-s0",
+      "last_logged_metrics": {
+        "counters/environment_steps": 49216,
+        "counters/learner_update_calls": 5515,
+        "counters/ppo_update_calls": 5515,
+        "fps/policy": 12.8393902870896,
+        "fps/train": 3286.883868113821,
+        "replay/behavior_sample_age_mean": 21923.142578125,
+        "replay/world_sample_age_mean": 5008.3154296875,
+        "report/ctde/action_mask_positive_recall": 0.95281720161438,
+        "report/ctde/attack_mask_positive_recall": 0.9008206129074096,
+        "report/ctde/embedding_cosine": 0.8765829801559448,
+        "report/ctde/multistep_jepa_h4_cosine": 0.817985475063324,
+        "report/ctde/multistep_jepa_h4_prediction_std": 0.15238916873931885,
+        "report/ctde/multistep_jepa_h4_target_std": 0.9510636925697328,
+        "report/ctde/teammate_belief_active_peer_top1": 0.37916669249534607,
+        "report/ctde/teammate_belief_attack_top1": 0.3883928656578064,
+        "report/ctde/teammate_belief_repeat_top1": 0.4853846132755279,
+        "report/ctde/teammate_plan_q4_active_top1": 0.3017377555370331,
+        "train/ctde/reward_loss": 0.8131897022429201,
+        "train/ctde/teammate_belief_active_peer_top1": 0.6419057170140374,
+        "train/ctde/teammate_plan_q4_active_top1": 0.5528469721681064,
+        "train/opt/actor/grad_norm": 0.06798970186602823,
+        "train/opt/actor/updates": 27087.5,
+        "train/opt/critic/grad_norm": 0.5822186588319307,
+        "train/opt/local_world/updates": 5417.5,
+        "train/ppo/actor/entropy": 0.4773845687969443,
+        "train/ppo/actor/entropy_coefficient": 0.009999999776482582,
+        "train/ppo/actor/exact_kl": 0.00025222146363488456,
+        "train/ppo/actor/final_clip_fraction": 0.0054920036141693435,
+        "train/ppo/actor/final_exact_kl": 0.0006749793884438011,
+        "train/ppo/batch_return": 6.729256300582099,
+        "train/ppo/batch_reward": 0.19934769374193603,
+        "train/ppo/batch_target_value": 6.746657206840122,
+        "train/ppo/batch_valid_fraction": 0.6312038772499439,
+        "train/ppo/critic/explained_variance": 0.982279884753768,
+        "train/ppo/critic/rmse": 0.62073323407124,
+        "train/replay_views/behavior_reward_mean": 0.1389421689295277,
+        "train/replay_views/world_reward_mean": 0.135130081018529
+      },
+      "train_created_utc": "2026-09-04T19:46:55Z",
+      "train_id": "mppo-9201-wm_start5k_env16_actor2x256_nopeerres-2s3z-s0",
+      "train_last_environment_step": 50000,
+      "train_state": "finished",
+      "train_url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/mppo-9201-wm_start5k_env16_actor2x256_nopeerres-2s3z-s0"
+    },
+    {
+      "curve": [
+        {
+          "_step": 5008,
+          "eval/return_mean": 3.625842571258545,
+          "eval/timeout_rate": 0.28125,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 10000,
+          "eval/return_mean": 0.8678768873214722,
+          "eval/timeout_rate": 0.0625,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 15008,
+          "eval/return_mean": 10.803845405578613,
+          "eval/timeout_rate": 0.125,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 20000,
+          "eval/return_mean": 12.605852127075195,
+          "eval/timeout_rate": 0,
+          "eval/win_rate": 0.1875
+        },
+        {
+          "_step": 25008,
+          "eval/return_mean": 11.867724418640137,
+          "eval/timeout_rate": 0.0625,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 30000,
+          "eval/return_mean": 12.403570175170898,
+          "eval/timeout_rate": 0.28125,
+          "eval/win_rate": 0.03125
+        },
+        {
+          "_step": 35008,
+          "eval/return_mean": 6.295649528503418,
+          "eval/timeout_rate": 0.34375,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 40000,
+          "eval/return_mean": 13.138174057006836,
+          "eval/timeout_rate": 0.125,
+          "eval/win_rate": 0.1875
+        },
+        {
+          "_step": 45008,
+          "eval/return_mean": 11.775965690612793,
+          "eval/timeout_rate": 0.25,
+          "eval/win_rate": 0.0625
+        },
+        {
+          "_step": 50000,
+          "eval/return_mean": 12.361825942993164,
+          "eval/timeout_rate": 0.0625,
+          "eval/win_rate": 0.09375
+        }
+      ],
+      "final": {
+        "action_attack_fraction": 0.4343427469660882,
+        "action_move_fraction": 0.1498695701485766,
+        "action_target_switch_count_mean": 12.015625,
+        "ally_deaths_mean": 4.46875,
+        "corrected_return_mean": 12.177542686462402,
+        "enemy_deaths_mean": 3.0078125,
+        "episodes": 128,
+        "return_mean": 12.3916597366333,
+        "return_std": 3.3135790824890137,
+        "timeout_rate": 0.1484375,
+        "win_rate": 0.1171875,
+        "wins": 15
+      },
+      "final_created_utc": "2026-09-04T21:36:25Z",
+      "final_id": "f-mppo-9201-wm_start5k_env16_total50k-2s3z-s0",
+      "final_state": "finished",
+      "final_url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/f-mppo-9201-wm_start5k_env16_total50k-2s3z-s0",
+      "last_logged_metrics": {
+        "counters/environment_steps": 48832,
+        "counters/learner_update_calls": 5467,
+        "counters/ppo_update_calls": 5467,
+        "fps/policy": 9.7022338631714,
+        "fps/train": 2483.7718886480543,
+        "replay/behavior_sample_age_mean": 22028.451171875,
+        "replay/world_sample_age_mean": 4912.9228515625,
+        "report/ctde/action_mask_positive_recall": 0.9656533002853394,
+        "report/ctde/attack_mask_positive_recall": 0.9316189885139464,
+        "report/ctde/embedding_cosine": 0.8551143407821655,
+        "report/ctde/multistep_jepa_h4_cosine": 0.8032538294792175,
+        "report/ctde/multistep_jepa_h4_prediction_std": 0.1492379903793335,
+        "report/ctde/multistep_jepa_h4_target_std": 0.9573551416397096,
+        "report/ctde/teammate_belief_active_peer_top1": 0.5377358794212341,
+        "report/ctde/teammate_belief_attack_top1": 0.6111299991607666,
+        "report/ctde/teammate_belief_repeat_top1": 0.6436271667480469,
+        "report/ctde/teammate_plan_q4_active_top1": 0.43725311756134033,
+        "train/ctde/reward_loss": 0.8762097958832571,
+        "train/ctde/teammate_belief_active_peer_top1": 0.7165791796494837,
+        "train/ctde/teammate_plan_q4_active_top1": 0.6411503026746723,
+        "train/opt/actor/grad_norm": 0.07852988534492172,
+        "train/opt/actor/updates": 26967.5,
+        "train/opt/critic/grad_norm": 0.7072202336706527,
+        "train/opt/local_world/updates": 5393.5,
+        "train/ppo/actor/entropy": 0.33376583906069196,
+        "train/ppo/actor/entropy_coefficient": 0.009999999776482582,
+        "train/ppo/actor/exact_kl": 0.0005181921601745185,
+        "train/ppo/actor/final_clip_fraction": 0.014953001663854267,
+        "train/ppo/actor/final_exact_kl": 0.001355668603225726,
+        "train/ppo/batch_return": 7.344074526878252,
+        "train/ppo/batch_reward": 0.2100325413558581,
+        "train/ppo/batch_target_value": 7.344195457353984,
+        "train/ppo/batch_valid_fraction": 0.6128574344393325,
+        "train/ppo/critic/explained_variance": 0.9813980701035016,
+        "train/ppo/critic/rmse": 0.668084442615509,
+        "train/replay_views/behavior_reward_mean": 0.14584142541232176,
+        "train/replay_views/world_reward_mean": 0.14967818063211769
+      },
+      "train_created_utc": "2026-09-04T19:47:17Z",
+      "train_id": "mppo-9201-wm_start5k_env16_total50k-2s3z-s0",
+      "train_last_environment_step": 50000,
+      "train_state": "finished",
+      "train_url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/mppo-9201-wm_start5k_env16_total50k-2s3z-s0"
+    },
+    {
+      "curve": [
+        {
+          "_step": 5008,
+          "eval/return_mean": 3.625842571258545,
+          "eval/timeout_rate": 0.28125,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 10000,
+          "eval/return_mean": 0.06495098024606705,
+          "eval/timeout_rate": 0.375,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 15008,
+          "eval/return_mean": 10.904258728027344,
+          "eval/timeout_rate": 0,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 20000,
+          "eval/return_mean": 9.913220405578613,
+          "eval/timeout_rate": 0.09375,
+          "eval/win_rate": 0.03125
+        },
+        {
+          "_step": 25008,
+          "eval/return_mean": 11.60654067993164,
+          "eval/timeout_rate": 0,
+          "eval/win_rate": 0.125
+        },
+        {
+          "_step": 30000,
+          "eval/return_mean": 12.779794692993164,
+          "eval/timeout_rate": 0.09375,
+          "eval/win_rate": 0.09375
+        },
+        {
+          "_step": 35008,
+          "eval/return_mean": 11.765242576599121,
+          "eval/timeout_rate": 0.28125,
+          "eval/win_rate": 0.0625
+        },
+        {
+          "_step": 40000,
+          "eval/return_mean": 12.08264446258545,
+          "eval/timeout_rate": 0.3125,
+          "eval/win_rate": 0.03125
+        },
+        {
+          "_step": 45008,
+          "eval/return_mean": 11.25834846496582,
+          "eval/timeout_rate": 0.15625,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 50000,
+          "eval/return_mean": 11.001226425170898,
+          "eval/timeout_rate": 0.125,
+          "eval/win_rate": 0.0625
+        }
+      ],
+      "final": {
+        "action_attack_fraction": 0.34271505660776636,
+        "action_move_fraction": 0.22109829647656332,
+        "action_target_switch_count_mean": 11.1953125,
+        "ally_deaths_mean": 4.453125,
+        "corrected_return_mean": 10.615178108215332,
+        "enemy_deaths_mean": 2.4453125,
+        "episodes": 128,
+        "return_mean": 10.926337242126465,
+        "return_std": 3.1395132541656494,
+        "timeout_rate": 0.265625,
+        "win_rate": 0.0546875,
+        "wins": 7
+      },
+      "final_created_utc": "2026-09-04T21:43:47Z",
+      "final_id": "f-mppo-9201-wm_start5k_env16_entropy-2s3z-s0",
+      "final_state": "finished",
+      "final_url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/f-mppo-9201-wm_start5k_env16_entropy-2s3z-s0",
+      "last_logged_metrics": {
+        "counters/environment_steps": 49344,
+        "counters/learner_update_calls": 5531,
+        "counters/ppo_update_calls": 5531,
+        "fps/policy": 11.319293483553396,
+        "fps/train": 2897.7390800382464,
+        "replay/behavior_sample_age_mean": 21886.02734375,
+        "replay/world_sample_age_mean": 5031.0244140625,
+        "report/ctde/action_mask_positive_recall": 0.9592753052711488,
+        "report/ctde/attack_mask_positive_recall": 0.9069080948829652,
+        "report/ctde/embedding_cosine": 0.8663857579231262,
+        "report/ctde/multistep_jepa_h4_cosine": 0.8144117593765259,
+        "report/ctde/multistep_jepa_h4_prediction_std": 0.14323197305202484,
+        "report/ctde/multistep_jepa_h4_target_std": 0.969692051410675,
+        "report/ctde/teammate_belief_active_peer_top1": 0.6516751646995544,
+        "report/ctde/teammate_belief_attack_top1": 0.7209841012954712,
+        "report/ctde/teammate_belief_repeat_top1": 0.7339394092559814,
+        "report/ctde/teammate_plan_q4_active_top1": 0.5939445495605469,
+        "train/ctde/reward_loss": 0.8474152403719285,
+        "train/ctde/teammate_belief_active_peer_top1": 0.786095538560082,
+        "train/ctde/teammate_plan_q4_active_top1": 0.7086649796542,
+        "train/opt/actor/grad_norm": 0.06522751505322316,
+        "train/opt/actor/updates": 27227.5,
+        "train/opt/critic/grad_norm": 0.7025193635155172,
+        "train/opt/local_world/updates": 5445.5,
+        "train/ppo/actor/entropy": 0.1482410424772431,
+        "train/ppo/actor/entropy_coefficient": 0.0003000000142492354,
+        "train/ppo/actor/exact_kl": 0.0006371664148686892,
+        "train/ppo/actor/final_clip_fraction": 0.01801518436849994,
+        "train/ppo/actor/final_exact_kl": 0.0016309678616166553,
+        "train/ppo/batch_return": 6.996935931374045,
+        "train/ppo/batch_reward": 0.20522352404454175,
+        "train/ppo/batch_target_value": 6.996469671585981,
+        "train/ppo/batch_valid_fraction": 0.6091293538317961,
+        "train/ppo/critic/explained_variance": 0.9680587863220887,
+        "train/ppo/critic/rmse": 0.8161819051293766,
+        "train/replay_views/behavior_reward_mean": 0.15048843100667,
+        "train/replay_views/world_reward_mean": 0.16979663183583932
+      },
+      "train_created_utc": "2026-09-04T19:47:20Z",
+      "train_id": "mppo-9201-wm_start5k_env16_entropy-2s3z-s0",
+      "train_last_environment_step": 50000,
+      "train_state": "finished",
+      "train_url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/mppo-9201-wm_start5k_env16_entropy-2s3z-s0"
+    },
+    {
+      "curve": [
+        {
+          "_step": 5008,
+          "eval/return_mean": 3.625842571258545,
+          "eval/timeout_rate": 0.28125,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 10000,
+          "eval/return_mean": 0,
+          "eval/timeout_rate": 0.03125,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 15008,
+          "eval/return_mean": 11.260876655578613,
+          "eval/timeout_rate": 0.1875,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 20000,
+          "eval/return_mean": 10.658088684082031,
+          "eval/timeout_rate": 0.1875,
+          "eval/win_rate": 0.03125
+        },
+        {
+          "_step": 25008,
+          "eval/return_mean": 11.452742576599121,
+          "eval/timeout_rate": 0.25,
+          "eval/win_rate": 0.03125
+        },
+        {
+          "_step": 30000,
+          "eval/return_mean": 10.49892807006836,
+          "eval/timeout_rate": 0.09375,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 35008,
+          "eval/return_mean": 9.100414276123047,
+          "eval/timeout_rate": 0.1875,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 40000,
+          "eval/return_mean": 8.806142807006836,
+          "eval/timeout_rate": 0.5625,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 45008,
+          "eval/return_mean": 6.6328125,
+          "eval/timeout_rate": 0.40625,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 50000,
+          "eval/return_mean": 8.225643157958984,
+          "eval/timeout_rate": 0.625,
+          "eval/win_rate": 0
+        }
+      ],
+      "final": {
+        "action_attack_fraction": 0.19305477584409336,
+        "action_move_fraction": 0.26946828133771755,
+        "action_target_switch_count_mean": 8.15625,
+        "ally_deaths_mean": 4.0859375,
+        "corrected_return_mean": 7.596833229064941,
+        "enemy_deaths_mean": 1.65625,
+        "episodes": 128,
+        "return_mean": 8.461435317993164,
+        "return_std": 2.0322797298431396,
+        "timeout_rate": 0.625,
+        "win_rate": 0,
+        "wins": 0
+      },
+      "final_created_utc": "2026-09-04T21:02:43Z",
+      "final_id": "f-mppo-9201-wm_start5k_env16_entropy_critic1l8h-2s3z-s0",
+      "final_state": "finished",
+      "final_url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/f-mppo-9201-wm_start5k_env16_entropy_critic1l8h-2s3z-s0",
+      "last_logged_metrics": {
+        "counters/environment_steps": 49072,
+        "counters/learner_update_calls": 5497,
+        "counters/ppo_update_calls": 5497,
+        "fps/policy": 11.054739250550128,
+        "fps/train": 2830.01332677423,
+        "replay/behavior_sample_age_mean": 21934.544921875,
+        "replay/world_sample_age_mean": 4963.32958984375,
+        "report/ctde/action_mask_positive_recall": 0.9560146927833556,
+        "report/ctde/attack_mask_positive_recall": 0.8948498368263245,
+        "report/ctde/embedding_cosine": 0.8479823470115662,
+        "report/ctde/multistep_jepa_h4_cosine": 0.8239663243293762,
+        "report/ctde/multistep_jepa_h4_prediction_std": 0.14106085896492004,
+        "report/ctde/multistep_jepa_h4_target_std": 0.9566794633865356,
+        "report/ctde/teammate_belief_active_peer_top1": 0.5339622497558594,
+        "report/ctde/teammate_belief_attack_top1": 0.5640658140182495,
+        "report/ctde/teammate_belief_repeat_top1": 0.6973770260810852,
+        "report/ctde/teammate_plan_q4_active_top1": 0.4679803252220154,
+        "train/ctde/reward_loss": 0.6831072030297245,
+        "train/ctde/teammate_belief_active_peer_top1": 0.6224355729947607,
+        "train/ctde/teammate_plan_q4_active_top1": 0.5355087231440716,
+        "train/opt/actor/grad_norm": 0.08184795465365231,
+        "train/opt/actor/updates": 27067.5,
+        "train/opt/critic/grad_norm": 0.6388993385326431,
+        "train/opt/local_world/updates": 5413.5,
+        "train/ppo/actor/entropy": 0.1723198927490108,
+        "train/ppo/actor/entropy_coefficient": 0.0003000000142492354,
+        "train/ppo/actor/exact_kl": 0.0008435331066545794,
+        "train/ppo/actor/final_clip_fraction": 0.0248107981239726,
+        "train/ppo/actor/final_exact_kl": 0.002162896799406104,
+        "train/ppo/batch_return": 6.184308419744652,
+        "train/ppo/batch_reward": 0.1621894356626344,
+        "train/ppo/batch_target_value": 6.176889548818749,
+        "train/ppo/batch_valid_fraction": 0.6019116945295448,
+        "train/ppo/critic/explained_variance": 0.9671727914408028,
+        "train/ppo/critic/rmse": 1.0014850892216327,
+        "train/replay_views/behavior_reward_mean": 0.11894978452698296,
+        "train/replay_views/world_reward_mean": 0.09853913982858858
+      },
+      "train_created_utc": "2026-09-04T19:47:30Z",
+      "train_id": "mppo-9201-wm_start5k_env16_entropy_critic1l8h-2s3z-s0",
+      "train_last_environment_step": 50000,
+      "train_state": "finished",
+      "train_url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/mppo-9201-wm_start5k_env16_entropy_critic1l8h-2s3z-s0"
+    },
+    {
+      "curve": [
+        {
+          "_step": 5008,
+          "eval/return_mean": 3.625842571258545,
+          "eval/timeout_rate": 0.28125,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 10000,
+          "eval/return_mean": 2.6864278316497803,
+          "eval/timeout_rate": 0.25,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 15008,
+          "eval/return_mean": 8.527267456054688,
+          "eval/timeout_rate": 0.09375,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 20000,
+          "eval/return_mean": 10.635339736938477,
+          "eval/timeout_rate": 0.0625,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 25008,
+          "eval/return_mean": 10.906403541564941,
+          "eval/timeout_rate": 0.1875,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 30000,
+          "eval/return_mean": 11.111061096191406,
+          "eval/timeout_rate": 0.21875,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 35008,
+          "eval/return_mean": 11.56587028503418,
+          "eval/timeout_rate": 0.15625,
+          "eval/win_rate": 0.03125
+        },
+        {
+          "_step": 40000,
+          "eval/return_mean": 11.258195877075195,
+          "eval/timeout_rate": 0.25,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 45008,
+          "eval/return_mean": 12.59712028503418,
+          "eval/timeout_rate": 0.1875,
+          "eval/win_rate": 0.03125
+        },
+        {
+          "_step": 50000,
+          "eval/return_mean": 13.408088684082031,
+          "eval/timeout_rate": 0.15625,
+          "eval/win_rate": 0.15625
+        }
+      ],
+      "final": {
+        "action_attack_fraction": 0.39259413355523193,
+        "action_move_fraction": 0.17152069898065322,
+        "action_target_switch_count_mean": 15.640625,
+        "ally_deaths_mean": 4.421875,
+        "corrected_return_mean": 12.761220932006836,
+        "enemy_deaths_mean": 3.15625,
+        "episodes": 128,
+        "return_mean": 13.061466217041016,
+        "return_std": 3.043774127960205,
+        "timeout_rate": 0.234375,
+        "win_rate": 0.1171875,
+        "wins": 15
+      },
+      "final_created_utc": "2026-09-04T21:01:11Z",
+      "final_id": "f-mppo-9201-wm_start5k_env16_critic1l8h-2s3z-s0",
+      "final_state": "finished",
+      "final_url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/f-mppo-9201-wm_start5k_env16_critic1l8h-2s3z-s0",
+      "last_logged_metrics": {
+        "counters/environment_steps": 49712,
+        "counters/learner_update_calls": 5577,
+        "counters/ppo_update_calls": 5577,
+        "fps/policy": 11.362088869325683,
+        "fps/train": 2908.6947734527807,
+        "replay/behavior_sample_age_mean": 21982.857421875,
+        "replay/world_sample_age_mean": 5073.45166015625,
+        "report/ctde/action_mask_positive_recall": 0.947816789150238,
+        "report/ctde/attack_mask_positive_recall": 0.8949137330055237,
+        "report/ctde/embedding_cosine": 0.8468996286392212,
+        "report/ctde/multistep_jepa_h4_cosine": 0.7798242568969727,
+        "report/ctde/multistep_jepa_h4_prediction_std": 0.14039844274520874,
+        "report/ctde/multistep_jepa_h4_target_std": 0.9482657313346864,
+        "report/ctde/teammate_belief_active_peer_top1": 0.5483214855194092,
+        "report/ctde/teammate_belief_attack_top1": 0.5411238074302673,
+        "report/ctde/teammate_belief_repeat_top1": 0.691654622554779,
+        "report/ctde/teammate_plan_q4_active_top1": 0.46069613099098206,
+        "train/ctde/reward_loss": 0.9190309602160788,
+        "train/ctde/teammate_belief_active_peer_top1": 0.7128409691328226,
+        "train/ctde/teammate_plan_q4_active_top1": 0.6275199156167895,
+        "train/opt/actor/grad_norm": 0.08764341406437547,
+        "train/opt/actor/updates": 27452.5,
+        "train/opt/critic/grad_norm": 0.733961529683235,
+        "train/opt/local_world/updates": 5490.5,
+        "train/ppo/actor/entropy": 0.4141487402971401,
+        "train/ppo/actor/entropy_coefficient": 0.009999999776482582,
+        "train/ppo/actor/exact_kl": 0.0006338831979434851,
+        "train/ppo/actor/final_clip_fraction": 0.017456907973906328,
+        "train/ppo/actor/final_exact_kl": 0.0016547464596399994,
+        "train/ppo/batch_return": 7.1083045587983245,
+        "train/ppo/batch_reward": 0.2178991151930288,
+        "train/ppo/batch_target_value": 7.109320615613183,
+        "train/ppo/batch_valid_fraction": 0.6257778288320054,
+        "train/ppo/critic/explained_variance": 0.9758536164150682,
+        "train/ppo/critic/rmse": 0.6764075756072998,
+        "train/replay_views/behavior_reward_mean": 0.15024702276947888,
+        "train/replay_views/world_reward_mean": 0.1678289599976567
+      },
+      "train_created_utc": "2026-09-04T19:47:35Z",
+      "train_id": "mppo-9201-wm_start5k_env16_critic1l8h-2s3z-s0",
+      "train_last_environment_step": 50000,
+      "train_state": "finished",
+      "train_url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/mppo-9201-wm_start5k_env16_critic1l8h-2s3z-s0"
+    },
+    {
+      "curve": [
+        {
+          "_step": 5008,
+          "eval/return_mean": 3.6911001205444336,
+          "eval/timeout_rate": 0.375,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 10000,
+          "eval/return_mean": 0.2067248821258545,
+          "eval/timeout_rate": 0.03125,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 15008,
+          "eval/return_mean": 7.00559139251709,
+          "eval/timeout_rate": 0.53125,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 20000,
+          "eval/return_mean": 11.998008728027344,
+          "eval/timeout_rate": 0.125,
+          "eval/win_rate": 0.0625
+        },
+        {
+          "_step": 25008,
+          "eval/return_mean": 7.413909435272217,
+          "eval/timeout_rate": 0.59375,
+          "eval/win_rate": 0
+        },
+        {
+          "_step": 30000,
+          "eval/return_mean": 10.657169342041016,
+          "eval/timeout_rate": 0.125,
+          "eval/win_rate": 0.09375
+        },
+        {
+          "_step": 35008,
+          "eval/return_mean": 13.261872291564941,
+          "eval/timeout_rate": 0.03125,
+          "eval/win_rate": 0.1875
+        },
+        {
+          "_step": 40000,
+          "eval/return_mean": 12.18252182006836,
+          "eval/timeout_rate": 0.125,
+          "eval/win_rate": 0.15625
+        },
+        {
+          "_step": 45008,
+          "eval/return_mean": 12.931833267211914,
+          "eval/timeout_rate": 0.40625,
+          "eval/win_rate": 0.09375
+        },
+        {
+          "_step": 50000,
+          "eval/return_mean": 12.637945175170898,
+          "eval/timeout_rate": 0.28125,
+          "eval/win_rate": 0.125
+        }
+      ],
+      "final": {
+        "action_attack_fraction": 0.366594445538704,
+        "action_move_fraction": 0.22103604490841047,
+        "action_target_switch_count_mean": 11.2421875,
+        "ally_deaths_mean": 4.5078125,
+        "corrected_return_mean": 11.50693130493164,
+        "enemy_deaths_mean": 2.9765625,
+        "episodes": 128,
+        "return_mean": 11.726160049438477,
+        "return_std": 3.1029646396636963,
+        "timeout_rate": 0.2734375,
+        "win_rate": 0.0703125,
+        "wins": 9
+      },
+      "final_created_utc": "2026-09-04T20:54:42Z",
+      "final_id": "f-mppo-9201-wm_start5k_env16_entropy_actor2x256_nopeerres-2s3z-s0",
+      "final_state": "finished",
+      "final_url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/f-mppo-9201-wm_start5k_env16_entropy_actor2x256_nopeerres-2s3z-s0",
+      "last_logged_metrics": {
+        "counters/environment_steps": 48544,
+        "counters/learner_update_calls": 5431,
+        "counters/ppo_update_calls": 5431,
+        "fps/policy": 12.578849652229254,
+        "fps/train": 3220.1856189815085,
+        "replay/behavior_sample_age_mean": 22049.4296875,
+        "replay/world_sample_age_mean": 4984.83642578125,
+        "report/ctde/action_mask_positive_recall": 0.9595167636871338,
+        "report/ctde/attack_mask_positive_recall": 0.91558575630188,
+        "report/ctde/embedding_cosine": 0.8440176844596863,
+        "report/ctde/multistep_jepa_h4_cosine": 0.7965607643127441,
+        "report/ctde/multistep_jepa_h4_prediction_std": 0.14253026247024536,
+        "report/ctde/multistep_jepa_h4_target_std": 0.9596030712127686,
+        "report/ctde/teammate_belief_active_peer_top1": 0.6244309544563293,
+        "report/ctde/teammate_belief_attack_top1": 0.7614450454711914,
+        "report/ctde/teammate_belief_repeat_top1": 0.7081583738327026,
+        "report/ctde/teammate_plan_q4_active_top1": 0.5367352962493896,
+        "train/ctde/reward_loss": 0.889292057564384,
+        "train/ctde/teammate_belief_active_peer_top1": 0.7309729322006828,
+        "train/ctde/teammate_plan_q4_active_top1": 0.6581109755917599,
+        "train/opt/actor/grad_norm": 0.06319886993028616,
+        "train/opt/actor/updates": 26677.5,
+        "train/opt/critic/grad_norm": 0.7517965343437697,
+        "train/opt/local_world/updates": 5335.5,
+        "train/ppo/actor/entropy": 0.17005410915926883,
+        "train/ppo/actor/entropy_coefficient": 0.0003000000142492354,
+        "train/ppo/actor/exact_kl": 0.00020687269298880556,
+        "train/ppo/actor/final_clip_fraction": 0.005511336348411676,
+        "train/ppo/actor/final_exact_kl": 0.000559438665713012,
+        "train/ppo/batch_return": 9.299457555068166,
+        "train/ppo/batch_reward": 0.2073646765006216,
+        "train/ppo/batch_target_value": 9.293844155261391,
+        "train/ppo/batch_valid_fraction": 0.6286315654453478,
+        "train/ppo/critic/explained_variance": 0.9807118428380864,
+        "train/ppo/critic/rmse": 0.851838473269814,
+        "train/replay_views/behavior_reward_mean": 0.1509758038348273,
+        "train/replay_views/world_reward_mean": 0.16486526378675512
+      },
+      "train_created_utc": "2026-09-04T19:49:42Z",
+      "train_id": "mppo-9201-wm_start5k_env16_entropy_actor2x256_nopeerres-2s3z-s0",
+      "train_last_environment_step": 50000,
+      "train_state": "finished",
+      "train_url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/mppo-9201-wm_start5k_env16_entropy_actor2x256_nopeerres-2s3z-s0"
+    }
+  ]
+}

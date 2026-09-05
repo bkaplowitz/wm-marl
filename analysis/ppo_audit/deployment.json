@@ -1,0 +1,580 @@
+{
+  "approved_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+  "archive_sha256": "b043b3ee02e886c499a49ba1a9e3d6ab00d84fa7dc2c62b5eb0c5d25e5c4f683",
+  "created_utc": "2026-09-04T20:43:32.863341+00:00",
+  "hosts": {
+    "jinn": {
+      "hashes": {
+        "corrected": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+        "original": "7c0b50cbcf7fd701a57b1c64a2ed5fa1ba4a48a77def91e8781054b1cee40891",
+        "original_commit": "92014f1dd35f946816c350906af85370a434de40"
+      },
+      "last_observed_runs": [
+        {
+          "completed": null,
+          "curve": [],
+          "error": null,
+          "final": {},
+          "gpu": 1,
+          "last_step": 0,
+          "latest": {},
+          "name": "original_base-2s3z-seed1",
+          "slot": 5,
+          "source_commit": "92014f1dd35f946816c350906af85370a434de40",
+          "source_sha256": "7c0b50cbcf7fd701a57b1c64a2ed5fa1ba4a48a77def91e8781054b1cee40891",
+          "status": {
+            "compute_pids": [
+              1661660
+            ],
+            "gpu": 1,
+            "idle_seconds": 0,
+            "predecessor_pids": [
+              1661529
+            ],
+            "status": "waiting_for_gpu",
+            "updated_at": 1788554833.840655
+          }
+        },
+        {
+          "completed": null,
+          "curve": [],
+          "error": null,
+          "final": {},
+          "gpu": 0,
+          "last_step": 0,
+          "latest": {},
+          "name": "team_return_anchor-3m-seed0",
+          "slot": 4,
+          "source_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+          "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+          "status": {
+            "compute_pids": [
+              1661724
+            ],
+            "gpu": 0,
+            "idle_seconds": 0,
+            "predecessor_pids": [
+              1661531
+            ],
+            "status": "waiting_for_gpu",
+            "updated_at": 1788554831.900874
+          }
+        }
+      ],
+      "slots": [
+        {
+          "command": [
+            "/opt/dreamarl-smac/.venv/bin/python",
+            "/workspace/ma_jepa_ppo_2663ae5/scripts/run_ppo_correction_screen.py",
+            "--slot",
+            "4",
+            "--source",
+            "/workspace/ma_jepa_ppo_2663ae5",
+            "--expected-source-sha256",
+            "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+            "--experiment-root",
+            "/workspace/majepa_ppo_correction_2663ae5_20260904",
+            "--python",
+            "/opt/dreamarl-smac/.venv/bin/python",
+            "--external",
+            "/workspace/ma_jepa_ppo_cf97200/external/dreamerv3",
+            "--sc2",
+            "/opt/StarCraftII",
+            "--portserver-script",
+            "/opt/dreamarl-smac/.venv/bin/portserver.py",
+            "--portserver-address",
+            "@majepa-correction-2663ae5-s4",
+            "--portserver-pool",
+            "16000-16199",
+            "--gpu",
+            "0",
+            "--wait-pid",
+            "1661531"
+          ],
+          "gpu": 0,
+          "launched": {
+            "log": "/workspace/majepa_ppo_correction_2663ae5_20260904/slot-4-supervisor.log",
+            "supervisor_pid": 1670887
+          },
+          "predecessor_pid": 1661531,
+          "slot": 4,
+          "validation": {
+            "configuration": {
+              "actor_layers": 3,
+              "actor_lr": 3e-05,
+              "actor_units": 1024,
+              "collection_unimix": 0.05,
+              "critic_lr": 3e-05,
+              "entropy_coefficient": 0.01,
+              "entropy_schedule_enabled": false,
+              "envs": 1,
+              "joint_world_warmup": 1000,
+              "local_world_warmup": 1000,
+              "ppo_start_step": 5000,
+              "replay_value_scale": 0.3,
+              "seed": 0,
+              "task": "smac_3m",
+              "train_ratio": 128.0,
+              "world_model_start_step": 0
+            },
+            "run": {
+              "arm": "team_return_anchor",
+              "map_name": "3m",
+              "replay_value_scale": 0.3,
+              "seed": 0
+            },
+            "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+          }
+        },
+        {
+          "command": [
+            "/opt/dreamarl-smac/.venv/bin/python",
+            "/workspace/ma_jepa_ppo_2663ae5/scripts/run_ppo_correction_screen.py",
+            "--slot",
+            "5",
+            "--source",
+            "/workspace/ma_jepa_ppo_92014f1",
+            "--expected-source-sha256",
+            "7c0b50cbcf7fd701a57b1c64a2ed5fa1ba4a48a77def91e8781054b1cee40891",
+            "--experiment-root",
+            "/workspace/majepa_ppo_correction_2663ae5_20260904",
+            "--python",
+            "/opt/dreamarl-smac/.venv/bin/python",
+            "--external",
+            "/workspace/ma_jepa_ppo_cf97200/external/dreamerv3",
+            "--sc2",
+            "/opt/StarCraftII",
+            "--portserver-script",
+            "/opt/dreamarl-smac/.venv/bin/portserver.py",
+            "--portserver-address",
+            "@majepa-correction-2663ae5-s5",
+            "--portserver-pool",
+            "16200-16399",
+            "--gpu",
+            "1",
+            "--wait-pid",
+            "1661529"
+          ],
+          "gpu": 1,
+          "launched": {
+            "log": "/workspace/majepa_ppo_correction_2663ae5_20260904/slot-5-supervisor.log",
+            "supervisor_pid": 1671020
+          },
+          "predecessor_pid": 1661529,
+          "slot": 5,
+          "validation": {
+            "configuration": {
+              "actor_layers": 3,
+              "actor_lr": 3e-05,
+              "actor_units": 1024,
+              "collection_unimix": 0.05,
+              "critic_lr": 3e-05,
+              "entropy_coefficient": 0.01,
+              "entropy_schedule_enabled": false,
+              "envs": 1,
+              "joint_world_warmup": 1000,
+              "local_world_warmup": 1000,
+              "ppo_start_step": 5000,
+              "replay_value_scale": null,
+              "seed": 1,
+              "task": "smac_2s3z",
+              "train_ratio": 128.0,
+              "world_model_start_step": 0
+            },
+            "run": {
+              "arm": "original_base",
+              "map_name": "2s3z",
+              "replay_value_scale": null,
+              "seed": 1
+            },
+            "source_sha256": "7c0b50cbcf7fd701a57b1c64a2ed5fa1ba4a48a77def91e8781054b1cee40891"
+          }
+        }
+      ],
+      "staged": {
+        "commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+        "source": "/workspace/ma_jepa_ppo_2663ae5"
+      }
+    },
+    "jnin": {
+      "hashes": {
+        "corrected": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+        "original": "7c0b50cbcf7fd701a57b1c64a2ed5fa1ba4a48a77def91e8781054b1cee40891",
+        "original_commit": "92014f1dd35f946816c350906af85370a434de40"
+      },
+      "last_observed_runs": [
+        {
+          "completed": null,
+          "curve": [],
+          "error": null,
+          "final": {},
+          "gpu": 0,
+          "last_step": 0,
+          "latest": {},
+          "name": "team_return-2s3z-seed0",
+          "slot": 0,
+          "source_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+          "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+          "status": {
+            "compute_pids": [
+              2161367
+            ],
+            "gpu": 0,
+            "idle_seconds": 0,
+            "predecessor_pids": [
+              3425918
+            ],
+            "status": "waiting_for_gpu",
+            "updated_at": 1788554844.3689775
+          }
+        },
+        {
+          "completed": null,
+          "curve": [],
+          "error": null,
+          "final": {},
+          "gpu": 2,
+          "last_step": 0,
+          "latest": {},
+          "name": "team_return-2s3z-seed1",
+          "slot": 2,
+          "source_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+          "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+          "status": {
+            "compute_pids": [
+              2161369
+            ],
+            "gpu": 2,
+            "idle_seconds": 0,
+            "predecessor_pids": [
+              3425920
+            ],
+            "status": "waiting_for_gpu",
+            "updated_at": 1788554833.4050627
+          }
+        },
+        {
+          "completed": null,
+          "curve": [],
+          "error": null,
+          "final": {},
+          "gpu": 1,
+          "last_step": 0,
+          "latest": {},
+          "name": "team_return_anchor-2s3z-seed0",
+          "slot": 1,
+          "source_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+          "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+          "status": {
+            "compute_pids": [
+              2166262
+            ],
+            "gpu": 1,
+            "idle_seconds": 0,
+            "predecessor_pids": [
+              3425925
+            ],
+            "status": "waiting_for_gpu",
+            "updated_at": 1788554831.480514
+          }
+        },
+        {
+          "completed": null,
+          "curve": [],
+          "error": null,
+          "final": {},
+          "gpu": 3,
+          "last_step": 0,
+          "latest": {},
+          "name": "team_return_anchor-2s3z-seed1",
+          "slot": 3,
+          "source_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+          "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+          "status": {
+            "compute_pids": [
+              2161368
+            ],
+            "gpu": 3,
+            "idle_seconds": 0,
+            "predecessor_pids": [
+              3425922
+            ],
+            "status": "waiting_for_gpu",
+            "updated_at": 1788554835.4715433
+          }
+        }
+      ],
+      "slots": [
+        {
+          "command": [
+            "/workspace/dreamarl/.venv/bin/python",
+            "/workspace/ma_jepa_ppo_2663ae5/scripts/run_ppo_correction_screen.py",
+            "--slot",
+            "0",
+            "--source",
+            "/workspace/ma_jepa_ppo_2663ae5",
+            "--expected-source-sha256",
+            "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+            "--experiment-root",
+            "/workspace/majepa_ppo_correction_2663ae5_20260904",
+            "--python",
+            "/workspace/dreamarl/.venv/bin/python",
+            "--external",
+            "/workspace/ma_jepa_ppo_cf97200/external/dreamerv3",
+            "--sc2",
+            "/workspace/StarCraftII",
+            "--portserver-script",
+            "/workspace/dreamarl/.venv/bin/portserver.py",
+            "--portserver-address",
+            "@majepa-correction-2663ae5-s0",
+            "--portserver-pool",
+            "16000-16199",
+            "--gpu",
+            "0",
+            "--wait-pid",
+            "3425918"
+          ],
+          "gpu": 0,
+          "launched": {
+            "log": "/workspace/majepa_ppo_correction_2663ae5_20260904/slot-0-supervisor.log",
+            "supervisor_pid": 3449932
+          },
+          "predecessor_pid": 3425918,
+          "slot": 0,
+          "validation": {
+            "configuration": {
+              "actor_layers": 3,
+              "actor_lr": 3e-05,
+              "actor_units": 1024,
+              "collection_unimix": 0.05,
+              "critic_lr": 3e-05,
+              "entropy_coefficient": 0.01,
+              "entropy_schedule_enabled": false,
+              "envs": 1,
+              "joint_world_warmup": 1000,
+              "local_world_warmup": 1000,
+              "ppo_start_step": 5000,
+              "replay_value_scale": 0.0,
+              "seed": 0,
+              "task": "smac_2s3z",
+              "train_ratio": 128.0,
+              "world_model_start_step": 0
+            },
+            "run": {
+              "arm": "team_return",
+              "map_name": "2s3z",
+              "replay_value_scale": 0.0,
+              "seed": 0
+            },
+            "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+          }
+        },
+        {
+          "command": [
+            "/workspace/dreamarl/.venv/bin/python",
+            "/workspace/ma_jepa_ppo_2663ae5/scripts/run_ppo_correction_screen.py",
+            "--slot",
+            "1",
+            "--source",
+            "/workspace/ma_jepa_ppo_2663ae5",
+            "--expected-source-sha256",
+            "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+            "--experiment-root",
+            "/workspace/majepa_ppo_correction_2663ae5_20260904",
+            "--python",
+            "/workspace/dreamarl/.venv/bin/python",
+            "--external",
+            "/workspace/ma_jepa_ppo_cf97200/external/dreamerv3",
+            "--sc2",
+            "/workspace/StarCraftII",
+            "--portserver-script",
+            "/workspace/dreamarl/.venv/bin/portserver.py",
+            "--portserver-address",
+            "@majepa-correction-2663ae5-s1",
+            "--portserver-pool",
+            "16200-16399",
+            "--gpu",
+            "1",
+            "--wait-pid",
+            "3425925"
+          ],
+          "gpu": 1,
+          "launched": {
+            "log": "/workspace/majepa_ppo_correction_2663ae5_20260904/slot-1-supervisor.log",
+            "supervisor_pid": 3450013
+          },
+          "predecessor_pid": 3425925,
+          "slot": 1,
+          "validation": {
+            "configuration": {
+              "actor_layers": 3,
+              "actor_lr": 3e-05,
+              "actor_units": 1024,
+              "collection_unimix": 0.05,
+              "critic_lr": 3e-05,
+              "entropy_coefficient": 0.01,
+              "entropy_schedule_enabled": false,
+              "envs": 1,
+              "joint_world_warmup": 1000,
+              "local_world_warmup": 1000,
+              "ppo_start_step": 5000,
+              "replay_value_scale": 0.3,
+              "seed": 0,
+              "task": "smac_2s3z",
+              "train_ratio": 128.0,
+              "world_model_start_step": 0
+            },
+            "run": {
+              "arm": "team_return_anchor",
+              "map_name": "2s3z",
+              "replay_value_scale": 0.3,
+              "seed": 0
+            },
+            "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+          }
+        },
+        {
+          "command": [
+            "/workspace/dreamarl/.venv/bin/python",
+            "/workspace/ma_jepa_ppo_2663ae5/scripts/run_ppo_correction_screen.py",
+            "--slot",
+            "2",
+            "--source",
+            "/workspace/ma_jepa_ppo_2663ae5",
+            "--expected-source-sha256",
+            "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+            "--experiment-root",
+            "/workspace/majepa_ppo_correction_2663ae5_20260904",
+            "--python",
+            "/workspace/dreamarl/.venv/bin/python",
+            "--external",
+            "/workspace/ma_jepa_ppo_cf97200/external/dreamerv3",
+            "--sc2",
+            "/workspace/StarCraftII",
+            "--portserver-script",
+            "/workspace/dreamarl/.venv/bin/portserver.py",
+            "--portserver-address",
+            "@majepa-correction-2663ae5-s2",
+            "--portserver-pool",
+            "16400-16599",
+            "--gpu",
+            "2",
+            "--wait-pid",
+            "3425920"
+          ],
+          "gpu": 2,
+          "launched": {
+            "log": "/workspace/majepa_ppo_correction_2663ae5_20260904/slot-2-supervisor.log",
+            "supervisor_pid": 3450094
+          },
+          "predecessor_pid": 3425920,
+          "slot": 2,
+          "validation": {
+            "configuration": {
+              "actor_layers": 3,
+              "actor_lr": 3e-05,
+              "actor_units": 1024,
+              "collection_unimix": 0.05,
+              "critic_lr": 3e-05,
+              "entropy_coefficient": 0.01,
+              "entropy_schedule_enabled": false,
+              "envs": 1,
+              "joint_world_warmup": 1000,
+              "local_world_warmup": 1000,
+              "ppo_start_step": 5000,
+              "replay_value_scale": 0.0,
+              "seed": 1,
+              "task": "smac_2s3z",
+              "train_ratio": 128.0,
+              "world_model_start_step": 0
+            },
+            "run": {
+              "arm": "team_return",
+              "map_name": "2s3z",
+              "replay_value_scale": 0.0,
+              "seed": 1
+            },
+            "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+          }
+        },
+        {
+          "command": [
+            "/workspace/dreamarl/.venv/bin/python",
+            "/workspace/ma_jepa_ppo_2663ae5/scripts/run_ppo_correction_screen.py",
+            "--slot",
+            "3",
+            "--source",
+            "/workspace/ma_jepa_ppo_2663ae5",
+            "--expected-source-sha256",
+            "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+            "--experiment-root",
+            "/workspace/majepa_ppo_correction_2663ae5_20260904",
+            "--python",
+            "/workspace/dreamarl/.venv/bin/python",
+            "--external",
+            "/workspace/ma_jepa_ppo_cf97200/external/dreamerv3",
+            "--sc2",
+            "/workspace/StarCraftII",
+            "--portserver-script",
+            "/workspace/dreamarl/.venv/bin/portserver.py",
+            "--portserver-address",
+            "@majepa-correction-2663ae5-s3",
+            "--portserver-pool",
+            "16600-16799",
+            "--gpu",
+            "3",
+            "--wait-pid",
+            "3425922"
+          ],
+          "gpu": 3,
+          "launched": {
+            "log": "/workspace/majepa_ppo_correction_2663ae5_20260904/slot-3-supervisor.log",
+            "supervisor_pid": 3450175
+          },
+          "predecessor_pid": 3425922,
+          "slot": 3,
+          "validation": {
+            "configuration": {
+              "actor_layers": 3,
+              "actor_lr": 3e-05,
+              "actor_units": 1024,
+              "collection_unimix": 0.05,
+              "critic_lr": 3e-05,
+              "entropy_coefficient": 0.01,
+              "entropy_schedule_enabled": false,
+              "envs": 1,
+              "joint_world_warmup": 1000,
+              "local_world_warmup": 1000,
+              "ppo_start_step": 5000,
+              "replay_value_scale": 0.3,
+              "seed": 1,
+              "task": "smac_2s3z",
+              "train_ratio": 128.0,
+              "world_model_start_step": 0
+            },
+            "run": {
+              "arm": "team_return_anchor",
+              "map_name": "2s3z",
+              "replay_value_scale": 0.3,
+              "seed": 1
+            },
+            "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+          }
+        }
+      ],
+      "staged": {
+        "commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+        "source": "/workspace/ma_jepa_ppo_2663ae5"
+      }
+    }
+  },
+  "latest_status_utc": "2026-09-04T20:47:24.821621+00:00",
+  "results": "/workspace/majepa_ppo_correction_2663ae5_20260904",
+  "source": "/workspace/ma_jepa_ppo_2663ae5",
+  "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+  "validation": {
+    "full_suite": "83 passed in 205 seconds",
+    "ruff": "passed",
+    "subsequent_truncation_replay_and_learner_tests": "5 passed in 51 seconds"
+  }
+}

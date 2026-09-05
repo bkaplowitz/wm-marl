@@ -1,0 +1,511 @@
+{
+  "algorithm_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+  "authentication": {
+    "credential_file_mode": "0600",
+    "wandb_auth_present": true
+  },
+  "created_utc": "2026-09-05T07:18:26.507336+00:00",
+  "final_backup_watcher": {
+    "authorization": "Each successfully completed final128 archives independently of other runs or diagnostics; preserve source files.",
+    "command": [
+      "/Users/osaze/MARL/world_marl/.venv/bin/python",
+      "/Users/osaze/MARL/worktrees/ma_jepa_ppo/analysis/ppo_audit/watch_final_backups.py",
+      "--host",
+      "root@154.54.102.56",
+      "--port",
+      "14808",
+      "--remote-root",
+      "/workspace/majepa_ppo_correction_2663ae5_20260905",
+      "--mirror",
+      "/Users/osaze/MARL/worktrees/ma_jepa_ppo/analysis/ppo_audit/correction_20260905_mirror",
+      "--destination",
+      "/Users/osaze/MARL/remote_archives/majepa_ppo_correction_20260905",
+      "--bandwidth-kbps",
+      "64000"
+    ],
+    "local_free_bytes_before_start": 188517425152,
+    "pid": 21048,
+    "started_utc": "2026-09-05T07:36:02.955013+00:00"
+  },
+  "host": "root@154.54.102.56",
+  "launcher_sha256": "b7e283eed1c81883328b88780dfb3638e3f0cbc27773876a850f5aa5d28a690e",
+  "local_mirror": "/Users/osaze/MARL/worktrees/ma_jepa_ppo/analysis/ppo_audit/correction_20260905_mirror",
+  "mirror": {
+    "command": [
+      "/Users/osaze/MARL/world_marl/.venv/bin/python",
+      "/Users/osaze/MARL/worktrees/ma_jepa_ppo/analysis/ppo_audit/mirror_remote_results.py",
+      "--host",
+      "root@154.54.102.56",
+      "--port",
+      "14808",
+      "--remote-root",
+      "/workspace/majepa_ppo_correction_2663ae5_20260905",
+      "--local-root",
+      "/Users/osaze/MARL/worktrees/ma_jepa_ppo/analysis/ppo_audit/correction_20260905_mirror",
+      "--expected-runs",
+      "6",
+      "--watch",
+      "--interval",
+      "120"
+    ],
+    "pid": 22223,
+    "restarts": [
+      {
+        "new_pid": 18876,
+        "old_pid": 17845,
+        "reason": "Add configuration snapshots and preserve remote log-reset history",
+        "utc": "2026-09-05T07:25:41.849795+00:00"
+      },
+      {
+        "new_pid": 22223,
+        "old_pid": 18876,
+        "reason": "Retain safe SSH connection-error signatures and resolved status",
+        "utc": "2026-09-05T07:47:38.409598+00:00"
+      }
+    ]
+  },
+  "original_commit": "92014f1dd35f946816c350906af85370a434de40",
+  "original_source": "/workspace/ma_jepa_ppo_92014f1",
+  "original_source_sha256": "7c0b50cbcf7fd701a57b1c64a2ed5fa1ba4a48a77def91e8781054b1cee40891",
+  "port": 14808,
+  "results": "/workspace/majepa_ppo_correction_2663ae5_20260905",
+  "slots": [
+    {
+      "command": [
+        "/workspace/majepa-runtime/bin/python",
+        "/workspace/ma_jepa_ppo_2663ae5/scripts/run_ppo_correction_screen.py",
+        "--slot",
+        "0",
+        "--source",
+        "/workspace/ma_jepa_ppo_2663ae5",
+        "--expected-source-sha256",
+        "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+        "--experiment-root",
+        "/workspace/majepa_ppo_correction_2663ae5_20260905",
+        "--python",
+        "/workspace/majepa-runtime/bin/python",
+        "--external",
+        "/workspace/external/dreamerv3",
+        "--sc2",
+        "/workspace/StarCraftII",
+        "--portserver-script",
+        "/workspace/majepa-runtime/bin/portserver.py",
+        "--portserver-address",
+        "@majepa-correction-20260905-s0",
+        "--portserver-pool",
+        "16000-16199",
+        "--gpu",
+        "0",
+        "--wandb-project",
+        "majepa-ppo-treatments",
+        "--wandb-entity",
+        "osaze-obahor",
+        "--wandb-group",
+        "ma-jepa-ppo-correction-2663ae5-20260905",
+        "--wandb-run-prefix",
+        "corr-2663-20260905"
+      ],
+      "gpu": 0,
+      "launched": {
+        "log": "/workspace/majepa_ppo_correction_2663ae5_20260905/slot-0-supervisor.log",
+        "pid": 3977
+      },
+      "slot": 0,
+      "validation": {
+        "configuration": {
+          "actor_layers": 3,
+          "actor_lr": 3e-05,
+          "actor_units": 1024,
+          "collection_unimix": 0.05,
+          "critic_lr": 3e-05,
+          "entropy_coefficient": 0.01,
+          "entropy_schedule_enabled": false,
+          "envs": 1,
+          "joint_world_warmup": 1000,
+          "local_world_warmup": 1000,
+          "ppo_start_step": 5000,
+          "replay_value_scale": 0.0,
+          "seed": 0,
+          "task": "smac_2s3z",
+          "train_ratio": 128.0,
+          "world_model_start_step": 0
+        },
+        "run": {
+          "arm": "team_return",
+          "map_name": "2s3z",
+          "replay_value_scale": 0.0,
+          "seed": 0
+        },
+        "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+      }
+    },
+    {
+      "command": [
+        "/workspace/majepa-runtime/bin/python",
+        "/workspace/ma_jepa_ppo_2663ae5/scripts/run_ppo_correction_screen.py",
+        "--slot",
+        "1",
+        "--source",
+        "/workspace/ma_jepa_ppo_2663ae5",
+        "--expected-source-sha256",
+        "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+        "--experiment-root",
+        "/workspace/majepa_ppo_correction_2663ae5_20260905",
+        "--python",
+        "/workspace/majepa-runtime/bin/python",
+        "--external",
+        "/workspace/external/dreamerv3",
+        "--sc2",
+        "/workspace/StarCraftII",
+        "--portserver-script",
+        "/workspace/majepa-runtime/bin/portserver.py",
+        "--portserver-address",
+        "@majepa-correction-20260905-s1",
+        "--portserver-pool",
+        "16200-16399",
+        "--gpu",
+        "1",
+        "--wandb-project",
+        "majepa-ppo-treatments",
+        "--wandb-entity",
+        "osaze-obahor",
+        "--wandb-group",
+        "ma-jepa-ppo-correction-2663ae5-20260905",
+        "--wandb-run-prefix",
+        "corr-2663-20260905"
+      ],
+      "gpu": 1,
+      "launched": {
+        "log": "/workspace/majepa_ppo_correction_2663ae5_20260905/slot-1-supervisor.log",
+        "pid": 4054
+      },
+      "slot": 1,
+      "validation": {
+        "configuration": {
+          "actor_layers": 3,
+          "actor_lr": 3e-05,
+          "actor_units": 1024,
+          "collection_unimix": 0.05,
+          "critic_lr": 3e-05,
+          "entropy_coefficient": 0.01,
+          "entropy_schedule_enabled": false,
+          "envs": 1,
+          "joint_world_warmup": 1000,
+          "local_world_warmup": 1000,
+          "ppo_start_step": 5000,
+          "replay_value_scale": 0.3,
+          "seed": 0,
+          "task": "smac_2s3z",
+          "train_ratio": 128.0,
+          "world_model_start_step": 0
+        },
+        "run": {
+          "arm": "team_return_anchor",
+          "map_name": "2s3z",
+          "replay_value_scale": 0.3,
+          "seed": 0
+        },
+        "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+      }
+    },
+    {
+      "command": [
+        "/workspace/majepa-runtime/bin/python",
+        "/workspace/ma_jepa_ppo_2663ae5/scripts/run_ppo_correction_screen.py",
+        "--slot",
+        "2",
+        "--source",
+        "/workspace/ma_jepa_ppo_2663ae5",
+        "--expected-source-sha256",
+        "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+        "--experiment-root",
+        "/workspace/majepa_ppo_correction_2663ae5_20260905",
+        "--python",
+        "/workspace/majepa-runtime/bin/python",
+        "--external",
+        "/workspace/external/dreamerv3",
+        "--sc2",
+        "/workspace/StarCraftII",
+        "--portserver-script",
+        "/workspace/majepa-runtime/bin/portserver.py",
+        "--portserver-address",
+        "@majepa-correction-20260905-s2",
+        "--portserver-pool",
+        "16400-16599",
+        "--gpu",
+        "2",
+        "--wandb-project",
+        "majepa-ppo-treatments",
+        "--wandb-entity",
+        "osaze-obahor",
+        "--wandb-group",
+        "ma-jepa-ppo-correction-2663ae5-20260905",
+        "--wandb-run-prefix",
+        "corr-2663-20260905"
+      ],
+      "gpu": 2,
+      "launched": {
+        "log": "/workspace/majepa_ppo_correction_2663ae5_20260905/slot-2-supervisor.log",
+        "pid": 4135
+      },
+      "slot": 2,
+      "validation": {
+        "configuration": {
+          "actor_layers": 3,
+          "actor_lr": 3e-05,
+          "actor_units": 1024,
+          "collection_unimix": 0.05,
+          "critic_lr": 3e-05,
+          "entropy_coefficient": 0.01,
+          "entropy_schedule_enabled": false,
+          "envs": 1,
+          "joint_world_warmup": 1000,
+          "local_world_warmup": 1000,
+          "ppo_start_step": 5000,
+          "replay_value_scale": 0.0,
+          "seed": 1,
+          "task": "smac_2s3z",
+          "train_ratio": 128.0,
+          "world_model_start_step": 0
+        },
+        "run": {
+          "arm": "team_return",
+          "map_name": "2s3z",
+          "replay_value_scale": 0.0,
+          "seed": 1
+        },
+        "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+      }
+    },
+    {
+      "command": [
+        "/workspace/majepa-runtime/bin/python",
+        "/workspace/ma_jepa_ppo_2663ae5/scripts/run_ppo_correction_screen.py",
+        "--slot",
+        "3",
+        "--source",
+        "/workspace/ma_jepa_ppo_2663ae5",
+        "--expected-source-sha256",
+        "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+        "--experiment-root",
+        "/workspace/majepa_ppo_correction_2663ae5_20260905",
+        "--python",
+        "/workspace/majepa-runtime/bin/python",
+        "--external",
+        "/workspace/external/dreamerv3",
+        "--sc2",
+        "/workspace/StarCraftII",
+        "--portserver-script",
+        "/workspace/majepa-runtime/bin/portserver.py",
+        "--portserver-address",
+        "@majepa-correction-20260905-s3",
+        "--portserver-pool",
+        "16600-16799",
+        "--gpu",
+        "3",
+        "--wandb-project",
+        "majepa-ppo-treatments",
+        "--wandb-entity",
+        "osaze-obahor",
+        "--wandb-group",
+        "ma-jepa-ppo-correction-2663ae5-20260905",
+        "--wandb-run-prefix",
+        "corr-2663-20260905"
+      ],
+      "gpu": 3,
+      "launched": {
+        "log": "/workspace/majepa_ppo_correction_2663ae5_20260905/slot-3-supervisor.log",
+        "pid": 4216
+      },
+      "slot": 3,
+      "validation": {
+        "configuration": {
+          "actor_layers": 3,
+          "actor_lr": 3e-05,
+          "actor_units": 1024,
+          "collection_unimix": 0.05,
+          "critic_lr": 3e-05,
+          "entropy_coefficient": 0.01,
+          "entropy_schedule_enabled": false,
+          "envs": 1,
+          "joint_world_warmup": 1000,
+          "local_world_warmup": 1000,
+          "ppo_start_step": 5000,
+          "replay_value_scale": 0.3,
+          "seed": 1,
+          "task": "smac_2s3z",
+          "train_ratio": 128.0,
+          "world_model_start_step": 0
+        },
+        "run": {
+          "arm": "team_return_anchor",
+          "map_name": "2s3z",
+          "replay_value_scale": 0.3,
+          "seed": 1
+        },
+        "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+      }
+    },
+    {
+      "command": [
+        "/workspace/majepa-runtime/bin/python",
+        "/workspace/ma_jepa_ppo_2663ae5/scripts/run_ppo_correction_screen.py",
+        "--slot",
+        "4",
+        "--source",
+        "/workspace/ma_jepa_ppo_2663ae5",
+        "--expected-source-sha256",
+        "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+        "--experiment-root",
+        "/workspace/majepa_ppo_correction_2663ae5_20260905",
+        "--python",
+        "/workspace/majepa-runtime/bin/python",
+        "--external",
+        "/workspace/external/dreamerv3",
+        "--sc2",
+        "/workspace/StarCraftII",
+        "--portserver-script",
+        "/workspace/majepa-runtime/bin/portserver.py",
+        "--portserver-address",
+        "@majepa-correction-20260905-s4",
+        "--portserver-pool",
+        "16800-16999",
+        "--gpu",
+        "4",
+        "--wandb-project",
+        "majepa-ppo-treatments",
+        "--wandb-entity",
+        "osaze-obahor",
+        "--wandb-group",
+        "ma-jepa-ppo-correction-2663ae5-20260905",
+        "--wandb-run-prefix",
+        "corr-2663-20260905"
+      ],
+      "gpu": 4,
+      "launched": {
+        "log": "/workspace/majepa_ppo_correction_2663ae5_20260905/slot-4-supervisor.log",
+        "pid": 4297
+      },
+      "slot": 4,
+      "validation": {
+        "configuration": {
+          "actor_layers": 3,
+          "actor_lr": 3e-05,
+          "actor_units": 1024,
+          "collection_unimix": 0.05,
+          "critic_lr": 3e-05,
+          "entropy_coefficient": 0.01,
+          "entropy_schedule_enabled": false,
+          "envs": 1,
+          "joint_world_warmup": 1000,
+          "local_world_warmup": 1000,
+          "ppo_start_step": 5000,
+          "replay_value_scale": 0.3,
+          "seed": 0,
+          "task": "smac_3m",
+          "train_ratio": 128.0,
+          "world_model_start_step": 0
+        },
+        "run": {
+          "arm": "team_return_anchor",
+          "map_name": "3m",
+          "replay_value_scale": 0.3,
+          "seed": 0
+        },
+        "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+      }
+    },
+    {
+      "command": [
+        "/workspace/majepa-runtime/bin/python",
+        "/workspace/ma_jepa_ppo_2663ae5/scripts/run_ppo_correction_screen.py",
+        "--slot",
+        "5",
+        "--source",
+        "/workspace/ma_jepa_ppo_92014f1",
+        "--expected-source-sha256",
+        "7c0b50cbcf7fd701a57b1c64a2ed5fa1ba4a48a77def91e8781054b1cee40891",
+        "--experiment-root",
+        "/workspace/majepa_ppo_correction_2663ae5_20260905",
+        "--python",
+        "/workspace/majepa-runtime/bin/python",
+        "--external",
+        "/workspace/external/dreamerv3",
+        "--sc2",
+        "/workspace/StarCraftII",
+        "--portserver-script",
+        "/workspace/majepa-runtime/bin/portserver.py",
+        "--portserver-address",
+        "@majepa-correction-20260905-s5",
+        "--portserver-pool",
+        "17000-17199",
+        "--gpu",
+        "5",
+        "--wandb-project",
+        "majepa-ppo-treatments",
+        "--wandb-entity",
+        "osaze-obahor",
+        "--wandb-group",
+        "ma-jepa-ppo-correction-2663ae5-20260905",
+        "--wandb-run-prefix",
+        "corr-2663-20260905"
+      ],
+      "gpu": 5,
+      "launched": {
+        "log": "/workspace/majepa_ppo_correction_2663ae5_20260905/slot-5-supervisor.log",
+        "pid": 4378
+      },
+      "slot": 5,
+      "validation": {
+        "configuration": {
+          "actor_layers": 3,
+          "actor_lr": 3e-05,
+          "actor_units": 1024,
+          "collection_unimix": 0.05,
+          "critic_lr": 3e-05,
+          "entropy_coefficient": 0.01,
+          "entropy_schedule_enabled": false,
+          "envs": 1,
+          "joint_world_warmup": 1000,
+          "local_world_warmup": 1000,
+          "ppo_start_step": 5000,
+          "replay_value_scale": null,
+          "seed": 1,
+          "task": "smac_2s3z",
+          "train_ratio": 128.0,
+          "world_model_start_step": 0
+        },
+        "run": {
+          "arm": "original_base",
+          "map_name": "2s3z",
+          "replay_value_scale": null,
+          "seed": 1
+        },
+        "source_sha256": "7c0b50cbcf7fd701a57b1c64a2ed5fa1ba4a48a77def91e8781054b1cee40891"
+      }
+    }
+  ],
+  "source": "/workspace/ma_jepa_ppo_2663ae5",
+  "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+  "staged_launcher": {
+    "launcher_sha256": "b7e283eed1c81883328b88780dfb3638e3f0cbc27773876a850f5aa5d28a690e"
+  },
+  "validation": {
+    "local_launcher_and_mirror": "11 passed",
+    "remote_gpu_affected_tests": "10 passed (parent verified)",
+    "remote_random_smac": "3m and 2s3z completed (parent verified)",
+    "ruff": "passed"
+  },
+  "verified_package_hashes": {
+    "corrected": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+    "corrected_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+    "original": "7c0b50cbcf7fd701a57b1c64a2ed5fa1ba4a48a77def91e8781054b1cee40891",
+    "original_commit": "92014f1dd35f946816c350906af85370a434de40"
+  },
+  "wandb_api_check": {
+    "authenticated": true
+  },
+  "wandb_group": "ma-jepa-ppo-correction-2663ae5-20260905",
+  "wandb_project": "osaze-obahor/majepa-ppo-treatments",
+  "wandb_run_prefix": "corr-2663-20260905"
+}

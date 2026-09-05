@@ -1,0 +1,162 @@
+{
+  "jinn": {
+    "captured_utc": "2026-09-04T20:47:24.608594+00:00",
+    "runs": [
+      {
+        "completed": null,
+        "curve": [],
+        "error": null,
+        "final": {},
+        "gpu": 1,
+        "last_step": 0,
+        "latest": {},
+        "name": "original_base-2s3z-seed1",
+        "slot": 5,
+        "source_commit": "92014f1dd35f946816c350906af85370a434de40",
+        "source_sha256": "7c0b50cbcf7fd701a57b1c64a2ed5fa1ba4a48a77def91e8781054b1cee40891",
+        "status": {
+          "compute_pids": [
+            1661660
+          ],
+          "gpu": 1,
+          "idle_seconds": 0,
+          "predecessor_pids": [
+            1661529
+          ],
+          "status": "waiting_for_gpu",
+          "updated_at": 1788554833.840655
+        }
+      },
+      {
+        "completed": null,
+        "curve": [],
+        "error": null,
+        "final": {},
+        "gpu": 0,
+        "last_step": 0,
+        "latest": {},
+        "name": "team_return_anchor-3m-seed0",
+        "slot": 4,
+        "source_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+        "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+        "status": {
+          "compute_pids": [
+            1661724
+          ],
+          "gpu": 0,
+          "idle_seconds": 0,
+          "predecessor_pids": [
+            1661531
+          ],
+          "status": "waiting_for_gpu",
+          "updated_at": 1788554831.900874
+        }
+      }
+    ]
+  },
+  "jnin": {
+    "captured_utc": "2026-09-04T20:47:24.784087+00:00",
+    "runs": [
+      {
+        "completed": null,
+        "curve": [],
+        "error": null,
+        "final": {},
+        "gpu": 0,
+        "last_step": 0,
+        "latest": {},
+        "name": "team_return-2s3z-seed0",
+        "slot": 0,
+        "source_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+        "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+        "status": {
+          "compute_pids": [
+            2161367
+          ],
+          "gpu": 0,
+          "idle_seconds": 0,
+          "predecessor_pids": [
+            3425918
+          ],
+          "status": "waiting_for_gpu",
+          "updated_at": 1788554844.3689775
+        }
+      },
+      {
+        "completed": null,
+        "curve": [],
+        "error": null,
+        "final": {},
+        "gpu": 2,
+        "last_step": 0,
+        "latest": {},
+        "name": "team_return-2s3z-seed1",
+        "slot": 2,
+        "source_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+        "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+        "status": {
+          "compute_pids": [
+            2161369
+          ],
+          "gpu": 2,
+          "idle_seconds": 0,
+          "predecessor_pids": [
+            3425920
+          ],
+          "status": "waiting_for_gpu",
+          "updated_at": 1788554833.4050627
+        }
+      },
+      {
+        "completed": null,
+        "curve": [],
+        "error": null,
+        "final": {},
+        "gpu": 1,
+        "last_step": 0,
+        "latest": {},
+        "name": "team_return_anchor-2s3z-seed0",
+        "slot": 1,
+        "source_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+        "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+        "status": {
+          "compute_pids": [
+            2166262
+          ],
+          "gpu": 1,
+          "idle_seconds": 0,
+          "predecessor_pids": [
+            3425925
+          ],
+          "status": "waiting_for_gpu",
+          "updated_at": 1788554831.480514
+        }
+      },
+      {
+        "completed": null,
+        "curve": [],
+        "error": null,
+        "final": {},
+        "gpu": 3,
+        "last_step": 0,
+        "latest": {},
+        "name": "team_return_anchor-2s3z-seed1",
+        "slot": 3,
+        "source_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+        "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+        "status": {
+          "compute_pids": [
+            2161368
+          ],
+          "gpu": 3,
+          "idle_seconds": 0,
+          "predecessor_pids": [
+            3425922
+          ],
+          "status": "waiting_for_gpu",
+          "updated_at": 1788554835.4715433
+        }
+      }
+    ]
+  }
+}
