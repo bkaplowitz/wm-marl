@@ -1,3 +1,5 @@
+> Superseded by user steering on 2026-09-05 before any arm was launched. Retained as a prepared protocol, not experimental results. See prefill_recurrent_ema_protocol.md.
+
 # Draft: recurrent world-model training and shorter PPO imagination
 
 Status: prepared, not launched. Anchor selection requires the current screen's

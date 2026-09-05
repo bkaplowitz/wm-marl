@@ -18,6 +18,9 @@ analysis/ppo_audit/correction_20260905_summary.json
 analysis/ppo_audit/correction_20260905_wandb_latest.json
 analysis/ppo_audit/ppo_correction_curves.png
 analysis/ppo_audit/ppo_correction_curves.svg
+analysis/ppo_audit/self_fed_20260905_mirror/
 analysis/ppo_audit/corrected_2s3z_first_checkpoint/
 # The compressed raw audit is versioned alongside its summary.
 analysis/ppo_audit/historical_2s3z_seed234_simulator.json
+
+analysis/ppo_audit/prefill_recurrent_ema_20260905_mirror/
