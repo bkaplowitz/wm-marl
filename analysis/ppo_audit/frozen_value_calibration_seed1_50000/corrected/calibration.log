@@ -1,0 +1,93 @@
+Observations
+  observation      Space(float32, shape=(5, 80), low=-inf, high=inf)
+  reward           Space(float32, shape=(5,), low=-inf, high=inf)
+  agent_present    Space(bool, shape=(5,), low=False, high=True)
+  agent_alive      Space(bool, shape=(5,), low=False, high=True)
+  controllable_alive Space(bool, shape=(5,), low=False, high=True)
+  action_mask      Space(bool, shape=(5, 11), low=False, high=True)
+  is_first         Space(bool, shape=(), low=False, high=True)
+  is_last          Space(bool, shape=(), low=False, high=True)
+  is_terminal      Space(bool, shape=(), low=False, high=True)
+Actions
+  action           Space(int32, shape=(5,), low=0, high=11)
+Extras
+  consec           Space(int32, shape=(), low=-2147483648, high=2147483647)
+  stepid           Space(uint8, shape=(20,), low=0, high=255)
+  _environment_step Space(int32, shape=(), low=-2147483648, high=2147483647)
+  dyn/stoch        Space(float32, shape=(5, 32, 64), low=-inf, high=inf)
+  dyn/pair         Space(float32, shape=(5, 2059), low=-inf, high=inf)
+  dyn/reset        Space(bool, shape=(5,), low=False, high=True)
+  dyn/position     Space(int32, shape=(5,), low=-2147483648, high=2147483647)
+  dyn/active       Space(bool, shape=(5,), low=False, high=True)
+  _behavior_replay/observation Space(float32, shape=(5, 80), low=-inf, high=inf)
+  _behavior_replay/reward Space(float32, shape=(5,), low=-inf, high=inf)
+  _behavior_replay/agent_present Space(bool, shape=(5,), low=False, high=True)
+  _behavior_replay/agent_alive Space(bool, shape=(5,), low=False, high=True)
+  _behavior_replay/controllable_alive Space(bool, shape=(5,), low=False, high=True)
+  _behavior_replay/action_mask Space(bool, shape=(5, 11), low=False, high=True)
+  _behavior_replay/is_first Space(bool, shape=(), low=False, high=True)
+  _behavior_replay/is_last Space(bool, shape=(), low=False, high=True)
+  _behavior_replay/is_terminal Space(bool, shape=(), low=False, high=True)
+  _behavior_replay/action Space(int32, shape=(5,), low=0, high=11)
+  _behavior_replay/consec Space(int32, shape=(), low=-2147483648, high=2147483647)
+  _behavior_replay/stepid Space(uint8, shape=(20,), low=0, high=255)
+  _behavior_replay/dyn/stoch Space(float32, shape=(5, 32, 64), low=-inf, high=inf)
+  _behavior_replay/dyn/pair Space(float32, shape=(5, 2059), low=-inf, high=inf)
+  _behavior_replay/dyn/reset Space(bool, shape=(5,), low=False, high=True)
+  _behavior_replay/dyn/position Space(int32, shape=(5,), low=-2147483648, high=2147483647)
+  _behavior_replay/dyn/active Space(bool, shape=(5,), low=False, high=True)
+JAX devices (1): [cuda:0]
+Policy devices: cuda:0
+Train devices:  cuda:0
+Initializing parameters...
+Optimizer opt/local_world has 89,539,851 parameters
+Optimizer opt/joint_world has 34,755,929 parameters
+Optimizer opt/actor has 15,367,947 parameters
+Optimizer opt/critic has 4,398,847 parameters
+Optimizer opt/actor has 15,367,947 parameters
+Optimizer opt/critic has 4,398,847 parameters
+Optimizer opt/actor has 15,367,947 parameters
+Optimizer opt/critic has 4,398,847 parameters
+Optimizer opt/actor has 15,367,947 parameters
+Optimizer opt/critic has 4,398,847 parameters
+Optimizer opt/actor has 15,367,947 parameters
+Optimizer opt/critic has 4,398,847 parameters
+Done initializing!
+Compiling 1 checkpoint groups...
+Largest checkpoint group: 2 GB
+Loading checkpoint: /workspace/majepa_value_calibration_20260905/team_return_anchor-2s3z-seed1/frozen/ckpt/20260905T085005F524901
+Loaded checkpoint.
+Version: B75689 (SC2.4.10)
+Build: Aug 12 2019 17:16:57
+Command Line: '"/workspace/StarCraftII/Versions/Base75689/SC2_x64" -listen 127.0.0.1 -port 18199 -dataDir /workspace/StarCraftII/ -tempDir /tmp/sc-iv29uwyc/'
+Starting up...
+Startup Phase 1 complete
+Startup Phase 2 complete
+Creating stub renderer...
+Listening on: 127.0.0.1:18199
+Startup Phase 3 complete. Ready for commands.
+ConnectHandler: Request from 127.0.0.1:53078 accepted
+ReadyHandler: 127.0.0.1:53078 ready
+Requesting to join a single player game
+Configuring interface options
+Configure: raw interface enabled
+Configure: feature layer interface disabled
+Configure: score interface disabled
+Configure: render interface disabled
+Launching next game.
+Next launch phase started: 2
+Next launch phase started: 3
+Next launch phase started: 4
+Next launch phase started: 5
+Next launch phase started: 6
+Next launch phase started: 7
+Next launch phase started: 8
+Game has started.
+Using default stable ids, none found at: /workspace/StarCraftII/stableid.json
+Successfully loaded stable ids: GameData\stableid.json
+Sending ResponseJoinGame
+RequestQuit command received.
+Closing Application...
+DataHandler: unable to parse websocket frame.
+CloseHandler: 127.0.0.1:53078 disconnected
+{"output": "/workspace/majepa_value_calibration_20260905/team_return_anchor-2s3z-seed1/result32", "episodes": 32, "return_mean": 12.559053644537926, "win_rate": 0.03125}

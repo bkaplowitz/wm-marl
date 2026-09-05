@@ -1,0 +1,215 @@
+{
+  "checkpoint": "/workspace/majepa_value_calibration_20260905/team_return_anchor-2s3z-seed1/frozen/ckpt/20260905T085005F524901",
+  "checkpoint_files": {
+    "agent.pkl": {
+      "bytes": 1755214096,
+      "sha256": "46b2e6a31ddcaa8acf53c936908e60d5c2b769aba112e3634750e6a5be65f8df"
+    }
+  },
+  "command": [
+    "/workspace/ma_jepa_calibration_corrected_2663ae5_d433a7e/scripts/evaluate_value_calibration.py",
+    "--config",
+    "/workspace/majepa_value_calibration_20260905/team_return_anchor-2s3z-seed1/frozen/config.yaml",
+    "--checkpoint",
+    "/workspace/majepa_value_calibration_20260905/team_return_anchor-2s3z-seed1/frozen/ckpt/20260905T085005F524901",
+    "--training-manifest",
+    "/workspace/majepa_value_calibration_20260905/team_return_anchor-2s3z-seed1/frozen/training_manifest.json",
+    "--output",
+    "/workspace/majepa_value_calibration_20260905/team_return_anchor-2s3z-seed1/result32",
+    "--episodes",
+    "32",
+    "--envs",
+    "1",
+    "--eval-seed",
+    "70001",
+    "--worker-offset",
+    "200000",
+    "--diagnostic-seed",
+    "9001",
+    "--policy-mode",
+    "eval_sample",
+    "--max-driver-steps",
+    "20000",
+    "--platform",
+    "cuda"
+  ],
+  "created_utc": "2026-09-05T09:00:04.706429+00:00",
+  "evaluation_overrides": {
+    "jax.expect_devices": 0,
+    "jax.platform": "cuda",
+    "jax.policy_devices": [
+      0
+    ],
+    "jax.precompile": false,
+    "jax.profiler": false,
+    "jax.train_devices": [
+      0
+    ],
+    "logdir": "/workspace/majepa_value_calibration_20260905/team_return_anchor-2s3z-seed1/result32/runtime",
+    "run.debug": true,
+    "script": "eval_only",
+    "seed": 70001
+  },
+  "packages": {
+    "elements": "3.22.0",
+    "jax": "0.4.36",
+    "jaxlib": "0.4.36",
+    "ninjax": "3.6.3",
+    "numpy": "1.26.4",
+    "pysc2": "4.0.0",
+    "s2clientprotocol": "5.0.14.93333.0",
+    "smac": "1.0.0"
+  },
+  "protocol": {
+    "actor_rng": "canonical runtime; evaluation seed plus restored checkpoint n_actions",
+    "critic_input": "current local posterior from returned actor carry; synchronized real roster/liveness",
+    "diagnostic_seed": 9001,
+    "discount": 0.996996996996997,
+    "environment_seeds": [
+      270001
+    ],
+    "envs": 1,
+    "episodes": 32,
+    "eval_seed": 70001,
+    "finite_horizon": "H-step Bellman target includes gamma^H times same frozen head at actual successor; zero at terminal. This is not an H-step return predictor.",
+    "force_sample_first_post_death": true,
+    "horizons": [
+      5,
+      15
+    ],
+    "max_driver_steps": 20000,
+    "parallel_envs": false,
+    "policy_distribution": "learned stochastic policy without collection_unimix",
+    "policy_mode": "eval_sample",
+    "raw_alignment": "observation[t], action[t] chosen there, reward[t] received on arrival; terminal action is Driver-masked and not executed; episode_offsets includes reset and terminal states",
+    "reward": "one shared SMAC reward, never the sum of duplicated per-agent rewards",
+    "sample_stride": 1,
+    "state_weighting": "uniform sampled state-agent pairs; episode_initial and alive/dead slices reported separately; agents/states are correlated",
+    "timeout_semantics": "unchanged SMAC adapter: all is_last (including timeouts) are is_terminal",
+    "value_target": "V(s_t) versus sum of gamma^(k-1)*reward[t+k] through true terminal",
+    "worker_offset": 200000
+  },
+  "python": "/workspace/majepa-runtime/bin/python",
+  "runtime": {
+    "commit": null,
+    "embodied_root": "/workspace/external/dreamerv3/embodied",
+    "files_sha256": {
+      "__init__.py": "de1322d37227254ce32ce2358f5c0d034fdc18fc8d6d0c7e9b62757ef22e7dfb",
+      "core/driver.py": "f8397df5e3fccfb3d6079b224dfe4b15281587a8754061af0d644bf4ded4157c",
+      "core/wrappers.py": "f6f5beab87109bc97c0bd3318bea637e8f91d43db5005075f61ab1c0be3a73e7",
+      "jax/agent.py": "8b89eb35f974f9d311b3b2f3de9e0b432d277bd1db814c18fc940a23746b0c0d",
+      "jax/internal.py": "3d7c7feb748d1d4f89e4b607a7f4c90f9e56fa86e85d3d6192bd17256a0419fd",
+      "jax/transform.py": "39c1ea717eddee4215538f2fef71bf7c73b9def966702fe9e14b5a3ced8724ee",
+      "jax/utils.py": "76cd112313a19dc8524721dc7b1be86b89799b11c9865cce5e11de2a67bb1461"
+    }
+  },
+  "source": {
+    "commit": null,
+    "files_sha256": {
+      "scripts/evaluate_value_calibration.py": "e880e606b62e2fea8a01a6584a5844deb584d1ccf6d16cc41e110566f753444d",
+      "src/majepa/__init__.py": "f95c2e40ee06b55d8cee9ae19c52cd0fd5fe9319bc7d5fde5b9f2e11b12d5093",
+      "src/majepa/agent.py": "9cd839deef5eceddfbd7267a587edff74aa49a9a516a9d610ed68de11b40d105",
+      "src/majepa/config.py": "04e3b95c409c8675d84d0e0ac1424b9215ffaef26c4bbf65ab6ad7b5cd8e0356",
+      "src/majepa/configs.yaml": "0613d697e00c2d12ec0f6aa5d84bc5b4288209d98d244054b31e1f4dc7df0818",
+      "src/majepa/contracts.py": "5253a860f144424330925fdc0cdeead1e11a5f1b19bfcbfd883b731e362fd861",
+      "src/majepa/envs/__init__.py": "f510d4f3c0e05c68b29f8243813def4686253387da0c212f64564ac0f0c89526",
+      "src/majepa/envs/smac.py": "867e13e4e2a0c7c693daafe4a648436b33603330d6a1167830317a85af0bf601",
+      "src/majepa/evaluation.py": "dae4c4e2550197d57b5277d672b277cddf84803a3171b0ee23abaef6526c5895",
+      "src/majepa/launcher.py": "89d960c2f117fff1a5fece2be6a7fce6c29754e3b28e72fc3f04e91f43614c26",
+      "src/majepa/main.py": "5d84ead644c166d56e47e6147aa68f067a27c1e69bf63ad2d1233575aa043395",
+      "src/majepa/marl/__init__.py": "eafd5002db2ab2a45bdee69a887df1b248adfe42cf4bdbfc570841b53c327626",
+      "src/majepa/marl/axes.py": "87d2d06eed96d532aacdb8f890a1c8551da192e1406e0e3960d4b9be1f348982",
+      "src/majepa/marl/core.py": "3692c71ebae67ea9bb19dc8d5bdfe5e08f6a37a8547b57a82125ae52caa3e2cf",
+      "src/majepa/marl/spaces.py": "4ed8f0be976eb4a2ddfad8e715aa26a26f42b0dc82fff8a5f12e0ee950007746",
+      "src/majepa/models/__init__.py": "7731a150f35294a701435be912fa1c7789f76b3a44becb2335cdc6b17c62d83d",
+      "src/majepa/models/ctde.py": "46da71446da0f49a38198311d4105ab3b8d754ab82866a101f13aafe66db5b50",
+      "src/majepa/models/heads.py": "2c2afeeb489ae6a4dd01c2e1e4888b2d77f27bada5ec2f4ed376ee10d82cb49e",
+      "src/majepa/models/latent.py": "cee80d19e5b84ce7acf283abfe0941e5a80c416df3f387d699030783f95c0e26",
+      "src/majepa/models/multistep_jepa.py": "f6061d5b5331970ddb77036202a34174ddd4463a6957602a283ee4082c1da75c",
+      "src/majepa/models/visual.py": "3cfe95990b23604f39f7a6a11b54fa82ba18f840c6524e3e80c9008696e585af",
+      "src/majepa/replay.py": "8d110729c9c49c7f5e2932da01270275ce5485265f61e3a6549c7f5930dd4539",
+      "src/majepa/runtime.py": "a007984c38ff778b3a8dd8973a50f47ab08b910cb87ca63b0df6b150ca291a9b",
+      "src/majepa/scripts/__init__.py": "4351caddc990d38aa8ccde680c5934756384e0774cf3f1b19ebff7f07b6458a4",
+      "src/majepa/scripts/evaluate.py": "c2fda04352ebeb05b2ecae42c387e280f50bf08d6e32498a7e619375131da383",
+      "src/majepa/scripts/train.py": "8cc60f4dd494db759e89d8f315b2013cbb625d31a240bd8adef0d52f15812449",
+      "src/majepa/train.py": "9797f3cd7279a349d78c268aff998c18183ff5f1bfc255682f03157de1df6613",
+      "src/majepa/training/__init__.py": "279d3e76b092c4531cba4b3c430442079a0af4b59768943dfc1e049734118c4a",
+      "src/majepa/training/common.py": "5bffd0b929471f5cd60e1a55211069c39a35f7053b717a3dc4e2963f9a6c4280",
+      "src/majepa/training/ctde.py": "636e66c1de3bd29028d0fc1a85e6aadcd10102623a2a165508e138868db5ba9e",
+      "src/majepa/training/learner.py": "8b68627da3e92edeab159bdba3993929b32d9c2c2ec72235a3ba959abf35f16d",
+      "src/majepa/training/multistep_jepa.py": "1f9e70f7094f73e62a143a92ea820af42e205d8b210224e475ea730e3fdd863d",
+      "src/majepa/training/optimization.py": "e05d98ff3f2ce9e01426a8142581033655bf5702c4dc38e90a64ce31c0fb22f4",
+      "src/majepa/training/policy.py": "ed9fa6b048c44c4cafa280c32234899782b0e8ecf1d228f5a68514c67557d552",
+      "src/majepa/training/ppo.py": "f078f03a94cc01fe69da79076db4abc566b2a479558ee7f05931847f0018fce8",
+      "src/majepa/training/replay.py": "41d5c9df0d9ecc7cc4677527b7c7a2d49c068c5a155ef76d30ade913fe77b056",
+      "src/majepa/training/replay_value.py": "90d08671b2dda86db8f039dee31f5a6ab6dd4686dc438c23b4487aef7f80e68e",
+      "src/majepa/training/reporting.py": "6f4b1b20aed9f703a8ee9649988614c3943e17a63708c8135ea119a4eb39aa4d",
+      "src/majepa/training/representation.py": "8057b971e08683f18e757fb838ce1ad970700ce680cb2d338a23752232d60b0b",
+      "src/majepa/world_model/__init__.py": "c62f27be71a4163dff39ca3635e27be3ab0ca97b09b734208f8d1a7d9fd14c6f",
+      "src/majepa/world_model/backend.py": "26dfc3a109f66135bdcb985302da7c3f6e1b39bef8e3165a709f4995071e957c",
+      "src/majepa/world_model/transformer.py": "65978d4bd3fbeec0299f4a4482341298cc4ac314c9c6ba5f63f8da3db4fe28a2"
+    },
+    "root": "/workspace/ma_jepa_calibration_corrected_2663ae5_d433a7e",
+    "status": null
+  },
+  "training_config": {
+    "path": "/workspace/majepa_value_calibration_20260905/team_return_anchor-2s3z-seed1/frozen/config.yaml",
+    "sha256": "c7abaa8cd942ec2931c180e0452d1452043632234272452ac8d3eaf3f3b0d8e2"
+  },
+  "training_manifest": {
+    "contents": {
+      "configuration": {
+        "actor_layers": 3,
+        "actor_lr": 3e-05,
+        "actor_units": 1024,
+        "collection_unimix": 0.05,
+        "critic_lr": 3e-05,
+        "entropy_coefficient": 0.01,
+        "entropy_schedule_enabled": false,
+        "envs": 1,
+        "joint_world_warmup": 1000,
+        "local_world_warmup": 1000,
+        "ppo_start_step": 5000,
+        "replay_value_scale": 0.3,
+        "seed": 1,
+        "task": "smac_2s3z",
+        "train_ratio": 128.0,
+        "world_model_start_step": 0
+      },
+      "created_at": 1788592757.5570092,
+      "gpu": 3,
+      "logging": {
+        "outputs": [
+          "jsonl",
+          "wandb"
+        ],
+        "wandb_entity": "osaze-obahor",
+        "wandb_group": "ma-jepa-ppo-correction-2663ae5-20260905",
+        "wandb_project": "majepa-ppo-treatments",
+        "wandb_run_prefix": "corr-2663-20260905"
+      },
+      "protocol": {
+        "curve_episodes": 32,
+        "curve_interval": 5000,
+        "curve_seed_offset": 50000,
+        "final_episodes": 128,
+        "final_seed_offset": 100000,
+        "train_steps": 50000
+      },
+      "run": {
+        "arm": "team_return_anchor",
+        "map_name": "2s3z",
+        "replay_value_scale": 0.3,
+        "seed": 1
+      },
+      "slot": 3,
+      "source": "/workspace/ma_jepa_ppo_2663ae5",
+      "source_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+      "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+      "wait_pids": []
+    },
+    "path": "/workspace/majepa_value_calibration_20260905/team_return_anchor-2s3z-seed1/frozen/training_manifest.json",
+    "sha256": "4eeebb9902f41ac128f8bcd1521e640a6921d924b7f92ebbd05a6b496f0ce04a"
+  },
+  "training_source_note": "Only a supplied training manifest establishes training provenance; evaluation source is recorded independently."
+}

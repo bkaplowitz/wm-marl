@@ -1,0 +1,795 @@
+{
+  "calibration": {
+    "live": {
+      "h15_bootstrap": {
+        "alive": {
+          "bias": -0.8938765595528034,
+          "correlation": 0.6411614345484115,
+          "count": 7784,
+          "explained_variance": 0.322491101319597,
+          "mae": 2.4163326635865605,
+          "prediction_mean": 5.724592685699463,
+          "rmse": 3.872951210945354,
+          "target_mean": 6.618469390822387
+        },
+        "all": {
+          "bias": 0.4350059459377559,
+          "correlation": 0.41433190928609515,
+          "count": 13015,
+          "explained_variance": -0.07292040046740178,
+          "mae": 3.1397041008534323,
+          "prediction_mean": 6.156927585601807,
+          "rmse": 4.787162167617847,
+          "target_mean": 5.7219216977187575
+        },
+        "dead": {
+          "bias": 2.4124522129495154,
+          "correlation": 0.14867313887377995,
+          "count": 5231,
+          "explained_variance": -0.557730484025492,
+          "mae": 4.21611841316185,
+          "prediction_mean": 6.800264358520508,
+          "rmse": 5.890507877288653,
+          "target_mean": 4.387812111957209
+        },
+        "episode_initial": {
+          "bias": 0.5620827861481038,
+          "correlation": 0.09140843162394041,
+          "count": 160,
+          "explained_variance": -0.0031282169313457953,
+          "mae": 1.6374213995031437,
+          "prediction_mean": 12.038463592529297,
+          "rmse": 2.0980594914661395,
+          "target_mean": 11.47638112228581
+        },
+        "terminal": {
+          "count": 0
+        }
+      },
+      "h5_bootstrap": {
+        "alive": {
+          "bias": -0.3620631373156301,
+          "correlation": 0.8213224955275377,
+          "count": 7784,
+          "explained_variance": 0.6462921636722998,
+          "mae": 1.2548322082093115,
+          "prediction_mean": 5.724592685699463,
+          "rmse": 2.6086423752683783,
+          "target_mean": 6.086655968585213
+        },
+        "all": {
+          "bias": 0.1476149205012756,
+          "correlation": 0.6660481791887036,
+          "count": 13015,
+          "explained_variance": 0.35223878056144586,
+          "mae": 1.8682908335384558,
+          "prediction_mean": 6.156927585601807,
+          "rmse": 3.479981022624185,
+          "target_mean": 6.0093127231552375
+        },
+        "dead": {
+          "bias": 0.9060423726226278,
+          "correlation": 0.43225108629093933,
+          "count": 5231,
+          "explained_variance": -0.04644184422752273,
+          "mae": 2.7811491664694548,
+          "prediction_mean": 6.800264358520508,
+          "rmse": 4.472668113996639,
+          "target_mean": 5.894221952284096
+        },
+        "episode_initial": {
+          "bias": -0.1306528633762541,
+          "correlation": 0.47423475382181146,
+          "count": 160,
+          "explained_variance": 0.20928469236052916,
+          "mae": 0.47028351939259705,
+          "prediction_mean": 12.038463592529297,
+          "rmse": 0.6089211156363157,
+          "target_mean": 12.169116771810167
+        },
+        "terminal": {
+          "count": 0
+        }
+      },
+      "monte_carlo": {
+        "alive": {
+          "bias": 0.7781023791023282,
+          "correlation": 0.9201765310408216,
+          "count": 7784,
+          "explained_variance": 0.7795852851305355,
+          "mae": 1.4194540780229494,
+          "prediction_mean": 5.724592685699463,
+          "rmse": 1.8797156012522325,
+          "target_mean": 4.946490452167256
+        },
+        "all": {
+          "bias": 2.746995199649652,
+          "correlation": 0.5505355247207364,
+          "count": 13015,
+          "explained_variance": -0.1260400816436884,
+          "mae": 3.130983843576534,
+          "prediction_mean": 6.156927585601807,
+          "rmse": 4.59375330873898,
+          "target_mean": 3.409932444006862
+        },
+        "dead": {
+          "bias": 5.676810094534066,
+          "correlation": 0.1891159000122525,
+          "count": 5231,
+          "explained_variance": -9.386123031641104,
+          "mae": 5.677829130341798,
+          "prediction_mean": 6.800264358520508,
+          "rmse": 6.873609694837134,
+          "target_mean": 1.1234542303726593
+        },
+        "episode_initial": {
+          "bias": 1.8137610179110286,
+          "correlation": -0.01312130536024777,
+          "count": 160,
+          "explained_variance": -0.1071963779385745,
+          "mae": 1.8950210305660224,
+          "prediction_mean": 12.038463592529297,
+          "rmse": 2.2554325101309005,
+          "target_mean": 10.224702890522886
+        },
+        "terminal": {
+          "bias": 10.13525014175102,
+          "correlation": null,
+          "count": 160,
+          "explained_variance": null,
+          "mae": 10.13525014175102,
+          "prediction_mean": 10.13525104522705,
+          "rmse": 11.39511282709805,
+          "target_mean": 0.0
+        }
+      }
+    },
+    "slow": {
+      "h15_bootstrap": {
+        "alive": {
+          "bias": -0.8938765595528034,
+          "correlation": 0.6411614345484115,
+          "count": 7784,
+          "explained_variance": 0.322491101319597,
+          "mae": 2.4163326635865605,
+          "prediction_mean": 5.724592685699463,
+          "rmse": 3.872951210945354,
+          "target_mean": 6.618469390822387
+        },
+        "all": {
+          "bias": 0.4350059459377559,
+          "correlation": 0.41433190928609515,
+          "count": 13015,
+          "explained_variance": -0.07292040046740178,
+          "mae": 3.1397041008534323,
+          "prediction_mean": 6.156927585601807,
+          "rmse": 4.787162167617847,
+          "target_mean": 5.7219216977187575
+        },
+        "dead": {
+          "bias": 2.4124522129495154,
+          "correlation": 0.14867313887377995,
+          "count": 5231,
+          "explained_variance": -0.557730484025492,
+          "mae": 4.21611841316185,
+          "prediction_mean": 6.800264358520508,
+          "rmse": 5.890507877288653,
+          "target_mean": 4.387812111957209
+        },
+        "episode_initial": {
+          "bias": 0.5620827861481038,
+          "correlation": 0.09140843162394041,
+          "count": 160,
+          "explained_variance": -0.0031282169313457953,
+          "mae": 1.6374213995031437,
+          "prediction_mean": 12.038463592529297,
+          "rmse": 2.0980594914661395,
+          "target_mean": 11.47638112228581
+        },
+        "terminal": {
+          "count": 0
+        }
+      },
+      "h5_bootstrap": {
+        "alive": {
+          "bias": -0.3620631373156301,
+          "correlation": 0.8213224955275377,
+          "count": 7784,
+          "explained_variance": 0.6462921636722998,
+          "mae": 1.2548322082093115,
+          "prediction_mean": 5.724592685699463,
+          "rmse": 2.6086423752683783,
+          "target_mean": 6.086655968585213
+        },
+        "all": {
+          "bias": 0.1476149205012756,
+          "correlation": 0.6660481791887036,
+          "count": 13015,
+          "explained_variance": 0.35223878056144586,
+          "mae": 1.8682908335384558,
+          "prediction_mean": 6.156927585601807,
+          "rmse": 3.479981022624185,
+          "target_mean": 6.0093127231552375
+        },
+        "dead": {
+          "bias": 0.9060423726226278,
+          "correlation": 0.43225108629093933,
+          "count": 5231,
+          "explained_variance": -0.04644184422752273,
+          "mae": 2.7811491664694548,
+          "prediction_mean": 6.800264358520508,
+          "rmse": 4.472668113996639,
+          "target_mean": 5.894221952284096
+        },
+        "episode_initial": {
+          "bias": -0.1306528633762541,
+          "correlation": 0.47423475382181146,
+          "count": 160,
+          "explained_variance": 0.20928469236052916,
+          "mae": 0.47028351939259705,
+          "prediction_mean": 12.038463592529297,
+          "rmse": 0.6089211156363157,
+          "target_mean": 12.169116771810167
+        },
+        "terminal": {
+          "count": 0
+        }
+      },
+      "monte_carlo": {
+        "alive": {
+          "bias": 0.7781023791023282,
+          "correlation": 0.9201765310408216,
+          "count": 7784,
+          "explained_variance": 0.7795852851305355,
+          "mae": 1.4194540780229494,
+          "prediction_mean": 5.724592685699463,
+          "rmse": 1.8797156012522325,
+          "target_mean": 4.946490452167256
+        },
+        "all": {
+          "bias": 2.746995199649652,
+          "correlation": 0.5505355247207364,
+          "count": 13015,
+          "explained_variance": -0.1260400816436884,
+          "mae": 3.130983843576534,
+          "prediction_mean": 6.156927585601807,
+          "rmse": 4.59375330873898,
+          "target_mean": 3.409932444006862
+        },
+        "dead": {
+          "bias": 5.676810094534066,
+          "correlation": 0.1891159000122525,
+          "count": 5231,
+          "explained_variance": -9.386123031641104,
+          "mae": 5.677829130341798,
+          "prediction_mean": 6.800264358520508,
+          "rmse": 6.873609694837134,
+          "target_mean": 1.1234542303726593
+        },
+        "episode_initial": {
+          "bias": 1.8137610179110286,
+          "correlation": -0.01312130536024777,
+          "count": 160,
+          "explained_variance": -0.1071963779385745,
+          "mae": 1.8950210305660224,
+          "prediction_mean": 12.038463592529297,
+          "rmse": 2.2554325101309005,
+          "target_mean": 10.224702890522886
+        },
+        "terminal": {
+          "bias": 10.13525014175102,
+          "correlation": null,
+          "count": 160,
+          "explained_variance": null,
+          "mae": 10.13525014175102,
+          "prediction_mean": 10.13525104522705,
+          "rmse": 11.39511282709805,
+          "target_mean": 0.0
+        }
+      }
+    }
+  },
+  "complete_terminal_episodes": 32,
+  "diagnostic_calls": 2635,
+  "environment_provenance": [
+    {
+      "adapter": "majepa.envs.smac.SMACEnv",
+      "engine_ping": {
+        "baseBuild": 75689,
+        "dataBuild": 75689,
+        "dataVersion": "B89B5D6FA7CBF6452E721311BFBC6CB2",
+        "gameVersion": "4.10.0.75689"
+      },
+      "environment_info": {
+        "agent_features": [
+          "health",
+          "energy/cooldown",
+          "rel_x",
+          "rel_y",
+          "shield",
+          "type_0",
+          "type_1"
+        ],
+        "enemy_features": [
+          "health",
+          "rel_x",
+          "rel_y",
+          "shield",
+          "type_0",
+          "type_1"
+        ],
+        "episode_limit": 120,
+        "n_actions": 11,
+        "n_agents": 5,
+        "obs_shape": 80,
+        "state_shape": 120
+      },
+      "implementation": {
+        "path": "/workspace/majepa-runtime/lib/python3.11/site-packages/smac/env/starcraft2/starcraft2.py",
+        "sha256": "98588e57372c1d551b3ab4a2618f97e0a4f4ba33aa6f5daff27fb153f362e5db"
+      },
+      "installed_versions": [
+        "Base75689",
+        "Shaders41359"
+      ],
+      "map_files": {
+        "/workspace/StarCraftII/Maps/SMAC_Maps/2s3z.SC2Map": "928d21db081910096628ecc14627caa972940a7ccb99cc3448de28f7ec770a12"
+      },
+      "sc2_path": "/workspace/StarCraftII",
+      "settings": {
+        "_seed": 270001,
+        "continuing_episode": true,
+        "difficulty": "7",
+        "episode_limit": 120,
+        "map_name": "2s3z",
+        "reward_death_value": 10,
+        "reward_only_positive": true,
+        "reward_scale": true,
+        "reward_scale_rate": 20,
+        "reward_sparse": false,
+        "reward_win": 200
+      }
+    }
+  ],
+  "episode_records": [
+    {
+      "discounted_return": 7.988695330152215,
+      "episode": 0,
+      "return": 8.568629264831543,
+      "steps": 120,
+      "terminated": true,
+      "timeout": 1.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 0,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 8.73894619104846,
+      "episode": 1,
+      "return": 9.392157554626465,
+      "steps": 90,
+      "terminated": true,
+      "timeout": 0.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 1,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 10.539198163739558,
+      "episode": 2,
+      "return": 11.627452850341797,
+      "steps": 120,
+      "terminated": true,
+      "timeout": 1.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 2,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 9.878719538721052,
+      "episode": 3,
+      "return": 10.509803771972656,
+      "steps": 50,
+      "terminated": true,
+      "timeout": 0.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 3,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 9.354121782930372,
+      "episode": 4,
+      "return": 10.00245189666748,
+      "steps": 59,
+      "terminated": true,
+      "timeout": 0.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 4,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 9.257149326754613,
+      "episode": 5,
+      "return": 9.823530197143555,
+      "steps": 53,
+      "terminated": true,
+      "timeout": 0.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 5,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 9.618837792899539,
+      "episode": 6,
+      "return": 10.27450942993164,
+      "steps": 57,
+      "terminated": true,
+      "timeout": 0.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 6,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 11.769708408393589,
+      "episode": 7,
+      "return": 13.009805679321289,
+      "steps": 120,
+      "terminated": true,
+      "timeout": 1.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 7,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 10.52091890373573,
+      "episode": 8,
+      "return": 11.274510383605957,
+      "steps": 55,
+      "terminated": true,
+      "timeout": 0.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 8,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 9.611965832939916,
+      "episode": 9,
+      "return": 10.235294342041016,
+      "steps": 46,
+      "terminated": true,
+      "timeout": 0.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 9,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 10.651198222831345,
+      "episode": 10,
+      "return": 11.360292434692383,
+      "steps": 53,
+      "terminated": true,
+      "timeout": 0.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 10,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 7.852101913280755,
+      "episode": 11,
+      "return": 8.416666984558105,
+      "steps": 67,
+      "terminated": true,
+      "timeout": 0.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 11,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 11.226871183733268,
+      "episode": 12,
+      "return": 12.235295295715332,
+      "steps": 110,
+      "terminated": true,
+      "timeout": 0.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 12,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 10.363875530540021,
+      "episode": 13,
+      "return": 11.107843399047852,
+      "steps": 60,
+      "terminated": true,
+      "timeout": 0.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 13,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 9.759123272074016,
+      "episode": 14,
+      "return": 10.394607543945312,
+      "steps": 59,
+      "terminated": true,
+      "timeout": 0.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 14,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 11.851752837262035,
+      "episode": 15,
+      "return": 13.210786819458008,
+      "steps": 120,
+      "terminated": true,
+      "timeout": 1.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 15,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 12.428850612011587,
+      "episode": 16,
+      "return": 13.490198135375977,
+      "steps": 120,
+      "terminated": true,
+      "timeout": 1.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 16,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 11.580290009152025,
+      "episode": 17,
+      "return": 12.588236808776855,
+      "steps": 120,
+      "terminated": true,
+      "timeout": 1.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 17,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 8.737842511477828,
+      "episode": 18,
+      "return": 9.235294342041016,
+      "steps": 48,
+      "terminated": true,
+      "timeout": 0.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 18,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 9.428185921122926,
+      "episode": 19,
+      "return": 10.352941513061523,
+      "steps": 120,
+      "terminated": true,
+      "timeout": 1.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 19,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 10.907512804276953,
+      "episode": 20,
+      "return": 11.69117546081543,
+      "steps": 67,
+      "terminated": true,
+      "timeout": 0.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 20,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 10.458597941667795,
+      "episode": 21,
+      "return": 11.289215087890625,
+      "steps": 66,
+      "terminated": true,
+      "timeout": 0.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 21,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 9.588797143789979,
+      "episode": 22,
+      "return": 10.254901885986328,
+      "steps": 47,
+      "terminated": true,
+      "timeout": 0.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 22,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 9.044365421313422,
+      "episode": 23,
+      "return": 9.784316062927246,
+      "steps": 120,
+      "terminated": true,
+      "timeout": 1.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 23,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 11.800312579358215,
+      "episode": 24,
+      "return": 12.803922653198242,
+      "steps": 120,
+      "terminated": true,
+      "timeout": 1.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 24,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 11.719211604914408,
+      "episode": 25,
+      "return": 12.64706039428711,
+      "steps": 120,
+      "terminated": true,
+      "timeout": 1.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 25,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 9.666957190436966,
+      "episode": 26,
+      "return": 10.25,
+      "steps": 59,
+      "terminated": true,
+      "timeout": 0.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 26,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 11.293280965260907,
+      "episode": 27,
+      "return": 12.210784912109375,
+      "steps": 59,
+      "terminated": true,
+      "timeout": 0.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 27,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 9.089576793629055,
+      "episode": 28,
+      "return": 9.791666984558105,
+      "steps": 54,
+      "terminated": true,
+      "timeout": 0.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 28,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 11.390935749564038,
+      "episode": 29,
+      "return": 12.274510383605957,
+      "steps": 59,
+      "terminated": true,
+      "timeout": 0.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 29,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 12.66187895828977,
+      "episode": 30,
+      "return": 13.848040580749512,
+      "steps": 120,
+      "terminated": true,
+      "timeout": 1.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 30,
+      "worker_index": 200000
+    },
+    {
+      "discounted_return": 8.41071205942999,
+      "episode": 31,
+      "return": 8.906862258911133,
+      "steps": 65,
+      "terminated": true,
+      "timeout": 0.0,
+      "win": 0.0,
+      "worker": 0,
+      "worker_episode": 31,
+      "worker_index": 200000
+    }
+  ],
+  "episodes": 32,
+  "frozen_state_after": {
+    "counters": {
+      "n_actions": 50000,
+      "n_batches": 6091,
+      "n_updates": 6091
+    },
+    "parameters_sha256": "7036c6b86856d61d076f369d8624d33786fc821a8e251102a76987af0a59e739"
+  },
+  "frozen_state_before": {
+    "counters": {
+      "n_actions": 50000,
+      "n_batches": 6091,
+      "n_updates": 6091
+    },
+    "parameters_sha256": "7036c6b86856d61d076f369d8624d33786fc821a8e251102a76987af0a59e739"
+  },
+  "protocol": {
+    "actor_rng": "canonical runtime; evaluation seed plus restored checkpoint n_actions",
+    "critic_input": "current local posterior from returned actor carry; synchronized real roster/liveness",
+    "diagnostic_seed": 9001,
+    "discount": 0.996996996996997,
+    "environment_seeds": [
+      270001
+    ],
+    "envs": 1,
+    "episodes": 32,
+    "eval_seed": 70001,
+    "finite_horizon": "H-step Bellman target includes gamma^H times same frozen head at actual successor; zero at terminal. This is not an H-step return predictor.",
+    "force_sample_first_post_death": true,
+    "horizons": [
+      5,
+      15
+    ],
+    "max_driver_steps": 20000,
+    "parallel_envs": false,
+    "policy_distribution": "learned stochastic policy without collection_unimix",
+    "policy_mode": "eval_sample",
+    "raw_alignment": "observation[t], action[t] chosen there, reward[t] received on arrival; terminal action is Driver-masked and not executed; episode_offsets includes reset and terminal states",
+    "reward": "one shared SMAC reward, never the sum of duplicated per-agent rewards",
+    "sample_stride": 1,
+    "state_weighting": "uniform sampled state-agent pairs; episode_initial and alive/dead slices reported separately; agents/states are correlated",
+    "timeout_semantics": "unchanged SMAC adapter: all is_last (including timeouts) are is_terminal",
+    "value_target": "V(s_t) versus sum of gamma^(k-1)*reward[t+k] through true terminal",
+    "worker_offset": 200000
+  },
+  "raw_archive": {
+    "bytes": 507365,
+    "file": "episodes.npz",
+    "sha256": "659f9ec912892699a25fe72ab0f1a2335841b369ec10f519f41376c33a48a4e9"
+  },
+  "return_mean": 11.026961416006088,
+  "sampled_state_count": 2603,
+  "state_count": 2635,
+  "win_rate": 0.0
+}

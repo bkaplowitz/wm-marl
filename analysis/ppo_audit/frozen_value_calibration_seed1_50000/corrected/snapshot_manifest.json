@@ -1,0 +1,204 @@
+{
+  "created_utc": "2026-09-05T08:59:59.770427+00:00",
+  "files": [
+    {
+      "bytes": 1755214096,
+      "path": "frozen/ckpt/20260905T085005F524901/agent.pkl",
+      "preservation": "hardlink",
+      "sha256": "46b2e6a31ddcaa8acf53c936908e60d5c2b769aba112e3634750e6a5be65f8df",
+      "source": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed1/train/run/ckpt/20260905T085005F524901/agent.pkl"
+    },
+    {
+      "bytes": 0,
+      "path": "frozen/ckpt/20260905T085005F524901/done",
+      "preservation": "hardlink",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed1/train/run/ckpt/20260905T085005F524901/done"
+    },
+    {
+      "bytes": 15,
+      "path": "frozen/ckpt/20260905T085005F524901/first_learner_environment_step.pkl",
+      "preservation": "hardlink",
+      "sha256": "10c235afeca1425adf4e22fbbea4a2af414bbd45a66fe40793f72f0f6e140ace",
+      "source": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed1/train/run/ckpt/20260905T085005F524901/first_learner_environment_step.pkl"
+    },
+    {
+      "bytes": 15,
+      "path": "frozen/ckpt/20260905T085005F524901/first_ppo_environment_step.pkl",
+      "preservation": "hardlink",
+      "sha256": "9a3a465d9b5e11f88025ae2bea4ffb9c9a2bd4f7138db272eee2a60867d57d6d",
+      "source": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed1/train/run/ckpt/20260905T085005F524901/first_ppo_environment_step.pkl"
+    },
+    {
+      "bytes": 15,
+      "path": "frozen/ckpt/20260905T085005F524901/learner_update_calls.pkl",
+      "preservation": "hardlink",
+      "sha256": "417e116e6eb231c8f8b164a91284f683adfa364897c7d5b74cf96e8064a395a2",
+      "source": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed1/train/run/ckpt/20260905T085005F524901/learner_update_calls.pkl"
+    },
+    {
+      "bytes": 15,
+      "path": "frozen/ckpt/20260905T085005F524901/ppo_update_calls.pkl",
+      "preservation": "hardlink",
+      "sha256": "4d6d07c73186744cc22908466a8cabbceefd45d0ed4d8421397c7324ecf134a6",
+      "source": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed1/train/run/ckpt/20260905T085005F524901/ppo_update_calls.pkl"
+    },
+    {
+      "bytes": 4,
+      "path": "frozen/ckpt/20260905T085005F524901/replay.pkl",
+      "preservation": "hardlink",
+      "sha256": "9c298d589a2158eb513cb52191144518a2acab2cb0c04f1df14fca0f712fa4a1",
+      "source": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed1/train/run/ckpt/20260905T085005F524901/replay.pkl"
+    },
+    {
+      "bytes": 15,
+      "path": "frozen/ckpt/20260905T085005F524901/step.pkl",
+      "preservation": "hardlink",
+      "sha256": "5ea87b097f3b2db02231d720fb18e63b64e5542355d506b652a21bdb979e24f3",
+      "source": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed1/train/run/ckpt/20260905T085005F524901/step.pkl"
+    },
+    {
+      "bytes": 15,
+      "path": "frozen/ckpt/20260905T085005F524901/world_only_update_calls.pkl",
+      "preservation": "hardlink",
+      "sha256": "6cc902185735a8c26fe185abe280141224e13df5586e455ae7c66b2c2bd78c4b",
+      "source": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed1/train/run/ckpt/20260905T085005F524901/world_only_update_calls.pkl"
+    },
+    {
+      "bytes": 6312,
+      "path": "frozen/config.yaml",
+      "preservation": "copy",
+      "sha256": "c7abaa8cd942ec2931c180e0452d1452043632234272452ac8d3eaf3f3b0d8e2",
+      "source": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed1/train/run/config.yaml"
+    },
+    {
+      "bytes": 1311,
+      "path": "frozen/training_manifest.json",
+      "preservation": "copy",
+      "sha256": "4eeebb9902f41ac128f8bcd1521e640a6921d924b7f92ebbd05a6b496f0ce04a",
+      "source": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed1/manifest.json"
+    },
+    {
+      "bytes": 30155,
+      "path": "frozen/training_outcome.json",
+      "preservation": "copy",
+      "sha256": "19ac77c769b1c48bf0ae4732b6f20566f8b73033998ad57cf4af33f8886a8f8a",
+      "source": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed1/outcome.json"
+    }
+  ],
+  "stage": {
+    "archive_sha256": "5aacbe7648b4a94523a3d24d9e66180466825b0a73357fc496e6df041aa494b4",
+    "diagnostic_scripts_sha256": {
+      "audit_causal_simulator.py": "f72a0a2303074e3183693955a229a7172b3d3e336ebd32f0e883dcd40bd9e488",
+      "evaluate_value_calibration.py": "e880e606b62e2fea8a01a6584a5844deb584d1ccf6d16cc41e110566f753444d",
+      "probe_control_sufficiency.py": "bcdc0f1a6717bb4ff354c9df0ea50ed35a4cbe9179742b5de291b7910c2c021c"
+    },
+    "model_source_commit": "2663ae5",
+    "probe_staged_from_commit": "4ac9b4bc371c5968813cad3159723c75dd1b5078",
+    "source_files_sha256": {
+      "src/majepa/LICENSE": "47506bef866f9fe31951f4b86e02a3b56990a664f5a11a98ce7371e86eb5e43f",
+      "src/majepa/__init__.py": "f95c2e40ee06b55d8cee9ae19c52cd0fd5fe9319bc7d5fde5b9f2e11b12d5093",
+      "src/majepa/agent.py": "9cd839deef5eceddfbd7267a587edff74aa49a9a516a9d610ed68de11b40d105",
+      "src/majepa/config.py": "04e3b95c409c8675d84d0e0ac1424b9215ffaef26c4bbf65ab6ad7b5cd8e0356",
+      "src/majepa/configs.yaml": "0613d697e00c2d12ec0f6aa5d84bc5b4288209d98d244054b31e1f4dc7df0818",
+      "src/majepa/contracts.py": "5253a860f144424330925fdc0cdeead1e11a5f1b19bfcbfd883b731e362fd861",
+      "src/majepa/envs/__init__.py": "f510d4f3c0e05c68b29f8243813def4686253387da0c212f64564ac0f0c89526",
+      "src/majepa/envs/smac.py": "867e13e4e2a0c7c693daafe4a648436b33603330d6a1167830317a85af0bf601",
+      "src/majepa/evaluation.py": "dae4c4e2550197d57b5277d672b277cddf84803a3171b0ee23abaef6526c5895",
+      "src/majepa/launcher.py": "89d960c2f117fff1a5fece2be6a7fce6c29754e3b28e72fc3f04e91f43614c26",
+      "src/majepa/main.py": "5d84ead644c166d56e47e6147aa68f067a27c1e69bf63ad2d1233575aa043395",
+      "src/majepa/marl/__init__.py": "eafd5002db2ab2a45bdee69a887df1b248adfe42cf4bdbfc570841b53c327626",
+      "src/majepa/marl/axes.py": "87d2d06eed96d532aacdb8f890a1c8551da192e1406e0e3960d4b9be1f348982",
+      "src/majepa/marl/core.py": "3692c71ebae67ea9bb19dc8d5bdfe5e08f6a37a8547b57a82125ae52caa3e2cf",
+      "src/majepa/marl/spaces.py": "4ed8f0be976eb4a2ddfad8e715aa26a26f42b0dc82fff8a5f12e0ee950007746",
+      "src/majepa/models/__init__.py": "7731a150f35294a701435be912fa1c7789f76b3a44becb2335cdc6b17c62d83d",
+      "src/majepa/models/ctde.py": "46da71446da0f49a38198311d4105ab3b8d754ab82866a101f13aafe66db5b50",
+      "src/majepa/models/heads.py": "2c2afeeb489ae6a4dd01c2e1e4888b2d77f27bada5ec2f4ed376ee10d82cb49e",
+      "src/majepa/models/latent.py": "cee80d19e5b84ce7acf283abfe0941e5a80c416df3f387d699030783f95c0e26",
+      "src/majepa/models/multistep_jepa.py": "f6061d5b5331970ddb77036202a34174ddd4463a6957602a283ee4082c1da75c",
+      "src/majepa/models/visual.py": "3cfe95990b23604f39f7a6a11b54fa82ba18f840c6524e3e80c9008696e585af",
+      "src/majepa/replay.py": "8d110729c9c49c7f5e2932da01270275ce5485265f61e3a6549c7f5930dd4539",
+      "src/majepa/runtime.py": "a007984c38ff778b3a8dd8973a50f47ab08b910cb87ca63b0df6b150ca291a9b",
+      "src/majepa/scripts/__init__.py": "4351caddc990d38aa8ccde680c5934756384e0774cf3f1b19ebff7f07b6458a4",
+      "src/majepa/scripts/evaluate.py": "c2fda04352ebeb05b2ecae42c387e280f50bf08d6e32498a7e619375131da383",
+      "src/majepa/scripts/train.py": "8cc60f4dd494db759e89d8f315b2013cbb625d31a240bd8adef0d52f15812449",
+      "src/majepa/train.py": "9797f3cd7279a349d78c268aff998c18183ff5f1bfc255682f03157de1df6613",
+      "src/majepa/training/__init__.py": "279d3e76b092c4531cba4b3c430442079a0af4b59768943dfc1e049734118c4a",
+      "src/majepa/training/common.py": "5bffd0b929471f5cd60e1a55211069c39a35f7053b717a3dc4e2963f9a6c4280",
+      "src/majepa/training/ctde.py": "636e66c1de3bd29028d0fc1a85e6aadcd10102623a2a165508e138868db5ba9e",
+      "src/majepa/training/learner.py": "8b68627da3e92edeab159bdba3993929b32d9c2c2ec72235a3ba959abf35f16d",
+      "src/majepa/training/multistep_jepa.py": "1f9e70f7094f73e62a143a92ea820af42e205d8b210224e475ea730e3fdd863d",
+      "src/majepa/training/optimization.py": "e05d98ff3f2ce9e01426a8142581033655bf5702c4dc38e90a64ce31c0fb22f4",
+      "src/majepa/training/policy.py": "ed9fa6b048c44c4cafa280c32234899782b0e8ecf1d228f5a68514c67557d552",
+      "src/majepa/training/ppo.py": "f078f03a94cc01fe69da79076db4abc566b2a479558ee7f05931847f0018fce8",
+      "src/majepa/training/replay.py": "41d5c9df0d9ecc7cc4677527b7c7a2d49c068c5a155ef76d30ade913fe77b056",
+      "src/majepa/training/replay_value.py": "90d08671b2dda86db8f039dee31f5a6ab6dd4686dc438c23b4487aef7f80e68e",
+      "src/majepa/training/reporting.py": "6f4b1b20aed9f703a8ee9649988614c3943e17a63708c8135ea119a4eb39aa4d",
+      "src/majepa/training/representation.py": "8057b971e08683f18e757fb838ce1ad970700ce680cb2d338a23752232d60b0b",
+      "src/majepa/world_model/__init__.py": "c62f27be71a4163dff39ca3635e27be3ab0ca97b09b734208f8d1a7d9fd14c6f",
+      "src/majepa/world_model/backend.py": "26dfc3a109f66135bdcb985302da7c3f6e1b39bef8e3165a709f4995071e957c",
+      "src/majepa/world_model/transformer.py": "65978d4bd3fbeec0299f4a4482341298cc4ac314c9c6ba5f63f8da3db4fe28a2"
+    },
+    "staged_utc": "2026-09-05T08:18:24.847998+00:00",
+    "value_calibration_commit": "d433a7e",
+    "verified_against_running_source": "/workspace/ma_jepa_ppo_2663ae5"
+  },
+  "training": {
+    "checkpoint": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed1/train/run/ckpt/20260905T085005F524901",
+    "manifest": {
+      "configuration": {
+        "actor_layers": 3,
+        "actor_lr": 3e-05,
+        "actor_units": 1024,
+        "collection_unimix": 0.05,
+        "critic_lr": 3e-05,
+        "entropy_coefficient": 0.01,
+        "entropy_schedule_enabled": false,
+        "envs": 1,
+        "joint_world_warmup": 1000,
+        "local_world_warmup": 1000,
+        "ppo_start_step": 5000,
+        "replay_value_scale": 0.3,
+        "seed": 1,
+        "task": "smac_2s3z",
+        "train_ratio": 128.0,
+        "world_model_start_step": 0
+      },
+      "created_at": 1788592757.5570092,
+      "gpu": 3,
+      "logging": {
+        "outputs": [
+          "jsonl",
+          "wandb"
+        ],
+        "wandb_entity": "osaze-obahor",
+        "wandb_group": "ma-jepa-ppo-correction-2663ae5-20260905",
+        "wandb_project": "majepa-ppo-treatments",
+        "wandb_run_prefix": "corr-2663-20260905"
+      },
+      "protocol": {
+        "curve_episodes": 32,
+        "curve_interval": 5000,
+        "curve_seed_offset": 50000,
+        "final_episodes": 128,
+        "final_seed_offset": 100000,
+        "train_steps": 50000
+      },
+      "run": {
+        "arm": "team_return_anchor",
+        "map_name": "2s3z",
+        "replay_value_scale": 0.3,
+        "seed": 1
+      },
+      "slot": 3,
+      "source": "/workspace/ma_jepa_ppo_2663ae5",
+      "source_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+      "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+      "wait_pids": []
+    },
+    "name": "team_return_anchor-2s3z-seed1",
+    "run": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed1",
+    "step": 50000,
+    "supervisor_pid": 4216
+  }
+}

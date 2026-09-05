@@ -1,0 +1,102 @@
+{
+  "checkpoint_payloads_included": false,
+  "files": {
+    "clustered_calibration.json": {
+      "bytes": 114813,
+      "sha256": "2b846f3222c846bd3e7d27ae26069db5b1fd39b5e846530b96522f764d2308a0"
+    },
+    "corrected/calibration.log": {
+      "bytes": 4857,
+      "sha256": "2b459eb27bf14fdc605287b70cb5b40630260973cb1abf195eae76c73b5d7494"
+    },
+    "corrected/execution.json": {
+      "bytes": 1366,
+      "sha256": "137a8c64f935a4a1b41f7ce50756bfce1438ce232ca1b96d4c214b2a234ce0fa"
+    },
+    "corrected/launch_readiness.json": {
+      "bytes": 4061,
+      "sha256": "06c67a4150de53bfd8417b217a730e503ef348c1bb42f0a9c07d166af5381160"
+    },
+    "corrected/result32/calibration_stage_manifest.json": {
+      "bytes": 5069,
+      "sha256": "b3a425c013c97d3e53319544543d9bae246578c535c98c0aa383184bb2d482c1"
+    },
+    "corrected/result32/done.json": {
+      "bytes": 91,
+      "sha256": "1f2ec913b16cca62828f7e5b997de1ee2267a48ae0dc9c9666b4c957a079e66b"
+    },
+    "corrected/result32/episodes.npz": {
+      "bytes": 444384,
+      "sha256": "289cc7a942d1b37d7d69c71a91204759fda48ad718d62bd178bebf2a5c7aae9e"
+    },
+    "corrected/result32/evaluation_config.yaml": {
+      "bytes": 6317,
+      "sha256": "09f072dc34d2d07ef49f9708acfaa9c3a4df4553ea4a10d4518730febcfaa87b"
+    },
+    "corrected/result32/provenance.json": {
+      "bytes": 10887,
+      "sha256": "6f9cef410107f2c3627040f072fcea2591d793a9d5138c1145ebe38c06edc420"
+    },
+    "corrected/result32/summary.json": {
+      "bytes": 22559,
+      "sha256": "0aa614e818f770418c91bbc410592392deb43196648ae35ab2cbc72325958bed"
+    },
+    "corrected/result32/training_config.yaml": {
+      "bytes": 6312,
+      "sha256": "c7abaa8cd942ec2931c180e0452d1452043632234272452ac8d3eaf3f3b0d8e2"
+    },
+    "corrected/snapshot_manifest.json": {
+      "bytes": 11524,
+      "sha256": "dbb6ceb9f56b712bdd7cf03e5167a361b70a203e7a8af825c1a48d01a77a6576"
+    },
+    "findings.md": {
+      "bytes": 7421,
+      "sha256": "f0e9f1f857499446923c83b69e9a578a5206c3ad312d3436a864ff64c0fdfca6"
+    },
+    "original/calibration.log": {
+      "bytes": 4843,
+      "sha256": "e2d71c58278fa3a63d9f85ec1766eb0cd6e33f289e680db1f893adb7e21f104d"
+    },
+    "original/execution.json": {
+      "bytes": 1336,
+      "sha256": "d1353095c877c7bfbac7719b1fabdedb441b51858f2dd868f0fa9788619335c4"
+    },
+    "original/launch_readiness.json": {
+      "bytes": 4042,
+      "sha256": "16bd6bd1812ac33fbb86ce7e5ded5084b75d03e1071d285c4bd42ef982d9810c"
+    },
+    "original/result32/calibration_stage_manifest.json": {
+      "bytes": 4958,
+      "sha256": "ae492dbbe44d094287acc63d1770f7258cc8773a8ff3e8be2fe11148749ac3b2"
+    },
+    "original/result32/done.json": {
+      "bytes": 91,
+      "sha256": "8f280f953e6dadcaadda0fa652060c5dd9bc8e211ebb42b6ac33f44a0c92c089"
+    },
+    "original/result32/episodes.npz": {
+      "bytes": 507365,
+      "sha256": "659f9ec912892699a25fe72ab0f1a2335841b369ec10f519f41376c33a48a4e9"
+    },
+    "original/result32/evaluation_config.yaml": {
+      "bytes": 6257,
+      "sha256": "4fb062bb08dbdbfa4a30c4a1c776b50725a6a6b80e55af33bfe48719e324c189"
+    },
+    "original/result32/provenance.json": {
+      "bytes": 10729,
+      "sha256": "0cd4d7b30c1e10cebf50ed11b230f3418dea741c34d1027d4cefa218aec39da2"
+    },
+    "original/result32/summary.json": {
+      "bytes": 22538,
+      "sha256": "ef11465b36a5fdc5a1d9f6af695d7cd2e68cea11cad653be2d3ccc8e78e1d875"
+    },
+    "original/result32/training_config.yaml": {
+      "bytes": 6252,
+      "sha256": "43fd3722799ac74cd22c5e037e6c1ce7387c2c9e1e3a57daa5b56fe53ea57088"
+    },
+    "original/snapshot_manifest.json": {
+      "bytes": 11333,
+      "sha256": "351fa9cbc4cc11146f946b37d64f3cb963635ebc92903c858e0d30262ea9dfa7"
+    }
+  },
+  "raw_episodes_preserved": true
+}

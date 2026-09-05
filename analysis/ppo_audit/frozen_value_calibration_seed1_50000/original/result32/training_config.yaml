@@ -1,0 +1,180 @@
+agent:
+  action_mask_reduction: balanced
+  collection_unimix: 0.05
+  conhead: {act: silu, layers: 1, norm: rms, output: binary, outscale: 1.0, 
+      units: 1024, winit: trunc_normal_in}
+  contdisc: true
+  dyn:
+    parallel_transformer: {absolute: false, act: silu, blocks: 8, classes: 64, 
+        context: 64, deter: 8192, dynlayers: 1, ffup: 4, free_nats: 1.0, heads: 
+        8, hidden: 1024, imglayers: 2, layers: 2, model: 512, norm: rms, 
+        obslayers: 1, outscale: 1.0, posterior_context: history, stoch: 32, 
+        unimix: 0.01, winit: trunc_normal_in}
+  enc:
+    simple:
+      act: silu
+      depth: 64
+      kernel: 5
+      layers: 3
+      mults: [2, 3, 4, 4]
+      norm: rms
+      outer: false
+      strided: false
+      symlog: true
+      units: 1024
+      winit: trunc_normal_in
+  horizon: 333
+  imag_last: 0
+  imag_length: 5
+  loss_scales: {action_mask: 1.0, con: 1.0, ctde_action_mask: 1.0, ctde_alive: 
+      1.0, ctde_alive_calibration: 1.0, ctde_continuation: 1.0, ctde_embedding: 
+      2.0, ctde_interface: 1.0, ctde_mask_calibration: 1.0, 
+      ctde_multistep_action_mask: 1.0, ctde_multistep_alive: 1.0, 
+      ctde_multistep_continuation: 1.0, ctde_multistep_embedding: 2.0, 
+      ctde_multistep_interface: 1.0, ctde_multistep_jepa_action: 0.25, 
+      ctde_multistep_jepa_cosine: 2.0, ctde_multistep_reward: 1.0, ctde_reward: 
+      1.0, ctde_teammate_belief: 1.0, ctde_teammate_plan: 0.5, dyn: 1.0, 
+      dynamics_jepa: 2.0, posterior_jepa: 2.0, rep: 0.1, rew: 1.0, sigreg: 0.05, 
+      spatial_jepa: 1.0}
+  marl:
+    ctde:
+      critic: {act: silu, bins: 255, dropout: 0.0, ffup: 4, heads: 4, layers: 2, 
+          norm: rms, outscale: 0.0, value_layers: 2, value_units: 256, width: 
+          256, winit: trunc_normal_in}
+      head: {act: silu, bins: 255, layers: 2, norm: rms, outscale: 0.0, units: 
+          256, winit: trunc_normal_in}
+      joint: {act: silu, action_conditioning: add, agent_layers: 2, context: 16, 
+          dropout: 0.1, ffup: 4, heads: 4, norm: rms, temporal_layers: 12, width: 
+          256, winit: trunc_normal_in}
+      mask_calibration:
+        enabled: false
+        horizons: [1, 4, 8, 15]
+        soft_liveness: false
+      multistep: {anchors: 0}
+      multistep_jepa:
+        act: silu
+        action_counterfactual_mode: all_legal_mean
+        action_margin: 0.1
+        belief_context: true
+        decay: 0.75
+        enabled: true
+        horizons: [1, 2, 4, 8]
+        layers: 2
+        max_horizon: 8
+        norm: rms
+        plan_aggregation: mean
+        plan_units: 256
+        units: 512
+        width: 256
+        winit: trunc_normal_in
+      opt: {agc: 0.3, anneal: 0, beta1: 0.9, beta2: 0.999, eps: 1e-20, lr: 4e-05,
+        momentum: true, schedule: const, warmup: 1000, wd: 0.0}
+      rollout_steps: 1
+      teammate_belief: {act: silu, actor_residual: true, adapter_layers: 1, 
+          adapter_units: 256, enabled: true, layers: 2, logit_clip: 5.0, norm: 
+          rms, outscale: 0.0, units: 512, winit: trunc_normal_in}
+    execution: strict_decentralized
+    stage: ctde
+  maskhead: {act: silu, layers: 1, norm: rms, output: binary, outscale: 0.0, 
+      units: 1024, winit: trunc_normal_in}
+  num_agents: 5
+  opt: {agc: 0.3, anneal: 0, beta1: 0.9, beta2: 0.999, eps: 1e-20, lr: 4e-05, 
+      momentum: true, schedule: const, warmup: 1000, wd: 0.0}
+  policy: {act: silu, layers: 3, maxstd: 1.0, minstd: 0.1, norm: rms, outscale: 
+      0.01, unimix: 0.01, units: 1024, winit: trunc_normal_in}
+  policy_dist_cont: bounded_normal
+  policy_dist_disc: categorical
+  ppo:
+    actor_lr: 3e-05
+    clip_epsilon: 0.2
+    critic_lr: 3e-05
+    entropy_coefficient: 0.01
+    entropy_schedule: {decay_steps: 40000, enabled: false, final: 0.0003, 
+        initial: 0.001, normalize: true, schedule: cosine}
+    epochs: 5
+    lam: 0.95
+    optimizer_warmup: 0
+  report: true
+  report_gradnorms: false
+  reward_grad: true
+  rewhead: {act: silu, bins: 255, layers: 1, norm: rms, output: symexp_twohot, 
+      outscale: 0.0, units: 1024, winit: trunc_normal_in}
+  sigreg: {aggregation: per_agent, knots: 17, num_proj: 256}
+  slowvalue: {every: 1, rate: 1.0}
+  spatial_jepa: {fill_value: 128, mask_ratio: 0.5}
+  target_encoder: {every: 1, rate: 0.01}
+  value: {act: silu, bins: 255, layers: 3, norm: rms, output: symexp_twohot, 
+      outscale: 0.0, units: 1024, winit: trunc_normal_in}
+batch_length: 64
+batch_size: 16
+consec_report: 1
+consec_train: 1
+env:
+  smac: {continuing_episode: true, difficulty: '7', use_seed: true}
+errfile: false
+ipv6: false
+jax:
+  compute_dtype: bfloat16
+  coordinator_address: ''
+  debug: false
+  enable_policy: true
+  expect_devices: 0
+  jit: true
+  mock_devices: 0
+  platform: cuda
+  policy_devices: [0]
+  prealloc: false
+  precompile: true
+  profiler: false
+  train_devices: [0]
+logdir: 
+  /workspace/majepa_ppo_correction_2663ae5_20260905/runs/original_base-2s3z-seed1/train/run
+logger:
+  filter: 
+    score|return|length|fps|ratio|sample_age|replay/behavior_|schedule/|counters/|replay_views/|train/loss/|train/opt/|train/ppo/|train/ctde/|report/ctde/|central_critic/|battle_won|win_rate|legacy_|corrected_|enemy_|ally_|timeout|action_|attack_target_|eval/|episode/|final_eval/
+  fps: 15
+  outputs: [jsonl, wandb]
+  timer: true
+  user: ''
+random_agent: false
+replay: {chunksize: 1024, online: false, recency_decay: 0.9998, sampling: 
+    recent_world_uniform_behavior, size: 250000}
+replay_context: 192
+replica: 0
+replicas: 1
+report_length: 32
+run:
+  actor_addr: localhost:{auto}
+  actor_batch: -1
+  actor_threads: 1
+  agent_process: false
+  checkpoint_at_curve_eval: false
+  curve_eval_eps: 32
+  curve_eval_interval: 5000
+  curve_eval_policy_mode: eval
+  curve_eval_seed_offset: 50000
+  debug: false
+  envs: 1
+  episode_timeout: 180
+  eval_envs: 4
+  eval_eps: 1
+  eval_policy_mode: eval
+  eval_worker_offset: 0
+  final_save: true
+  from_checkpoint: ''
+  log_every: 120
+  logger_addr: localhost:{auto}
+  ppo_start_step: 5000
+  remote_envs: false
+  remote_replay: false
+  replay_addr: localhost:{auto}
+  report_batches: 1
+  report_every: 300
+  save_every: 900
+  steps: 50000.0
+  train_ratio: 128
+  usage: {gc: false, gputil: false, malloc: false, nvsmi: true, psutil: true}
+  world_model_start_step: 0
+script: train
+seed: 1
+task: smac_2s3z
