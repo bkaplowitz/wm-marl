@@ -10,6 +10,8 @@ is exactly the canonical single-agent learner.
 
 from __future__ import annotations
 
+import math
+
 import elements
 import embodied.jax
 import embodied.jax.nets as nn
@@ -51,6 +53,7 @@ from ..training.multistep_jepa import (
     direct_multistep_objective,
 )
 from ..training.common import sample
+from ..training.self_fed import self_fed_losses
 from .axes import (
     BEHAVIOR_REPLAY_PREFIX,
     TeamAxis,
@@ -173,6 +176,38 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         self.public_act_space = dict(act_space)
         self.marl_stage = str(marl.stage)
         self.ctde_enabled = self.marl_stage == "ctde" and self.team.size > 1
+        self.ctde_self_fed_enabled = bool(
+            marl.ctde.get("self_fed", {}).get("enabled", False)
+            if self.ctde_enabled
+            else False
+        )
+        if self.ctde_self_fed_enabled:
+            self_fed = marl.ctde.self_fed
+            horizons = tuple(int(value) for value in self_fed.horizons)
+            if (
+                not horizons
+                or horizons != tuple(sorted(set(horizons)))
+                or min(horizons) < 2
+                or max(horizons) > 15
+                or int(self_fed.anchors) < 1
+                or any(
+                    not math.isfinite(value) or value < 0
+                    for value in (
+                        float(self_fed.scale),
+                        float(self_fed.consumer_kl_scale),
+                    )
+                )
+            ):
+                raise ValueError(
+                    "Self-fed training needs sorted unique H2..15, positive anchors and finite nonnegative scales"
+                )
+            if int(config.batch_length) < 3:
+                raise ValueError(
+                    "Self-fed training requires at least three replay states"
+                )
+            # A zero-scale control must preserve the complete baseline graph,
+            # including loss keys, parameter creation and random-key ordering.
+            self.ctde_self_fed_enabled = float(self_fed.scale) > 0
         self.ctde_rollout_steps = (
             int(marl.ctde.rollout_steps) if self.ctde_enabled else 1
         )
@@ -181,6 +216,11 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         self.ctde_mask_calibration = bool(
             marl.ctde.mask_calibration.enabled if self.ctde_enabled else False
         )
+        if self.ctde_self_fed_enabled and self.ctde_mask_calibration:
+            raise ValueError(
+                "Self-fed training requires the baseline hard CTDE mask path; "
+                "mask_calibration is not supported"
+            )
         self.ctde_soft_liveness = bool(
             marl.ctde.mask_calibration.soft_liveness
             if self.ctde_mask_calibration
@@ -287,6 +327,22 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             local_act_space,
             config,
         )
+        if self.ctde_self_fed_enabled:
+            scale = float(marl.ctde.self_fed.scale)
+            for name in (
+                "embedding",
+                "interface",
+                "reward",
+                "continuation",
+                "action_mask",
+                "alive",
+            ):
+                self.scales[f"ctde_self_fed_{name}"] = scale * float(
+                    self.scales[f"ctde_{name}"]
+                )
+            self.scales["ctde_self_fed_consumer_kl"] = scale * float(
+                marl.ctde.self_fed.consumer_kl_scale
+            )
         if self.ctde_multistep_jepa_enabled:
             if not self.two_branch_replay:
                 raise ValueError(
@@ -1098,6 +1154,20 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             )
             losses.update(multistep_losses)
             metrics.update(multistep_metrics)
+        if training and self.ctde_self_fed_enabled:
+            auxiliary_losses, auxiliary_metrics = isolated_creation_call(
+                self_fed_losses,
+                864_025,
+                self,
+                online_tokens,
+                repfeat,
+                dyn_entries,
+                target_tokens,
+                obs,
+                prevact,
+            )
+            losses.update(auxiliary_losses)
+            metrics.update(auxiliary_metrics)
         if not training:
             metrics.update(
                 self._ctde_self_fed_report(

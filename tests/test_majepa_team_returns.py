@@ -64,6 +64,7 @@ def _replay_losses(reward_prediction):
     core.ctde_soft_liveness = False
     core.ctde_teammate_belief_enabled = False
     core.ctde_multistep_jepa_enabled = False
+    core.ctde_self_fed_enabled = False
     core.ctde_mask_calibration = False
     core.ctde_rollout_steps = 1
     core.action_mask_reduction = "mean"
