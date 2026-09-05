@@ -1,0 +1,328 @@
+{
+  "baseline_source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+  "captured_utc": "2026-09-05T08:39:05.711863+00:00",
+  "disabled_parity_record": "analysis/ppo_audit/parity_d623d4d/parity.json",
+  "disabled_parity_validated": true,
+  "optional_source_sha256": "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc",
+  "profiles": [
+    {
+      "configuration": {
+        "actor_layers": 3,
+        "actor_lr": 3e-05,
+        "actor_units": 1024,
+        "collection_unimix": 0.05,
+        "critic_lr": 3e-05,
+        "entropy_coefficient": 0.01,
+        "entropy_schedule_enabled": false,
+        "envs": 1,
+        "joint_world_warmup": 1000,
+        "local_world_warmup": 1000,
+        "phases": {
+          "final128": {
+            "envs": 4,
+            "episodes": 128,
+            "imag_length": 5,
+            "policy_mode": "eval",
+            "seed_offset": 100000,
+            "self_fed": {
+              "anchors": 8,
+              "consumer_kl_scale": 0.0,
+              "enabled": true,
+              "horizons": [
+                2,
+                4,
+                5
+              ],
+              "scale": 0.1
+            }
+          },
+          "train": {
+            "checkpoint_at_curve_eval": false,
+            "curve_eps": 32,
+            "curve_interval": 5000,
+            "curve_seed_offset": 50000,
+            "envs": 1,
+            "imag_length": 5,
+            "self_fed": {
+              "anchors": 8,
+              "consumer_kl_scale": 0.0,
+              "enabled": true,
+              "horizons": [
+                2,
+                4,
+                5
+              ],
+              "scale": 0.1
+            },
+            "steps": 50000
+          }
+        },
+        "ppo_start_step": 5000,
+        "replay_value_scale": 0.3,
+        "seed": 0,
+        "task": "smac_2s3z",
+        "train_ratio": 128.0,
+        "world_model_start_step": 0
+      },
+      "run": "recurrent_h5-2s3z-seed0",
+      "slot": 0,
+      "source": "/Users/osaze/MARL/worktrees/ma_jepa_self_fed_training"
+    },
+    {
+      "configuration": {
+        "actor_layers": 3,
+        "actor_lr": 3e-05,
+        "actor_units": 1024,
+        "collection_unimix": 0.05,
+        "critic_lr": 3e-05,
+        "entropy_coefficient": 0.01,
+        "entropy_schedule_enabled": false,
+        "envs": 1,
+        "joint_world_warmup": 1000,
+        "local_world_warmup": 1000,
+        "phases": {
+          "final128": {
+            "envs": 4,
+            "episodes": 128,
+            "imag_length": 2,
+            "policy_mode": "eval",
+            "seed_offset": 100000,
+            "self_fed": null
+          },
+          "train": {
+            "checkpoint_at_curve_eval": false,
+            "curve_eps": 32,
+            "curve_interval": 5000,
+            "curve_seed_offset": 50000,
+            "envs": 1,
+            "imag_length": 2,
+            "self_fed": null,
+            "steps": 50000
+          }
+        },
+        "ppo_start_step": 5000,
+        "replay_value_scale": 0.3,
+        "seed": 0,
+        "task": "smac_2s3z",
+        "train_ratio": 128.0,
+        "world_model_start_step": 0
+      },
+      "run": "corrected_h2-2s3z-seed0",
+      "slot": 1,
+      "source": "/Users/osaze/MARL/worktrees/ma_jepa_ppo"
+    },
+    {
+      "configuration": {
+        "actor_layers": 3,
+        "actor_lr": 3e-05,
+        "actor_units": 1024,
+        "collection_unimix": 0.05,
+        "critic_lr": 3e-05,
+        "entropy_coefficient": 0.01,
+        "entropy_schedule_enabled": false,
+        "envs": 1,
+        "joint_world_warmup": 1000,
+        "local_world_warmup": 1000,
+        "phases": {
+          "final128": {
+            "envs": 4,
+            "episodes": 128,
+            "imag_length": 5,
+            "policy_mode": "eval",
+            "seed_offset": 100000,
+            "self_fed": {
+              "anchors": 8,
+              "consumer_kl_scale": 0.0,
+              "enabled": true,
+              "horizons": [
+                2,
+                4,
+                5
+              ],
+              "scale": 0.1
+            }
+          },
+          "train": {
+            "checkpoint_at_curve_eval": false,
+            "curve_eps": 32,
+            "curve_interval": 5000,
+            "curve_seed_offset": 50000,
+            "envs": 1,
+            "imag_length": 5,
+            "self_fed": {
+              "anchors": 8,
+              "consumer_kl_scale": 0.0,
+              "enabled": true,
+              "horizons": [
+                2,
+                4,
+                5
+              ],
+              "scale": 0.1
+            },
+            "steps": 50000
+          }
+        },
+        "ppo_start_step": 5000,
+        "replay_value_scale": 0.3,
+        "seed": 1,
+        "task": "smac_2s3z",
+        "train_ratio": 128.0,
+        "world_model_start_step": 0
+      },
+      "run": "recurrent_h5-2s3z-seed1",
+      "slot": 2,
+      "source": "/Users/osaze/MARL/worktrees/ma_jepa_self_fed_training"
+    },
+    {
+      "configuration": {
+        "actor_layers": 3,
+        "actor_lr": 3e-05,
+        "actor_units": 1024,
+        "collection_unimix": 0.05,
+        "critic_lr": 3e-05,
+        "entropy_coefficient": 0.01,
+        "entropy_schedule_enabled": false,
+        "envs": 1,
+        "joint_world_warmup": 1000,
+        "local_world_warmup": 1000,
+        "phases": {
+          "final128": {
+            "envs": 4,
+            "episodes": 128,
+            "imag_length": 2,
+            "policy_mode": "eval",
+            "seed_offset": 100000,
+            "self_fed": null
+          },
+          "train": {
+            "checkpoint_at_curve_eval": false,
+            "curve_eps": 32,
+            "curve_interval": 5000,
+            "curve_seed_offset": 50000,
+            "envs": 1,
+            "imag_length": 2,
+            "self_fed": null,
+            "steps": 50000
+          }
+        },
+        "ppo_start_step": 5000,
+        "replay_value_scale": 0.3,
+        "seed": 1,
+        "task": "smac_2s3z",
+        "train_ratio": 128.0,
+        "world_model_start_step": 0
+      },
+      "run": "corrected_h2-2s3z-seed1",
+      "slot": 3,
+      "source": "/Users/osaze/MARL/worktrees/ma_jepa_ppo"
+    },
+    {
+      "configuration": {
+        "actor_layers": 3,
+        "actor_lr": 3e-05,
+        "actor_units": 1024,
+        "collection_unimix": 0.05,
+        "critic_lr": 3e-05,
+        "entropy_coefficient": 0.01,
+        "entropy_schedule_enabled": false,
+        "envs": 1,
+        "joint_world_warmup": 1000,
+        "local_world_warmup": 1000,
+        "phases": {
+          "final128": {
+            "envs": 4,
+            "episodes": 128,
+            "imag_length": 5,
+            "policy_mode": "eval",
+            "seed_offset": 100000,
+            "self_fed": {
+              "anchors": 8,
+              "consumer_kl_scale": 0.0,
+              "enabled": true,
+              "horizons": [
+                2,
+                4,
+                5
+              ],
+              "scale": 0.1
+            }
+          },
+          "train": {
+            "checkpoint_at_curve_eval": false,
+            "curve_eps": 32,
+            "curve_interval": 5000,
+            "curve_seed_offset": 50000,
+            "envs": 1,
+            "imag_length": 5,
+            "self_fed": {
+              "anchors": 8,
+              "consumer_kl_scale": 0.0,
+              "enabled": true,
+              "horizons": [
+                2,
+                4,
+                5
+              ],
+              "scale": 0.1
+            },
+            "steps": 50000
+          }
+        },
+        "ppo_start_step": 5000,
+        "replay_value_scale": 0.3,
+        "seed": 0,
+        "task": "smac_3m",
+        "train_ratio": 128.0,
+        "world_model_start_step": 0
+      },
+      "run": "recurrent_h5-3m-seed0",
+      "slot": 4,
+      "source": "/Users/osaze/MARL/worktrees/ma_jepa_self_fed_training"
+    },
+    {
+      "configuration": {
+        "actor_layers": 3,
+        "actor_lr": 3e-05,
+        "actor_units": 1024,
+        "collection_unimix": 0.05,
+        "critic_lr": 3e-05,
+        "entropy_coefficient": 0.01,
+        "entropy_schedule_enabled": false,
+        "envs": 1,
+        "joint_world_warmup": 1000,
+        "local_world_warmup": 1000,
+        "phases": {
+          "final128": {
+            "envs": 4,
+            "episodes": 128,
+            "imag_length": 5,
+            "policy_mode": "eval",
+            "seed_offset": 100000,
+            "self_fed": null
+          },
+          "train": {
+            "checkpoint_at_curve_eval": false,
+            "curve_eps": 32,
+            "curve_interval": 5000,
+            "curve_seed_offset": 50000,
+            "envs": 1,
+            "imag_length": 5,
+            "self_fed": null,
+            "steps": 50000
+          }
+        },
+        "ppo_start_step": 5000,
+        "replay_value_scale": 0.3,
+        "seed": 123,
+        "task": "smac_2s3z",
+        "train_ratio": 128.0,
+        "world_model_start_step": 0
+      },
+      "run": "corrected_h5-2s3z-seed123",
+      "slot": 5,
+      "source": "/Users/osaze/MARL/worktrees/ma_jepa_ppo"
+    }
+  ],
+  "scope": "Provisional CPU config-resolution only; no train/eval launch or anchor selection"
+}

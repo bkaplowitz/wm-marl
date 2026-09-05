@@ -95,11 +95,11 @@ def common_command(args, run, logdir):
         "--agent.num_agents",
         str(run.num_agents),
         "--agent.imag_length",
-        "5",
+        str(getattr(run, "imag_length", 5)),
     ]
     if run.replay_value_scale is not None:
         command += ["--agent.ppo.replay_value_scale", str(run.replay_value_scale)]
-    return command
+    return command + list(getattr(run, "configuration_flags", ()))
 
 
 def logger_outputs(args):
@@ -192,7 +192,7 @@ def execution_environment(args):
 def phase_environment(args, phase_root, phase, env):
     env = env.copy()
     if getattr(args, "wandb_project", ""):
-        run = SLOTS[args.slot]
+        run = getattr(args, "run_spec", SLOTS[args.slot])
         env.update(
             WANDB_ENTITY=args.wandb_entity,
             WANDB_PROJECT=args.wandb_project,
@@ -203,7 +203,7 @@ def phase_environment(args, phase_root, phase, env):
             WANDB_DIR=str(phase_root),
             WANDB_RESUME="never",
             WANDB_NOTES=(
-                f"Correction screen {run.name}; package SHA256 "
+                f"{getattr(args, 'screen_label', 'Correction screen')} {run.name}; package SHA256 "
                 f"{args.expected_source_sha256}; 50k total environment transitions."
             ),
         )
@@ -379,7 +379,7 @@ def run_child(args, children, run_root, phase, command, env):
         raise RuntimeError(f"{phase} exited with status {returncode}")
 
 
-def main():
+def argument_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--slot", type=int, choices=SLOTS, required=True)
     parser.add_argument("--source", type=Path, required=True)
@@ -400,7 +400,10 @@ def main():
     parser.add_argument("--wandb-group", default="")
     parser.add_argument("--wandb-run-prefix", default="")
     parser.add_argument("--validate-only", action="store_true")
-    args = parser.parse_args()
+    return parser
+
+
+def run_screen(args, run=None, profile_validator=validate_profile, extra_manifest=None):
     for field in ("source", "python", "external", "sc2", "portserver_script"):
         path = getattr(args, field).absolute()
         if not path.exists():
@@ -416,9 +419,10 @@ def main():
     actual = source_fingerprint(args.source)
     if actual != args.expected_source_sha256:
         raise RuntimeError(f"Source fingerprint mismatch: {actual}")
-    run = SLOTS[args.slot]
+    run = run or SLOTS[args.slot]
+    args.run_spec = run
     env = execution_environment(args)
-    resolved = validate_profile(args, run, env)
+    resolved = profile_validator(args, run, env)
     if args.validate_only:
         print(
             json.dumps(
@@ -426,6 +430,7 @@ def main():
                     "source_sha256": actual,
                     "run": asdict(run),
                     "configuration": resolved,
+                    **(extra_manifest or {}),
                 },
                 sort_keys=True,
             )
@@ -438,6 +443,7 @@ def main():
     atomic_json(
         run_root / "manifest.json",
         {
+            **(extra_manifest or {}),
             "run": asdict(run),
             "source": str(args.source),
             "source_sha256": actual,
@@ -537,6 +543,10 @@ def main():
         raise
     finally:
         children.close()
+
+
+def main():
+    run_screen(argument_parser().parse_args())
 
 
 if __name__ == "__main__":
