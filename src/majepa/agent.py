@@ -8,6 +8,7 @@ import numpy as np
 
 from .marl.axes import MODEL_EXCLUDED_FIELDS
 from .models.heads import MLPHead
+from .models.target import CriticTarget
 from .training.learner import LearnerMixin
 from .training.optimization import OptimizationMixin
 from .training.policy import PolicyMixin
@@ -249,7 +250,7 @@ class Agent(
         """Construct the maintained fast and slow value models."""
 
         value = embodied.jax.MLPHead(scalar, **config.value, name="val")
-        slowvalue = embodied.jax.SlowModel(
+        slowvalue = CriticTarget(
             embodied.jax.MLPHead(scalar, **config.value, name="slowval"),
             source=value,
             **config.slowvalue,

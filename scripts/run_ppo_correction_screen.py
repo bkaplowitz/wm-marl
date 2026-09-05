@@ -113,7 +113,7 @@ def train_command(args, run, logdir):
         "--run.steps",
         "50000",
         "--run.envs",
-        "1",
+        str(getattr(run, "envs", 1)),
         "--run.world_model_start_step",
         str(getattr(run, "world_model_start_step", 0)),
         "--run.ppo_start_step",
@@ -311,7 +311,7 @@ print(json.dumps({
     expected = {
         "task": f"smac_{run.map_name}",
         "seed": run.seed,
-        "envs": 1,
+        "envs": getattr(run, "envs", 1),
         "train_ratio": 128.0,
         "ppo_start_step": 5000,
         "world_model_start_step": getattr(run, "world_model_start_step", 0),

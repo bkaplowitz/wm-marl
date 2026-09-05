@@ -59,7 +59,14 @@ class LearnerMixin:
             raise ValueError("MA-JEPA PPO requires the separated CTDE optimizer")
 
         ppo_active = self._ppo_schedule(data)
+        fresh_history = bool(
+            getattr(self, "ctde_self_fed_enabled", False)
+            and self.config.marl.ctde.self_fed.get("fresh_history", False)
+        )
+        raw_world = data if fresh_history else None
         carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
+        if fresh_history:
+            obs = dict(obs, _self_fed_raw=raw_world)
         metrics, (carry, entries, outs, mets) = self.opt(
             self.loss,
             carry,

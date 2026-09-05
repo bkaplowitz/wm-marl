@@ -119,9 +119,54 @@ def mixed_posterior_kl(predicted, target, unimix):
     )
 
 
+def frozen_local_transition(dynamics, local, action, embedding, active):
+    """Keep the local input Jacobian while stopping all local parameters."""
+
+    def advance(local, action, embedding, active):
+        cache, deter = dynamics.advance(local, action, training=False, active=active)
+        return dynamics.complete_from_observation(cache, deter, embedding, sample=True)[
+            0
+        ]
+
+    if nj.creating():
+        return advance(local, action, embedding, active)
+    params = {
+        key: jax.lax.stop_gradient(value)
+        for key, value in nj.context().items()
+        if key.startswith(dynamics.path + "/")
+    }
+    _, output = nj.pure(advance, nested=True)(
+        params,
+        local,
+        action,
+        embedding,
+        active,
+        seed=nj.seed(),
+        create=False,
+        modify=False,
+    )
+    return output
+
+
+def recurrent_training_inputs(agent, features, entries, obs):
+    """Optionally rebuild only auxiliary roots from current raw histories."""
+    cfg = agent.config.marl.ctde.self_fed
+    if not cfg.get("fresh_history", False):
+        return features, entries
+    carry, fresh_obs, actions, _ = agent._apply_behavior_replay_context(
+        obs["_self_fed_raw"]
+    )
+    _, (_, entries, _), features = agent._behavior_model_states(
+        carry, fresh_obs, actions
+    )
+    return features, entries
+
+
 def self_fed_losses(agent, online, features, entries, ema, obs, prevact):
     """Produce sparse root-aligned auxiliary grids using existing model heads."""
     cfg = agent.config.marl.ctde.self_fed
+    features, entries = recurrent_training_inputs(agent, features, entries, obs)
+    bptt_steps = int(cfg.get("bptt_steps", 1))
     horizons = tuple(int(value) for value in cfg.horizons)
     maximum = max(horizons)
     group = agent.team.unfold_sequence
@@ -187,7 +232,13 @@ def self_fed_losses(agent, online, features, entries, ema, obs, prevact):
     root_reset = gather_at(first, anchors)
 
     def transition(state, offset):
-        local, joint, current_alive, current_mask, reset = stop(state)
+        if bptt_steps == 1:
+            state = stop(state)
+        else:
+            state = jax.lax.cond(
+                (offset - 1) % bptt_steps == 0, stop, lambda value: value, state
+            )
+        local, joint, current_alive, current_mask, reset = state
         action = gather_at(actions, anchors, offset)
         local_state = agent.team.unfold_batch(
             agent.feat2tensor({key: local[key] for key in ("deter", "stoch")})
@@ -201,20 +252,28 @@ def self_fed_losses(agent, online, features, entries, ema, obs, prevact):
             reset,
             training=False,
         )
-        cache, deter = agent.dyn.advance(
-            local,
-            {agent.ctde_action_key: agent.team.fold_batch(action)},
-            training=False,
-            active=agent.team.fold_batch(root_present),
-        )
-        # This output is detached before another loss can consume it. Local
-        # parameters cannot receive gradient from the auxiliary state generator.
-        local, _ = agent.dyn.complete_from_observation(
-            cache,
-            deter,
-            agent.team.fold_batch(prediction["embedding"]),
-            sample=True,
-        )
+        local_action = {agent.ctde_action_key: agent.team.fold_batch(action)}
+        if bptt_steps == 1:
+            cache, deter = agent.dyn.advance(
+                local,
+                local_action,
+                training=False,
+                active=agent.team.fold_batch(root_present),
+            )
+            local, _ = agent.dyn.complete_from_observation(
+                cache,
+                deter,
+                agent.team.fold_batch(prediction["embedding"]),
+                sample=True,
+            )
+        else:
+            local = frozen_local_transition(
+                agent.dyn,
+                local,
+                local_action,
+                agent.team.fold_batch(prediction["embedding"]),
+                agent.team.fold_batch(root_present),
+            )
         hidden = prediction["hidden"]
         reward_output = agent.ctde_rew(hidden, 2)
         continuation_output = agent.ctde_con(hidden, 2)
@@ -289,7 +348,7 @@ def self_fed_losses(agent, online, features, entries, ema, obs, prevact):
             .mean(-1),
         }
         state = (local, joint, next_alive, next_mask, jnp.zeros_like(reset))
-        return stop(state), (losses, stop(metrics))
+        return (stop(state) if bptt_steps == 1 else state), (losses, stop(metrics))
 
     initial = nn.cast(stop((local, joint, root_alive, root_mask, root_reset)))
     _, (steps, step_metrics) = nj.scan(

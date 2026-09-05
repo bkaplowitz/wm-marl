@@ -506,8 +506,16 @@ def test_default_off_and_enabled_zero_scale_preserve_initialization_and_full_tra
             exact_tree(reference_result, result)
 
 
-def test_auxiliary_gradients_are_joint_only_including_frozen_consumer_posterior():
-    learner, observations, actions = make_tiny(enabled=True, consumer=0.1)
+@pytest.mark.parametrize("bptt_steps", [1, 2])
+def test_auxiliary_gradients_are_joint_only_including_frozen_consumer_posterior(
+    bptt_steps,
+):
+    learner, observations, actions = make_tiny(
+        enabled=True, consumer=0.1 if bptt_steps == 1 else 0.0
+    )
+    learner.config = elements.Config(
+        {**learner.config.flat, "marl.ctde.self_fed.bptt_steps": bptt_steps}
+    )
     data = _synthetic_replay(learner, observations, actions)
     carry = learner.init_train(2)
     state = nj.init(learner.train)({}, carry, data, seed=983)

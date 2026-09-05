@@ -54,6 +54,7 @@ from ..training.multistep_jepa import (
 )
 from ..training.common import sample
 from ..training.self_fed import self_fed_losses
+from ..models.target import CriticTarget
 from .axes import (
     BEHAVIOR_REPLAY_PREFIX,
     TeamAxis,
@@ -183,6 +184,14 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         )
         if self.ctde_self_fed_enabled:
             self_fed = marl.ctde.self_fed
+            if int(self_fed.get("bptt_steps", 1)) not in (1, 2):
+                raise ValueError("Self-fed bptt_steps must be 1 or 2")
+            if int(self_fed.get("bptt_steps", 1)) > 1 and float(
+                self_fed.consumer_kl_scale
+            ):
+                raise ValueError(
+                    "Two-step BPTT currently requires consumer KL disabled"
+                )
             horizons = tuple(int(value) for value in self_fed.horizons)
             if (
                 not horizons
@@ -393,7 +402,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 outscale=float(cfg.outscale),
                 name="ctde_val",
             )
-            slowvalue = embodied.jax.SlowModel(
+            slowvalue = CriticTarget(
                 CentralAttentionCritic(
                     width=int(cfg.width),
                     heads=int(cfg.heads),

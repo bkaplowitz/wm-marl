@@ -37,7 +37,15 @@ def write_json(path, values):
     temporary.replace(path)
 
 
-def gate_config(saved, output, *, enabled=True):
+def gate_config(
+    saved,
+    output,
+    *,
+    enabled=True,
+    fresh_history=False,
+    bptt_steps=1,
+    slowvalue_rate=None,
+):
     """Keep all saved model, batch, replay and PPO settings except this treatment."""
     import elements
 
@@ -60,7 +68,11 @@ def gate_config(saved, output, *, enabled=True):
         "agent.marl.ctde.self_fed.anchors": 8,
         "agent.marl.ctde.self_fed.scale": 0.1,
         "agent.marl.ctde.self_fed.consumer_kl_scale": 0.0,
+        "agent.marl.ctde.self_fed.fresh_history": fresh_history,
+        "agent.marl.ctde.self_fed.bptt_steps": bptt_steps,
     }
+    if slowvalue_rate is not None:
+        overrides["agent.slowvalue.rate"] = slowvalue_rate
     return elements.Config({**config.flat, **overrides}), overrides
 
 
@@ -198,7 +210,14 @@ def run(args):
     output = args.output.expanduser().resolve()
     copied_checkpoint, inputs = copy_inputs(args.run, args.checkpoint, output)
     saved = YAML(typ="safe").load((output / "inputs" / "config.yaml").read_text())
-    config, overrides = gate_config(saved, output, enabled=not args.disabled_control)
+    config, overrides = gate_config(
+        saved,
+        output,
+        enabled=not args.disabled_control,
+        fresh_history=args.fresh_history,
+        bptt_steps=args.bptt_steps,
+        slowvalue_rate=args.slowvalue_rate,
+    )
     config.save(str(output / "gate_config.yaml"))
     with (copied_checkpoint / "step.pkl").open("rb") as stream:
         environment_step = int(pickle.load(stream))
@@ -386,6 +405,9 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--updates", type=int, default=3)
     parser.add_argument("--disabled-control", action="store_true")
+    parser.add_argument("--fresh-history", action="store_true")
+    parser.add_argument("--bptt-steps", type=int, choices=(1, 2), default=1)
+    parser.add_argument("--slowvalue-rate", type=float)
     parser.add_argument("--validate-only", action="store_true")
     args = parser.parse_args(argv)
     if not 1 <= args.updates <= 5:
