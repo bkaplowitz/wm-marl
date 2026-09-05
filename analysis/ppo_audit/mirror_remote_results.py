@@ -24,11 +24,11 @@ if not root.is_dir():raise FileNotFoundError(root)
 offsets=request.get('offsets',{});files=[];outcomes=[];budget=16*1024*1024
 patterns=[
  'runs/*/manifest.json','runs/*/status.json','runs/*/outcome.json',
- 'runs/*/train/launch.json','runs/*/final128/launch.json',
- 'runs/*/train/run/config.yaml','runs/*/final128/run/config.yaml',
+ 'runs/*/train/launch.json','runs/*/final*/launch.json',
+ 'runs/*/train/run/config.yaml','runs/*/final*/run/config.yaml',
  'runs/*/train/run/metrics.jsonl','runs/*/train/run/scores.jsonl',
- 'runs/*/final128/run/metrics.jsonl','runs/*/final128/run/scores.jsonl',
- 'runs/*/final128/run/evaluation_summary.json','runs/*/final128/run/evaluation_episodes.jsonl',
+ 'runs/*/final*/run/metrics.jsonl','runs/*/final*/run/scores.jsonl',
+ 'runs/*/final*/run/evaluation_summary.json','runs/*/final*/run/evaluation_episodes.jsonl',
 ]
 for pattern in patterns:
  for path in sorted(root.glob(pattern)):

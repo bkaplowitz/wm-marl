@@ -156,7 +156,7 @@ def eval_command(args, run, logdir, checkpoint):
         "--run.eval_worker_offset",
         "100000",
         "--run.eval_eps",
-        "128",
+        str(getattr(run, "final_episodes", 128)),
         "--run.envs",
         "4",
         "--run.eval_policy_mode",
@@ -424,6 +424,8 @@ def run_screen(args, run=None, profile_validator=validate_profile, extra_manifes
     if actual != args.expected_source_sha256:
         raise RuntimeError(f"Source fingerprint mismatch: {actual}")
     run = run or SLOTS[args.slot]
+    final_episodes = getattr(run, "final_episodes", 128)
+    final_phase = f"final{final_episodes}"
     args.run_spec = run
     env = execution_environment(args)
     resolved = profile_validator(args, run, env)
@@ -471,7 +473,7 @@ def run_screen(args, run=None, profile_validator=validate_profile, extra_manifes
                 "curve_interval": 5000,
                 "curve_episodes": 32,
                 "curve_seed_offset": 50000,
-                "final_episodes": 128,
+                "final_episodes": final_episodes,
                 "final_seed_offset": 100000,
             },
         },
@@ -520,20 +522,21 @@ def run_screen(args, run=None, profile_validator=validate_profile, extra_manifes
                 args,
                 children,
                 run_root,
-                "final128",
-                eval_command(args, run, run_root / "final128/run", checkpoint),
+                final_phase,
+                eval_command(args, run, run_root / final_phase / "run", checkpoint),
                 env,
             )
         summary = json.loads(
-            (run_root / "final128/run/evaluation_summary.json").read_text()
+            (run_root / final_phase / "run/evaluation_summary.json").read_text()
         )
-        if summary.get("evaluation_protocol", {}).get("episodes") != 128:
-            raise RuntimeError("Fixed-128 evaluation was not completed")
+        if summary.get("evaluation_protocol", {}).get("episodes") != final_episodes:
+            raise RuntimeError(f"Fixed-{final_episodes} evaluation was not completed")
         atomic_json(
             run_root / "outcome.json",
             {
                 "completed": True,
                 "checkpoint": str(checkpoint),
+                "final_phase": final_phase,
                 "summary": summary,
                 "finished_at": time.time(),
             },

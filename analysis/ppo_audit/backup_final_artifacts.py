@@ -22,6 +22,8 @@ r=json.load(sys.stdin);root=pathlib.Path(r['root']);run=root/'runs'/r['run']
 if not run.resolve().is_relative_to((root/'runs').resolve()):raise ValueError('Run outside experiment root')
 def read(p):return json.loads(p.read_text()) if p.is_file() else {}
 outcome=read(run/'outcome.json');reasons=[];files=[]
+final_phase=outcome.get('final_phase','final128')
+if final_phase not in ('final100','final128'):raise ValueError('Unexpected final evaluation phase')
 ready_marker=pathlib.Path(r['ready_marker']) if r.get('ready_marker') else None
 if not outcome.get('completed'):reasons.append('This run has no successful final128 outcome')
 latest=run/'train/run/ckpt/latest'
@@ -37,9 +39,9 @@ if not r.get('exports_only') and latest.is_file():
   if path.is_file() and path.name not in ['agent.pkl','step.pkl','done']:add(path,'checkpoint/'+folder.name+'/'+path.name)
  add(latest,'checkpoint/latest')
 elif not r.get('exports_only'):reasons.append('Final checkpoint pointer is missing')
-for phase in ['train','final128']:add(run/phase/'run/config.yaml',phase+'/config.yaml')
+for phase in ['train',final_phase]:add(run/phase/'run/config.yaml',phase+'/config.yaml')
 for name in ['manifest.json','outcome.json']:add(run/name,name)
-add(run/'final128/run/evaluation_summary.json','final128/evaluation_summary.json')
+add(run/final_phase/'run/evaluation_summary.json',final_phase+'/evaluation_summary.json')
 replay_files=[] if r.get('exports_only') else sorted((run/'train/run/replay').rglob('*.npz'))
 if not r.get('exports_only') and not replay_files:reasons.append('Completed run has no raw replay NPZ files')
 for path in replay_files:

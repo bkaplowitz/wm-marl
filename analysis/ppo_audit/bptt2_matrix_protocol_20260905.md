@@ -18,7 +18,7 @@ not adopted for this matrix.
 - Training ratio 128; all other training settings come from the frozen profile.
 - Curves: 32 greedy episodes every 5,000 transitions, four eval environments,
   evaluation worker seed offset 50,000.
-- Final: fixed-budget final checkpoint, 128 greedy episodes, four environments,
+- Final: fixed-budget final checkpoint, 100 greedy episodes, four environments,
   evaluation worker seed offset 100,000. No best-checkpoint selection.
 
 ## Requested maps
@@ -48,7 +48,7 @@ matrix run.
 
 Pod: `root@154.54.102.56:14808`, six A100 GPUs.
 Queue root: `/workspace/majepa_bptt2_matrix_20260905`.
-Launcher: `/workspace/majepa_bptt2_matrix_launcher_20260905/scripts/run_ppo_bptt2_matrix.py`.
+Launcher: `/workspace/majepa_bptt2_final100_launcher_20260905/scripts/run_ppo_bptt2_matrix.py`.
 Training source: `/workspace/ma_jepa_recurrent_extensions_f2273e9`.
 
 Six detached workers claim jobs under a filesystem lock. Each GPU has a separate
@@ -83,3 +83,12 @@ third-seed barrier, total budgets, and the 200,000-step final-checkpoint guard.
 The six live jobs started on separate GPUs at approximately 13:18 UTC.
 Deployment, process IDs, source/launcher hashes, and map checks are recorded in
 `bptt2_matrix_deployment_20260905.json`. Full training completion remains pending.
+
+The user subsequently selected **100 final episodes only**. At 13:42 UTC the
+six workers and their evaluation supervisors were replaced while the six original
+training processes and portservers continued. Training PIDs and Linux process
+start times were checked before and after this handoff. The frozen training
+package and all periodic curve settings remain unchanged. All 42 amended train
+and final configurations were resolved again; the adopted completion path was
+checked through a successful final100 outcome. Updated ownership and verification
+are recorded in `bptt2_matrix_final100_20260905.json`.
