@@ -275,8 +275,8 @@ def latest_checkpoint(train_root):
 
 def validate_profile(args, run, env):
     """Validate configuration with the chosen source/runtime, before GPU waiting."""
-    flags = common_command(args, run, Path("unused"))[3:]
-    # common_command starts [python, -m, majepa.main]; parse only config flags.
+    flags = train_command(args, run, Path("unused"))[3:]
+    # Parse the complete actual training command, including startup overrides.
     code = """
 import json, pathlib, sys
 import elements, majepa
