@@ -1,0 +1,90 @@
+{
+  "recurrent": {
+    "status": "passed",
+    "input_files_unchanged": true,
+    "updates_before": 1157,
+    "updates_after": 1160,
+    "actions_before": 10530,
+    "actions_after": 10530,
+    "initialize_seconds": 81.68672645138577,
+    "sampled_memory": {
+      "errors": [],
+      "interval_seconds": 0.25,
+      "process_peak_mib_sampled": 21080,
+      "samples": 1984
+    },
+    "updates": [
+      {
+        "seconds": 667.386080654338,
+        "finite": true,
+        "ppo_active": 1.0,
+        "joint_skipped": 0.0,
+        "local_skipped": 0.0,
+        "H5_count": 40.0,
+        "peak_live_bytes": 20323996416
+      },
+      {
+        "seconds": 0.6696837488561869,
+        "finite": true,
+        "ppo_active": 1.0,
+        "joint_skipped": 0.0,
+        "local_skipped": 0.0,
+        "H5_count": 35.0,
+        "peak_live_bytes": 20800201728
+      },
+      {
+        "seconds": 0.6694359872490168,
+        "finite": true,
+        "ppo_active": 1.0,
+        "joint_skipped": 0.0,
+        "local_skipped": 0.0,
+        "H5_count": 40.0,
+        "peak_live_bytes": 20974806272
+      }
+    ]
+  },
+  "disabled_control": {
+    "status": "passed",
+    "input_files_unchanged": true,
+    "updates_before": 1157,
+    "updates_after": 1160,
+    "actions_before": 10530,
+    "actions_after": 10530,
+    "initialize_seconds": 74.03468035999686,
+    "sampled_memory": {
+      "errors": [],
+      "interval_seconds": 0.25,
+      "process_peak_mib_sampled": 21068,
+      "samples": 1606
+    },
+    "updates": [
+      {
+        "seconds": 526.5595381702296,
+        "finite": true,
+        "ppo_active": 1.0,
+        "joint_skipped": 0.0,
+        "local_skipped": 0.0,
+        "H5_count": null,
+        "peak_live_bytes": 14258202368
+      },
+      {
+        "seconds": 0.6393969105556607,
+        "finite": true,
+        "ppo_active": 1.0,
+        "joint_skipped": 0.0,
+        "local_skipped": 0.0,
+        "H5_count": null,
+        "peak_live_bytes": 14726769152
+      },
+      {
+        "seconds": 0.6341686150990427,
+        "finite": true,
+        "ppo_active": 1.0,
+        "joint_skipped": 0.0,
+        "local_skipped": 0.0,
+        "H5_count": null,
+        "peak_live_bytes": 14901603328
+      }
+    ]
+  }
+}

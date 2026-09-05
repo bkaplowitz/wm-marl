@@ -1,0 +1,20 @@
+{
+  "pid": 42001,
+  "command": [
+    "/workspace/majepa-runtime/bin/python",
+    "/workspace/ma_jepa_self_fed_da98e2d/scripts/gate_self_fed_production.py",
+    "--run",
+    "/workspace/majepa_diagnostics_data_20260905",
+    "--checkpoint",
+    "/workspace/majepa_diagnostics_data_20260905/ckpt/20260905T074720F566169",
+    "--output",
+    "/workspace/majepa_self_fed_gate_20260905/recurrent",
+    "--updates",
+    "3"
+  ],
+  "output": "/workspace/majepa_self_fed_gate_20260905/recurrent",
+  "gpu": 4,
+  "started_unix": 1788598389.9587693,
+  "source_commit": "da98e2d683cfa28af9a261a56489a058a2567d4d",
+  "package_sha256": "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc"
+}

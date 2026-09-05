@@ -1,0 +1,92 @@
+[
+  {
+    "bytes": 6312,
+    "copy": "/workspace/majepa_self_fed_gate_20260905/recurrent/inputs/config.yaml",
+    "sha256": "0887d3d5577964259b84ebf0e51c561345465b4593885fd182df3ae24c57b88a",
+    "source": "/workspace/majepa_diagnostics_data_20260905/config.yaml"
+  },
+  {
+    "bytes": 1755214096,
+    "copy": "/workspace/majepa_self_fed_gate_20260905/recurrent/inputs/checkpoint/agent.pkl",
+    "sha256": "df4206ac0e997d7c828a7a901439227a9a680096dfb757ddbc7a51c052045714",
+    "source": "/workspace/majepa_diagnostics_data_20260905/ckpt/20260905T074720F566169/agent.pkl"
+  },
+  {
+    "bytes": 0,
+    "copy": "/workspace/majepa_self_fed_gate_20260905/recurrent/inputs/checkpoint/done",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "source": "/workspace/majepa_diagnostics_data_20260905/ckpt/20260905T074720F566169/done"
+  },
+  {
+    "bytes": 15,
+    "copy": "/workspace/majepa_self_fed_gate_20260905/recurrent/inputs/checkpoint/step.pkl",
+    "sha256": "28d9cc3d70ffff8225702a13258b988d3cc4b6580366c3cc95a46d1b5f1139f0",
+    "source": "/workspace/majepa_diagnostics_data_20260905/ckpt/20260905T074720F566169/step.pkl"
+  },
+  {
+    "bytes": 1121968,
+    "copy": "/workspace/majepa_self_fed_gate_20260905/recurrent/runtime/replay/20260905T073220F224744-0f0ySIJDL7MWwyCm4YJbV7-6tqcwgk4qWtIElmGGOrOmj-1024.npz",
+    "sha256": "eaf41f310e3025b2e5d151a07549c36f85cca54cbf8cc35ad5e8f00be2d9e6d0",
+    "source": "/workspace/majepa_diagnostics_data_20260905/replay/20260905T073220F224744-0f0ySIJDL7MWwyCm4YJbV7-6tqcwgk4qWtIElmGGOrOmj-1024.npz"
+  },
+  {
+    "bytes": 1104340,
+    "copy": "/workspace/majepa_self_fed_gate_20260905/recurrent/runtime/replay/20260905T073230F868799-6tqcwgk4qWtIElmGGOrOmj-5BXsnHFHOYMd72QFqKzEu3-1024.npz",
+    "sha256": "a5551cee21e932267ed2d77aa50fb97e7bea554c8a6a444789e398b1d35399fb",
+    "source": "/workspace/majepa_diagnostics_data_20260905/replay/20260905T073230F868799-6tqcwgk4qWtIElmGGOrOmj-5BXsnHFHOYMd72QFqKzEu3-1024.npz"
+  },
+  {
+    "bytes": 1127430,
+    "copy": "/workspace/majepa_self_fed_gate_20260905/recurrent/runtime/replay/20260905T073343F548061-5BXsnHFHOYMd72QFqKzEu3-2aaIyiZrml2EArcSPteDuo-1024.npz",
+    "sha256": "3c59736293a6e311a388fefd827f360d5ae53f27fb089d2f3a8cf9626f45f2b7",
+    "source": "/workspace/majepa_diagnostics_data_20260905/replay/20260905T073343F548061-5BXsnHFHOYMd72QFqKzEu3-2aaIyiZrml2EArcSPteDuo-1024.npz"
+  },
+  {
+    "bytes": 1109464,
+    "copy": "/workspace/majepa_self_fed_gate_20260905/recurrent/runtime/replay/20260905T073515F131007-2aaIyiZrml2EArcSPteDuo-1ZI6XpBUFlKyZHZyguliyj-1024.npz",
+    "sha256": "1ff99d693e2740d8f0d878d967fe8702846c4ac7544fa3f3448f608f1b699f40",
+    "source": "/workspace/majepa_diagnostics_data_20260905/replay/20260905T073515F131007-2aaIyiZrml2EArcSPteDuo-1ZI6XpBUFlKyZHZyguliyj-1024.npz"
+  },
+  {
+    "bytes": 1119476,
+    "copy": "/workspace/majepa_self_fed_gate_20260905/recurrent/runtime/replay/20260905T073646F058882-1ZI6XpBUFlKyZHZyguliyj-4ESelZ2LVK3BqGxoqEu0QG-1024.npz",
+    "sha256": "f51fc61e1fc9c8ad04be0f0562b919aa2aad32ba9e6ec5ba5efc374f26369a14",
+    "source": "/workspace/majepa_diagnostics_data_20260905/replay/20260905T073646F058882-1ZI6XpBUFlKyZHZyguliyj-4ESelZ2LVK3BqGxoqEu0QG-1024.npz"
+  },
+  {
+    "bytes": 1117781,
+    "copy": "/workspace/majepa_self_fed_gate_20260905/recurrent/runtime/replay/20260905T073852F194809-4ESelZ2LVK3BqGxoqEu0QG-5pmRjPGuznitCTShYUTkUc-1024.npz",
+    "sha256": "caf17d0d9ff9c367fd1ebd91100ec4f346f066b1104da5f627eaece8a88ae958",
+    "source": "/workspace/majepa_diagnostics_data_20260905/replay/20260905T073852F194809-4ESelZ2LVK3BqGxoqEu0QG-5pmRjPGuznitCTShYUTkUc-1024.npz"
+  },
+  {
+    "bytes": 1114459,
+    "copy": "/workspace/majepa_self_fed_gate_20260905/recurrent/runtime/replay/20260905T074023F263274-5pmRjPGuznitCTShYUTkUc-2lfgyWfW8OLmj3aifZOLyN-1024.npz",
+    "sha256": "0a20bcfd7c9da2baeff11ded3b67e5c4a3b3256df9e06d9a17735791aa1ad88b",
+    "source": "/workspace/majepa_diagnostics_data_20260905/replay/20260905T074023F263274-5pmRjPGuznitCTShYUTkUc-2lfgyWfW8OLmj3aifZOLyN-1024.npz"
+  },
+  {
+    "bytes": 1123566,
+    "copy": "/workspace/majepa_self_fed_gate_20260905/recurrent/runtime/replay/20260905T074154F498426-2lfgyWfW8OLmj3aifZOLyN-26Oi5SHiOw1YmMudnEI13L-1024.npz",
+    "sha256": "7145bc77fd339031479f73d7f8e5338c8e7010188709f635e2b7b33599bd0f0b",
+    "source": "/workspace/majepa_diagnostics_data_20260905/replay/20260905T074154F498426-2lfgyWfW8OLmj3aifZOLyN-26Oi5SHiOw1YmMudnEI13L-1024.npz"
+  },
+  {
+    "bytes": 1134593,
+    "copy": "/workspace/majepa_self_fed_gate_20260905/recurrent/runtime/replay/20260905T074327F424334-26Oi5SHiOw1YmMudnEI13L-4bUUrhIHXPKtXFkhjZxRsx-1024.npz",
+    "sha256": "505d8c3b33fab8a4ef7b833f3e5bfdbcc76d18b04369b85fd9b50b5336ccb4ea",
+    "source": "/workspace/majepa_diagnostics_data_20260905/replay/20260905T074327F424334-26Oi5SHiOw1YmMudnEI13L-4bUUrhIHXPKtXFkhjZxRsx-1024.npz"
+  },
+  {
+    "bytes": 1115168,
+    "copy": "/workspace/majepa_self_fed_gate_20260905/recurrent/runtime/replay/20260905T074459F072032-4bUUrhIHXPKtXFkhjZxRsx-5mut8bUhHZi1DcHu6inBvv-1024.npz",
+    "sha256": "cf3e987c3f03cf0cb696ef20365f955590a36bb47460f21d7e1aaaf6abb90047",
+    "source": "/workspace/majepa_diagnostics_data_20260905/replay/20260905T074459F072032-4bUUrhIHXPKtXFkhjZxRsx-5mut8bUhHZi1DcHu6inBvv-1024.npz"
+  },
+  {
+    "bytes": 317771,
+    "copy": "/workspace/majepa_self_fed_gate_20260905/recurrent/runtime/replay/20260905T074654F715518-5mut8bUhHZi1DcHu6inBvv-0sZuYRNp8IlkH2UHtXlZ67-290.npz",
+    "sha256": "1c20d163191733cbdcd95ee3a9267c4f64b44ef3c9eecab1c9c86df66ea0c45b",
+    "source": "/workspace/majepa_diagnostics_data_20260905/replay/20260905T074654F715518-5mut8bUhHZi1DcHu6inBvv-0sZuYRNp8IlkH2UHtXlZ67-290.npz"
+  }
+]

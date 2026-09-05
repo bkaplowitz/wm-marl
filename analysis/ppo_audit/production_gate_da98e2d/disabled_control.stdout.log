@@ -1,0 +1,102 @@
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+Observations
+  observation      Space(float32, shape=(5, 80), low=-inf, high=inf)
+  reward           Space(float32, shape=(5,), low=-inf, high=inf)
+  agent_present    Space(bool, shape=(5,), low=False, high=True)
+  agent_alive      Space(bool, shape=(5,), low=False, high=True)
+  controllable_alive Space(bool, shape=(5,), low=False, high=True)
+  action_mask      Space(bool, shape=(5, 11), low=False, high=True)
+  is_first         Space(bool, shape=(), low=False, high=True)
+  is_last          Space(bool, shape=(), low=False, high=True)
+  is_terminal      Space(bool, shape=(), low=False, high=True)
+Actions
+  action           Space(int32, shape=(5,), low=0, high=11)
+Extras
+  consec           Space(int32, shape=(), low=-2147483648, high=2147483647)
+  stepid           Space(uint8, shape=(20,), low=0, high=255)
+  _environment_step Space(int32, shape=(), low=-2147483648, high=2147483647)
+  dyn/stoch        Space(float32, shape=(5, 32, 64), low=-inf, high=inf)
+  dyn/pair         Space(float32, shape=(5, 2059), low=-inf, high=inf)
+  dyn/reset        Space(bool, shape=(5,), low=False, high=True)
+  dyn/position     Space(int32, shape=(5,), low=-2147483648, high=2147483647)
+  dyn/active       Space(bool, shape=(5,), low=False, high=True)
+  _behavior_replay/observation Space(float32, shape=(5, 80), low=-inf, high=inf)
+  _behavior_replay/reward Space(float32, shape=(5,), low=-inf, high=inf)
+  _behavior_replay/agent_present Space(bool, shape=(5,), low=False, high=True)
+  _behavior_replay/agent_alive Space(bool, shape=(5,), low=False, high=True)
+  _behavior_replay/controllable_alive Space(bool, shape=(5,), low=False, high=True)
+  _behavior_replay/action_mask Space(bool, shape=(5, 11), low=False, high=True)
+  _behavior_replay/is_first Space(bool, shape=(), low=False, high=True)
+  _behavior_replay/is_last Space(bool, shape=(), low=False, high=True)
+  _behavior_replay/is_terminal Space(bool, shape=(), low=False, high=True)
+  _behavior_replay/action Space(int32, shape=(5,), low=0, high=11)
+  _behavior_replay/consec Space(int32, shape=(), low=-2147483648, high=2147483647)
+  _behavior_replay/stepid Space(uint8, shape=(20,), low=0, high=255)
+  _behavior_replay/dyn/stoch Space(float32, shape=(5, 32, 64), low=-inf, high=inf)
+  _behavior_replay/dyn/pair Space(float32, shape=(5, 2059), low=-inf, high=inf)
+  _behavior_replay/dyn/reset Space(bool, shape=(5,), low=False, high=True)
+  _behavior_replay/dyn/position Space(int32, shape=(5,), low=-2147483648, high=2147483647)
+  _behavior_replay/dyn/active Space(bool, shape=(5,), low=False, high=True)
+JAX devices (1): [cuda:0]
+Policy devices: cuda:0
+Train devices:  cuda:0
+Initializing parameters...
+Optimizer opt/local_world has 89,539,851 parameters
+Optimizer opt/joint_world has 34,755,929 parameters
+Optimizer opt/actor has 15,367,947 parameters
+Optimizer opt/critic has 4,398,847 parameters
+Optimizer opt/actor has 15,367,947 parameters
+Optimizer opt/critic has 4,398,847 parameters
+Optimizer opt/actor has 15,367,947 parameters
+Optimizer opt/critic has 4,398,847 parameters
+Optimizer opt/actor has 15,367,947 parameters
+Optimizer opt/critic has 4,398,847 parameters
+Optimizer opt/actor has 15,367,947 parameters
+Optimizer opt/critic has 4,398,847 parameters
+Done initializing!
+Compiling 1 checkpoint groups...
+Largest checkpoint group: 2 GB
+Loading checkpoint: /workspace/majepa_self_fed_gate_20260905/disabled_control/inputs/checkpoint
+Loaded checkpoint.
+2026-09-05 09:00:49.514524: W external/xla/xla/service/gpu/ir_emitter_unnested.cc:1171] Unable to parse backend config for custom call: Could not convert JSON string to proto: Expected : between key:value pair.
+= 0 : ui8, lower = t
+^
+Fall back to parse the raw backend config str.
+2026-09-05 09:00:49.561782: W external/xla/xla/service/gpu/ir_emitter_unnested.cc:1171] Unable to parse backend config for custom call: Could not convert JSON string to proto: Expected : between key:value pair.
+= 0 : ui8, lower = t
+^
+Fall back to parse the raw backend config str.
+2026-09-05 09:00:49.705303: W external/xla/xla/service/gpu/ir_emitter_unnested.cc:1171] Unable to parse backend config for custom call: Could not convert JSON string to proto: Expected : between key:value pair.
+= 0 : ui8, lower = t
+^
+Fall back to parse the raw backend config str.
+2026-09-05 09:00:49.705640: W external/xla/xla/service/gpu/ir_emitter_unnested.cc:1171] Unable to parse backend config for custom call: Could not convert JSON string to proto: Expected : between key:value pair.
+= 0 : ui8, lower = t
+^
+Fall back to parse the raw backend config str.
+2026-09-05 09:00:58.162258: W external/xla/xla/service/gpu/ir_emitter_unnested.cc:1171] Unable to parse backend config for custom call: Could not convert JSON string to proto: Expected : between key:value pair.
+= 0 : ui8, lower = t
+^
+Fall back to parse the raw backend config str.
+2026-09-05 09:00:58.162672: W external/xla/xla/service/gpu/ir_emitter_unnested.cc:1171] Unable to parse backend config for custom call: Could not convert JSON string to proto: Expected : between key:value pair.
+= 0 : ui8, lower = t
+^
+Fall back to parse the raw backend config str.
+2026-09-05 09:01:00.900700: W external/xla/xla/service/gpu/ir_emitter_unnested.cc:1171] Unable to parse backend config for custom call: Could not convert JSON string to proto: Expected : between key:value pair.
+= 0 : ui8, lower = t
+^
+Fall back to parse the raw backend config str.
+2026-09-05 09:01:00.901030: W external/xla/xla/service/gpu/ir_emitter_unnested.cc:1171] Unable to parse backend config for custom call: Could not convert JSON string to proto: Expected : between key:value pair.
+= 0 : ui8, lower = t
+^
+Fall back to parse the raw backend config str.
+2026-09-05 09:01:01.579999: E external/xla/xla/service/slow_operation_alarm.cc:73] 
+********************************
+[Compiling module jit_fn] Very slow compile? If you want to file a bug, run with envvar XLA_FLAGS=--xla_dump_to=/tmp/foo and attach the results.
+********************************
+2026-09-05 09:05:19.228464: E external/xla/xla/service/slow_operation_alarm.cc:140] The operation took 6m17.648571082s
+
+********************************
+[Compiling module jit_fn] Very slow compile? If you want to file a bug, run with envvar XLA_FLAGS=--xla_dump_to=/tmp/foo and attach the results.
+********************************
