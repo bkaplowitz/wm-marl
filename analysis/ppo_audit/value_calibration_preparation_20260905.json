@@ -1,0 +1,47 @@
+{
+  "destination": "/workspace/majepa_value_calibration_20260905",
+  "evaluation_commit": "d433a7e",
+  "evaluation_script_sha256": "e880e606b62e2fea8a01a6584a5844deb584d1ccf6d16cc41e110566f753444d",
+  "gates": [
+    "Experiment-agent explicit allocation after coordination with root",
+    "Target final checkpoint has exact training config, step50000 and done marker",
+    "Assigned GPU predecessor completed successful final128 and supervisor exited",
+    "Assigned GPU has no compute processes, utilization0 and at most64MiB memory, rechecked before execution",
+    "Every staged model and diagnostic-script hash matches its manifest and actual training source"
+  ],
+  "preservation": "Hardlink final checkpoint into an isolated frozen directory, copy exact config/training manifest/outcome, hash all files; result retains raw real episodes NPZ and verifies before/after frozen tensor and counter hashes.",
+  "priority": [
+    {
+      "run": "original_base-2s3z-seed1",
+      "source_commit": "92014f1",
+      "stage": "/workspace/ma_jepa_calibration_original_92014f1_d433a7e"
+    },
+    {
+      "run": "team_return_anchor-2s3z-seed1",
+      "source_commit": "2663ae5",
+      "stage": "/workspace/ma_jepa_calibration_corrected_2663ae5_d433a7e"
+    }
+  ],
+  "probe_staged_from_commit": "4ac9b4bc371c5968813cad3159723c75dd1b5078",
+  "protocol": {
+    "diagnostic_seed": 9001,
+    "environment_seed": 270001,
+    "envs": 1,
+    "episodes": 32,
+    "eval_seed": 70001,
+    "max_driver_steps": 20000,
+    "policy_mode": "eval_sample",
+    "worker_offset": 200000
+  },
+  "scheduling": "If 3m releases a GPU before original seed1 final checkpoint exists, self-fed integration/performance gate takes that GPU; calibration waits for next eligible allocation. No running job is interrupted.",
+  "status": "staged_not_launched",
+  "validation": {
+    "launcher_gates_and_preservation_tests": "7 passed in 0.12s",
+    "model_source_matches_active": {
+      "corrected_files": 42,
+      "original_files": 41
+    },
+    "original_source_calibration_tests": "13 passed in 4.93s, including real policy/critic JIT and RNG/parameter invariance",
+    "remote_import_paths_verified": true
+  }
+}
