@@ -1,0 +1,1286 @@
+{
+  "captured_utc": "2026-09-05T08:06:51.772198+00:00",
+  "consumer_file_metadata": [
+    {
+      "config_file_top_keys": [
+        "_wandb"
+      ],
+      "files": [
+        {
+          "bytes": 0,
+          "name": "artifact/3416491882/wandb_manifest.json"
+        },
+        {
+          "bytes": 4504,
+          "name": "config.yaml"
+        },
+        {
+          "bytes": 1257576,
+          "name": "output.log"
+        },
+        {
+          "bytes": 2527,
+          "name": "requirements.txt"
+        },
+        {
+          "bytes": 2841,
+          "name": "wandb-metadata.json"
+        },
+        {
+          "bytes": 102071,
+          "name": "wandb-summary.json"
+        }
+      ],
+      "id": "99m67v2b",
+      "metadata": {
+        "git": null,
+        "program": "-m dreamarl.main",
+        "selected_arguments": [
+          [
+            "--task",
+            "smac_8m"
+          ],
+          [
+            "--seed",
+            "0"
+          ],
+          [
+            "--agent.num_agents",
+            "8"
+          ],
+          [
+            "--agent.imag_length",
+            "15"
+          ],
+          [
+            "--agent.loss_scales.ctde_embedding",
+            "2.0"
+          ],
+          [
+            "--agent.loss_scales.ctde_interface",
+            "1.0"
+          ],
+          [
+            "--agent.loss_scales.ctde_posterior",
+            "0.0"
+          ],
+          [
+            "--run.train_ratio",
+            "256"
+          ],
+          [
+            "--run.steps",
+            "100000"
+          ],
+          [
+            "--run.curve_eval_seed_offset",
+            "50000"
+          ]
+        ]
+      }
+    },
+    {
+      "files": [
+        {
+          "bytes": 0,
+          "name": "artifact/3416184333/wandb_manifest.json"
+        },
+        {
+          "bytes": 2527,
+          "name": "requirements.txt"
+        },
+        {
+          "bytes": 2845,
+          "name": "wandb-metadata.json"
+        }
+      ],
+      "id": "faqcgi3y",
+      "metadata": {
+        "git": null,
+        "program": "-m dreamarl.main",
+        "selected_arguments": [
+          [
+            "--task",
+            "smac_8m"
+          ],
+          [
+            "--seed",
+            "0"
+          ],
+          [
+            "--agent.num_agents",
+            "8"
+          ],
+          [
+            "--agent.imag_length",
+            "15"
+          ],
+          [
+            "--agent.loss_scales.ctde_embedding",
+            "0.0"
+          ],
+          [
+            "--agent.loss_scales.ctde_interface",
+            "0.0"
+          ],
+          [
+            "--agent.loss_scales.ctde_posterior",
+            "4.0"
+          ],
+          [
+            "--run.train_ratio",
+            "256"
+          ],
+          [
+            "--run.steps",
+            "100000"
+          ],
+          [
+            "--run.curve_eval_seed_offset",
+            "50000"
+          ]
+        ]
+      }
+    },
+    {
+      "files": [
+        {
+          "bytes": 0,
+          "name": "artifact/3416184453/wandb_manifest.json"
+        },
+        {
+          "bytes": 2527,
+          "name": "requirements.txt"
+        },
+        {
+          "bytes": 2849,
+          "name": "wandb-metadata.json"
+        }
+      ],
+      "id": "lot0671m",
+      "metadata": {
+        "git": null,
+        "program": "-m dreamarl.main",
+        "selected_arguments": [
+          [
+            "--task",
+            "smac_8m"
+          ],
+          [
+            "--seed",
+            "0"
+          ],
+          [
+            "--agent.num_agents",
+            "8"
+          ],
+          [
+            "--agent.imag_length",
+            "15"
+          ],
+          [
+            "--agent.loss_scales.ctde_embedding",
+            "0.0"
+          ],
+          [
+            "--agent.loss_scales.ctde_interface",
+            "0.1"
+          ],
+          [
+            "--agent.loss_scales.ctde_posterior",
+            "4.0"
+          ],
+          [
+            "--run.train_ratio",
+            "256"
+          ],
+          [
+            "--run.steps",
+            "100000"
+          ],
+          [
+            "--run.curve_eval_seed_offset",
+            "50000"
+          ]
+        ]
+      }
+    },
+    {
+      "files": [
+        {
+          "bytes": 0,
+          "name": "artifact/3416184137/wandb_manifest.json"
+        },
+        {
+          "bytes": 2527,
+          "name": "requirements.txt"
+        },
+        {
+          "bytes": 2848,
+          "name": "wandb-metadata.json"
+        }
+      ],
+      "id": "9ynpqwe0",
+      "metadata": {
+        "git": null,
+        "program": "-m dreamarl.main",
+        "selected_arguments": [
+          [
+            "--task",
+            "smac_8m"
+          ],
+          [
+            "--seed",
+            "0"
+          ],
+          [
+            "--agent.num_agents",
+            "8"
+          ],
+          [
+            "--agent.imag_length",
+            "15"
+          ],
+          [
+            "--agent.loss_scales.ctde_embedding",
+            "0.25"
+          ],
+          [
+            "--agent.loss_scales.ctde_interface",
+            "0.1"
+          ],
+          [
+            "--agent.loss_scales.ctde_posterior",
+            "4.0"
+          ],
+          [
+            "--run.train_ratio",
+            "256"
+          ],
+          [
+            "--run.steps",
+            "100000"
+          ],
+          [
+            "--run.curve_eval_seed_offset",
+            "50000"
+          ]
+        ]
+      }
+    }
+  ],
+  "consumer_source_and_arguments": [
+    {
+      "configuration_arguments": {
+        "--agent.imag_length": [
+          "15"
+        ],
+        "--agent.loss_scales.ctde_embedding": [
+          "2.0"
+        ],
+        "--agent.loss_scales.ctde_interface": [
+          "1.0"
+        ],
+        "--agent.loss_scales.ctde_posterior": [
+          "0.0"
+        ],
+        "--agent.num_agents": [
+          "8"
+        ],
+        "--configs": [
+          "smac_vector",
+          "ctde",
+          "ctde_deep",
+          "ctde_mask_full"
+        ],
+        "--jax.platform": [
+          "cuda"
+        ],
+        "--logdir": [
+          "/workspace/dreamarl_ctde_consumer_loss_clean_8m_20260825/clean-current-loss-h15-8m-seed0-100k-l40s/run"
+        ],
+        "--run.checkpoint_at_curve_eval": [
+          "False"
+        ],
+        "--run.curve_eval_eps": [
+          "32"
+        ],
+        "--run.curve_eval_interval": [
+          "2500"
+        ],
+        "--run.curve_eval_policy_mode": [
+          "eval"
+        ],
+        "--run.curve_eval_seed_offset": [
+          "50000"
+        ],
+        "--run.eval_envs": [
+          "1"
+        ],
+        "--run.final_save": [
+          "True"
+        ],
+        "--run.save_every": [
+          "2147483647"
+        ],
+        "--run.steps": [
+          "100000"
+        ],
+        "--run.train_ratio": [
+          "256"
+        ],
+        "--seed": [
+          "0"
+        ],
+        "--task": [
+          "smac_8m"
+        ]
+      },
+      "id": "99m67v2b",
+      "source_metadata": {
+        "codePath": null,
+        "codePathLocal": null,
+        "executable": "/workspace/dreamarl/.venv/bin/python",
+        "git": null,
+        "program": "-m dreamarl.main",
+        "python": "CPython 3.11.10",
+        "root": "/root"
+      }
+    },
+    {
+      "configuration_arguments": {
+        "--agent.imag_length": [
+          "15"
+        ],
+        "--agent.loss_scales.ctde_embedding": [
+          "0.0"
+        ],
+        "--agent.loss_scales.ctde_interface": [
+          "0.0"
+        ],
+        "--agent.loss_scales.ctde_posterior": [
+          "4.0"
+        ],
+        "--agent.num_agents": [
+          "8"
+        ],
+        "--configs": [
+          "smac_vector",
+          "ctde",
+          "ctde_deep",
+          "ctde_mask_full"
+        ],
+        "--jax.platform": [
+          "cuda"
+        ],
+        "--logdir": [
+          "/workspace/dreamarl_ctde_consumer_loss_clean_8m_20260825/clean-consumer-kl-only-h15-8m-seed0-100k-l40s/run"
+        ],
+        "--run.checkpoint_at_curve_eval": [
+          "False"
+        ],
+        "--run.curve_eval_eps": [
+          "32"
+        ],
+        "--run.curve_eval_interval": [
+          "2500"
+        ],
+        "--run.curve_eval_policy_mode": [
+          "eval"
+        ],
+        "--run.curve_eval_seed_offset": [
+          "50000"
+        ],
+        "--run.eval_envs": [
+          "1"
+        ],
+        "--run.final_save": [
+          "True"
+        ],
+        "--run.save_every": [
+          "2147483647"
+        ],
+        "--run.steps": [
+          "100000"
+        ],
+        "--run.train_ratio": [
+          "256"
+        ],
+        "--seed": [
+          "0"
+        ],
+        "--task": [
+          "smac_8m"
+        ]
+      },
+      "id": "faqcgi3y",
+      "source_metadata": {
+        "codePath": null,
+        "codePathLocal": null,
+        "executable": "/workspace/dreamarl/.venv/bin/python",
+        "git": null,
+        "program": "-m dreamarl.main",
+        "python": "CPython 3.11.10",
+        "root": "/root"
+      }
+    },
+    {
+      "configuration_arguments": {
+        "--agent.imag_length": [
+          "15"
+        ],
+        "--agent.loss_scales.ctde_embedding": [
+          "0.0"
+        ],
+        "--agent.loss_scales.ctde_interface": [
+          "0.1"
+        ],
+        "--agent.loss_scales.ctde_posterior": [
+          "4.0"
+        ],
+        "--agent.num_agents": [
+          "8"
+        ],
+        "--configs": [
+          "smac_vector",
+          "ctde",
+          "ctde_deep",
+          "ctde_mask_full"
+        ],
+        "--jax.platform": [
+          "cuda"
+        ],
+        "--logdir": [
+          "/workspace/dreamarl_ctde_consumer_loss_clean_8m_20260825/clean-consumer-kl-manifold-h15-8m-seed0-100k-l40s/run"
+        ],
+        "--run.checkpoint_at_curve_eval": [
+          "False"
+        ],
+        "--run.curve_eval_eps": [
+          "32"
+        ],
+        "--run.curve_eval_interval": [
+          "2500"
+        ],
+        "--run.curve_eval_policy_mode": [
+          "eval"
+        ],
+        "--run.curve_eval_seed_offset": [
+          "50000"
+        ],
+        "--run.eval_envs": [
+          "1"
+        ],
+        "--run.final_save": [
+          "True"
+        ],
+        "--run.save_every": [
+          "2147483647"
+        ],
+        "--run.steps": [
+          "100000"
+        ],
+        "--run.train_ratio": [
+          "256"
+        ],
+        "--seed": [
+          "0"
+        ],
+        "--task": [
+          "smac_8m"
+        ]
+      },
+      "id": "lot0671m",
+      "source_metadata": {
+        "codePath": null,
+        "codePathLocal": null,
+        "executable": "/workspace/dreamarl/.venv/bin/python",
+        "git": null,
+        "program": "-m dreamarl.main",
+        "python": "CPython 3.11.10",
+        "root": "/root"
+      }
+    },
+    {
+      "configuration_arguments": {
+        "--agent.imag_length": [
+          "15"
+        ],
+        "--agent.loss_scales.ctde_embedding": [
+          "0.25"
+        ],
+        "--agent.loss_scales.ctde_interface": [
+          "0.1"
+        ],
+        "--agent.loss_scales.ctde_posterior": [
+          "4.0"
+        ],
+        "--agent.num_agents": [
+          "8"
+        ],
+        "--configs": [
+          "smac_vector",
+          "ctde",
+          "ctde_deep",
+          "ctde_mask_full"
+        ],
+        "--jax.platform": [
+          "cuda"
+        ],
+        "--logdir": [
+          "/workspace/dreamarl_ctde_consumer_loss_clean_8m_20260825/clean-consumer-kl-hybrid-h15-8m-seed0-100k-l40s/run"
+        ],
+        "--run.checkpoint_at_curve_eval": [
+          "False"
+        ],
+        "--run.curve_eval_eps": [
+          "32"
+        ],
+        "--run.curve_eval_interval": [
+          "2500"
+        ],
+        "--run.curve_eval_policy_mode": [
+          "eval"
+        ],
+        "--run.curve_eval_seed_offset": [
+          "50000"
+        ],
+        "--run.eval_envs": [
+          "1"
+        ],
+        "--run.final_save": [
+          "True"
+        ],
+        "--run.save_every": [
+          "2147483647"
+        ],
+        "--run.steps": [
+          "100000"
+        ],
+        "--run.train_ratio": [
+          "256"
+        ],
+        "--seed": [
+          "0"
+        ],
+        "--task": [
+          "smac_8m"
+        ]
+      },
+      "id": "9ynpqwe0",
+      "source_metadata": {
+        "codePath": null,
+        "codePathLocal": null,
+        "executable": "/workspace/dreamarl/.venv/bin/python",
+        "git": null,
+        "program": "-m dreamarl.main",
+        "python": "CPython 3.11.10",
+        "root": "/root"
+      }
+    }
+  ],
+  "entity": "osaze-obahor",
+  "projects": [
+    {
+      "project": "dreamarl-ctde-consumer-loss-8m",
+      "reported_count": 6,
+      "retrieved": 6,
+      "runs": [
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T00:46:13Z",
+          "group": null,
+          "id": "g2jq3z9j",
+          "name": "smoke-consumer-kl",
+          "state": "crashed",
+          "summary": {},
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-consumer-loss-8m/runs/g2jq3z9j"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T01:32:13Z",
+          "group": null,
+          "id": "lqo87rvt",
+          "name": "source-control-deep-maskfull-h15-8m-seed0-10k-l40s",
+          "state": "crashed",
+          "summary": {},
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-consumer-loss-8m/runs/lqo87rvt"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T01:50:07Z",
+          "group": "consumer-loss-clean-screen-8m-seed0-100k-l40s",
+          "id": "99m67v2b",
+          "name": "clean-current-loss-h15-8m-seed0-100k-l40s",
+          "state": "finished",
+          "summary": {
+            "_runtime": 29491.680021008,
+            "_step": 100000,
+            "_timestamp": 1787652092.280886,
+            "episode/score": 5.875,
+            "eval/episodes": 32,
+            "eval/return_max": 12.21875,
+            "eval/return_mean": 10.771484375,
+            "eval/return_median": 11.046875,
+            "eval/return_min": 8.5625,
+            "eval/return_p10": 9.353125,
+            "eval/return_std": 0.9000812768936157,
+            "eval/win_rate": 0,
+            "eval/wins": 0,
+            "report/ctde/posterior_kl": 0.29607853293418884,
+            "train/ctde/posterior_kl": 0.31103876536643066,
+            "train/loss/ctde_posterior": 0.3110387615031666
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-consumer-loss-8m/runs/99m67v2b"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T01:50:25Z",
+          "group": "consumer-loss-clean-screen-8m-seed0-100k-l40s",
+          "id": "faqcgi3y",
+          "name": "clean-consumer-kl-only-h15-8m-seed0-100k-l40s",
+          "state": "crashed",
+          "summary": {
+            "_runtime": 22005.254074927,
+            "_step": 72880,
+            "_timestamp": 1787644630.9647703,
+            "episode/score": 1.5,
+            "eval/episodes": 32,
+            "eval/return_max": 0.5625,
+            "eval/return_mean": 0.052734375,
+            "eval/return_median": 0,
+            "eval/return_min": 0,
+            "eval/return_p10": 0,
+            "eval/return_std": 0.14244428277015686,
+            "eval/win_rate": 0,
+            "eval/wins": 0,
+            "report/ctde/posterior_kl": 0.1054760217666626,
+            "train/ctde/posterior_kl": 0.1231183260679245,
+            "train/loss/ctde_posterior": 0.1231183264961188
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-consumer-loss-8m/runs/faqcgi3y"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T01:51:00Z",
+          "group": "consumer-loss-clean-screen-8m-seed0-100k-l40s",
+          "id": "lot0671m",
+          "name": "clean-consumer-kl-manifold-h15-8m-seed0-100k-l40s",
+          "state": "crashed",
+          "summary": {
+            "_runtime": 21946.399986318,
+            "_step": 71252,
+            "_timestamp": 1787644607.5772853,
+            "episode/score": 0.5625,
+            "eval/episodes": 32,
+            "eval/return_max": 6.84375,
+            "eval/return_mean": 1.16015625,
+            "eval/return_median": 0,
+            "eval/return_min": 0,
+            "eval/return_p10": 0,
+            "eval/return_std": 1.668453574180603,
+            "eval/win_rate": 0,
+            "eval/wins": 0,
+            "report/ctde/posterior_kl": 0.1117718741297722,
+            "train/ctde/posterior_kl": 0.1303655885368864,
+            "train/loss/ctde_posterior": 0.13036558825836003
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-consumer-loss-8m/runs/lot0671m"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T01:51:31Z",
+          "group": "consumer-loss-clean-screen-8m-seed0-100k-l40s",
+          "id": "9ynpqwe0",
+          "name": "clean-consumer-kl-hybrid-h15-8m-seed0-100k-l40s",
+          "state": "crashed",
+          "summary": {
+            "_runtime": 21898.466117375,
+            "_step": 70430,
+            "_timestamp": 1787644590.3124027,
+            "episode/score": 0.375,
+            "eval/episodes": 32,
+            "eval/return_max": 5.71875,
+            "eval/return_mean": 2.255859375,
+            "eval/return_median": 1.875,
+            "eval/return_min": 0.1875,
+            "eval/return_p10": 0.20625,
+            "eval/return_std": 1.7268177270889282,
+            "eval/win_rate": 0,
+            "eval/wins": 0,
+            "report/ctde/posterior_kl": 0.09351929277181624,
+            "train/ctde/posterior_kl": 0.11033419399768456,
+            "train/loss/ctde_posterior": 0.11033419468279544
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-consumer-loss-8m/runs/9ynpqwe0"
+        }
+      ]
+    },
+    {
+      "project": "dreamarl-ctde-original-loss-depth-8m",
+      "reported_count": 21,
+      "retrieved": 21,
+      "runs": [
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T09:32:35Z",
+          "group": "original-loss-depth-isolation-seed0-a100",
+          "id": "8zr509v6",
+          "name": "original-loss-depth10x256-maskfull-h15-8m-seed0-100k-a100",
+          "state": "crashed",
+          "summary": {
+            "_runtime": 4487.147174686,
+            "_step": 24061,
+            "_timestamp": 1787654843.444476,
+            "episode/score": 3.59375,
+            "eval/episodes": 32,
+            "eval/return_max": 20,
+            "eval/return_mean": 8.759765625,
+            "eval/return_median": 8.375,
+            "eval/return_min": 6.8125,
+            "eval/return_p10": 7.2375,
+            "eval/return_std": 2.2217936515808105,
+            "eval/win_rate": 0.03125,
+            "eval/wins": 1,
+            "report/ctde/posterior_kl": 0.1556318700313568,
+            "train/ctde/posterior_kl": 0.159912221506238,
+            "train/loss/ctde_posterior": 0.1599122223444283
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-original-loss-depth-8m/runs/8zr509v6"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T09:34:27Z",
+          "group": "original-loss-depth-isolation-seed0-a100",
+          "id": "z2k6ehw5",
+          "name": "original-loss-depth12x256-maskfull-h15-8m-seed0-100k-a100",
+          "state": "crashed",
+          "summary": {
+            "_runtime": 4387.716638268,
+            "_step": 20154,
+            "_timestamp": 1787654855.3103104,
+            "episode/score": 4.15625,
+            "eval/episodes": 32,
+            "eval/return_max": 11.0625,
+            "eval/return_mean": 8.8984375,
+            "eval/return_median": 8.75,
+            "eval/return_min": 6.46875,
+            "eval/return_p10": 7.96875,
+            "eval/return_std": 0.9881808757781982,
+            "eval/win_rate": 0,
+            "eval/wins": 0,
+            "report/ctde/posterior_kl": 0.19623331725597384,
+            "train/ctde/posterior_kl": 0.2093114483135718,
+            "train/loss/ctde_posterior": 0.20931144941736152
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-original-loss-depth-8m/runs/z2k6ehw5"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T09:36:07Z",
+          "group": "original-loss-depth-isolation-seed0-a100",
+          "id": "urhv86ib",
+          "name": "original-loss-depth14x256-maskfull-h15-8m-seed0-100k-a100",
+          "state": "crashed",
+          "summary": {
+            "_runtime": 4391.024157805,
+            "_step": 20299,
+            "_timestamp": 1787654958.9010406,
+            "episode/score": 11.03125,
+            "eval/episodes": 32,
+            "eval/return_max": 20,
+            "eval/return_mean": 15.38671875,
+            "eval/return_median": 13.0625,
+            "eval/return_min": 9.71875,
+            "eval/return_p10": 10.659375,
+            "eval/return_std": 4.151612281799316,
+            "eval/win_rate": 0.4375,
+            "eval/wins": 14,
+            "report/ctde/posterior_kl": 0.20124702155590057,
+            "train/ctde/posterior_kl": 0.20798146117616584,
+            "train/loss/ctde_posterior": 0.2079814600723761
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-original-loss-depth-8m/runs/urhv86ib"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T10:01:01Z",
+          "group": "original-loss-depth-isolation-seed0-a100",
+          "id": "kpdpgohd",
+          "name": "delayed-kl005-deep-maskfull-h15-8m-seed0-100k-r5-scratch-a100",
+          "state": "crashed",
+          "summary": {
+            "_runtime": 2806.796244787,
+            "_step": 15009,
+            "_timestamp": 1787654869.0124424,
+            "episode/score": 3.75,
+            "eval/episodes": 32,
+            "eval/return_max": 5.84375,
+            "eval/return_mean": 4.357421875,
+            "eval/return_median": 4.34375,
+            "eval/return_min": 3,
+            "eval/return_p10": 3.4125,
+            "eval/return_std": 0.7048129439353943,
+            "eval/win_rate": 0,
+            "eval/wins": 0,
+            "report/ctde/posterior_kl": 4.969624042510986,
+            "train/ctde/posterior_kl": 4.672243115248953
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-original-loss-depth-8m/runs/kpdpgohd"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T10:57:11Z",
+          "group": "depth12-optimization-matrix-seed0-a100",
+          "id": "f3vrkill",
+          "name": "depth12-jointlr4e5-no-trust-8m-seed0-100k-a100",
+          "state": "crashed",
+          "summary": {
+            "_runtime": 15249.813813906,
+            "_step": 62385,
+            "_timestamp": 1787670681.6631718,
+            "episode/score": 3.5625,
+            "eval/episodes": 32,
+            "eval/return_max": 9.875,
+            "eval/return_mean": 7.6357421875,
+            "eval/return_median": 7.5,
+            "eval/return_min": 5.6875,
+            "eval/return_p10": 6.0625,
+            "eval/return_std": 1.1513994932174685,
+            "eval/win_rate": 0,
+            "eval/wins": 0,
+            "report/ctde/posterior_kl": 5.162040710449219,
+            "train/ctde/posterior_kl": 7.182770704340052
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-original-loss-depth-8m/runs/f3vrkill"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T10:58:47Z",
+          "group": "depth12-optimization-matrix-seed0-a100",
+          "id": "nnsdf5tv",
+          "name": "depth12-jointlr2e5-no-trust-8m-seed0-100k-a100",
+          "state": "crashed",
+          "summary": {
+            "_runtime": 6931.171756381,
+            "_step": 30998,
+            "_timestamp": 1787662458.6994135,
+            "episode/score": 2.09375,
+            "eval/episodes": 32,
+            "eval/return_max": 6.875,
+            "eval/return_mean": 1.48046875,
+            "eval/return_median": 0.9375,
+            "eval/return_min": 0,
+            "eval/return_p10": 0.018750000000000017,
+            "eval/return_std": 1.5498265027999878,
+            "eval/win_rate": 0,
+            "eval/wins": 0,
+            "report/ctde/posterior_kl": 9.64362621307373,
+            "train/ctde/posterior_kl": 8.751613337905319
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-original-loss-depth-8m/runs/nnsdf5tv"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T11:00:27Z",
+          "group": "depth12-optimization-matrix-seed0-a100",
+          "id": "80gykoyk",
+          "name": "depth12-jointlr4e5-delayedkl005-8m-seed0-100k-a100",
+          "state": "failed",
+          "summary": {
+            "_runtime": 893.25201151,
+            "_step": 5000,
+            "_timestamp": 1787656506.3496628,
+            "episode/score": 2.4375,
+            "eval/episodes": 32,
+            "eval/return_max": 0,
+            "eval/return_mean": 0,
+            "eval/return_median": 0,
+            "eval/return_min": 0,
+            "eval/return_p10": 0,
+            "eval/return_std": 0,
+            "eval/win_rate": 0,
+            "eval/wins": 0,
+            "report/ctde/posterior_kl": 3.5301520824432373,
+            "train/ctde/posterior_kl": 4.371572806153979
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-original-loss-depth-8m/runs/80gykoyk"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T11:01:51Z",
+          "group": "depth12-optimization-matrix-seed0-a100",
+          "id": "h9ftmbjd",
+          "name": "depth12-jointlr2e5-delayedkl005-8m-seed0-100k-a100",
+          "state": "crashed",
+          "summary": {
+            "_runtime": 6790.268068697,
+            "_step": 26096,
+            "_timestamp": 1787662502.1153045,
+            "episode/score": 1.6875,
+            "eval/episodes": 32,
+            "eval/return_max": 3.96875,
+            "eval/return_mean": 2.3134765625,
+            "eval/return_median": 2.25,
+            "eval/return_min": 1.6875,
+            "eval/return_p10": 1.70625,
+            "eval/return_std": 0.510956883430481,
+            "eval/win_rate": 0,
+            "eval/wins": 0,
+            "report/ctde/posterior_kl": 6.45347261428833,
+            "train/ctde/posterior_kl": 6.611426965050075
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-original-loss-depth-8m/runs/h9ftmbjd"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T12:18:06Z",
+          "group": "depth12-optimization-matrix-seed0-a100",
+          "id": "79ernlzw",
+          "name": "depth12-jointlr2e5-behaviorkl005-8m-seed0-100k-a100",
+          "state": "failed",
+          "summary": {
+            "_runtime": 920.85887883,
+            "_step": 5000,
+            "_timestamp": 1787661193.2085829,
+            "episode/score": 1.5,
+            "eval/episodes": 32,
+            "eval/return_max": 0,
+            "eval/return_mean": 0,
+            "eval/return_median": 0,
+            "eval/return_min": 0,
+            "eval/return_p10": 0,
+            "eval/return_std": 0,
+            "eval/win_rate": 0,
+            "eval/wins": 0,
+            "report/ctde/posterior_kl": 5.115804672241211,
+            "train/ctde/posterior_kl": 5.694815234861512
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-original-loss-depth-8m/runs/79ernlzw"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T13:12:25Z",
+          "group": "depth12-actor-timescale-seed0-a100",
+          "id": "n6ghiorj",
+          "name": "depth12-joint4e5-actor2e5-every1-8m-seed0-100k-a100",
+          "state": "crashed",
+          "summary": {
+            "_runtime": 7192.418101328,
+            "_step": 32089,
+            "_timestamp": 1787670738.296582,
+            "episode/score": 0,
+            "eval/episodes": 32,
+            "eval/return_max": 0,
+            "eval/return_mean": 0,
+            "eval/return_median": 0,
+            "eval/return_min": 0,
+            "eval/return_p10": 0,
+            "eval/return_std": 0,
+            "eval/win_rate": 0,
+            "eval/wins": 0,
+            "report/ctde/posterior_kl": 3.8199079036712646,
+            "train/ctde/posterior_kl": 3.564767482545641
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-original-loss-depth-8m/runs/n6ghiorj"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T13:13:41Z",
+          "group": "depth12-actor-timescale-seed0-a100",
+          "id": "nbhkfxwl",
+          "name": "depth12-joint4e5-actor1e5-every1-8m-seed0-100k-a100",
+          "state": "failed",
+          "summary": {
+            "_runtime": 10099.105258283,
+            "_step": 45000,
+            "_timestamp": 1787673688.3038318,
+            "episode/score": 9.3125,
+            "eval/episodes": 32,
+            "eval/return_max": 20,
+            "eval/return_mean": 19.2080078125,
+            "eval/return_median": 20,
+            "eval/return_min": 10.28125,
+            "eval/return_p10": 20,
+            "eval/return_std": 2.481715440750122,
+            "eval/win_rate": 0.90625,
+            "eval/wins": 29,
+            "report/ctde/posterior_kl": 11.651130676269531,
+            "train/ctde/posterior_kl": 12.029617599204734
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-original-loss-depth-8m/runs/nbhkfxwl"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T13:15:10Z",
+          "group": "depth12-actor-timescale-seed0-a100",
+          "id": "7q0s23it",
+          "name": "depth12-joint4e5-actor2e5-every2-8m-seed0-100k-a100",
+          "state": "crashed",
+          "summary": {
+            "_runtime": 8364.759687428,
+            "_step": 37479,
+            "_timestamp": 1787672075.4397037,
+            "episode/score": 6.09375,
+            "eval/episodes": 32,
+            "eval/return_max": 20,
+            "eval/return_mean": 9.9462890625,
+            "eval/return_median": 9.71875,
+            "eval/return_min": 7.03125,
+            "eval/return_p10": 7.9875,
+            "eval/return_std": 2.1828806400299072,
+            "eval/win_rate": 0.03125,
+            "eval/wins": 1,
+            "report/ctde/posterior_kl": 8.916025161743164,
+            "train/ctde/posterior_kl": 9.152196714613172
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-original-loss-depth-8m/runs/7q0s23it"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T15:21:11Z",
+          "group": "depth12-actor-timescale-seed0-a100",
+          "id": "n2dvbi55",
+          "name": "depth12-joint4e5-actor1e5-every2-8m-seed0-100k-a100",
+          "state": "crashed",
+          "summary": {
+            "_runtime": 736.941050508,
+            "_step": 4340,
+            "_timestamp": 1787672008.916088,
+            "episode/score": 1.5,
+            "report/ctde/posterior_kl": 3.808570384979248,
+            "train/ctde/posterior_kl": 3.252763534475256
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-original-loss-depth-8m/runs/n2dvbi55"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T15:22:03Z",
+          "group": "depth12-actor-timescale-seed0-a100",
+          "id": "fm7scpyd",
+          "name": "depth12-joint4e5-actor2e5-every3-8m-seed0-100k-a100",
+          "state": "crashed",
+          "summary": {
+            "_runtime": 738.833027466,
+            "_step": 4377,
+            "_timestamp": 1787672062.544404,
+            "episode/score": 1.6875,
+            "report/ctde/posterior_kl": 2.536301374435425,
+            "train/ctde/posterior_kl": 3.2272316809053776
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-original-loss-depth-8m/runs/fm7scpyd"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T15:42:06Z",
+          "group": "depth12-horizon-width-factorial-seed0-a100",
+          "id": "ysqz0w6m",
+          "name": "depth12-w256-h8-joint4e5-actor1e5-every1-8m-seed0-100k-a100",
+          "state": "failed",
+          "summary": {
+            "_runtime": 1346.425133526,
+            "_step": 8240,
+            "_timestamp": 1787673753.3764606,
+            "episode/score": 4.3125,
+            "eval/episodes": 32,
+            "eval/return_max": 0,
+            "eval/return_mean": 0,
+            "eval/return_median": 0,
+            "eval/return_min": 0,
+            "eval/return_p10": 0,
+            "eval/return_std": 0,
+            "eval/win_rate": 0,
+            "eval/wins": 0,
+            "report/ctde/posterior_kl": 4.298088550567627,
+            "train/ctde/posterior_kl": 4.014006670316061
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-original-loss-depth-8m/runs/ysqz0w6m"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T15:43:37Z",
+          "group": "depth12-horizon-width-factorial-seed0-a100",
+          "id": "4f3eeha1",
+          "name": "depth12-w320-h15-joint4e5-actor1e5-every1-8m-seed0-100k-a100",
+          "state": "failed",
+          "summary": {
+            "_runtime": 1100.164889773,
+            "_step": 5290,
+            "_timestamp": 1787673597.2774303,
+            "episode/score": 1.6875,
+            "eval/episodes": 32,
+            "eval/return_max": 3.03125,
+            "eval/return_mean": 0.2060546875,
+            "eval/return_median": 0,
+            "eval/return_min": 0,
+            "eval/return_p10": 0,
+            "eval/return_std": 0.55829918384552,
+            "eval/win_rate": 0,
+            "eval/wins": 0,
+            "report/ctde/posterior_kl": 5.042682647705078,
+            "train/ctde/posterior_kl": 4.6012005196677315
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-original-loss-depth-8m/runs/4f3eeha1"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T15:48:42Z",
+          "group": "depth12-horizon-width-factorial-seed0-a100",
+          "id": "rk7ym8gy",
+          "name": "depth12-w320-h8-joint4e5-actor1e5-every1-8m-seed0-100k-a100",
+          "state": "failed",
+          "summary": {
+            "_runtime": 1319.83737459,
+            "_step": 5000,
+            "_timestamp": 1787673644.3583636,
+            "episode/score": 2.625,
+            "eval/episodes": 32,
+            "eval/return_max": 0,
+            "eval/return_mean": 0,
+            "eval/return_median": 0,
+            "eval/return_min": 0,
+            "eval/return_p10": 0,
+            "eval/return_std": 0,
+            "eval/win_rate": 0,
+            "eval/wins": 0,
+            "report/ctde/posterior_kl": 4.721783638000488,
+            "train/ctde/posterior_kl": 4.39065588629523
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-original-loss-depth-8m/runs/rk7ym8gy"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T16:25:10Z",
+          "group": "depth12-horizon-width-factorial-seed0-a100-resumed",
+          "id": "z5cv7995",
+          "name": "depth12-w256-h15-joint4e5-actor1e5-every1-8m-seed0-100k-a100-resume40000",
+          "state": "crashed",
+          "summary": {
+            "_runtime": 6787.198542245,
+            "_step": 69600,
+            "_timestamp": 1787681897.4988775,
+            "episode/score": 0.75,
+            "eval/episodes": 32,
+            "eval/return_max": 20,
+            "eval/return_mean": 15.1064453125,
+            "eval/return_median": 16.484375,
+            "eval/return_min": 7.78125,
+            "eval/return_p10": 8.75,
+            "eval/return_std": 5.013043403625488,
+            "eval/win_rate": 0.5,
+            "eval/wins": 16,
+            "report/ctde/posterior_kl": 8.747396469116211,
+            "train/ctde/posterior_kl": 8.757779827824345
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-original-loss-depth-8m/runs/z5cv7995"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T16:25:12Z",
+          "group": "depth12-horizon-width-factorial-seed0-a100-resumed",
+          "id": "4owzr8oj",
+          "name": "depth12-w256-h8-joint4e5-actor1e5-every1-8m-seed0-100k-a100-resume5000",
+          "state": "crashed",
+          "summary": {
+            "_runtime": 6802.990852319,
+            "_step": 43614,
+            "_timestamp": 1787681916.009776,
+            "episode/score": 4.53125,
+            "eval/episodes": 32,
+            "eval/return_max": 12,
+            "eval/return_mean": 9.546875,
+            "eval/return_median": 9.609375,
+            "eval/return_min": 7,
+            "eval/return_p10": 7.44375,
+            "eval/return_std": 1.4132637977600098,
+            "eval/win_rate": 0,
+            "eval/wins": 0,
+            "report/ctde/posterior_kl": 5.289974212646484,
+            "train/ctde/posterior_kl": 5.583258414006496
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-original-loss-depth-8m/runs/4owzr8oj"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T16:25:56Z",
+          "group": "depth12-horizon-width-factorial-seed0-a100-resumed",
+          "id": "3dhuxe9q",
+          "name": "depth12-w320-h8-joint4e5-actor1e5-every1-8m-seed0-100k-a100-resume5000",
+          "state": "crashed",
+          "summary": {
+            "_runtime": 6691.642008565,
+            "_step": 43263,
+            "_timestamp": 1787681848.7458076,
+            "episode/score": 2.65625,
+            "eval/episodes": 32,
+            "eval/return_max": 7.40625,
+            "eval/return_mean": 3.7958984375,
+            "eval/return_median": 4.5625,
+            "eval/return_min": 0.375,
+            "eval/return_p10": 0.58125,
+            "eval/return_std": 2.054508924484253,
+            "eval/win_rate": 0,
+            "eval/wins": 0,
+            "report/ctde/posterior_kl": 5.8167405128479,
+            "train/ctde/posterior_kl": 6.9859707799068715
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-original-loss-depth-8m/runs/3dhuxe9q"
+        },
+        {
+          "commit": null,
+          "configuration": {},
+          "created_at": "2026-08-25T16:26:00Z",
+          "group": "depth12-horizon-width-factorial-seed0-a100-resumed",
+          "id": "mhb9g8jc",
+          "name": "depth12-w320-h15-joint4e5-actor1e5-every1-8m-seed0-100k-a100-resume5000",
+          "state": "crashed",
+          "summary": {
+            "_runtime": 6686.447039333,
+            "_step": 34018,
+            "_timestamp": 1787681847.2039187,
+            "episode/score": 8.34375,
+            "eval/episodes": 32,
+            "eval/return_max": 20,
+            "eval/return_mean": 11.8037109375,
+            "eval/return_median": 11.34375,
+            "eval/return_min": 6.8125,
+            "eval/return_p10": 9.134375,
+            "eval/return_std": 3.0205514430999756,
+            "eval/win_rate": 0.09375,
+            "eval/wins": 3,
+            "report/ctde/posterior_kl": 8.693020820617676,
+            "train/ctde/posterior_kl": 8.758062918980917
+          },
+          "url": "https://wandb.ai/osaze-obahor/dreamarl-ctde-original-loss-depth-8m/runs/mhb9g8jc"
+        }
+      ]
+    }
+  ],
+  "scope": "Only explicitly consumer-loss-8m and paired original-loss-depth-8m projects; up to100 run metadata+summaries each; no broad unrelated run scan."
+}

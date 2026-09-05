@@ -9,6 +9,7 @@ import numpy as np
 
 from scripts.probe_control_sufficiency import (
     complete_episode_slices,
+    load_episodes,
     load_frozen_params,
     main,
     make_extractor,
@@ -56,6 +57,29 @@ def test_ridge_generalizes_known_linear_signal_without_test_target_leakage():
     assert result["alpha"] == changed["alpha"]
     np.testing.assert_allclose(result["validation_rmse"], changed["validation_rmse"])
     assert changed["rmse"][0] > 999
+
+
+def test_plain_evaluation_export_without_replay_step_ids(tmp_path):
+    # Frozen policy calibration exports complete episodes in episodes.npz,
+    # without replay UUID filenames or replay-internal step IDs.
+    first = np.tile([True, False, False], 6)
+    last = np.tile([False, False, True], 6)
+    np.savez_compressed(
+        tmp_path / "episodes.npz",
+        observation=np.zeros((18, 2, 4), np.float32),
+        action=np.zeros((18, 2), np.int32),
+        action_mask=np.ones((18, 2, 3), bool),
+        reward=np.zeros((18, 2), np.float32),
+        is_first=first,
+        is_last=last,
+        is_terminal=last,
+    )
+    episodes, provenance = load_episodes(tmp_path, 1, 6, 0)
+    assert provenance["complete_episodes_available"] == 6
+    assert {episode.identity for episode in episodes} == {
+        f"episodes.npz:{start}" for start in range(0, 18, 3)
+    }
+    assert all(len(episode.data["reward"]) == 3 for episode in episodes)
 
 
 def test_frozen_extractor_reload_is_causal_and_matches_full_prefix(tmp_path):

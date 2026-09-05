@@ -223,7 +223,7 @@ def load_episodes(directory, max_chunks, max_episodes, seed):
             identity = (
                 np.asarray(data["stepid"][start]).tobytes().hex()
                 if "stepid" in data
-                else f"{path.stem.split('-')[1]}:{start}"
+                else f"{path.name}:{start}"
             )
             if identity in seen:
                 continue
