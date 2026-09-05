@@ -1,0 +1,1430 @@
+{
+  "backup": {
+    "alive_at_startup_check": true,
+    "command": [
+      "/Users/osaze/MARL/world_marl/.venv/bin/python",
+      "/Users/osaze/MARL/worktrees/ma_jepa_ppo/analysis/ppo_audit/watch_final_backups.py",
+      "--host",
+      "root@154.54.102.56",
+      "--port",
+      "14808",
+      "--remote-root",
+      "/workspace/majepa_prefill_recurrent_ema_20260905",
+      "--mirror",
+      "/Users/osaze/MARL/worktrees/ma_jepa_ppo/analysis/ppo_audit/prefill_recurrent_ema_20260905_mirror",
+      "--destination",
+      "/Users/osaze/MARL/remote_archives/majepa_prefill_recurrent_ema_20260905",
+      "--bandwidth-kbps",
+      "64000"
+    ],
+    "handoff_status": {
+      "active": null,
+      "attempts": {},
+      "exhausted": [],
+      "outcomes": {},
+      "state": "watching",
+      "updated_utc": "2026-09-05T09:16:13.709357+00:00"
+    },
+    "log": "/Users/osaze/MARL/remote_archives/majepa_prefill_recurrent_ema_20260905/backup-watcher.log",
+    "pid": 34108,
+    "started": true,
+    "started_utc": "2026-09-05T09:11:43.632576+00:00"
+  },
+  "baseline_source": "/workspace/ma_jepa_ppo_2663ae5",
+  "group": "ma-jepa-prefill-recurrent-vs-ema-20260905",
+  "handoff_utc": "2026-09-05T09:16:14.650868+00:00",
+  "host": "root@154.54.102.56",
+  "launcher_archive": "/tmp/majepa_screen_launchers_c3bb3bf.tar.gz",
+  "launcher_archive_sha256": "0628e2881da39a389ca11096a523ebd8a0fe0fdd48020618289b87470408aa1f",
+  "launcher_commit": "c3bb3bf",
+  "launcher_files_sha256": {
+    "analysis/ppo_audit/parity_d623d4d/parity.json": "da11b5892219b896fcef1b7a3ded24b962c57dfa8c5eb50bae0011b056be80c8",
+    "scripts/run_ppo_correction_screen.py": "4fec4a870b39588d11e795748c04ceb384d7a1e8b61dfcbb2fdc722a99491ce0",
+    "scripts/run_ppo_prefill_recurrent_ema_screen.py": "2659c486f0cd55aec67150ca125c8b1f3855b3a80d51f368d968eb6f22175460",
+    "scripts/run_ppo_self_fed_screen.py": "bb8bdf3b5f801ee3f34e517dfc3ca52135c3f1ec77303d96f5691be286932064"
+  },
+  "launcher_root": "/workspace/majepa_screen_launchers_c3bb3bf",
+  "mirror": {
+    "alive_at_startup_check": true,
+    "command": [
+      "/Users/osaze/MARL/world_marl/.venv/bin/python",
+      "/Users/osaze/MARL/worktrees/ma_jepa_ppo/analysis/ppo_audit/mirror_remote_results.py",
+      "--host",
+      "root@154.54.102.56",
+      "--port",
+      "14808",
+      "--remote-root",
+      "/workspace/majepa_prefill_recurrent_ema_20260905",
+      "--local-root",
+      "/Users/osaze/MARL/worktrees/ma_jepa_ppo/analysis/ppo_audit/prefill_recurrent_ema_20260905_mirror",
+      "--expected-runs",
+      "6",
+      "--watch",
+      "--interval",
+      "120"
+    ],
+    "handoff_status": {
+      "bytes_copied": 98170,
+      "captured_utc": "2026-09-05T09:16:01.788119+00:00",
+      "caught_up": true,
+      "checkpoint_inventory": [],
+      "completed": 0,
+      "files": 24,
+      "outcomes": 0,
+      "remote_host": "root@154.54.102.56",
+      "remote_root": "/workspace/majepa_prefill_recurrent_ema_20260905"
+    },
+    "initial_capture": {
+      "bytes_copied": 0,
+      "captured_utc": "2026-09-05T09:11:43.616152+00:00",
+      "caught_up": true,
+      "completed": 0,
+      "files": 0,
+      "outcomes": 0,
+      "remote_host": "root@154.54.102.56",
+      "remote_root": "/workspace/majepa_prefill_recurrent_ema_20260905"
+    },
+    "log": "/Users/osaze/MARL/remote_archives/majepa_prefill_recurrent_ema_20260905/mirror-watcher.log",
+    "pid": 34107,
+    "started": true,
+    "started_utc": "2026-09-05T09:11:43.630418+00:00"
+  },
+  "optional_source": "/workspace/ma_jepa_self_fed_da98e2d",
+  "port": 14808,
+  "prepared_utc": "2026-09-05T09:10:17.702166+00:00",
+  "prior_screen_backups": {
+    "others_queued_or_transferring": true,
+    "preserved": true,
+    "verified_completed_runs": [
+      "team_return_anchor-3m-seed0"
+    ],
+    "watcher_pid": 21048
+  },
+  "production_gate": {
+    "control_step_seconds": [
+      0.6394,
+      0.6342
+    ],
+    "finite_full_world_and_ppo_updates": 3,
+    "h5_valid_counts": [
+      40,
+      35,
+      40
+    ],
+    "live_jax_peak_gib": 19.53,
+    "measured_map": "2s3z",
+    "other_maps_are_scaling_checks": true,
+    "recurrent_step_seconds": [
+      0.6697,
+      0.6694
+    ],
+    "source_sha256": "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc"
+  },
+  "release_proof": {
+    "compute_processes": "",
+    "prior_owner_pids_absent": [
+      42001,
+      43000,
+      47309,
+      43695
+    ]
+  },
+  "release_proof_utc": "2026-09-05T09:11:37.338731+00:00",
+  "remote_validation_utc": "2026-09-05T09:11:01.982743+00:00",
+  "results": "/workspace/majepa_prefill_recurrent_ema_20260905",
+  "slots": [
+    {
+      "arm": "recurrent",
+      "command": [
+        "/workspace/majepa-runtime/bin/python",
+        "/workspace/majepa_screen_launchers_c3bb3bf/scripts/run_ppo_prefill_recurrent_ema_screen.py",
+        "--slot",
+        "0",
+        "--source",
+        "/workspace/ma_jepa_self_fed_da98e2d",
+        "--expected-source-sha256",
+        "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc",
+        "--baseline-source",
+        "/workspace/ma_jepa_ppo_2663ae5",
+        "--expected-baseline-source-sha256",
+        "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+        "--baseline-results-root",
+        "/workspace/majepa_ppo_correction_2663ae5_20260905",
+        "--disabled-parity-record",
+        "/workspace/majepa_screen_launchers_c3bb3bf/analysis/ppo_audit/parity_d623d4d/parity.json",
+        "--self-fed-scale",
+        "0.1",
+        "--experiment-root",
+        "/workspace/majepa_prefill_recurrent_ema_20260905",
+        "--python",
+        "/workspace/majepa-runtime/bin/python",
+        "--external",
+        "/workspace/external/dreamerv3",
+        "--sc2",
+        "/workspace/StarCraftII",
+        "--portserver-script",
+        "/workspace/majepa-runtime/bin/portserver.py",
+        "--portserver-address",
+        "@majepa-pre-rec-ema-20260905-s0",
+        "--portserver-pool",
+        "32000-32199",
+        "--gpu",
+        "1",
+        "--wandb-project",
+        "majepa-ppo-treatments",
+        "--wandb-entity",
+        "osaze-obahor",
+        "--wandb-group",
+        "ma-jepa-prefill-recurrent-vs-ema-20260905",
+        "--wandb-run-prefix",
+        "pre-rec-ema-20260905"
+      ],
+      "gpu": 1,
+      "launched": true,
+      "launched_utc": "2026-09-05T09:11:49.101529+00:00",
+      "map": "3m",
+      "resolved_validation": {
+        "anchor_decision": {
+          "outcomes": [
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return-2s3z-seed0/outcome.json",
+              "replay_value_scale": 0.0,
+              "return_mean": 11.78104019165039,
+              "run": "team_return-2s3z-seed0",
+              "seed": 0,
+              "win_rate": 0.046875
+            },
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return-2s3z-seed1/outcome.json",
+              "replay_value_scale": 0.0,
+              "return_mean": 12.75381088256836,
+              "run": "team_return-2s3z-seed1",
+              "seed": 1,
+              "win_rate": 0.0703125
+            },
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed0/outcome.json",
+              "replay_value_scale": 0.3,
+              "return_mean": 14.679725646972656,
+              "run": "team_return_anchor-2s3z-seed0",
+              "seed": 0,
+              "win_rate": 0.328125
+            },
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed1/outcome.json",
+              "replay_value_scale": 0.3,
+              "return_mean": 12.712928771972656,
+              "run": "team_return_anchor-2s3z-seed1",
+              "seed": 1,
+              "win_rate": 0.0703125
+            }
+          ],
+          "provisional": false,
+          "rule": "mean final128 win rate, then mean final return, then retain0.3",
+          "selected_replay_value_scale": 0.3,
+          "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+        },
+        "configuration": {
+          "actor_layers": 3,
+          "actor_lr": 3e-05,
+          "actor_units": 1024,
+          "collection_unimix": 0.05,
+          "critic_lr": 3e-05,
+          "entropy_coefficient": 0.01,
+          "entropy_schedule_enabled": false,
+          "envs": 1,
+          "joint_world_warmup": 0,
+          "local_world_warmup": 0,
+          "phases": {
+            "final128": {
+              "envs": 4,
+              "episodes": 128,
+              "imag_length": 5,
+              "num_agents": 3,
+              "policy_mode": "eval",
+              "seed_offset": 100000,
+              "self_fed": {
+                "anchors": 8,
+                "consumer_kl_scale": 0.0,
+                "enabled": true,
+                "horizons": [
+                  2,
+                  4,
+                  5
+                ],
+                "scale": 0.1
+              },
+              "slowvalue_rate": 1.0
+            },
+            "train": {
+              "checkpoint_at_curve_eval": false,
+              "curve_eps": 32,
+              "curve_interval": 5000,
+              "curve_seed_offset": 50000,
+              "envs": 1,
+              "imag_length": 5,
+              "num_agents": 3,
+              "self_fed": {
+                "anchors": 8,
+                "consumer_kl_scale": 0.0,
+                "enabled": true,
+                "horizons": [
+                  2,
+                  4,
+                  5
+                ],
+                "scale": 0.1
+              },
+              "slowvalue_rate": 1.0,
+              "steps": 50000
+            }
+          },
+          "ppo_start_step": 5000,
+          "replay_value_scale": 0.3,
+          "seed": 0,
+          "task": "smac_3m",
+          "train_ratio": 128.0,
+          "world_model_start_step": 5000
+        },
+        "interpretation": "Two candidate packages; recurrence and EMA are not independently identified without a matched no-recurrence/rate1 control.",
+        "run": {
+          "arm": "prefill_recurrent",
+          "imag_length": 5,
+          "map_name": "3m",
+          "recurrent": true,
+          "replay_value_scale": 0.3,
+          "seed": 0,
+          "self_fed_scale": 0.1,
+          "slowvalue_rate": 1.0,
+          "world_model_start_step": 5000,
+          "world_warmup": 0
+        },
+        "screen": "prefill_recurrent_vs_ema",
+        "source_comparison": {
+          "baseline_source": "/workspace/ma_jepa_ppo_2663ae5",
+          "baseline_source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+          "disabled_parity": {
+            "baseline_seconds": 41.831962208030745,
+            "baseline_source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+            "baseline_training_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+            "comparison": "Exact pytree paths, shapes, dtypes and tensor-byte SHA256; no differing tensors. Full initialized model/optimizers, then one full active-PPO learner update, returned carry, replay updates and metrics.",
+            "executed_probe_sha256": "4d791308b4be622a9599341508706b6f6830c39fad36535c168c2f077a94348d",
+            "executed_probe_source": "import hashlib\nimport json\nfrom pathlib import Path\nimport sys\nimport time\nimport jax\nimport jax.numpy as jnp\nimport ninjax as nj\nimport numpy as np\nfrom test_majepa_learner_smoke import _tiny_learner, _synthetic_replay\n\nstarted = time.monotonic()\nsource, output = Path(sys.argv[1]).resolve(), Path(sys.argv[2])\nfiles = sorted(path for path in (source / 'src/majepa').rglob('*') if path.suffix in ('.py', '.yaml'))\nfingerprint = hashlib.sha256()\nfor path in files:\n    fingerprint.update(str(path.relative_to(source)).encode())\n    fingerprint.update(path.read_bytes())\nlearner, observations, actions = _tiny_learner()\ndata = _synthetic_replay(learner, observations, actions)\ndata = dict(data, _environment_step=jnp.full((2, 8), 10, jnp.int32))\ncarry = learner.init_train(2)\nstate = nj.init(learner.train)({}, carry, data, seed=988)\nresult = jax.jit(nj.pure(learner.train))(state, carry, data, seed=989)\n\ndef describe(tree):\n    records = []\n    for path, value in jax.tree_util.tree_flatten_with_path(tree)[0]:\n        array = np.asarray(jax.device_get(value))\n        if not np.isfinite(array.astype(np.float32)).all():\n            raise ValueError('Nonfinite parity tensor')\n        records.append({'path': jax.tree_util.keystr(path), 'shape': list(array.shape), 'dtype': str(array.dtype), 'sha256': hashlib.sha256(array.tobytes()).hexdigest()})\n    return records\n\nrecord = {'source': str(source), 'source_sha256': fingerprint.hexdigest(),\n          'fixture_sha256': hashlib.sha256((source / 'tests/test_majepa_learner_smoke.py').read_bytes()).hexdigest(),\n          'jax_version': jax.__version__, 'initialization': describe(state), 'update': describe(result),\n          'ppo_active': float(result[1][2]['ppo/active']), 'wall_seconds': time.monotonic() - started}\noutput.write_text(json.dumps(record, indent=2, sort_keys=True) + '\\n')\nprint(json.dumps({key: record[key] for key in ['source', 'source_sha256', 'ppo_active', 'wall_seconds']}))\n",
+            "fingerprint_note": "Top-level source hashes use the screen canonical path-NUL-content-NUL formula. Raw tensor records use an unseparated path-content hash; both were recomputed after execution and matched the package files, confirming no package edits during the comparison.",
+            "fixture_sha256": "323e80881a766ea9a4e73a51961a29cbb0f5d9c74c4a341b955a5d597ad05b7f",
+            "initialization_tensors_compared": 624,
+            "jax_version": "0.4.36",
+            "limitations": "Production-shape GPU parity is not claimed. The common tiny fixture uses the maintained default-disabled self-fed setting.",
+            "optional_commit": "d623d4d34fcbebb8e345a1f038f71a988940235b",
+            "optional_seconds": 41.283610124955885,
+            "optional_source_sha256": "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc",
+            "parity_kind": "cross_source_executed_train",
+            "passed": true,
+            "platform": "cpu",
+            "ppo_active": 1.0,
+            "test_command": "In each source directory: JAX_PLATFORMS=cpu OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 PYTHONPATH=src:tests:/Users/osaze/MARL/worktrees/ma_jepa_paper/external/dreamerv3 /Users/osaze/MARL/worktrees/ma_jepa_paper/.venv/bin/python /tmp/majepa_cross_source_parity.py . OUTPUT.json; then assert equality of all initialization and update tensor descriptions.",
+            "update_tensors_compared": 922
+          },
+          "optional_source": "/workspace/ma_jepa_self_fed_da98e2d",
+          "optional_source_sha256": "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc"
+        },
+        "source_sha256": "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc"
+      },
+      "slot": 0,
+      "supervisor_pid": 53717,
+      "wandb_train_url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/pre-rec-ema-20260905-s0-train"
+    },
+    {
+      "arm": "recurrent",
+      "command": [
+        "/workspace/majepa-runtime/bin/python",
+        "/workspace/majepa_screen_launchers_c3bb3bf/scripts/run_ppo_prefill_recurrent_ema_screen.py",
+        "--slot",
+        "1",
+        "--source",
+        "/workspace/ma_jepa_self_fed_da98e2d",
+        "--expected-source-sha256",
+        "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc",
+        "--baseline-source",
+        "/workspace/ma_jepa_ppo_2663ae5",
+        "--expected-baseline-source-sha256",
+        "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+        "--baseline-results-root",
+        "/workspace/majepa_ppo_correction_2663ae5_20260905",
+        "--disabled-parity-record",
+        "/workspace/majepa_screen_launchers_c3bb3bf/analysis/ppo_audit/parity_d623d4d/parity.json",
+        "--self-fed-scale",
+        "0.1",
+        "--experiment-root",
+        "/workspace/majepa_prefill_recurrent_ema_20260905",
+        "--python",
+        "/workspace/majepa-runtime/bin/python",
+        "--external",
+        "/workspace/external/dreamerv3",
+        "--sc2",
+        "/workspace/StarCraftII",
+        "--portserver-script",
+        "/workspace/majepa-runtime/bin/portserver.py",
+        "--portserver-address",
+        "@majepa-pre-rec-ema-20260905-s1",
+        "--portserver-pool",
+        "32200-32399",
+        "--gpu",
+        "4",
+        "--wandb-project",
+        "majepa-ppo-treatments",
+        "--wandb-entity",
+        "osaze-obahor",
+        "--wandb-group",
+        "ma-jepa-prefill-recurrent-vs-ema-20260905",
+        "--wandb-run-prefix",
+        "pre-rec-ema-20260905"
+      ],
+      "gpu": 4,
+      "launched": true,
+      "launched_utc": "2026-09-05T09:11:49.101611+00:00",
+      "map": "2s3z",
+      "resolved_validation": {
+        "anchor_decision": {
+          "outcomes": [
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return-2s3z-seed0/outcome.json",
+              "replay_value_scale": 0.0,
+              "return_mean": 11.78104019165039,
+              "run": "team_return-2s3z-seed0",
+              "seed": 0,
+              "win_rate": 0.046875
+            },
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return-2s3z-seed1/outcome.json",
+              "replay_value_scale": 0.0,
+              "return_mean": 12.75381088256836,
+              "run": "team_return-2s3z-seed1",
+              "seed": 1,
+              "win_rate": 0.0703125
+            },
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed0/outcome.json",
+              "replay_value_scale": 0.3,
+              "return_mean": 14.679725646972656,
+              "run": "team_return_anchor-2s3z-seed0",
+              "seed": 0,
+              "win_rate": 0.328125
+            },
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed1/outcome.json",
+              "replay_value_scale": 0.3,
+              "return_mean": 12.712928771972656,
+              "run": "team_return_anchor-2s3z-seed1",
+              "seed": 1,
+              "win_rate": 0.0703125
+            }
+          ],
+          "provisional": false,
+          "rule": "mean final128 win rate, then mean final return, then retain0.3",
+          "selected_replay_value_scale": 0.3,
+          "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+        },
+        "configuration": {
+          "actor_layers": 3,
+          "actor_lr": 3e-05,
+          "actor_units": 1024,
+          "collection_unimix": 0.05,
+          "critic_lr": 3e-05,
+          "entropy_coefficient": 0.01,
+          "entropy_schedule_enabled": false,
+          "envs": 1,
+          "joint_world_warmup": 0,
+          "local_world_warmup": 0,
+          "phases": {
+            "final128": {
+              "envs": 4,
+              "episodes": 128,
+              "imag_length": 5,
+              "num_agents": 5,
+              "policy_mode": "eval",
+              "seed_offset": 100000,
+              "self_fed": {
+                "anchors": 8,
+                "consumer_kl_scale": 0.0,
+                "enabled": true,
+                "horizons": [
+                  2,
+                  4,
+                  5
+                ],
+                "scale": 0.1
+              },
+              "slowvalue_rate": 1.0
+            },
+            "train": {
+              "checkpoint_at_curve_eval": false,
+              "curve_eps": 32,
+              "curve_interval": 5000,
+              "curve_seed_offset": 50000,
+              "envs": 1,
+              "imag_length": 5,
+              "num_agents": 5,
+              "self_fed": {
+                "anchors": 8,
+                "consumer_kl_scale": 0.0,
+                "enabled": true,
+                "horizons": [
+                  2,
+                  4,
+                  5
+                ],
+                "scale": 0.1
+              },
+              "slowvalue_rate": 1.0,
+              "steps": 50000
+            }
+          },
+          "ppo_start_step": 5000,
+          "replay_value_scale": 0.3,
+          "seed": 0,
+          "task": "smac_2s3z",
+          "train_ratio": 128.0,
+          "world_model_start_step": 5000
+        },
+        "interpretation": "Two candidate packages; recurrence and EMA are not independently identified without a matched no-recurrence/rate1 control.",
+        "run": {
+          "arm": "prefill_recurrent",
+          "imag_length": 5,
+          "map_name": "2s3z",
+          "recurrent": true,
+          "replay_value_scale": 0.3,
+          "seed": 0,
+          "self_fed_scale": 0.1,
+          "slowvalue_rate": 1.0,
+          "world_model_start_step": 5000,
+          "world_warmup": 0
+        },
+        "screen": "prefill_recurrent_vs_ema",
+        "source_comparison": {
+          "baseline_source": "/workspace/ma_jepa_ppo_2663ae5",
+          "baseline_source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+          "disabled_parity": {
+            "baseline_seconds": 41.831962208030745,
+            "baseline_source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+            "baseline_training_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+            "comparison": "Exact pytree paths, shapes, dtypes and tensor-byte SHA256; no differing tensors. Full initialized model/optimizers, then one full active-PPO learner update, returned carry, replay updates and metrics.",
+            "executed_probe_sha256": "4d791308b4be622a9599341508706b6f6830c39fad36535c168c2f077a94348d",
+            "executed_probe_source": "import hashlib\nimport json\nfrom pathlib import Path\nimport sys\nimport time\nimport jax\nimport jax.numpy as jnp\nimport ninjax as nj\nimport numpy as np\nfrom test_majepa_learner_smoke import _tiny_learner, _synthetic_replay\n\nstarted = time.monotonic()\nsource, output = Path(sys.argv[1]).resolve(), Path(sys.argv[2])\nfiles = sorted(path for path in (source / 'src/majepa').rglob('*') if path.suffix in ('.py', '.yaml'))\nfingerprint = hashlib.sha256()\nfor path in files:\n    fingerprint.update(str(path.relative_to(source)).encode())\n    fingerprint.update(path.read_bytes())\nlearner, observations, actions = _tiny_learner()\ndata = _synthetic_replay(learner, observations, actions)\ndata = dict(data, _environment_step=jnp.full((2, 8), 10, jnp.int32))\ncarry = learner.init_train(2)\nstate = nj.init(learner.train)({}, carry, data, seed=988)\nresult = jax.jit(nj.pure(learner.train))(state, carry, data, seed=989)\n\ndef describe(tree):\n    records = []\n    for path, value in jax.tree_util.tree_flatten_with_path(tree)[0]:\n        array = np.asarray(jax.device_get(value))\n        if not np.isfinite(array.astype(np.float32)).all():\n            raise ValueError('Nonfinite parity tensor')\n        records.append({'path': jax.tree_util.keystr(path), 'shape': list(array.shape), 'dtype': str(array.dtype), 'sha256': hashlib.sha256(array.tobytes()).hexdigest()})\n    return records\n\nrecord = {'source': str(source), 'source_sha256': fingerprint.hexdigest(),\n          'fixture_sha256': hashlib.sha256((source / 'tests/test_majepa_learner_smoke.py').read_bytes()).hexdigest(),\n          'jax_version': jax.__version__, 'initialization': describe(state), 'update': describe(result),\n          'ppo_active': float(result[1][2]['ppo/active']), 'wall_seconds': time.monotonic() - started}\noutput.write_text(json.dumps(record, indent=2, sort_keys=True) + '\\n')\nprint(json.dumps({key: record[key] for key in ['source', 'source_sha256', 'ppo_active', 'wall_seconds']}))\n",
+            "fingerprint_note": "Top-level source hashes use the screen canonical path-NUL-content-NUL formula. Raw tensor records use an unseparated path-content hash; both were recomputed after execution and matched the package files, confirming no package edits during the comparison.",
+            "fixture_sha256": "323e80881a766ea9a4e73a51961a29cbb0f5d9c74c4a341b955a5d597ad05b7f",
+            "initialization_tensors_compared": 624,
+            "jax_version": "0.4.36",
+            "limitations": "Production-shape GPU parity is not claimed. The common tiny fixture uses the maintained default-disabled self-fed setting.",
+            "optional_commit": "d623d4d34fcbebb8e345a1f038f71a988940235b",
+            "optional_seconds": 41.283610124955885,
+            "optional_source_sha256": "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc",
+            "parity_kind": "cross_source_executed_train",
+            "passed": true,
+            "platform": "cpu",
+            "ppo_active": 1.0,
+            "test_command": "In each source directory: JAX_PLATFORMS=cpu OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 PYTHONPATH=src:tests:/Users/osaze/MARL/worktrees/ma_jepa_paper/external/dreamerv3 /Users/osaze/MARL/worktrees/ma_jepa_paper/.venv/bin/python /tmp/majepa_cross_source_parity.py . OUTPUT.json; then assert equality of all initialization and update tensor descriptions.",
+            "update_tensors_compared": 922
+          },
+          "optional_source": "/workspace/ma_jepa_self_fed_da98e2d",
+          "optional_source_sha256": "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc"
+        },
+        "source_sha256": "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc"
+      },
+      "slot": 1,
+      "supervisor_pid": 53718,
+      "wandb_train_url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/pre-rec-ema-20260905-s1-train"
+    },
+    {
+      "arm": "recurrent",
+      "command": [
+        "/workspace/majepa-runtime/bin/python",
+        "/workspace/majepa_screen_launchers_c3bb3bf/scripts/run_ppo_prefill_recurrent_ema_screen.py",
+        "--slot",
+        "2",
+        "--source",
+        "/workspace/ma_jepa_self_fed_da98e2d",
+        "--expected-source-sha256",
+        "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc",
+        "--baseline-source",
+        "/workspace/ma_jepa_ppo_2663ae5",
+        "--expected-baseline-source-sha256",
+        "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+        "--baseline-results-root",
+        "/workspace/majepa_ppo_correction_2663ae5_20260905",
+        "--disabled-parity-record",
+        "/workspace/majepa_screen_launchers_c3bb3bf/analysis/ppo_audit/parity_d623d4d/parity.json",
+        "--self-fed-scale",
+        "0.1",
+        "--experiment-root",
+        "/workspace/majepa_prefill_recurrent_ema_20260905",
+        "--python",
+        "/workspace/majepa-runtime/bin/python",
+        "--external",
+        "/workspace/external/dreamerv3",
+        "--sc2",
+        "/workspace/StarCraftII",
+        "--portserver-script",
+        "/workspace/majepa-runtime/bin/portserver.py",
+        "--portserver-address",
+        "@majepa-pre-rec-ema-20260905-s2",
+        "--portserver-pool",
+        "32400-32599",
+        "--gpu",
+        "5",
+        "--wandb-project",
+        "majepa-ppo-treatments",
+        "--wandb-entity",
+        "osaze-obahor",
+        "--wandb-group",
+        "ma-jepa-prefill-recurrent-vs-ema-20260905",
+        "--wandb-run-prefix",
+        "pre-rec-ema-20260905"
+      ],
+      "gpu": 5,
+      "launched": true,
+      "launched_utc": "2026-09-05T09:11:49.101621+00:00",
+      "map": "8m",
+      "resolved_validation": {
+        "anchor_decision": {
+          "outcomes": [
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return-2s3z-seed0/outcome.json",
+              "replay_value_scale": 0.0,
+              "return_mean": 11.78104019165039,
+              "run": "team_return-2s3z-seed0",
+              "seed": 0,
+              "win_rate": 0.046875
+            },
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return-2s3z-seed1/outcome.json",
+              "replay_value_scale": 0.0,
+              "return_mean": 12.75381088256836,
+              "run": "team_return-2s3z-seed1",
+              "seed": 1,
+              "win_rate": 0.0703125
+            },
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed0/outcome.json",
+              "replay_value_scale": 0.3,
+              "return_mean": 14.679725646972656,
+              "run": "team_return_anchor-2s3z-seed0",
+              "seed": 0,
+              "win_rate": 0.328125
+            },
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed1/outcome.json",
+              "replay_value_scale": 0.3,
+              "return_mean": 12.712928771972656,
+              "run": "team_return_anchor-2s3z-seed1",
+              "seed": 1,
+              "win_rate": 0.0703125
+            }
+          ],
+          "provisional": false,
+          "rule": "mean final128 win rate, then mean final return, then retain0.3",
+          "selected_replay_value_scale": 0.3,
+          "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+        },
+        "configuration": {
+          "actor_layers": 3,
+          "actor_lr": 3e-05,
+          "actor_units": 1024,
+          "collection_unimix": 0.05,
+          "critic_lr": 3e-05,
+          "entropy_coefficient": 0.01,
+          "entropy_schedule_enabled": false,
+          "envs": 1,
+          "joint_world_warmup": 0,
+          "local_world_warmup": 0,
+          "phases": {
+            "final128": {
+              "envs": 4,
+              "episodes": 128,
+              "imag_length": 5,
+              "num_agents": 8,
+              "policy_mode": "eval",
+              "seed_offset": 100000,
+              "self_fed": {
+                "anchors": 8,
+                "consumer_kl_scale": 0.0,
+                "enabled": true,
+                "horizons": [
+                  2,
+                  4,
+                  5
+                ],
+                "scale": 0.1
+              },
+              "slowvalue_rate": 1.0
+            },
+            "train": {
+              "checkpoint_at_curve_eval": false,
+              "curve_eps": 32,
+              "curve_interval": 5000,
+              "curve_seed_offset": 50000,
+              "envs": 1,
+              "imag_length": 5,
+              "num_agents": 8,
+              "self_fed": {
+                "anchors": 8,
+                "consumer_kl_scale": 0.0,
+                "enabled": true,
+                "horizons": [
+                  2,
+                  4,
+                  5
+                ],
+                "scale": 0.1
+              },
+              "slowvalue_rate": 1.0,
+              "steps": 50000
+            }
+          },
+          "ppo_start_step": 5000,
+          "replay_value_scale": 0.3,
+          "seed": 0,
+          "task": "smac_8m",
+          "train_ratio": 128.0,
+          "world_model_start_step": 5000
+        },
+        "interpretation": "Two candidate packages; recurrence and EMA are not independently identified without a matched no-recurrence/rate1 control.",
+        "run": {
+          "arm": "prefill_recurrent",
+          "imag_length": 5,
+          "map_name": "8m",
+          "recurrent": true,
+          "replay_value_scale": 0.3,
+          "seed": 0,
+          "self_fed_scale": 0.1,
+          "slowvalue_rate": 1.0,
+          "world_model_start_step": 5000,
+          "world_warmup": 0
+        },
+        "screen": "prefill_recurrent_vs_ema",
+        "source_comparison": {
+          "baseline_source": "/workspace/ma_jepa_ppo_2663ae5",
+          "baseline_source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+          "disabled_parity": {
+            "baseline_seconds": 41.831962208030745,
+            "baseline_source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+            "baseline_training_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+            "comparison": "Exact pytree paths, shapes, dtypes and tensor-byte SHA256; no differing tensors. Full initialized model/optimizers, then one full active-PPO learner update, returned carry, replay updates and metrics.",
+            "executed_probe_sha256": "4d791308b4be622a9599341508706b6f6830c39fad36535c168c2f077a94348d",
+            "executed_probe_source": "import hashlib\nimport json\nfrom pathlib import Path\nimport sys\nimport time\nimport jax\nimport jax.numpy as jnp\nimport ninjax as nj\nimport numpy as np\nfrom test_majepa_learner_smoke import _tiny_learner, _synthetic_replay\n\nstarted = time.monotonic()\nsource, output = Path(sys.argv[1]).resolve(), Path(sys.argv[2])\nfiles = sorted(path for path in (source / 'src/majepa').rglob('*') if path.suffix in ('.py', '.yaml'))\nfingerprint = hashlib.sha256()\nfor path in files:\n    fingerprint.update(str(path.relative_to(source)).encode())\n    fingerprint.update(path.read_bytes())\nlearner, observations, actions = _tiny_learner()\ndata = _synthetic_replay(learner, observations, actions)\ndata = dict(data, _environment_step=jnp.full((2, 8), 10, jnp.int32))\ncarry = learner.init_train(2)\nstate = nj.init(learner.train)({}, carry, data, seed=988)\nresult = jax.jit(nj.pure(learner.train))(state, carry, data, seed=989)\n\ndef describe(tree):\n    records = []\n    for path, value in jax.tree_util.tree_flatten_with_path(tree)[0]:\n        array = np.asarray(jax.device_get(value))\n        if not np.isfinite(array.astype(np.float32)).all():\n            raise ValueError('Nonfinite parity tensor')\n        records.append({'path': jax.tree_util.keystr(path), 'shape': list(array.shape), 'dtype': str(array.dtype), 'sha256': hashlib.sha256(array.tobytes()).hexdigest()})\n    return records\n\nrecord = {'source': str(source), 'source_sha256': fingerprint.hexdigest(),\n          'fixture_sha256': hashlib.sha256((source / 'tests/test_majepa_learner_smoke.py').read_bytes()).hexdigest(),\n          'jax_version': jax.__version__, 'initialization': describe(state), 'update': describe(result),\n          'ppo_active': float(result[1][2]['ppo/active']), 'wall_seconds': time.monotonic() - started}\noutput.write_text(json.dumps(record, indent=2, sort_keys=True) + '\\n')\nprint(json.dumps({key: record[key] for key in ['source', 'source_sha256', 'ppo_active', 'wall_seconds']}))\n",
+            "fingerprint_note": "Top-level source hashes use the screen canonical path-NUL-content-NUL formula. Raw tensor records use an unseparated path-content hash; both were recomputed after execution and matched the package files, confirming no package edits during the comparison.",
+            "fixture_sha256": "323e80881a766ea9a4e73a51961a29cbb0f5d9c74c4a341b955a5d597ad05b7f",
+            "initialization_tensors_compared": 624,
+            "jax_version": "0.4.36",
+            "limitations": "Production-shape GPU parity is not claimed. The common tiny fixture uses the maintained default-disabled self-fed setting.",
+            "optional_commit": "d623d4d34fcbebb8e345a1f038f71a988940235b",
+            "optional_seconds": 41.283610124955885,
+            "optional_source_sha256": "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc",
+            "parity_kind": "cross_source_executed_train",
+            "passed": true,
+            "platform": "cpu",
+            "ppo_active": 1.0,
+            "test_command": "In each source directory: JAX_PLATFORMS=cpu OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 PYTHONPATH=src:tests:/Users/osaze/MARL/worktrees/ma_jepa_paper/external/dreamerv3 /Users/osaze/MARL/worktrees/ma_jepa_paper/.venv/bin/python /tmp/majepa_cross_source_parity.py . OUTPUT.json; then assert equality of all initialization and update tensor descriptions.",
+            "update_tensors_compared": 922
+          },
+          "optional_source": "/workspace/ma_jepa_self_fed_da98e2d",
+          "optional_source_sha256": "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc"
+        },
+        "source_sha256": "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc"
+      },
+      "slot": 2,
+      "supervisor_pid": 53719,
+      "wandb_train_url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/pre-rec-ema-20260905-s2-train"
+    },
+    {
+      "arm": "ema",
+      "command": [
+        "/workspace/majepa-runtime/bin/python",
+        "/workspace/majepa_screen_launchers_c3bb3bf/scripts/run_ppo_prefill_recurrent_ema_screen.py",
+        "--slot",
+        "3",
+        "--source",
+        "/workspace/ma_jepa_self_fed_da98e2d",
+        "--expected-source-sha256",
+        "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc",
+        "--baseline-source",
+        "/workspace/ma_jepa_ppo_2663ae5",
+        "--expected-baseline-source-sha256",
+        "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+        "--baseline-results-root",
+        "/workspace/majepa_ppo_correction_2663ae5_20260905",
+        "--disabled-parity-record",
+        "/workspace/majepa_screen_launchers_c3bb3bf/analysis/ppo_audit/parity_d623d4d/parity.json",
+        "--self-fed-scale",
+        "0.1",
+        "--experiment-root",
+        "/workspace/majepa_prefill_recurrent_ema_20260905",
+        "--python",
+        "/workspace/majepa-runtime/bin/python",
+        "--external",
+        "/workspace/external/dreamerv3",
+        "--sc2",
+        "/workspace/StarCraftII",
+        "--portserver-script",
+        "/workspace/majepa-runtime/bin/portserver.py",
+        "--portserver-address",
+        "@majepa-pre-rec-ema-20260905-s3",
+        "--portserver-pool",
+        "32600-32799",
+        "--gpu",
+        "0",
+        "--wandb-project",
+        "majepa-ppo-treatments",
+        "--wandb-entity",
+        "osaze-obahor",
+        "--wandb-group",
+        "ma-jepa-prefill-recurrent-vs-ema-20260905",
+        "--wandb-run-prefix",
+        "pre-rec-ema-20260905"
+      ],
+      "gpu": 0,
+      "launched": true,
+      "launched_utc": "2026-09-05T09:11:49.101626+00:00",
+      "map": "3m",
+      "resolved_validation": {
+        "anchor_decision": {
+          "outcomes": [
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return-2s3z-seed0/outcome.json",
+              "replay_value_scale": 0.0,
+              "return_mean": 11.78104019165039,
+              "run": "team_return-2s3z-seed0",
+              "seed": 0,
+              "win_rate": 0.046875
+            },
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return-2s3z-seed1/outcome.json",
+              "replay_value_scale": 0.0,
+              "return_mean": 12.75381088256836,
+              "run": "team_return-2s3z-seed1",
+              "seed": 1,
+              "win_rate": 0.0703125
+            },
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed0/outcome.json",
+              "replay_value_scale": 0.3,
+              "return_mean": 14.679725646972656,
+              "run": "team_return_anchor-2s3z-seed0",
+              "seed": 0,
+              "win_rate": 0.328125
+            },
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed1/outcome.json",
+              "replay_value_scale": 0.3,
+              "return_mean": 12.712928771972656,
+              "run": "team_return_anchor-2s3z-seed1",
+              "seed": 1,
+              "win_rate": 0.0703125
+            }
+          ],
+          "provisional": false,
+          "rule": "mean final128 win rate, then mean final return, then retain0.3",
+          "selected_replay_value_scale": 0.3,
+          "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+        },
+        "configuration": {
+          "actor_layers": 3,
+          "actor_lr": 3e-05,
+          "actor_units": 1024,
+          "collection_unimix": 0.05,
+          "critic_lr": 3e-05,
+          "entropy_coefficient": 0.01,
+          "entropy_schedule_enabled": false,
+          "envs": 1,
+          "joint_world_warmup": 0,
+          "local_world_warmup": 0,
+          "phases": {
+            "final128": {
+              "envs": 4,
+              "episodes": 128,
+              "imag_length": 5,
+              "num_agents": 3,
+              "policy_mode": "eval",
+              "seed_offset": 100000,
+              "self_fed": null,
+              "slowvalue_rate": 0.02
+            },
+            "train": {
+              "checkpoint_at_curve_eval": false,
+              "curve_eps": 32,
+              "curve_interval": 5000,
+              "curve_seed_offset": 50000,
+              "envs": 1,
+              "imag_length": 5,
+              "num_agents": 3,
+              "self_fed": null,
+              "slowvalue_rate": 0.02,
+              "steps": 50000
+            }
+          },
+          "ppo_start_step": 5000,
+          "replay_value_scale": 0.3,
+          "seed": 0,
+          "task": "smac_3m",
+          "train_ratio": 128.0,
+          "world_model_start_step": 5000
+        },
+        "interpretation": "Two candidate packages; recurrence and EMA are not independently identified without a matched no-recurrence/rate1 control.",
+        "run": {
+          "arm": "prefill_ema",
+          "imag_length": 5,
+          "map_name": "3m",
+          "recurrent": false,
+          "replay_value_scale": 0.3,
+          "seed": 0,
+          "self_fed_scale": 0.0,
+          "slowvalue_rate": 0.02,
+          "world_model_start_step": 5000,
+          "world_warmup": 0
+        },
+        "screen": "prefill_recurrent_vs_ema",
+        "source_comparison": {
+          "baseline_source": "/workspace/ma_jepa_ppo_2663ae5",
+          "baseline_source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+          "disabled_parity": {
+            "baseline_seconds": 41.831962208030745,
+            "baseline_source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+            "baseline_training_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+            "comparison": "Exact pytree paths, shapes, dtypes and tensor-byte SHA256; no differing tensors. Full initialized model/optimizers, then one full active-PPO learner update, returned carry, replay updates and metrics.",
+            "executed_probe_sha256": "4d791308b4be622a9599341508706b6f6830c39fad36535c168c2f077a94348d",
+            "executed_probe_source": "import hashlib\nimport json\nfrom pathlib import Path\nimport sys\nimport time\nimport jax\nimport jax.numpy as jnp\nimport ninjax as nj\nimport numpy as np\nfrom test_majepa_learner_smoke import _tiny_learner, _synthetic_replay\n\nstarted = time.monotonic()\nsource, output = Path(sys.argv[1]).resolve(), Path(sys.argv[2])\nfiles = sorted(path for path in (source / 'src/majepa').rglob('*') if path.suffix in ('.py', '.yaml'))\nfingerprint = hashlib.sha256()\nfor path in files:\n    fingerprint.update(str(path.relative_to(source)).encode())\n    fingerprint.update(path.read_bytes())\nlearner, observations, actions = _tiny_learner()\ndata = _synthetic_replay(learner, observations, actions)\ndata = dict(data, _environment_step=jnp.full((2, 8), 10, jnp.int32))\ncarry = learner.init_train(2)\nstate = nj.init(learner.train)({}, carry, data, seed=988)\nresult = jax.jit(nj.pure(learner.train))(state, carry, data, seed=989)\n\ndef describe(tree):\n    records = []\n    for path, value in jax.tree_util.tree_flatten_with_path(tree)[0]:\n        array = np.asarray(jax.device_get(value))\n        if not np.isfinite(array.astype(np.float32)).all():\n            raise ValueError('Nonfinite parity tensor')\n        records.append({'path': jax.tree_util.keystr(path), 'shape': list(array.shape), 'dtype': str(array.dtype), 'sha256': hashlib.sha256(array.tobytes()).hexdigest()})\n    return records\n\nrecord = {'source': str(source), 'source_sha256': fingerprint.hexdigest(),\n          'fixture_sha256': hashlib.sha256((source / 'tests/test_majepa_learner_smoke.py').read_bytes()).hexdigest(),\n          'jax_version': jax.__version__, 'initialization': describe(state), 'update': describe(result),\n          'ppo_active': float(result[1][2]['ppo/active']), 'wall_seconds': time.monotonic() - started}\noutput.write_text(json.dumps(record, indent=2, sort_keys=True) + '\\n')\nprint(json.dumps({key: record[key] for key in ['source', 'source_sha256', 'ppo_active', 'wall_seconds']}))\n",
+            "fingerprint_note": "Top-level source hashes use the screen canonical path-NUL-content-NUL formula. Raw tensor records use an unseparated path-content hash; both were recomputed after execution and matched the package files, confirming no package edits during the comparison.",
+            "fixture_sha256": "323e80881a766ea9a4e73a51961a29cbb0f5d9c74c4a341b955a5d597ad05b7f",
+            "initialization_tensors_compared": 624,
+            "jax_version": "0.4.36",
+            "limitations": "Production-shape GPU parity is not claimed. The common tiny fixture uses the maintained default-disabled self-fed setting.",
+            "optional_commit": "d623d4d34fcbebb8e345a1f038f71a988940235b",
+            "optional_seconds": 41.283610124955885,
+            "optional_source_sha256": "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc",
+            "parity_kind": "cross_source_executed_train",
+            "passed": true,
+            "platform": "cpu",
+            "ppo_active": 1.0,
+            "test_command": "In each source directory: JAX_PLATFORMS=cpu OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 PYTHONPATH=src:tests:/Users/osaze/MARL/worktrees/ma_jepa_paper/external/dreamerv3 /Users/osaze/MARL/worktrees/ma_jepa_paper/.venv/bin/python /tmp/majepa_cross_source_parity.py . OUTPUT.json; then assert equality of all initialization and update tensor descriptions.",
+            "update_tensors_compared": 922
+          },
+          "optional_source": "/workspace/ma_jepa_self_fed_da98e2d",
+          "optional_source_sha256": "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc"
+        },
+        "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+      },
+      "slot": 3,
+      "supervisor_pid": 53720,
+      "wandb_train_url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/pre-rec-ema-20260905-s3-train"
+    },
+    {
+      "arm": "ema",
+      "command": [
+        "/workspace/majepa-runtime/bin/python",
+        "/workspace/majepa_screen_launchers_c3bb3bf/scripts/run_ppo_prefill_recurrent_ema_screen.py",
+        "--slot",
+        "4",
+        "--source",
+        "/workspace/ma_jepa_self_fed_da98e2d",
+        "--expected-source-sha256",
+        "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc",
+        "--baseline-source",
+        "/workspace/ma_jepa_ppo_2663ae5",
+        "--expected-baseline-source-sha256",
+        "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+        "--baseline-results-root",
+        "/workspace/majepa_ppo_correction_2663ae5_20260905",
+        "--disabled-parity-record",
+        "/workspace/majepa_screen_launchers_c3bb3bf/analysis/ppo_audit/parity_d623d4d/parity.json",
+        "--self-fed-scale",
+        "0.1",
+        "--experiment-root",
+        "/workspace/majepa_prefill_recurrent_ema_20260905",
+        "--python",
+        "/workspace/majepa-runtime/bin/python",
+        "--external",
+        "/workspace/external/dreamerv3",
+        "--sc2",
+        "/workspace/StarCraftII",
+        "--portserver-script",
+        "/workspace/majepa-runtime/bin/portserver.py",
+        "--portserver-address",
+        "@majepa-pre-rec-ema-20260905-s4",
+        "--portserver-pool",
+        "32800-32999",
+        "--gpu",
+        "2",
+        "--wandb-project",
+        "majepa-ppo-treatments",
+        "--wandb-entity",
+        "osaze-obahor",
+        "--wandb-group",
+        "ma-jepa-prefill-recurrent-vs-ema-20260905",
+        "--wandb-run-prefix",
+        "pre-rec-ema-20260905"
+      ],
+      "gpu": 2,
+      "launched": true,
+      "launched_utc": "2026-09-05T09:11:49.101633+00:00",
+      "map": "2s3z",
+      "resolved_validation": {
+        "anchor_decision": {
+          "outcomes": [
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return-2s3z-seed0/outcome.json",
+              "replay_value_scale": 0.0,
+              "return_mean": 11.78104019165039,
+              "run": "team_return-2s3z-seed0",
+              "seed": 0,
+              "win_rate": 0.046875
+            },
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return-2s3z-seed1/outcome.json",
+              "replay_value_scale": 0.0,
+              "return_mean": 12.75381088256836,
+              "run": "team_return-2s3z-seed1",
+              "seed": 1,
+              "win_rate": 0.0703125
+            },
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed0/outcome.json",
+              "replay_value_scale": 0.3,
+              "return_mean": 14.679725646972656,
+              "run": "team_return_anchor-2s3z-seed0",
+              "seed": 0,
+              "win_rate": 0.328125
+            },
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed1/outcome.json",
+              "replay_value_scale": 0.3,
+              "return_mean": 12.712928771972656,
+              "run": "team_return_anchor-2s3z-seed1",
+              "seed": 1,
+              "win_rate": 0.0703125
+            }
+          ],
+          "provisional": false,
+          "rule": "mean final128 win rate, then mean final return, then retain0.3",
+          "selected_replay_value_scale": 0.3,
+          "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+        },
+        "configuration": {
+          "actor_layers": 3,
+          "actor_lr": 3e-05,
+          "actor_units": 1024,
+          "collection_unimix": 0.05,
+          "critic_lr": 3e-05,
+          "entropy_coefficient": 0.01,
+          "entropy_schedule_enabled": false,
+          "envs": 1,
+          "joint_world_warmup": 0,
+          "local_world_warmup": 0,
+          "phases": {
+            "final128": {
+              "envs": 4,
+              "episodes": 128,
+              "imag_length": 5,
+              "num_agents": 5,
+              "policy_mode": "eval",
+              "seed_offset": 100000,
+              "self_fed": null,
+              "slowvalue_rate": 0.02
+            },
+            "train": {
+              "checkpoint_at_curve_eval": false,
+              "curve_eps": 32,
+              "curve_interval": 5000,
+              "curve_seed_offset": 50000,
+              "envs": 1,
+              "imag_length": 5,
+              "num_agents": 5,
+              "self_fed": null,
+              "slowvalue_rate": 0.02,
+              "steps": 50000
+            }
+          },
+          "ppo_start_step": 5000,
+          "replay_value_scale": 0.3,
+          "seed": 0,
+          "task": "smac_2s3z",
+          "train_ratio": 128.0,
+          "world_model_start_step": 5000
+        },
+        "interpretation": "Two candidate packages; recurrence and EMA are not independently identified without a matched no-recurrence/rate1 control.",
+        "run": {
+          "arm": "prefill_ema",
+          "imag_length": 5,
+          "map_name": "2s3z",
+          "recurrent": false,
+          "replay_value_scale": 0.3,
+          "seed": 0,
+          "self_fed_scale": 0.0,
+          "slowvalue_rate": 0.02,
+          "world_model_start_step": 5000,
+          "world_warmup": 0
+        },
+        "screen": "prefill_recurrent_vs_ema",
+        "source_comparison": {
+          "baseline_source": "/workspace/ma_jepa_ppo_2663ae5",
+          "baseline_source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+          "disabled_parity": {
+            "baseline_seconds": 41.831962208030745,
+            "baseline_source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+            "baseline_training_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+            "comparison": "Exact pytree paths, shapes, dtypes and tensor-byte SHA256; no differing tensors. Full initialized model/optimizers, then one full active-PPO learner update, returned carry, replay updates and metrics.",
+            "executed_probe_sha256": "4d791308b4be622a9599341508706b6f6830c39fad36535c168c2f077a94348d",
+            "executed_probe_source": "import hashlib\nimport json\nfrom pathlib import Path\nimport sys\nimport time\nimport jax\nimport jax.numpy as jnp\nimport ninjax as nj\nimport numpy as np\nfrom test_majepa_learner_smoke import _tiny_learner, _synthetic_replay\n\nstarted = time.monotonic()\nsource, output = Path(sys.argv[1]).resolve(), Path(sys.argv[2])\nfiles = sorted(path for path in (source / 'src/majepa').rglob('*') if path.suffix in ('.py', '.yaml'))\nfingerprint = hashlib.sha256()\nfor path in files:\n    fingerprint.update(str(path.relative_to(source)).encode())\n    fingerprint.update(path.read_bytes())\nlearner, observations, actions = _tiny_learner()\ndata = _synthetic_replay(learner, observations, actions)\ndata = dict(data, _environment_step=jnp.full((2, 8), 10, jnp.int32))\ncarry = learner.init_train(2)\nstate = nj.init(learner.train)({}, carry, data, seed=988)\nresult = jax.jit(nj.pure(learner.train))(state, carry, data, seed=989)\n\ndef describe(tree):\n    records = []\n    for path, value in jax.tree_util.tree_flatten_with_path(tree)[0]:\n        array = np.asarray(jax.device_get(value))\n        if not np.isfinite(array.astype(np.float32)).all():\n            raise ValueError('Nonfinite parity tensor')\n        records.append({'path': jax.tree_util.keystr(path), 'shape': list(array.shape), 'dtype': str(array.dtype), 'sha256': hashlib.sha256(array.tobytes()).hexdigest()})\n    return records\n\nrecord = {'source': str(source), 'source_sha256': fingerprint.hexdigest(),\n          'fixture_sha256': hashlib.sha256((source / 'tests/test_majepa_learner_smoke.py').read_bytes()).hexdigest(),\n          'jax_version': jax.__version__, 'initialization': describe(state), 'update': describe(result),\n          'ppo_active': float(result[1][2]['ppo/active']), 'wall_seconds': time.monotonic() - started}\noutput.write_text(json.dumps(record, indent=2, sort_keys=True) + '\\n')\nprint(json.dumps({key: record[key] for key in ['source', 'source_sha256', 'ppo_active', 'wall_seconds']}))\n",
+            "fingerprint_note": "Top-level source hashes use the screen canonical path-NUL-content-NUL formula. Raw tensor records use an unseparated path-content hash; both were recomputed after execution and matched the package files, confirming no package edits during the comparison.",
+            "fixture_sha256": "323e80881a766ea9a4e73a51961a29cbb0f5d9c74c4a341b955a5d597ad05b7f",
+            "initialization_tensors_compared": 624,
+            "jax_version": "0.4.36",
+            "limitations": "Production-shape GPU parity is not claimed. The common tiny fixture uses the maintained default-disabled self-fed setting.",
+            "optional_commit": "d623d4d34fcbebb8e345a1f038f71a988940235b",
+            "optional_seconds": 41.283610124955885,
+            "optional_source_sha256": "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc",
+            "parity_kind": "cross_source_executed_train",
+            "passed": true,
+            "platform": "cpu",
+            "ppo_active": 1.0,
+            "test_command": "In each source directory: JAX_PLATFORMS=cpu OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 PYTHONPATH=src:tests:/Users/osaze/MARL/worktrees/ma_jepa_paper/external/dreamerv3 /Users/osaze/MARL/worktrees/ma_jepa_paper/.venv/bin/python /tmp/majepa_cross_source_parity.py . OUTPUT.json; then assert equality of all initialization and update tensor descriptions.",
+            "update_tensors_compared": 922
+          },
+          "optional_source": "/workspace/ma_jepa_self_fed_da98e2d",
+          "optional_source_sha256": "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc"
+        },
+        "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+      },
+      "slot": 4,
+      "supervisor_pid": 53721,
+      "wandb_train_url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/pre-rec-ema-20260905-s4-train"
+    },
+    {
+      "arm": "ema",
+      "command": [
+        "/workspace/majepa-runtime/bin/python",
+        "/workspace/majepa_screen_launchers_c3bb3bf/scripts/run_ppo_prefill_recurrent_ema_screen.py",
+        "--slot",
+        "5",
+        "--source",
+        "/workspace/ma_jepa_self_fed_da98e2d",
+        "--expected-source-sha256",
+        "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc",
+        "--baseline-source",
+        "/workspace/ma_jepa_ppo_2663ae5",
+        "--expected-baseline-source-sha256",
+        "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+        "--baseline-results-root",
+        "/workspace/majepa_ppo_correction_2663ae5_20260905",
+        "--disabled-parity-record",
+        "/workspace/majepa_screen_launchers_c3bb3bf/analysis/ppo_audit/parity_d623d4d/parity.json",
+        "--self-fed-scale",
+        "0.1",
+        "--experiment-root",
+        "/workspace/majepa_prefill_recurrent_ema_20260905",
+        "--python",
+        "/workspace/majepa-runtime/bin/python",
+        "--external",
+        "/workspace/external/dreamerv3",
+        "--sc2",
+        "/workspace/StarCraftII",
+        "--portserver-script",
+        "/workspace/majepa-runtime/bin/portserver.py",
+        "--portserver-address",
+        "@majepa-pre-rec-ema-20260905-s5",
+        "--portserver-pool",
+        "33000-33199",
+        "--gpu",
+        "3",
+        "--wandb-project",
+        "majepa-ppo-treatments",
+        "--wandb-entity",
+        "osaze-obahor",
+        "--wandb-group",
+        "ma-jepa-prefill-recurrent-vs-ema-20260905",
+        "--wandb-run-prefix",
+        "pre-rec-ema-20260905"
+      ],
+      "gpu": 3,
+      "launched": true,
+      "launched_utc": "2026-09-05T09:11:49.101637+00:00",
+      "map": "8m",
+      "resolved_validation": {
+        "anchor_decision": {
+          "outcomes": [
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return-2s3z-seed0/outcome.json",
+              "replay_value_scale": 0.0,
+              "return_mean": 11.78104019165039,
+              "run": "team_return-2s3z-seed0",
+              "seed": 0,
+              "win_rate": 0.046875
+            },
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return-2s3z-seed1/outcome.json",
+              "replay_value_scale": 0.0,
+              "return_mean": 12.75381088256836,
+              "run": "team_return-2s3z-seed1",
+              "seed": 1,
+              "win_rate": 0.0703125
+            },
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed0/outcome.json",
+              "replay_value_scale": 0.3,
+              "return_mean": 14.679725646972656,
+              "run": "team_return_anchor-2s3z-seed0",
+              "seed": 0,
+              "win_rate": 0.328125
+            },
+            {
+              "outcome_path": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed1/outcome.json",
+              "replay_value_scale": 0.3,
+              "return_mean": 12.712928771972656,
+              "run": "team_return_anchor-2s3z-seed1",
+              "seed": 1,
+              "win_rate": 0.0703125
+            }
+          ],
+          "provisional": false,
+          "rule": "mean final128 win rate, then mean final return, then retain0.3",
+          "selected_replay_value_scale": 0.3,
+          "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+        },
+        "configuration": {
+          "actor_layers": 3,
+          "actor_lr": 3e-05,
+          "actor_units": 1024,
+          "collection_unimix": 0.05,
+          "critic_lr": 3e-05,
+          "entropy_coefficient": 0.01,
+          "entropy_schedule_enabled": false,
+          "envs": 1,
+          "joint_world_warmup": 0,
+          "local_world_warmup": 0,
+          "phases": {
+            "final128": {
+              "envs": 4,
+              "episodes": 128,
+              "imag_length": 5,
+              "num_agents": 8,
+              "policy_mode": "eval",
+              "seed_offset": 100000,
+              "self_fed": null,
+              "slowvalue_rate": 0.02
+            },
+            "train": {
+              "checkpoint_at_curve_eval": false,
+              "curve_eps": 32,
+              "curve_interval": 5000,
+              "curve_seed_offset": 50000,
+              "envs": 1,
+              "imag_length": 5,
+              "num_agents": 8,
+              "self_fed": null,
+              "slowvalue_rate": 0.02,
+              "steps": 50000
+            }
+          },
+          "ppo_start_step": 5000,
+          "replay_value_scale": 0.3,
+          "seed": 0,
+          "task": "smac_8m",
+          "train_ratio": 128.0,
+          "world_model_start_step": 5000
+        },
+        "interpretation": "Two candidate packages; recurrence and EMA are not independently identified without a matched no-recurrence/rate1 control.",
+        "run": {
+          "arm": "prefill_ema",
+          "imag_length": 5,
+          "map_name": "8m",
+          "recurrent": false,
+          "replay_value_scale": 0.3,
+          "seed": 0,
+          "self_fed_scale": 0.0,
+          "slowvalue_rate": 0.02,
+          "world_model_start_step": 5000,
+          "world_warmup": 0
+        },
+        "screen": "prefill_recurrent_vs_ema",
+        "source_comparison": {
+          "baseline_source": "/workspace/ma_jepa_ppo_2663ae5",
+          "baseline_source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+          "disabled_parity": {
+            "baseline_seconds": 41.831962208030745,
+            "baseline_source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+            "baseline_training_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+            "comparison": "Exact pytree paths, shapes, dtypes and tensor-byte SHA256; no differing tensors. Full initialized model/optimizers, then one full active-PPO learner update, returned carry, replay updates and metrics.",
+            "executed_probe_sha256": "4d791308b4be622a9599341508706b6f6830c39fad36535c168c2f077a94348d",
+            "executed_probe_source": "import hashlib\nimport json\nfrom pathlib import Path\nimport sys\nimport time\nimport jax\nimport jax.numpy as jnp\nimport ninjax as nj\nimport numpy as np\nfrom test_majepa_learner_smoke import _tiny_learner, _synthetic_replay\n\nstarted = time.monotonic()\nsource, output = Path(sys.argv[1]).resolve(), Path(sys.argv[2])\nfiles = sorted(path for path in (source / 'src/majepa').rglob('*') if path.suffix in ('.py', '.yaml'))\nfingerprint = hashlib.sha256()\nfor path in files:\n    fingerprint.update(str(path.relative_to(source)).encode())\n    fingerprint.update(path.read_bytes())\nlearner, observations, actions = _tiny_learner()\ndata = _synthetic_replay(learner, observations, actions)\ndata = dict(data, _environment_step=jnp.full((2, 8), 10, jnp.int32))\ncarry = learner.init_train(2)\nstate = nj.init(learner.train)({}, carry, data, seed=988)\nresult = jax.jit(nj.pure(learner.train))(state, carry, data, seed=989)\n\ndef describe(tree):\n    records = []\n    for path, value in jax.tree_util.tree_flatten_with_path(tree)[0]:\n        array = np.asarray(jax.device_get(value))\n        if not np.isfinite(array.astype(np.float32)).all():\n            raise ValueError('Nonfinite parity tensor')\n        records.append({'path': jax.tree_util.keystr(path), 'shape': list(array.shape), 'dtype': str(array.dtype), 'sha256': hashlib.sha256(array.tobytes()).hexdigest()})\n    return records\n\nrecord = {'source': str(source), 'source_sha256': fingerprint.hexdigest(),\n          'fixture_sha256': hashlib.sha256((source / 'tests/test_majepa_learner_smoke.py').read_bytes()).hexdigest(),\n          'jax_version': jax.__version__, 'initialization': describe(state), 'update': describe(result),\n          'ppo_active': float(result[1][2]['ppo/active']), 'wall_seconds': time.monotonic() - started}\noutput.write_text(json.dumps(record, indent=2, sort_keys=True) + '\\n')\nprint(json.dumps({key: record[key] for key in ['source', 'source_sha256', 'ppo_active', 'wall_seconds']}))\n",
+            "fingerprint_note": "Top-level source hashes use the screen canonical path-NUL-content-NUL formula. Raw tensor records use an unseparated path-content hash; both were recomputed after execution and matched the package files, confirming no package edits during the comparison.",
+            "fixture_sha256": "323e80881a766ea9a4e73a51961a29cbb0f5d9c74c4a341b955a5d597ad05b7f",
+            "initialization_tensors_compared": 624,
+            "jax_version": "0.4.36",
+            "limitations": "Production-shape GPU parity is not claimed. The common tiny fixture uses the maintained default-disabled self-fed setting.",
+            "optional_commit": "d623d4d34fcbebb8e345a1f038f71a988940235b",
+            "optional_seconds": 41.283610124955885,
+            "optional_source_sha256": "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc",
+            "parity_kind": "cross_source_executed_train",
+            "passed": true,
+            "platform": "cpu",
+            "ppo_active": 1.0,
+            "test_command": "In each source directory: JAX_PLATFORMS=cpu OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 PYTHONPATH=src:tests:/Users/osaze/MARL/worktrees/ma_jepa_paper/external/dreamerv3 /Users/osaze/MARL/worktrees/ma_jepa_paper/.venv/bin/python /tmp/majepa_cross_source_parity.py . OUTPUT.json; then assert equality of all initialization and update tensor descriptions.",
+            "update_tensors_compared": 922
+          },
+          "optional_source": "/workspace/ma_jepa_self_fed_da98e2d",
+          "optional_source_sha256": "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc"
+        },
+        "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+      },
+      "slot": 5,
+      "supervisor_pid": 53722,
+      "wandb_train_url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/pre-rec-ema-20260905-s5-train"
+    }
+  ],
+  "source_archives": [
+    {
+      "path": "/Users/osaze/MARL/remote_archives/majepa_prefill_recurrent_ema_20260905/source_snapshots/ma_jepa_2663ae5.tar.gz",
+      "sha256": "ca61c030b452232f80561463b0b514bdb9d47226010180dcb04670b30f3da8b6"
+    },
+    {
+      "path": "/Users/osaze/MARL/remote_archives/majepa_prefill_recurrent_ema_20260905/source_snapshots/majepa-self-fed-gate.tar.gz",
+      "sha256": "f5a6408b52a7ba241825ca7a8db75688d4c1be45fa8f36e2ec739b53dac78a30"
+    },
+    {
+      "path": "/Users/osaze/MARL/remote_archives/majepa_prefill_recurrent_ema_20260905/source_snapshots/majepa_screen_launchers_c3bb3bf.tar.gz",
+      "sha256": "0628e2881da39a389ca11096a523ebd8a0fe0fdd48020618289b87470408aa1f"
+    }
+  ],
+  "startup_check": {
+    "gpus": "0, 465, 0\n1, 465, 0\n2, 497, 0\n3, 561, 0\n4, 497, 0\n5, 561, 0\n",
+    "runs": [
+      {
+        "config_exists": true,
+        "log_tail": [
+          "Optimizer opt/actor has 15,358,729 parameters",
+          "Optimizer opt/critic has 4,398,847 parameters",
+          "Optimizer opt/actor has 15,358,729 parameters",
+          "Optimizer opt/critic has 4,398,847 parameters",
+          "Optimizer opt/actor has 15,358,729 parameters",
+          "Optimizer opt/critic has 4,398,847 parameters"
+        ],
+        "manifest_exists": true,
+        "outcome": null,
+        "slot": 0,
+        "status": {
+          "status": "train",
+          "updated_at": 1788599577.7691362
+        },
+        "supervisor_alive": true,
+        "train_pid": "54631"
+      },
+      {
+        "config_exists": true,
+        "log_tail": [
+          "Optimizer opt/actor has 15,367,947 parameters",
+          "Optimizer opt/critic has 4,398,847 parameters",
+          "Optimizer opt/actor has 15,367,947 parameters",
+          "Optimizer opt/critic has 4,398,847 parameters",
+          "Optimizer opt/actor has 15,367,947 parameters",
+          "Optimizer opt/critic has 4,398,847 parameters"
+        ],
+        "manifest_exists": true,
+        "outcome": null,
+        "slot": 1,
+        "status": {
+          "status": "train",
+          "updated_at": 1788599578.5583563
+        },
+        "supervisor_alive": true,
+        "train_pid": "54762"
+      },
+      {
+        "config_exists": true,
+        "log_tail": [
+          "Optimizer opt/actor has 15,385,614 parameters",
+          "Optimizer opt/critic has 4,398,847 parameters",
+          "Optimizer opt/actor has 15,385,614 parameters",
+          "Optimizer opt/critic has 4,398,847 parameters",
+          "Optimizer opt/actor has 15,385,614 parameters",
+          "Optimizer opt/critic has 4,398,847 parameters"
+        ],
+        "manifest_exists": true,
+        "outcome": null,
+        "slot": 2,
+        "status": {
+          "status": "train",
+          "updated_at": 1788599578.512778
+        },
+        "supervisor_alive": true,
+        "train_pid": "54759"
+      },
+      {
+        "config_exists": true,
+        "log_tail": [
+          "Optimizer opt/actor has 15,358,729 parameters",
+          "Optimizer opt/critic has 4,398,847 parameters",
+          "Optimizer opt/actor has 15,358,729 parameters",
+          "Optimizer opt/critic has 4,398,847 parameters",
+          "Optimizer opt/actor has 15,358,729 parameters",
+          "Optimizer opt/critic has 4,398,847 parameters"
+        ],
+        "manifest_exists": true,
+        "outcome": null,
+        "slot": 3,
+        "status": {
+          "status": "train",
+          "updated_at": 1788599578.5188441
+        },
+        "supervisor_alive": true,
+        "train_pid": "54760"
+      },
+      {
+        "config_exists": true,
+        "log_tail": [
+          "Optimizer opt/actor has 15,367,947 parameters",
+          "Optimizer opt/critic has 4,398,847 parameters",
+          "Optimizer opt/actor has 15,367,947 parameters",
+          "Optimizer opt/critic has 4,398,847 parameters",
+          "Optimizer opt/actor has 15,367,947 parameters",
+          "Optimizer opt/critic has 4,398,847 parameters"
+        ],
+        "manifest_exists": true,
+        "outcome": null,
+        "slot": 4,
+        "status": {
+          "status": "train",
+          "updated_at": 1788599577.9109738
+        },
+        "supervisor_alive": true,
+        "train_pid": "54695"
+      },
+      {
+        "config_exists": true,
+        "log_tail": [
+          "Optimizer opt/actor has 15,385,614 parameters",
+          "Optimizer opt/critic has 4,398,847 parameters",
+          "Optimizer opt/actor has 15,385,614 parameters",
+          "Optimizer opt/critic has 4,398,847 parameters",
+          "Optimizer opt/actor has 15,385,614 parameters",
+          "Optimizer opt/critic has 4,398,847 parameters"
+        ],
+        "manifest_exists": true,
+        "outcome": null,
+        "slot": 5,
+        "status": {
+          "status": "train",
+          "updated_at": 1788599578.5374117
+        },
+        "supervisor_alive": true,
+        "train_pid": "54761"
+      }
+    ]
+  },
+  "startup_check_utc": "2026-09-05T09:13:58.770334+00:00",
+  "startup_limitation": "All six live children have saved configs and initialized GPU contexts; logs are in agent/model construction. The runner constructs the agent before make_logger(), so W&B run registration has not occurred in the bounded checks. URLs are deterministic intended run addresses, not verified online at handoff. No learning outcome is claimed.",
+  "state": "six_training_processes_live_wandb_registration_pending",
+  "wandb_startup_check": {
+    "captured_utc": "2026-09-05T09:15:29.565447+00:00",
+    "runs": []
+  },
+  "watchers_detached_ppid1_verified": true
+}

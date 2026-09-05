@@ -1,0 +1,667 @@
+{
+  "all_completed": true,
+  "anchor_decision": {
+    "outcomes": [
+      {
+        "outcome_path": "analysis/ppo_audit/correction_20260905_mirror/runs/team_return-2s3z-seed0/outcome.json",
+        "replay_value_scale": 0.0,
+        "return_mean": 11.78104019165039,
+        "run": "team_return-2s3z-seed0",
+        "seed": 0,
+        "win_rate": 0.046875
+      },
+      {
+        "outcome_path": "analysis/ppo_audit/correction_20260905_mirror/runs/team_return-2s3z-seed1/outcome.json",
+        "replay_value_scale": 0.0,
+        "return_mean": 12.75381088256836,
+        "run": "team_return-2s3z-seed1",
+        "seed": 1,
+        "win_rate": 0.0703125
+      },
+      {
+        "outcome_path": "analysis/ppo_audit/correction_20260905_mirror/runs/team_return_anchor-2s3z-seed0/outcome.json",
+        "replay_value_scale": 0.3,
+        "return_mean": 14.679725646972656,
+        "run": "team_return_anchor-2s3z-seed0",
+        "seed": 0,
+        "win_rate": 0.328125
+      },
+      {
+        "outcome_path": "analysis/ppo_audit/correction_20260905_mirror/runs/team_return_anchor-2s3z-seed1/outcome.json",
+        "replay_value_scale": 0.3,
+        "return_mean": 12.712928771972656,
+        "run": "team_return_anchor-2s3z-seed1",
+        "seed": 1,
+        "win_rate": 0.0703125
+      }
+    ],
+    "provisional": false,
+    "rule": "mean final128 win rate, then mean final return, then retain0.3",
+    "selected_replay_value_scale": 0.3,
+    "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7"
+  },
+  "captured_utc": "2026-09-05T08:56:16.292530+00:00",
+  "comparisons": {
+    "anchor03_mean2s3z_final_win": 0.19921875,
+    "anchor0_mean2s3z_final_win": 0.05859375,
+    "anchor_gain_seed0_percentage_points": 28.125,
+    "anchor_gain_seed1_percentage_points": 0.0,
+    "limitation": "The .3 gain is driven entirely by seed0; seed1 has9/128 wins in both arms. The3m82.8125% versus historical93.75% is not a clean causal comparison because the old SC2 build is unknown. All six final outcomes are preserved."
+  },
+  "curve_area_definition": "Trapezoidal integral of32-episode win fraction over measured steps5000 through50000, divided by45000. No value is imputed for unmeasured0\u20135000.",
+  "note": "Final128 at exact50k; individual Wilson intervals describe evaluation uncertainty conditional on each trained policy. Two training seeds do not establish seed robustness. Curve area is normalized only over measured5k\u201350k window.",
+  "runs": [
+    {
+      "checkpoint": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return-2s3z-seed0/train/run/ckpt/20260905T084810F038965",
+      "created_at": 1788592752.5541234,
+      "curve": [
+        {
+          "eval/return_mean": 4.948452949523926,
+          "eval/timeout_rate": 0.4375,
+          "eval/win_rate": 0.0,
+          "step": 5000
+        },
+        {
+          "eval/return_mean": 6.115272521972656,
+          "eval/timeout_rate": 0.0625,
+          "eval/win_rate": 0.0,
+          "step": 10000
+        },
+        {
+          "eval/return_mean": 10.002144813537598,
+          "eval/timeout_rate": 0.21875,
+          "eval/win_rate": 0.0,
+          "step": 15000
+        },
+        {
+          "eval/return_mean": 10.2109375,
+          "eval/timeout_rate": 0.3125,
+          "eval/win_rate": 0.0,
+          "step": 20000
+        },
+        {
+          "eval/return_mean": 9.323453903198242,
+          "eval/timeout_rate": 0.0625,
+          "eval/win_rate": 0.0,
+          "step": 25000
+        },
+        {
+          "eval/return_mean": 8.955730438232422,
+          "eval/timeout_rate": 0.0625,
+          "eval/win_rate": 0.09375,
+          "step": 30000
+        },
+        {
+          "eval/return_mean": 12.530407905578613,
+          "eval/timeout_rate": 0.09375,
+          "eval/win_rate": 0.15625,
+          "step": 35000
+        },
+        {
+          "eval/return_mean": 9.615043640136719,
+          "eval/timeout_rate": 0.03125,
+          "eval/win_rate": 0.0,
+          "step": 40000
+        },
+        {
+          "eval/return_mean": 12.429305076599121,
+          "eval/timeout_rate": 0.03125,
+          "eval/win_rate": 0.0625,
+          "step": 45000
+        },
+        {
+          "eval/return_mean": 12.307214736938477,
+          "eval/timeout_rate": 0.15625,
+          "eval/win_rate": 0.0625,
+          "step": 50000
+        }
+      ],
+      "episodes": 128,
+      "evaluation_protocol": {
+        "envs": 4,
+        "episodes": 128,
+        "policy_mode": "eval",
+        "worker_indices": [
+          100000,
+          100001,
+          100002,
+          100003
+        ],
+        "worker_offset": 100000
+      },
+      "finished_at": 1788598235.8762114,
+      "name": "team_return-2s3z-seed0",
+      "observed_curve5k_to50k_mean_win": 0.03819444444444445,
+      "return_mean": 11.78104019165039,
+      "return_std": 2.989081621170044,
+      "run": {
+        "arm": "team_return",
+        "map_name": "2s3z",
+        "replay_value_scale": 0.0,
+        "seed": 0
+      },
+      "slot": 0,
+      "source_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+      "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+      "timeout_rate": 0.1328125,
+      "win_rate": 0.046875,
+      "win_rate_wilson95_conditional_on_trained_policy": [
+        0.021657844171923776,
+        0.09849752245094322
+      ],
+      "wins": 6
+    },
+    {
+      "checkpoint": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed0/train/run/ckpt/20260905T084954F843802",
+      "created_at": 1788592754.2098556,
+      "curve": [
+        {
+          "eval/return_mean": 4.948452949523926,
+          "eval/timeout_rate": 0.4375,
+          "eval/win_rate": 0.0,
+          "step": 5000
+        },
+        {
+          "eval/return_mean": 4.778263092041016,
+          "eval/timeout_rate": 0.09375,
+          "eval/win_rate": 0.0,
+          "step": 10000
+        },
+        {
+          "eval/return_mean": 13.667356491088867,
+          "eval/timeout_rate": 0.15625,
+          "eval/win_rate": 0.125,
+          "step": 15000
+        },
+        {
+          "eval/return_mean": 14.41122817993164,
+          "eval/timeout_rate": 0.15625,
+          "eval/win_rate": 0.28125,
+          "step": 20000
+        },
+        {
+          "eval/return_mean": 13.162454605102539,
+          "eval/timeout_rate": 0.03125,
+          "eval/win_rate": 0.21875,
+          "step": 25000
+        },
+        {
+          "eval/return_mean": 13.881203651428223,
+          "eval/timeout_rate": 0.0,
+          "eval/win_rate": 0.28125,
+          "step": 30000
+        },
+        {
+          "eval/return_mean": 14.167126655578613,
+          "eval/timeout_rate": 0.125,
+          "eval/win_rate": 0.1875,
+          "step": 35000
+        },
+        {
+          "eval/return_mean": 14.93864917755127,
+          "eval/timeout_rate": 0.0,
+          "eval/win_rate": 0.375,
+          "step": 40000
+        },
+        {
+          "eval/return_mean": 13.328584671020508,
+          "eval/timeout_rate": 0.09375,
+          "eval/win_rate": 0.125,
+          "step": 45000
+        },
+        {
+          "eval/return_mean": 14.621094703674316,
+          "eval/timeout_rate": 0.0,
+          "eval/win_rate": 0.34375,
+          "step": 50000
+        }
+      ],
+      "episodes": 128,
+      "evaluation_protocol": {
+        "envs": 4,
+        "episodes": 128,
+        "policy_mode": "eval",
+        "worker_indices": [
+          100000,
+          100001,
+          100002,
+          100003
+        ],
+        "worker_offset": 100000
+      },
+      "finished_at": 1788598338.8905876,
+      "name": "team_return_anchor-2s3z-seed0",
+      "observed_curve5k_to50k_mean_win": 0.19618055555555555,
+      "return_mean": 14.679725646972656,
+      "return_std": 4.096107006072998,
+      "run": {
+        "arm": "team_return_anchor",
+        "map_name": "2s3z",
+        "replay_value_scale": 0.3,
+        "seed": 0
+      },
+      "slot": 1,
+      "source_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+      "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+      "timeout_rate": 0.015625,
+      "win_rate": 0.328125,
+      "win_rate_wilson95_conditional_on_trained_policy": [
+        0.25282984471663306,
+        0.41343598400238546
+      ],
+      "wins": 42
+    },
+    {
+      "checkpoint": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return-2s3z-seed1/train/run/ckpt/20260905T084810F760761",
+      "created_at": 1788592755.9465756,
+      "curve": [
+        {
+          "eval/return_mean": 2.108992099761963,
+          "eval/timeout_rate": 1.0,
+          "eval/win_rate": 0.0,
+          "step": 5000
+        },
+        {
+          "eval/return_mean": 0.19607843458652496,
+          "eval/timeout_rate": 0.0625,
+          "eval/win_rate": 0.0,
+          "step": 10000
+        },
+        {
+          "eval/return_mean": 8.96484375,
+          "eval/timeout_rate": 0.1875,
+          "eval/win_rate": 0.0,
+          "step": 15000
+        },
+        {
+          "eval/return_mean": 9.297640800476074,
+          "eval/timeout_rate": 0.4375,
+          "eval/win_rate": 0.0,
+          "step": 20000
+        },
+        {
+          "eval/return_mean": 11.086397171020508,
+          "eval/timeout_rate": 0.0,
+          "eval/win_rate": 0.03125,
+          "step": 25000
+        },
+        {
+          "eval/return_mean": 9.85232925415039,
+          "eval/timeout_rate": 0.21875,
+          "eval/win_rate": 0.0,
+          "step": 30000
+        },
+        {
+          "eval/return_mean": 11.164292335510254,
+          "eval/timeout_rate": 0.21875,
+          "eval/win_rate": 0.0,
+          "step": 35000
+        },
+        {
+          "eval/return_mean": 12.477405548095703,
+          "eval/timeout_rate": 0.09375,
+          "eval/win_rate": 0.09375,
+          "step": 40000
+        },
+        {
+          "eval/return_mean": 11.429611206054688,
+          "eval/timeout_rate": 0.0625,
+          "eval/win_rate": 0.0,
+          "step": 45000
+        },
+        {
+          "eval/return_mean": 12.80131721496582,
+          "eval/timeout_rate": 0.25,
+          "eval/win_rate": 0.09375,
+          "step": 50000
+        }
+      ],
+      "episodes": 128,
+      "evaluation_protocol": {
+        "envs": 4,
+        "episodes": 128,
+        "policy_mode": "eval",
+        "worker_indices": [
+          100000,
+          100001,
+          100002,
+          100003
+        ],
+        "worker_offset": 100000
+      },
+      "finished_at": 1788598242.3223538,
+      "name": "team_return-2s3z-seed1",
+      "observed_curve5k_to50k_mean_win": 0.019097222222222224,
+      "return_mean": 12.75381088256836,
+      "return_std": 2.696619749069214,
+      "run": {
+        "arm": "team_return",
+        "map_name": "2s3z",
+        "replay_value_scale": 0.0,
+        "seed": 1
+      },
+      "slot": 2,
+      "source_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+      "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+      "timeout_rate": 0.2734375,
+      "win_rate": 0.0703125,
+      "win_rate_wilson95_conditional_on_trained_policy": [
+        0.03742976830393997,
+        0.12823480349360633
+      ],
+      "wins": 9
+    },
+    {
+      "checkpoint": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed1/train/run/ckpt/20260905T085005F524901",
+      "created_at": 1788592757.5570092,
+      "curve": [
+        {
+          "eval/return_mean": 2.6806068420410156,
+          "eval/timeout_rate": 1.0,
+          "eval/win_rate": 0.0,
+          "step": 5000
+        },
+        {
+          "eval/return_mean": 6.136565685272217,
+          "eval/timeout_rate": 0.0625,
+          "eval/win_rate": 0.0,
+          "step": 10000
+        },
+        {
+          "eval/return_mean": 10.504365921020508,
+          "eval/timeout_rate": 0.03125,
+          "eval/win_rate": 0.0,
+          "step": 15000
+        },
+        {
+          "eval/return_mean": 11.628522872924805,
+          "eval/timeout_rate": 0.15625,
+          "eval/win_rate": 0.0,
+          "step": 20000
+        },
+        {
+          "eval/return_mean": 9.151578903198242,
+          "eval/timeout_rate": 0.15625,
+          "eval/win_rate": 0.0,
+          "step": 25000
+        },
+        {
+          "eval/return_mean": 13.275735855102539,
+          "eval/timeout_rate": 0.28125,
+          "eval/win_rate": 0.125,
+          "step": 30000
+        },
+        {
+          "eval/return_mean": 12.448530197143555,
+          "eval/timeout_rate": 0.125,
+          "eval/win_rate": 0.09375,
+          "step": 35000
+        },
+        {
+          "eval/return_mean": 12.073376655578613,
+          "eval/timeout_rate": 0.125,
+          "eval/win_rate": 0.0625,
+          "step": 40000
+        },
+        {
+          "eval/return_mean": 14.309436798095703,
+          "eval/timeout_rate": 0.09375,
+          "eval/win_rate": 0.1875,
+          "step": 45000
+        },
+        {
+          "eval/return_mean": 13.330117225646973,
+          "eval/timeout_rate": 0.1875,
+          "eval/win_rate": 0.125,
+          "step": 50000
+        }
+      ],
+      "episodes": 128,
+      "evaluation_protocol": {
+        "envs": 4,
+        "episodes": 128,
+        "policy_mode": "eval",
+        "worker_indices": [
+          100000,
+          100001,
+          100002,
+          100003
+        ],
+        "worker_offset": 100000
+      },
+      "finished_at": 1788598354.7940805,
+      "name": "team_return_anchor-2s3z-seed1",
+      "observed_curve5k_to50k_mean_win": 0.059027777777777776,
+      "return_mean": 12.712928771972656,
+      "return_std": 2.456974506378174,
+      "run": {
+        "arm": "team_return_anchor",
+        "map_name": "2s3z",
+        "replay_value_scale": 0.3,
+        "seed": 1
+      },
+      "slot": 3,
+      "source_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+      "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+      "timeout_rate": 0.0859375,
+      "win_rate": 0.0703125,
+      "win_rate_wilson95_conditional_on_trained_policy": [
+        0.03742976830393997,
+        0.12823480349360633
+      ],
+      "wins": 9
+    },
+    {
+      "checkpoint": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-3m-seed0/train/run/ckpt/20260905T084225F232384",
+      "created_at": 1788592759.2179055,
+      "curve": [
+        {
+          "eval/return_mean": 2.229452133178711,
+          "eval/timeout_rate": 0.6875,
+          "eval/win_rate": 0.0,
+          "step": 5000
+        },
+        {
+          "eval/return_mean": 0.0,
+          "eval/timeout_rate": 0.03125,
+          "eval/win_rate": 0.0,
+          "step": 10000
+        },
+        {
+          "eval/return_mean": 7.657533645629883,
+          "eval/timeout_rate": 0.0,
+          "eval/win_rate": 0.09375,
+          "step": 15000
+        },
+        {
+          "eval/return_mean": 16.203767776489258,
+          "eval/timeout_rate": 0.0,
+          "eval/win_rate": 0.6875,
+          "step": 20000
+        },
+        {
+          "eval/return_mean": 18.082191467285156,
+          "eval/timeout_rate": 0.0,
+          "eval/win_rate": 0.84375,
+          "step": 25000
+        },
+        {
+          "eval/return_mean": 19.239727020263672,
+          "eval/timeout_rate": 0.0,
+          "eval/win_rate": 0.9375,
+          "step": 30000
+        },
+        {
+          "eval/return_mean": 18.84417724609375,
+          "eval/timeout_rate": 0.0,
+          "eval/win_rate": 0.90625,
+          "step": 35000
+        },
+        {
+          "eval/return_mean": 18.885272979736328,
+          "eval/timeout_rate": 0.0,
+          "eval/win_rate": 0.90625,
+          "step": 40000
+        },
+        {
+          "eval/return_mean": 19.25,
+          "eval/timeout_rate": 0.0,
+          "eval/win_rate": 0.9375,
+          "step": 45000
+        },
+        {
+          "eval/return_mean": 16.477739334106445,
+          "eval/timeout_rate": 0.0,
+          "eval/win_rate": 0.71875,
+          "step": 50000
+        }
+      ],
+      "episodes": 128,
+      "evaluation_protocol": {
+        "envs": 4,
+        "episodes": 128,
+        "policy_mode": "eval",
+        "worker_indices": [
+          100000,
+          100001,
+          100002,
+          100003
+        ],
+        "worker_offset": 100000
+      },
+      "finished_at": 1788597869.0653179,
+      "name": "team_return_anchor-3m-seed0",
+      "observed_curve5k_to50k_mean_win": 0.6302083333333334,
+      "return_mean": 17.84803009033203,
+      "return_std": 4.735016345977783,
+      "run": {
+        "arm": "team_return_anchor",
+        "map_name": "3m",
+        "replay_value_scale": 0.3,
+        "seed": 0
+      },
+      "slot": 4,
+      "source_commit": "2663ae57ab80482ad201f9c3bdaa9fe2c732dbe9",
+      "source_sha256": "9db9598e0da7cced1eab43036845b9ff593bb9f61713720f4654460a5c49b4e7",
+      "timeout_rate": 0.0,
+      "win_rate": 0.828125,
+      "win_rate_wilson95_conditional_on_trained_policy": [
+        0.7534600319269827,
+        0.8836688405185272
+      ],
+      "wins": 106
+    },
+    {
+      "checkpoint": "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/original_base-2s3z-seed1/train/run/ckpt/20260905T084909F063960",
+      "created_at": 1788592761.1462853,
+      "curve": [
+        {
+          "eval/return_mean": 3.171721935272217,
+          "eval/timeout_rate": 1.0,
+          "eval/win_rate": 0.0,
+          "step": 5000
+        },
+        {
+          "eval/return_mean": 1.3682599067687988,
+          "eval/timeout_rate": 0.0625,
+          "eval/win_rate": 0.0,
+          "step": 10000
+        },
+        {
+          "eval/return_mean": 8.536994934082031,
+          "eval/timeout_rate": 0.0,
+          "eval/win_rate": 0.0,
+          "step": 15000
+        },
+        {
+          "eval/return_mean": 11.569470405578613,
+          "eval/timeout_rate": 0.125,
+          "eval/win_rate": 0.0,
+          "step": 20000
+        },
+        {
+          "eval/return_mean": 12.048867225646973,
+          "eval/timeout_rate": 0.46875,
+          "eval/win_rate": 0.0,
+          "step": 25000
+        },
+        {
+          "eval/return_mean": 12.032093048095703,
+          "eval/timeout_rate": 0.34375,
+          "eval/win_rate": 0.09375,
+          "step": 30000
+        },
+        {
+          "eval/return_mean": 11.357231140136719,
+          "eval/timeout_rate": 0.4375,
+          "eval/win_rate": 0.125,
+          "step": 35000
+        },
+        {
+          "eval/return_mean": 10.624387741088867,
+          "eval/timeout_rate": 0.5,
+          "eval/win_rate": 0.0,
+          "step": 40000
+        },
+        {
+          "eval/return_mean": 10.265012741088867,
+          "eval/timeout_rate": 0.3125,
+          "eval/win_rate": 0.0,
+          "step": 45000
+        },
+        {
+          "eval/return_mean": 11.480009078979492,
+          "eval/timeout_rate": 0.5625,
+          "eval/win_rate": 0.0,
+          "step": 50000
+        }
+      ],
+      "episodes": 128,
+      "evaluation_protocol": {
+        "envs": 4,
+        "episodes": 128,
+        "policy_mode": "eval",
+        "worker_indices": [
+          100000,
+          100001,
+          100002,
+          100003
+        ],
+        "worker_offset": 100000
+      },
+      "finished_at": 1788598299.9177759,
+      "name": "original_base-2s3z-seed1",
+      "observed_curve5k_to50k_mean_win": 0.024305555555555556,
+      "return_mean": 11.360084533691406,
+      "return_std": 1.875190019607544,
+      "run": {
+        "arm": "original_base",
+        "map_name": "2s3z",
+        "replay_value_scale": null,
+        "seed": 1
+      },
+      "slot": 5,
+      "source_commit": "92014f1dd35f946816c350906af85370a434de40",
+      "source_sha256": "7c0b50cbcf7fd701a57b1c64a2ed5fa1ba4a48a77def91e8781054b1cee40891",
+      "timeout_rate": 0.34375,
+      "win_rate": 0.0078125,
+      "win_rate_wilson95_conditional_on_trained_policy": [
+        0.0013804318928742412,
+        0.04292625943886061
+      ],
+      "wins": 1
+    }
+  ],
+  "runtime": {
+    "bootstrap_evidence": "analysis/ppo_audit/new_pod_bootstrap/",
+    "external_dreamerv3_commit": "e3f02248693a79dc8b0ebd62c93683888ddaccfe",
+    "jax": "0.4.36",
+    "python": "/workspace/majepa-runtime/bin/python",
+    "remote_result_root": "/workspace/majepa_ppo_correction_2663ae5_20260905",
+    "starcraft_base": "Base75689",
+    "starcraft_version": "4.10",
+    "wandb_group": "ma-jepa-ppo-correction-2663ae5-20260905",
+    "wandb_project": "osaze-obahor/majepa-ppo-treatments"
+  },
+  "source_mirror_capture": "2026-09-05T08:53:37.088891+00:00"
+}
