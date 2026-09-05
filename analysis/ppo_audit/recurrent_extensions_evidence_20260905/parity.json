@@ -1,0 +1,10 @@
+{
+  "passed": true,
+  "initialization_tensors": 624,
+  "active_ppo_update_tensors": 974,
+  "old_source": "/Users/osaze/MARL/worktrees/ma_jepa_self_fed_training",
+  "new_source": "/Users/osaze/MARL/worktrees/ma_jepa_ppo",
+  "reference_package_sha256": "a06ed84235620d433a2030189e7017d05393d32a5b7247325cb37a046d64e7bc",
+  "extension_package_sha256": "af6e6d23ab98e60d893071054942889ca73c14d0d9071505c4a9ee886df46b5a",
+  "note": "Executed active-recurrence default parity, including full PPO update. Raw record source hashes use a different path-content convention."
+}

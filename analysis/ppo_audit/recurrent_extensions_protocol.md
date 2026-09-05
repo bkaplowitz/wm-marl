@@ -36,3 +36,24 @@ The external dependency and prior source snapshots are not modified.
 This is a one-map, one-seed screening experiment. Improvements need replication
 and validation on other maps. Fixed final128 is separate from 32-episode curves.
 There are no queued additional seeds or second waves.
+
+## Additional allocation requested by the user
+
+The user subsequently authorized two more experiments on GPUs4/5. Slot4
+combines fresh history with BPTT2; slot5 combines sixteen environments with
+critic EMA .5. All remaining settings and the 2s3z seed0 budget are unchanged.
+These combinations can be compared with their individual components in slots0-3.
+They use the same immutable f2273e9 training package and a separate 8052058
+launcher. Each waits for the preceding recurrent supervisor and an idle GPU;
+ongoing final evaluations are not interrupted. Results live in a separate
+`majepa_recurrent_combinations_20260905` directory with independent two-run
+mirror/backup watchers, and share the six-run W&B extensions group.
+
+At the user's request, the additional production gates and broad regression
+run were stopped and the four original experiments were launched immediately.
+Completed checks included full tiny PPO execution for each code variant,
+local-parameter gradient ownership, raw-history invariance, EMA averaging,
+resolved production configurations, and exact active-recurrence/PPO parity
+between the previous and current default implementation. Production-size
+executability of the new structural variants was not established by the
+cancelled gates; their actual training runs provide that check.
