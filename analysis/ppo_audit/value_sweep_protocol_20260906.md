@@ -1,5 +1,12 @@
 # Value-learning and PPO regression sweep
 
+**Superseded on 6 September 2026 by explicit user authorization to use all six
+GPUs for interface/coverage verification.** Read
+`interface_verification_protocol_20260906.md` and monitor
+`/workspace/majepa_interface_verify_20260906/queue.json` instead. Preserve this
+sweep's completed and interrupted results. Do not resume its pending jobs or
+its old checkpoint keeper. The original 48-hour deadline still applies.
+
 The user authorized a larger sweep on the existing six-A100 pod, with a decision
 within 48 hours. Existing matrix jobs retain their GPUs through final evaluation.
 The first available GPU starts the factual-target arm. Source snapshots and all

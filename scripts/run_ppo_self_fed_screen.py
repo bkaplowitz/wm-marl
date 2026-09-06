@@ -175,6 +175,7 @@ def validate_profile(args, run, env):
             "anchors": 8,
             "scale": run.self_fed_scale,
             "consumer_kl_scale": 0.0,
+            "trajectory_kl_scale": 0.0,
         }
         if run.recurrent
         else None

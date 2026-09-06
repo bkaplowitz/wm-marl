@@ -204,6 +204,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                     for value in (
                         float(self_fed.scale),
                         float(self_fed.consumer_kl_scale),
+                        float(self_fed.get("trajectory_kl_scale", 0.0)),
                     )
                 )
             ):
@@ -352,6 +353,10 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             self.scales["ctde_self_fed_consumer_kl"] = scale * float(
                 marl.ctde.self_fed.consumer_kl_scale
             )
+            if float(marl.ctde.self_fed.get("trajectory_kl_scale", 0.0)):
+                self.scales["ctde_self_fed_trajectory_kl"] = scale * float(
+                    marl.ctde.self_fed.trajectory_kl_scale
+                )
         if self.ctde_multistep_jepa_enabled:
             if not self.two_branch_replay:
                 raise ValueError(

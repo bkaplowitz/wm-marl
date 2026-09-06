@@ -86,7 +86,7 @@ def scatter_sample_mean(value, anchors, valid, destination_valid, *, team_loss=F
     return grid.at[anchors.batch, anchors.time].add(value)
 
 
-def frozen_posterior(dynamics, embedding, deter):
+def frozen_posterior(dynamics, embedding, deter, *, history_gradient=False):
     """Frozen parameter Jacobian, live input Jacobian, no state creation/writes."""
     prefix = dynamics.path + "/"
     params = {
@@ -97,7 +97,7 @@ def frozen_posterior(dynamics, embedding, deter):
     _, logits = nj.pure(dynamics.posterior, nested=True)(
         params,
         nn.cast(embedding),
-        nn.cast(jax.lax.stop_gradient(deter)),
+        nn.cast(deter if history_gradient else jax.lax.stop_gradient(deter)),
         create=False,
         modify=False,
     )
@@ -167,6 +167,7 @@ def self_fed_losses(agent, online, features, entries, ema, obs, prevact):
     cfg = agent.config.marl.ctde.self_fed
     features, entries = recurrent_training_inputs(agent, features, entries, obs)
     bptt_steps = int(cfg.get("bptt_steps", 1))
+    trajectory_kl = float(cfg.get("trajectory_kl_scale", 0.0)) > 0
     horizons = tuple(int(value) for value in cfg.horizons)
     maximum = max(horizons)
     group = agent.team.unfold_sequence
@@ -186,6 +187,8 @@ def self_fed_losses(agent, online, features, entries, ema, obs, prevact):
             "alive": alive,
         }
     )
+    if trajectory_kl:
+        targets["factual_deter"] = stop(group(features["deter"]))
     team_valid, local_valid = endpoint_validity(first, last, present, alive, maximum)
     destination = group(agent.validity(obs)).astype(bool)
     eligible = local_valid[:, :, 1].any(-1) & destination.any(-1)
@@ -326,6 +329,24 @@ def self_fed_losses(agent, online, features, entries, ema, obs, prevact):
                     prediction_logits,
                     target_logits,
                     agent.dyn.unimix,
+                )
+            )
+        if trajectory_kl:
+            # Compare the actually induced recurrent posterior with the factual
+            # history posterior, rather than evaluating both on predicted history.
+            # Local parameters and factual targets stay frozen; the live history
+            # Jacobian credits the joint producer through the existing BPTT window.
+            prediction_logits = frozen_posterior(
+                agent.dyn, agent.team.fold_batch(embedding), local["deter"],
+                history_gradient=True,
+            )
+            target_logits = frozen_posterior(
+                agent.dyn, agent.team.fold_batch(target["online"]),
+                agent.team.fold_batch(target["factual_deter"]),
+            )
+            losses["trajectory_kl"] = agent.team.unfold_batch(
+                mixed_posterior_kl(
+                    prediction_logits, target_logits, agent.dyn.unimix,
                 )
             )
         reward, continuation = shared_team_outcomes(

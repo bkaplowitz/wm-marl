@@ -80,6 +80,7 @@ def validate_profile(args, run, env):
             anchors=8,
             scale=0.1,
             consumer_kl_scale=0.0,
+            trajectory_kl_scale=0.0,
             fresh_history=run.fresh_history,
             bptt_steps=run.bptt_steps,
         ),

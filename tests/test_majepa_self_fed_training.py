@@ -379,13 +379,14 @@ def test_frozen_consumer_keeps_input_gradient_and_blocks_params_state_and_teache
             np.testing.assert_array_equal(value, 0)
 
 
-def make_tiny(*, enabled, consumer=0.0, scale=0.1, length=4, anchors=2):
+def make_tiny(*, enabled, consumer=0.0, trajectory=0.0, scale=0.1, length=4, anchors=2):
     original, observations, actions = _tiny_learner()
     config = original.config.update(
         {
             "marl.ctde.self_fed.enabled": enabled,
             "marl.ctde.self_fed.anchors": anchors,
             "marl.ctde.self_fed.consumer_kl_scale": consumer,
+            "marl.ctde.self_fed.trajectory_kl_scale": trajectory,
             "marl.ctde.self_fed.scale": scale,
             "batch_length": length,
         }
@@ -395,7 +396,7 @@ def make_tiny(*, enabled, consumer=0.0, scale=0.1, length=4, anchors=2):
     return model, observations, actions
 
 
-@pytest.mark.parametrize("name", ["scale", "consumer"])
+@pytest.mark.parametrize("name", ["scale", "consumer", "trajectory"])
 @pytest.mark.parametrize("value", [-0.1, float("inf"), float("nan")])
 def test_nonfinite_or_negative_scales_are_rejected(name, value):
     with pytest.raises(ValueError, match="finite nonnegative scales"):
@@ -506,12 +507,12 @@ def test_default_off_and_enabled_zero_scale_preserve_initialization_and_full_tra
             exact_tree(reference_result, result)
 
 
-@pytest.mark.parametrize("bptt_steps", [1, 2])
+@pytest.mark.parametrize("bptt_steps,trajectory", [(1, 0.0), (2, 0.0), (2, 0.1)])
 def test_auxiliary_gradients_are_joint_only_including_frozen_consumer_posterior(
-    bptt_steps,
+    bptt_steps, trajectory,
 ):
     learner, observations, actions = make_tiny(
-        enabled=True, consumer=0.1 if bptt_steps == 1 else 0.0
+        enabled=True, consumer=0.1 if bptt_steps == 1 else 0.0, trajectory=trajectory,
     )
     learner.config = elements.Config(
         {**learner.config.flat, "marl.ctde.self_fed.bptt_steps": bptt_steps}
@@ -553,6 +554,8 @@ def test_auxiliary_gradients_are_joint_only_including_frozen_consumer_posterior(
         jax.value_and_grad(differentiate, has_aux=True, allow_int=True)
     )(state)
     _assert_finite(metrics)
+    if trajectory:
+        assert float(metrics["ctde/self_fed_train_h2/trajectory_kl_loss"]) > 0
     magnitude = {}
     for key, value in gradients.items():
         if str(value.dtype) == "[('float0', 'V')]":
