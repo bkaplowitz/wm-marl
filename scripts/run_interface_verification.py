@@ -189,26 +189,37 @@ def execute(children, command, log, env):
 
 
 def offline_job(root, job, gpu, children):
-    output = root / "offline" / job["name"]
+    output = root / "offline" / job.get("output_name", job["name"])
+    attempt = int(job.get("attempt", 0))
+    wandb_id = job.get("wandb_id", f"ifv-{job['name']}")
     env = {**os.environ, "CUDA_VISIBLE_DEVICES": str(gpu),
         "PYTHONPATH": f"{SOURCE}/src:/workspace/external/dreamerv3",
         "XLA_PYTHON_CLIENT_PREALLOCATE": "false", "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.8",
         "OMP_NUM_THREADS": "4", "OPENBLAS_NUM_THREADS": "4", "MKL_NUM_THREADS": "4",
         "PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1"}
     run = MATRIX / f"bptt2-{job['map']}-seed{job['seed']}/train/run"
-    execute(children, [str(PYTHON), str(SOURCE / "scripts/verify_interface_offline.py"),
-        "--run", str(run), "--own", str(BANK / f"calibration-{job['map']}-s{job['seed']}/episodes.npz"),
-        "--strong", str(BANK / f"calibration-{job['map']}-s{job['strong_seed']}/episodes.npz"),
-        "--output", str(output), "--arm", job["arm"], "--coverage", job["coverage"],
-        "--updates", "500", "--wandb-id", f"ifv-{job['name']}"],
-        root / "workers" / f"{job['name']}.training.log", env)
+    if job.get("resume_stage") == "audit":
+        status = json.loads((output / "status.json").read_text())
+        if status["phase"] != "complete" or status["completed_updates"] != 500:
+            raise ValueError("Cannot resume audits without a verified completed model")
+    else:
+        execute(children, [str(PYTHON), str(SOURCE / "scripts/verify_interface_offline.py"),
+            "--run", str(run), "--own", str(BANK / f"calibration-{job['map']}-s{job['seed']}/episodes.npz"),
+            "--strong", str(BANK / f"calibration-{job['map']}-s{job['strong_seed']}/episodes.npz"),
+            "--output", str(output), "--arm", job["arm"], "--coverage", job["coverage"],
+            "--updates", "500", "--wandb-id", wandb_id],
+            root / "workers" / f"{job['name']}.a{attempt}.training.log", env)
     for phase, model_run in (("before", run), ("after", output / "run")):
+        if (output / f"{phase}.json").exists():
+            if len(json.loads((output / f"{phase}.json").read_text())["records"]) != 96:
+                raise ValueError("Incomplete prior audit must be preserved before retry")
+            continue
         execute(children, [str(PYTHON), str(SOURCE / "scripts/audit_causal_simulator.py"),
             "--run", str(model_run), "--replay", str(output / "data/heldout"),
             "--output", str(output / f"{phase}.json"), "--external", "/workspace/external/dreamerv3",
             "--platform", "cuda", "--roots", "96", "--max-episodes", "32", "--max-chunks", "2",
             "--horizons", "1", "2", "4", "5", "8", "--seed", "2718"],
-            root / "workers" / f"{job['name']}.{phase}.log", env)
+            root / "workers" / f"{job['name']}.a{attempt}.{phase}.log", env)
     before, after = [json.loads((output / f"{phase}.json").read_text()) for phase in ("before", "after")]
     def identity(row):
         return row["episode"], row["source"], row["root"]
@@ -218,7 +229,7 @@ def offline_job(root, job, gpu, children):
               "training": json.loads((output / "status.json").read_text())}
     base.atomic_json(output / "result.json", result)
     import wandb
-    remote_run = wandb.Api().run(f"osaze-obahor/majepa-ppo-treatments/ifv-{job['name']}")
+    remote_run = wandb.Api().run(f"osaze-obahor/majepa-ppo-treatments/{wandb_id}")
     remote_run.summary["heldout_before"] = result["before"]
     remote_run.summary["heldout_after"] = result["after"]
     remote_run.summary["verification_complete"] = True
@@ -249,7 +260,10 @@ def worker(root, gpu):
                 kind = "offline" if offline else "online"
                 state["phase"] = kind
                 pending = [j for j in state["jobs"] if j["kind"] == kind and j["status"] == "pending"]
-                if not pending:
+                if kind == "online" and not state.get("storage_ready", False):
+                    state["phase"] = "waiting_for_verified_storage_archive"
+                    job = None
+                elif not pending:
                     if not any(j["status"] == "running" for j in state["jobs"]):
                         state["phase"] = "complete"
                         return

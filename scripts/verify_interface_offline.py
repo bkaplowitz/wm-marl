@@ -211,6 +211,14 @@ def main():
         with (checkpoint / "agent.pkl").open("rb") as stream:
             payload = pickle.load(stream)
         payload["params"].update({k: np.asarray(v) for k, v in replacement.items()})
+        # The next stage only audits the simulator. Avoid duplicating unrelated
+        # actor/critic weights and 1.1 GB of optimizer state in each diagnostic.
+        payload = {
+            "params": {k: v for k, v in payload["params"].items()
+                       if k.startswith(("enc/", "dyn/", *TRAIN_PREFIXES))},
+            "counters": payload.get("counters", {}),
+            "simulator_audit_only": True,
+        }
         target = args.output / "run/ckpt/diagnostic-final"
         target.mkdir(parents=True)
         with (target / "agent.pkl").open("wb") as stream:
@@ -224,6 +232,7 @@ def main():
         status.update(phase="complete", finished_at=time.time(),
                       original_checkpoint_unchanged=True,
                       frozen_parameter_keys_unchanged=True,
+                      checkpoint_kind="simulator_audit_only",
                       output_checkpoint=str(target))
         write(args.output / "status.json", status)
         run.summary.update(status)
@@ -233,7 +242,7 @@ def main():
         raise
     finally:
         history.close()
-        run.finish()
+        run.finish(exit_code=int(status["phase"] == "failed"))
 
 
 if __name__ == "__main__":
