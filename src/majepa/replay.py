@@ -119,7 +119,13 @@ class DualViewReplay(embodied.replay.Replay):
     _BEHAVIOR_MODES = frozenset({"train_behavior", "report", "eval"})
 
     def __init__(
-        self, *, optimized_length=None, recency_decay=0.9998, seed=0, **kwargs
+        self,
+        *,
+        optimized_length=None,
+        recency_decay=0.9998,
+        seed=0,
+        isolate_report_rng=False,
+        **kwargs,
     ):
         decay = float(recency_decay)
         if not 0.0 < decay <= 1.0:
@@ -142,6 +148,11 @@ class DualViewReplay(embodied.replay.Replay):
         # corresponding behavior root, even when both streams advance in lock
         # step in the learner.
         self.behavior_sampler = embodied.selectors.Uniform(seed=int(seed) + 1)
+        self.report_sampler = (
+            embodied.selectors.Uniform(seed=int(seed) + 2)
+            if isolate_report_rng
+            else None
+        )
         self._view_stats = {
             "world_samples": 0,
             "behavior_samples": 0,
@@ -158,12 +169,16 @@ class DualViewReplay(embodied.replay.Replay):
         # The base replay owns the item table and recency selector. This second
         # selector stores only integer item identifiers.
         self.behavior_sampler[itemid] = ()
+        if self.report_sampler is not None:
+            self.report_sampler[itemid] = ()
 
     def _remove(self):
         """Evict the same FIFO item from both selector views."""
 
         itemid = self.fifo[0]
         del self.behavior_sampler[itemid]
+        if self.report_sampler is not None:
+            del self.report_sampler[itemid]
         super()._remove()
 
     def _sample(self, mode):
@@ -173,6 +188,8 @@ class DualViewReplay(embodied.replay.Replay):
         is_world = mode in self._WORLD_MODES
         selector = self.sampler if is_world else self.behavior_sampler
         is_training = mode in {"train", "train_world", "train_behavior"}
+        if not is_training and self.report_sampler is not None:
+            selector = self.report_sampler
         if is_training:
             # Preserve upstream replay-ratio accounting while exposing the two
             # view-specific counts separately below.

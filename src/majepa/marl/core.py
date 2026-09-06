@@ -2444,7 +2444,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         enc_carry, dyn_carry, dec_carry, prevact = carry
         normal_carry = (enc_carry, dyn_carry, dec_carry)
         stepid = data["stepid"]
-        obs = {key: data[key] for key in self.obs_space}
+        obs = self._replay_observations(data)
 
         def prepend(initial, sequence):
             return jnp.concatenate([initial[:, None], sequence[:, :-1]], 1)
@@ -2477,7 +2477,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             replay_dyn_carry,
             {},
         )
-        replay_obs = {key: rhs(data[key]) for key in self.obs_space}
+        replay_obs = rhs(self._replay_observations(data))
         replay_prevact = {key: data[key][:, context - 1 : -1] for key in self.act_space}
         replay_stepid = rhs(stepid)
         first_chunk = data["consec"][:, 0] == 0

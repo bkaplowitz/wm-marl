@@ -154,7 +154,12 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
             "_behavior_replay/",
         )
     stream_train = iter(agent.stream(train_source))
-    stream_report = iter(agent.stream(report_source))
+    if bool(getattr(args, "isolate_report_rng", False)):
+        from .streams import isolated_report_stream
+
+        stream_report = iter(isolated_report_stream(agent, report_source))
+    else:
+        stream_report = iter(agent.stream(report_source))
     carry_train = [agent.init_train(args.batch_size)]
     carry_report = agent.init_report(args.batch_size)
     learner_update_calls = elements.Counter()

@@ -273,6 +273,7 @@ def make_replay(config, folder, mode="train"):
             optimized_length=int(consec * batlen),
             recency_decay=float(config.replay.recency_decay),
             seed=int(config.seed),
+            isolate_report_rng=bool(config.run.isolate_report_rng),
         )
     if sampling != "uniform" and mode == "train":
         raise ValueError(f"unsupported replay sampling: {sampling!r}")

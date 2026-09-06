@@ -17,6 +17,7 @@ from .ppo import (
     value_objective,
 )
 from .replay_value import replay_lambda_return
+from .factual_value import factual_vtrace_return, joint_action_logratio
 from .representation import (
     embedding_prediction_loss,
     embedding_std,
@@ -89,28 +90,32 @@ class LearnerMixin:
         metrics.update(batch_metrics)
         actor_epochs = []
         critic_epochs = []
-        for _ in range(int(self.config.ppo.epochs)):
-            actor_optimizer, actor_metrics = self.opt.step_group(
-                "actor",
-                self._ppo_actor_loss,
-                ppo_batch,
-                has_aux=True,
-                active=ppo_active,
-            )
-            critic_optimizer, critic_metrics = self.opt.step_group(
-                "critic",
-                self._ppo_critic_loss,
-                ppo_batch,
-                has_aux=True,
-                active=ppo_active,
-            )
-            actor_epochs.append(actor_metrics)
-            critic_epochs.append(critic_metrics)
+        for epoch in range(max(self.ppo_actor_epochs, self.ppo_critic_epochs)):
+            if epoch < self.ppo_actor_epochs:
+                actor_optimizer, actor_metrics = self.opt.step_group(
+                    "actor",
+                    self._ppo_actor_loss,
+                    ppo_batch,
+                    has_aux=True,
+                    active=ppo_active,
+                )
+                actor_epochs.append(actor_metrics)
+            if epoch < self.ppo_critic_epochs:
+                critic_optimizer, critic_metrics = self.opt.step_group(
+                    "critic",
+                    self._ppo_critic_loss,
+                    ppo_batch,
+                    has_aux=True,
+                    active=ppo_active,
+                )
+                critic_epochs.append(critic_metrics)
         metrics.update(actor_optimizer)
         metrics.update(critic_optimizer)
         metrics.update(self._ppo_epoch_metrics("actor", actor_epochs))
         metrics.update(self._ppo_epoch_metrics("critic", critic_epochs))
         metrics["ppo/epochs"] = jnp.asarray(self.config.ppo.epochs, jnp.float32)
+        metrics["ppo/actor_epochs"] = jnp.asarray(self.ppo_actor_epochs, jnp.float32)
+        metrics["ppo/critic_epochs"] = jnp.asarray(self.ppo_critic_epochs, jnp.float32)
         metrics["ppo/active"] = ppo_active.astype(jnp.float32)
         metrics["ppo/entropy_coefficient"] = entropy_coefficient
 
@@ -220,6 +225,15 @@ class LearnerMixin:
         reduced = {key: masked_mean(value, valid) for key, value in losses.items()}
         metrics.update({f"loss/{key}": value for key, value in reduced.items()})
         loss = sum(value * self.scales[key] for key, value in reduced.items())
+        if getattr(self, "factual_representation_scale", 0.0):
+            # Supervise current encoder/history features with stopped targets.
+            # PPO and the central critic retain their normal gradient boundaries.
+            auxiliary, aux_metrics = self._factual_representation_loss(repfeat, obs)
+            loss += self.factual_representation_scale * auxiliary
+            metrics["loss/factual_representation"] = auxiliary
+            metrics.update(
+                {f"ctde/factual_representation/{k}": v for k, v in aux_metrics.items()}
+            )
         metrics["replay_views/world_reward_mean"] = sg(
             obs["reward"].astype(jnp.float32).mean()
         )
@@ -242,7 +256,7 @@ class LearnerMixin:
                 f"context={context}, length={total_length}"
             )
         enc_carry, dyn_carry, dec_carry, initial_prevact = self._local_initial(batch)
-        obs = {key: data[key] for key in self.obs_space}
+        obs = self._replay_observations(data)
 
         def prepend(initial, sequence):
             return jnp.concatenate([initial[:, None], sequence[:, :-1]], axis=1)
@@ -470,11 +484,12 @@ class LearnerMixin:
                 lam=float(self.config.ppo.lam),
             )
         )
-        advantage = normalize_advantage(
-            advantage,
-            valid,
-            trajectory_weight,
-        )
+        advantage_scale = jnp.asarray(1.0, jnp.float32)
+        if self.ppo_return_norm is None:
+            advantage = normalize_advantage(advantage, valid, trajectory_weight)
+        else:
+            _, advantage_scale = self.ppo_return_norm(target_return, True, valid)
+            advantage = jnp.where(valid, advantage / sg(advantage_scale), 0.0)
 
         def decisions(tree):
             return jax.tree.map(lambda value: value[:, :-1], tree)
@@ -500,6 +515,7 @@ class LearnerMixin:
                 repfeat, obs, target_return[:, 0], starts_count
             )
         metrics = {
+            "ppo/return_percentile_scale": advantage_scale,
             **critic_metrics,
             **self.imagination_interface_metrics(features, policy_features),
             **self.imagination_behavior_metrics(actions, valid, auxiliary),
@@ -547,6 +563,23 @@ class LearnerMixin:
         """
 
         features = jax.tree.map(lambda value: value[:, -starts_count:], features)
+        if getattr(self, "factual_value_enabled", False):
+            fields = {
+                "reward",
+                "is_first",
+                "is_last",
+                "is_terminal",
+                "agent_present",
+                "agent_alive",
+                "controllable_alive",
+                "action_mask",
+                "behavior_logprob",
+                "_replay_action",
+            }
+            return self._prepare_factual_value_batch(
+                features,
+                {k: v[:, -starts_count:] for k, v in obs.items() if k in fields},
+            )
         selected = {
             key: obs[key][:, -starts_count:]
             for key in ("reward", "is_first", "is_last", "is_terminal", "agent_present")
@@ -587,6 +620,59 @@ class LearnerMixin:
             }
         )
 
+    def _prepare_factual_value_batch(self, features, obs):
+        context = {
+            "present": self.team.unfold_sequence(obs["agent_present"]),
+            "controllable_alive": self.team.unfold_sequence(self._controllable(obs)),
+        }
+        frozen = sg(features)
+        # The world auxiliary can run before the first imagined PPO batch has
+        # initialized the fast critic. SlowModel needs that source to exist.
+        self.critic(frozen, 2, slow=False, context=context)
+        values = self.critic(frozen, 2, slow=True, context=context).pred()
+        distribution = self.policy_distribution(
+            self.feat2tensor(frozen), 2, action_mask=obs["action_mask"]
+        )[self.action_mask_key]
+        current = -distribution.loss(obs["_replay_action"])
+        ratios = joint_action_logratio(
+            current,
+            obs["behavior_logprob"],
+            self._controllable(obs) & obs["agent_present"],
+            self.team,
+        )
+        cfg = self.config.ppo.factual_value
+        targets, valid, metrics = factual_vtrace_return(
+            obs["reward"],
+            obs["is_first"],
+            obs["is_last"],
+            obs["is_terminal"],
+            obs["agent_present"],
+            values,
+            ratios,
+            discount=1.0 - 1.0 / float(self.config.horizon),
+            lam=float(self.config.ppo.replay_value_lam),
+            rho_clip=float(cfg.rho_clip),
+            c_clip=float(cfg.c_clip),
+        )
+        return sg(
+            {
+                "features": jax.tree.map(lambda value: value[:, :-1], features),
+                "context": jax.tree.map(lambda value: value[:, :-1], context),
+                "target_return": targets,
+                "valid": valid,
+                "trace_metrics": metrics,
+            }
+        )
+
+    def _factual_representation_loss(self, features, obs):
+        factual = self._prepare_factual_value_batch(features, obs)
+        return value_objective(
+            self.real_value(self.feat2tensor(features)[:, :-1], 2),
+            factual["target_return"],
+            factual["valid"],
+            jnp.ones_like(factual["target_return"]),
+        )
+
     def _ppo_actor_loss(self, batch):
         policy = self.policy_distribution(
             batch["policy_inputs"],
@@ -622,6 +708,24 @@ class LearnerMixin:
             batch["critic_valid"],
             batch["trajectory_weight"],
         )
+        slowreg = float(self.config.ppo.get("critic_slowreg", 0.0))
+        if slowreg:
+            slow_prediction = sg(
+                self.critic(
+                    batch["critic_features"],
+                    2,
+                    slow=True,
+                    context=batch["critic_context"],
+                ).pred()
+            )
+            anchor_loss, _ = value_objective(
+                value,
+                slow_prediction,
+                batch["critic_valid"],
+                batch["trajectory_weight"],
+            )
+            loss += slowreg * anchor_loss
+            metrics["slow_anchor_loss"] = anchor_loss
         if "replay_value" in batch:
             replay = batch["replay_value"]
             replay_value = self.critic(
@@ -633,11 +737,31 @@ class LearnerMixin:
                 replay["valid"],
                 jnp.ones_like(replay["target_return"]),
             )
+            if slowreg:
+                slow_prediction = sg(
+                    self.critic(
+                        replay["features"],
+                        2,
+                        slow=True,
+                        context=replay["context"],
+                    ).pred()
+                )
+                anchor_loss, _ = value_objective(
+                    replay_value,
+                    slow_prediction,
+                    replay["valid"],
+                    jnp.ones_like(replay["target_return"]),
+                )
+                replay_loss += slowreg * anchor_loss
+                replay_metrics["slow_anchor_loss"] = anchor_loss
             loss += float(self.config.ppo.replay_value_scale) * replay_loss
             metrics.update(
                 {f"replay_{key}": value for key, value in replay_metrics.items()}
             )
-            metrics["total_loss"] = loss
+            metrics.update(
+                {f"factual_{k}": v for k, v in replay.get("trace_metrics", {}).items()}
+            )
+        metrics["total_loss"] = loss
         return loss, metrics
 
     def _update_slow_models(self, ppo_active):

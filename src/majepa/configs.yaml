@@ -40,6 +40,7 @@ defaults:
     ppo_start_step: 0
     log_every: 120
     report_every: 300
+    isolate_report_rng: False
     save_every: 900
     final_save: True
     envs: 1
@@ -121,6 +122,10 @@ defaults:
     contdisc: True
     ppo:
       epochs: 5
+      actor_epochs: 0
+      critic_epochs: 0
+      advantage_mode: batch
+      critic_slowreg: 0.0
       clip_epsilon: 0.2
       entropy_coefficient: 1e-2
       entropy_schedule: {enabled: False, initial: 1e-3, final: 3e-4, decay_steps: 40000, schedule: cosine, normalize: True}
@@ -130,6 +135,7 @@ defaults:
       optimizer_warmup: 0
       replay_value_scale: 0.3
       replay_value_lam: 0.95
+      factual_value: {enabled: False, rho_clip: 1.0, c_clip: 1.0, representation_scale: 0.0}
     slowvalue: {rate: 1.0, every: 1}
     reward_grad: True
     report: True
@@ -200,6 +206,17 @@ ma_jepa:
           act: silu
           norm: rms
           winit: trunc_normal_in
+
+# Optional treatments, applied after ma_jepa. Matrix defaults remain unchanged.
+factual_value:
+  agent:
+    ppo:
+      factual_value: {enabled: True}
+
+factual_value_representation:
+  agent:
+    ppo:
+      factual_value: {enabled: True, representation_scale: 0.1}
 
 smac_vector:
   task: smac_3m

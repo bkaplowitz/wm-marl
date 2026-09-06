@@ -8,6 +8,7 @@ import numpy as np
 
 from .marl.axes import MODEL_EXCLUDED_FIELDS
 from .models.heads import MLPHead
+from .models.normalize import Normalize
 from .models.target import CriticTarget
 from .training.learner import LearnerMixin
 from .training.optimization import OptimizationMixin
@@ -36,6 +37,22 @@ class Agent(
         self.obs_space = obs_space
         self.act_space = act_space
         self.config = config
+        factual = getattr(config.ppo, "factual_value", {})
+        self.factual_value_enabled = bool(factual.get("enabled", False))
+        self.factual_representation_scale = float(
+            factual.get("representation_scale", 0.0)
+        )
+        if self.factual_representation_scale < 0:
+            raise ValueError("factual representation scale must be nonnegative")
+        if self.factual_representation_scale and not self.factual_value_enabled:
+            raise ValueError(
+                "factual representation supervision requires factual targets"
+            )
+        if self.factual_value_enabled:
+            if not 0 < float(factual.c_clip) <= float(factual.rho_clip):
+                raise ValueError("factual trace requires 0 < c_clip <= rho_clip")
+            if not float(config.ppo.replay_value_scale):
+                raise ValueError("factual targets require replay value training")
         self.replay_sampling = str(getattr(config, "replay_sampling", "uniform"))
         self.two_branch_replay = self.replay_sampling == "recent_world_uniform_behavior"
         self.ppo_start_step = int(getattr(config, "ppo_start_step", 0))
@@ -54,6 +71,32 @@ class Agent(
             )
         if int(config.ppo.epochs) < 1:
             raise ValueError("PPO requires at least one optimization epoch")
+        self.ppo_actor_epochs = int(config.ppo.get("actor_epochs", 0)) or int(
+            config.ppo.epochs
+        )
+        self.ppo_critic_epochs = int(config.ppo.get("critic_epochs", 0)) or int(
+            config.ppo.epochs
+        )
+        if min(self.ppo_actor_epochs, self.ppo_critic_epochs) < 1:
+            raise ValueError("Actor and critic epoch counts must be positive")
+        self.ppo_advantage_mode = str(config.ppo.get("advantage_mode", "batch"))
+        if self.ppo_advantage_mode not in {"batch", "return_percentile"}:
+            raise ValueError("Unsupported PPO advantage mode")
+        if float(config.ppo.get("critic_slowreg", 0.0)) < 0:
+            raise ValueError("Critic slow regularization must be nonnegative")
+        self.ppo_return_norm = (
+            Normalize(
+                impl="perc",
+                rate=0.01,
+                limit=1.0,
+                perclo=5.0,
+                perchi=95.0,
+                debias=False,
+                name="ppo_return_norm",
+            )
+            if self.ppo_advantage_mode == "return_percentile"
+            else None
+        )
         if not 0.0 < float(config.ppo.clip_epsilon) < 1.0:
             raise ValueError("PPO clip_epsilon must be in (0, 1)")
         if float(config.ppo.entropy_coefficient) < 0.0:
@@ -133,6 +176,11 @@ class Agent(
         else:
             self.actmask = None
         self.val, self.slowval = self._make_value_models(scalar, config)
+        self.real_value = (
+            embodied.jax.MLPHead(scalar, **config.value, name="real_value")
+            if self.factual_representation_scale
+            else None
+        )
 
         additional_modules = self.additional_modules()
         self.modules = [
@@ -158,6 +206,9 @@ class Agent(
         if ctde_module_ids.intersection(ctde_actor_module_ids):
             raise ValueError("CTDE world and actor modules must be disjoint")
         world_modules = [self.dyn, self.enc, self.rew, self.con]
+        if self.real_value is not None:
+            self.modules.append(self.real_value)
+            world_modules.append(self.real_value)
         if self.actmask is not None:
             world_modules.append(self.actmask)
         world_modules.extend(
@@ -208,6 +259,8 @@ class Agent(
             "consec": elements.Space(np.int32),
             "stepid": elements.Space(np.uint8, 20),
         }
+        if self.factual_value_enabled:
+            spaces["behavior_logprob"] = elements.Space(np.float32)
         if self.ppo_start_step or bool(self.config.ppo.entropy_schedule.enabled):
             # Runtime-only control input. It is injected after replay sampling,
             # so it never becomes replay content or changes sampled sequences.

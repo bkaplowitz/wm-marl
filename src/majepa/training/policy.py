@@ -50,6 +50,12 @@ class PolicyMixin:
                 )
             )
         }
+        if getattr(self, "factual_value_enabled", False):
+            # The distribution here is the actual legal collection mixture.
+            # Store probability for a_t alongside a_t, not at its arrival.
+            out["behavior_logprob"] = -policy[self.action_mask_key].loss(
+                act[self.action_mask_key]
+            )
         carry = (enc_carry, dyn_carry, dec_carry, act)
         if self.config.replay_context:
             entries = dict(

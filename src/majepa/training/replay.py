@@ -7,6 +7,14 @@ import jax.numpy as jnp
 
 
 class ReplayMixin:
+    def _replay_observations(self, data):
+        obs = {key: data[key] for key in self.obs_space}
+        if getattr(self, "factual_value_enabled", False):
+            # Metadata is not in obs_space and never enters the encoder.
+            obs["behavior_logprob"] = data["behavior_logprob"]
+            obs["_replay_action"] = data[self.action_mask_key]
+        return obs
+
     def dynamics_replay_entry_space(self):
         return self.dyn.entry_space
 
@@ -23,7 +31,7 @@ class ReplayMixin:
         enc_carry, dyn_carry, dec_carry, prevact = carry
         carry = (enc_carry, dyn_carry, dec_carry)
         stepid = data["stepid"]
-        obs = {key: data[key] for key in self.obs_space}
+        obs = self._replay_observations(data)
 
         def prepend(initial, sequence):
             return jnp.concatenate([initial[:, None], sequence[:, :-1]], 1)
@@ -51,7 +59,7 @@ class ReplayMixin:
                 else {}
             ),
         )
-        replay_obs = {key: rhs(data[key]) for key in self.obs_space}
+        replay_obs = rhs(self._replay_observations(data))
         replay_prevact = {key: data[key][:, context - 1 : -1] for key in self.act_space}
         replay_stepid = rhs(stepid)
 

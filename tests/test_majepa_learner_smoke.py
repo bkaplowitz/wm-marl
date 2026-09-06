@@ -7,13 +7,14 @@ import jax
 import jax.numpy as jnp
 import ninjax as nj
 import numpy as np
+import pytest
 
 from majepa.main import _load_configs, _resolve_config_profiles
 from majepa.marl.axes import BEHAVIOR_REPLAY_PREFIX, split_prefixed_data
 from majepa.marl.core import MARLCore
 
 
-def _tiny_learner():
+def _tiny_learner(overrides=None):
     config = _resolve_config_profiles(
         _load_configs(), ("smac_vector", "ma_jepa", "debug")
     ).update(
@@ -38,6 +39,8 @@ def _tiny_learner():
             "agent.sigreg.num_proj": 8,
         }
     )
+    if overrides:
+        config = config.update(overrides)
     config = elements.Config(
         **config.agent,
         batch_size=config.batch_size,
@@ -87,6 +90,8 @@ def _synthetic_replay(learner, obs_space, act_space):
     noop = jnp.zeros_like(mask).at[..., 0].set(True)
     data["action_mask"] = jnp.where(alive[..., None], mask, noop)
     data["action"] = jnp.where(alive, 1, 0).astype(jnp.int32)
+    if "behavior_logprob" in data:
+        data["behavior_logprob"] = jnp.where(alive, -jnp.log(7.0), 0.0)
     data["is_first"] = data["is_first"].at[:, 0].set(True).at[1, 5].set(True)
     data["is_last"] = data["is_last"].at[0, 7].set(True).at[1, 4].set(True)
     data["is_terminal"] = data["is_last"]
@@ -179,3 +184,71 @@ def test_full_learner_jit_warmup_and_ppo_with_death_and_episode_resets():
     _assert_finite((report_carry, report_metrics))
     assert "ctde/self_fed_h1/reward_rmse" in report_metrics
     assert "ctde/self_fed_h2/reward_rmse" in report_metrics
+
+
+@pytest.mark.parametrize(
+    "representation_scale,controls",
+    [
+        (0.0, False),
+        (0.1, False),
+        pytest.param(0.1, True, id="sweep_controls"),
+    ],
+)
+def test_factual_value_full_learner_update(representation_scale, controls):
+    learner, obs_space, act_space = _tiny_learner(
+        {
+            "agent.ppo.factual_value.enabled": True,
+            "agent.ppo.factual_value.representation_scale": representation_scale,
+            "agent.marl.ctde.self_fed.enabled": True,
+            "agent.marl.ctde.self_fed.horizons": [2],
+            "agent.marl.ctde.self_fed.anchors": 2,
+            "agent.marl.ctde.self_fed.bptt_steps": 2,
+            **(
+                {
+                    "agent.ppo.actor_epochs": 1,
+                    "agent.ppo.critic_epochs": 2,
+                    "agent.ppo.advantage_mode": "return_percentile",
+                    "agent.ppo.critic_slowreg": 1.0,
+                }
+                if controls
+                else {}
+            ),
+        }
+    )
+    data = _synthetic_replay(learner, obs_space, act_space)
+    data = dict(data, _environment_step=jnp.full((2, 8), 10, jnp.int32))
+    carry = learner.init_train(2)
+    state = nj.init(learner.train)({}, carry, data, seed=802)
+    train = jax.jit(nj.pure(learner.train))
+    updated, (carry, _, metrics) = train(state, carry, data, seed=803)
+    _assert_finite((updated, carry, metrics))
+    assert float(metrics["ppo/batch_illegal_action_fraction"]) == 0.0
+    assert 0.0 < float(metrics["ppo/critic/final_factual_relative_ess"]) <= 1.00001
+    assert float(metrics["opt/actor/updates"]) == learner.ppo_actor_epochs
+    assert float(metrics["opt/critic/updates"]) == learner.ppo_critic_epochs
+    if controls:
+        assert float(metrics["ppo/critic/final_slow_anchor_loss"]) > 0
+        assert float(metrics["ppo/critic/final_replay_slow_anchor_loss"]) > 0
+        assert float(metrics["ppo/return_percentile_scale"]) >= 1
+    if representation_scale:
+        assert float(metrics["loss/factual_representation"]) > 0.0
+        assert any(
+            not np.array_equal(v, updated[k])
+            for k, v in state.items()
+            if k.startswith("real_value/")
+        )
+    else:
+        assert not any(k.startswith("real_value/") for k in updated)
+
+    _, behavior = split_prefixed_data(data)
+    behavior = learner.team.local_sequence_data(behavior)
+
+    def inspect():
+        batch, _ = learner._prepare_ppo_batch(behavior, jnp.float32(0.01))
+        _, actor_metrics = learner._ppo_actor_loss(batch)
+        return batch["replay_value"], actor_metrics
+
+    _, (replay, actor) = jax.jit(nj.pure(inspect))(updated, seed=804)
+    _assert_finite((replay, actor))
+    np.testing.assert_allclose(actor["ratio"], 1.0, atol=1e-6)
+    assert replay["features"]["deter"].shape[:2] == replay["target_return"].shape
