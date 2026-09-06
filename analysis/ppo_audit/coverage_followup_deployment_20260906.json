@@ -1,0 +1,417 @@
+{
+  "at": 1788725383.9681563,
+  "host": "root@154.54.102.56",
+  "ssh_port": 14808,
+  "experiment_root": "/workspace/majepa_coverage_followup_20260906",
+  "source": "/workspace/ma_jepa_coverage_followup_3d4aeda_20260906",
+  "commit": "3d4aedadab7db7c118345c88c6d030788cf5fc19",
+  "source_sha256": "101751eba8d04bb6f4db7348760703fc15e97d25d6ac00c80bd1ab289c227eb8",
+  "changed_package_files": [
+    "src/majepa/replay.py",
+    "src/majepa/main.py",
+    "src/majepa/configs.yaml"
+  ],
+  "workers": [
+    {
+      "gpu": 0,
+      "pid": 736274,
+      "log": "/workspace/majepa_coverage_followup_20260906/workers/gpu0.launch.log",
+      "status": {
+        "phase": "waiting_for_current_matrix",
+        "pid": 736274,
+        "updated_at": 1788725381.2645757
+      }
+    },
+    {
+      "gpu": 1,
+      "pid": 736275,
+      "log": "/workspace/majepa_coverage_followup_20260906/workers/gpu1.launch.log",
+      "status": {
+        "phase": "waiting_for_current_matrix",
+        "pid": 736275,
+        "updated_at": 1788725381.269466
+      }
+    },
+    {
+      "gpu": 2,
+      "pid": 736276,
+      "log": "/workspace/majepa_coverage_followup_20260906/workers/gpu2.launch.log",
+      "status": {
+        "phase": "waiting_for_current_matrix",
+        "pid": 736276,
+        "updated_at": 1788725381.2726753
+      }
+    },
+    {
+      "gpu": 3,
+      "pid": 736277,
+      "log": "/workspace/majepa_coverage_followup_20260906/workers/gpu3.launch.log",
+      "status": {
+        "phase": "waiting_for_current_matrix",
+        "pid": 736277,
+        "updated_at": 1788725381.2992349
+      }
+    },
+    {
+      "gpu": 4,
+      "pid": 736278,
+      "log": "/workspace/majepa_coverage_followup_20260906/workers/gpu4.launch.log",
+      "status": {
+        "phase": "waiting_for_current_matrix",
+        "pid": 736278,
+        "updated_at": 1788725381.2734702
+      }
+    },
+    {
+      "gpu": 5,
+      "pid": 736279,
+      "log": "/workspace/majepa_coverage_followup_20260906/workers/gpu5.launch.log",
+      "status": {
+        "phase": "waiting_for_current_matrix",
+        "pid": 736279,
+        "updated_at": 1788725381.276656
+      }
+    }
+  ],
+  "queue_counts": {
+    "pending": 24
+  },
+  "dependency": "/workspace/majepa_interface_verify_20260906",
+  "dependency_counts": {
+    "complete": 18,
+    "running": 6,
+    "pending": 12
+  },
+  "claim_deadline": 1788853343.719265,
+  "decision_deadline": 1788864143.719265,
+  "validation": {
+    "replay_mixture_test": "1 passed",
+    "complete_control_config_comparisons": 48
+  },
+  "wandb_group": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/groups/ma-jepa-coverage-followup-20260906",
+  "storage_deduplication": {
+    "records": [
+      {
+        "path": "/workspace/majepa_recurrent_extensions_20260905/gates/slot0/inputs/checkpoint/agent.pkl",
+        "canonical": "/workspace/majepa_diagnostics_data_20260905/ckpt/20260905T074720F566169/agent.pkl",
+        "sha256": "df4206ac0e997d7c828a7a901439227a9a680096dfb757ddbc7a51c052045714",
+        "original_inode": 13765861,
+        "bytes": 1755214096,
+        "at": 1788725292.0231442
+      },
+      {
+        "path": "/workspace/majepa_recurrent_extensions_20260905/gates/slot1/inputs/checkpoint/agent.pkl",
+        "canonical": "/workspace/majepa_diagnostics_data_20260905/ckpt/20260905T074720F566169/agent.pkl",
+        "sha256": "df4206ac0e997d7c828a7a901439227a9a680096dfb757ddbc7a51c052045714",
+        "original_inode": 13765828,
+        "bytes": 1755214096,
+        "at": 1788725293.6100216
+      },
+      {
+        "path": "/workspace/majepa_self_fed_gate_20260905/disabled_control/inputs/checkpoint/agent.pkl",
+        "canonical": "/workspace/majepa_diagnostics_data_20260905/ckpt/20260905T074720F566169/agent.pkl",
+        "sha256": "df4206ac0e997d7c828a7a901439227a9a680096dfb757ddbc7a51c052045714",
+        "original_inode": 1636471,
+        "bytes": 1755214096,
+        "at": 1788725295.10519
+      },
+      {
+        "path": "/workspace/majepa_self_fed_gate_20260905/recurrent/inputs/checkpoint/agent.pkl",
+        "canonical": "/workspace/majepa_diagnostics_data_20260905/ckpt/20260905T074720F566169/agent.pkl",
+        "sha256": "df4206ac0e997d7c828a7a901439227a9a680096dfb757ddbc7a51c052045714",
+        "original_inode": 1726966,
+        "bytes": 1755214096,
+        "at": 1788725296.6380258
+      }
+    ],
+    "reclaimed_bytes": 7020856384,
+    "all_paths_and_full_content_preserved": true
+  },
+  "storage_cleanup": {
+    "at": 1788725648.978815,
+    "phase": "complete",
+    "plan": [
+      {
+        "reason": "Completed weak/abandoned setup: retain every model tensor; release optimizer state under prior unsuccessful-checkpoint cleanup authorization",
+        "run": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-2s3z-seed0",
+        "source": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-2s3z-seed0/train/run/ckpt/20260905T145025F895387/agent.pkl",
+        "win_rate": 0.24
+      },
+      {
+        "reason": "Completed weak/abandoned setup: retain every model tensor; release optimizer state under prior unsuccessful-checkpoint cleanup authorization",
+        "run": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-2s3z-seed1",
+        "source": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-2s3z-seed1/train/run/ckpt/20260905T203549F196400/agent.pkl",
+        "win_rate": 0.26
+      },
+      {
+        "reason": "Completed weak/abandoned setup: retain every model tensor; release optimizer state under prior unsuccessful-checkpoint cleanup authorization",
+        "run": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-2s3z-seed2",
+        "source": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-2s3z-seed2/train/run/ckpt/20260906T001642F769522/agent.pkl",
+        "win_rate": 0.26
+      },
+      {
+        "reason": "Completed weak/abandoned setup: retain every model tensor; release optimizer state under prior unsuccessful-checkpoint cleanup authorization",
+        "run": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-MMM-seed2",
+        "source": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-MMM-seed2/train/run/ckpt/20260906T012855F178401/agent.pkl",
+        "win_rate": 0.31
+      },
+      {
+        "reason": "Completed weak/abandoned setup: retain every model tensor; release optimizer state under prior unsuccessful-checkpoint cleanup authorization",
+        "run": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-8m-seed2",
+        "source": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-8m-seed2/train/run/ckpt/20260906T005346F234325/agent.pkl",
+        "win_rate": 0.44
+      },
+      {
+        "reason": "Completed weak/abandoned setup: retain every model tensor; release optimizer state under prior unsuccessful-checkpoint cleanup authorization",
+        "run": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-corridor-seed1",
+        "source": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-corridor-seed1/train/run/ckpt/20260906T093855F394228/agent.pkl",
+        "win_rate": 0.22
+      },
+      {
+        "reason": "Completed weak/abandoned setup: retain every model tensor; release optimizer state under prior unsuccessful-checkpoint cleanup authorization",
+        "run": "/workspace/majepa_value_sweep_20260906/runs/base-2s3z-seed0",
+        "source": "/workspace/majepa_value_sweep_20260906/runs/base-2s3z-seed0/train/run/ckpt/20260906T134836F617337/agent.pkl",
+        "win_rate": 0.25
+      },
+      {
+        "reason": "Completed weak/abandoned setup: retain every model tensor; release optimizer state under prior unsuccessful-checkpoint cleanup authorization",
+        "run": "/workspace/majepa_value_sweep_20260906/runs/fact-a1-2s3z-seed0",
+        "source": "/workspace/majepa_value_sweep_20260906/runs/fact-a1-2s3z-seed0/train/run/ckpt/20260906T151427F327491/agent.pkl",
+        "win_rate": 0.26
+      },
+      {
+        "reason": "Completed weak/abandoned setup: retain every model tensor; release optimizer state under prior unsuccessful-checkpoint cleanup authorization",
+        "run": "/workspace/majepa_value_sweep_20260906/runs/frep-a1-2s3z-seed0",
+        "source": "/workspace/majepa_value_sweep_20260906/runs/frep-a1-2s3z-seed0/train/run/ckpt/20260906T151853F986542/agent.pkl",
+        "win_rate": 0.36
+      },
+      {
+        "reason": "Completed weak/abandoned setup: retain every model tensor; release optimizer state under prior unsuccessful-checkpoint cleanup authorization",
+        "run": "/workspace/majepa_recurrent_capacity_20260905/runs/recurrent_wmlr1e4_actor2x256-2s3z-seed0",
+        "source": "/workspace/majepa_recurrent_capacity_20260905/runs/recurrent_wmlr1e4_actor2x256-2s3z-seed0/train/run/ckpt/20260905T130352F418193/agent.pkl",
+        "win_rate": 0.3828125
+      }
+    ],
+    "reclaimed_bytes": 16133736567,
+    "records": [
+      {
+        "after_final100": true,
+        "archive": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-2s3z-seed0/train/run/ckpt/20260905T145025F895387/agent.pkl.gz",
+        "at": 1788725680.3494933,
+        "compressed_bytes": 556485997,
+        "exact_optimizer_resume": false,
+        "kind": "all_model_weights_only",
+        "original_bytes": 1755214096,
+        "path": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-2s3z-seed0/train/run/ckpt/20260905T145025F895387/agent.pkl",
+        "reclaimed_bytes": 1198728099,
+        "restore": "gzip -dc agent.pkl.gz > agent.pkl; optimizer state is absent",
+        "retained_tensors": 477,
+        "sha256": "439aeae2c8849a1f2f58b03a02bff83b0102dc943d99e2c39b46542e8b073c28",
+        "step": 50000,
+        "tensor_equality_verified": true
+      },
+      {
+        "after_final100": true,
+        "archive": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-2s3z-seed1/train/run/ckpt/20260905T203549F196400/agent.pkl.gz",
+        "at": 1788725710.4716604,
+        "compressed_bytes": 556488181,
+        "exact_optimizer_resume": false,
+        "kind": "all_model_weights_only",
+        "original_bytes": 1755214096,
+        "path": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-2s3z-seed1/train/run/ckpt/20260905T203549F196400/agent.pkl",
+        "reclaimed_bytes": 1198725915,
+        "restore": "gzip -dc agent.pkl.gz > agent.pkl; optimizer state is absent",
+        "retained_tensors": 477,
+        "sha256": "736e3e55ec2e4cb7d048767f69aced97cf1c0b95952434ed8be86ad8ed8cbfda",
+        "step": 50000,
+        "tensor_equality_verified": true
+      },
+      {
+        "after_final100": true,
+        "archive": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-2s3z-seed2/train/run/ckpt/20260906T001642F769522/agent.pkl.gz",
+        "at": 1788725740.8999066,
+        "compressed_bytes": 556492526,
+        "exact_optimizer_resume": false,
+        "kind": "all_model_weights_only",
+        "original_bytes": 1755214096,
+        "path": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-2s3z-seed2/train/run/ckpt/20260906T001642F769522/agent.pkl",
+        "reclaimed_bytes": 1198721570,
+        "restore": "gzip -dc agent.pkl.gz > agent.pkl; optimizer state is absent",
+        "retained_tensors": 477,
+        "sha256": "ebc034fc988132ccc5182a624adbe2047caf06ed1d469015b00031d18a6509ee",
+        "step": 50000,
+        "tensor_equality_verified": true
+      },
+      {
+        "after_final100": true,
+        "archive": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-MMM-seed2/train/run/ckpt/20260906T012855F178401/agent.pkl.gz",
+        "at": 1788725771.0166886,
+        "compressed_bytes": 557646439,
+        "exact_optimizer_resume": false,
+        "kind": "all_model_weights_only",
+        "original_bytes": 1758277506,
+        "path": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-MMM-seed2/train/run/ckpt/20260906T012855F178401/agent.pkl",
+        "reclaimed_bytes": 1200631067,
+        "restore": "gzip -dc agent.pkl.gz > agent.pkl; optimizer state is absent",
+        "retained_tensors": 477,
+        "sha256": "8f284144ce6058137c127c901b416d2f2e219c8e2d4018d5445b62749c27341a",
+        "step": 50000,
+        "tensor_equality_verified": true
+      },
+      {
+        "after_final100": true,
+        "archive": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-8m-seed2/train/run/ckpt/20260906T005346F234325/agent.pkl.gz",
+        "at": 1788725800.6541867,
+        "compressed_bytes": 556830994,
+        "exact_optimizer_resume": false,
+        "kind": "all_model_weights_only",
+        "original_bytes": 1756210360,
+        "path": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-8m-seed2/train/run/ckpt/20260906T005346F234325/agent.pkl",
+        "reclaimed_bytes": 1199379366,
+        "restore": "gzip -dc agent.pkl.gz > agent.pkl; optimizer state is absent",
+        "retained_tensors": 477,
+        "sha256": "82e55cb86c953c8e52d9047ea64de27693e07beb1369dc76698202be2350becf",
+        "step": 50000,
+        "tensor_equality_verified": true
+      },
+      {
+        "after_final100": true,
+        "archive": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-corridor-seed1/train/run/ckpt/20260906T093855F394228/agent.pkl.gz",
+        "at": 1788725830.4912472,
+        "compressed_bytes": 558330559,
+        "exact_optimizer_resume": false,
+        "kind": "all_model_weights_only",
+        "original_bytes": 1760590780,
+        "path": "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-corridor-seed1/train/run/ckpt/20260906T093855F394228/agent.pkl",
+        "reclaimed_bytes": 1202260221,
+        "restore": "gzip -dc agent.pkl.gz > agent.pkl; optimizer state is absent",
+        "retained_tensors": 477,
+        "sha256": "5210077c4c3ecf7d2784326afbf2bbd468be422095a3806ffaf48bb6758cf6ad",
+        "step": 200000,
+        "tensor_equality_verified": true
+      },
+      {
+        "after_final100": true,
+        "archive": "/workspace/majepa_value_sweep_20260906/runs/base-2s3z-seed0/train/run/ckpt/20260906T134836F617337/agent.pkl.gz",
+        "at": 1788725860.1341686,
+        "compressed_bytes": 556486664,
+        "exact_optimizer_resume": false,
+        "kind": "all_model_weights_only",
+        "original_bytes": 1755214096,
+        "path": "/workspace/majepa_value_sweep_20260906/runs/base-2s3z-seed0/train/run/ckpt/20260906T134836F617337/agent.pkl",
+        "reclaimed_bytes": 1198727432,
+        "restore": "gzip -dc agent.pkl.gz > agent.pkl; optimizer state is absent",
+        "retained_tensors": 477,
+        "sha256": "da8375b470c316fa1c631b7ba88775c6ba37b07321ae8f4992af21de01ebb7aa",
+        "step": 50000,
+        "tensor_equality_verified": true
+      },
+      {
+        "after_final100": true,
+        "archive": "/workspace/majepa_value_sweep_20260906/runs/fact-a1-2s3z-seed0/train/run/ckpt/20260906T151427F327491/agent.pkl.gz",
+        "at": 1788725890.230282,
+        "compressed_bytes": 556522397,
+        "exact_optimizer_resume": false,
+        "kind": "all_model_weights_only",
+        "original_bytes": 1755214096,
+        "path": "/workspace/majepa_value_sweep_20260906/runs/fact-a1-2s3z-seed0/train/run/ckpt/20260906T151427F327491/agent.pkl",
+        "reclaimed_bytes": 1198691699,
+        "restore": "gzip -dc agent.pkl.gz > agent.pkl; optimizer state is absent",
+        "retained_tensors": 477,
+        "sha256": "403cc52bb8ae122a8ae7bac2a5be0e6caf1954ce27e5f395b7558deb00b9d845",
+        "step": 50000,
+        "tensor_equality_verified": true
+      },
+      {
+        "after_final100": true,
+        "archive": "/workspace/majepa_value_sweep_20260906/runs/frep-a1-2s3z-seed0/train/run/ckpt/20260906T151853F986542/agent.pkl.gz",
+        "at": 1788725923.0673265,
+        "compressed_bytes": 603375802,
+        "exact_optimizer_resume": false,
+        "kind": "all_model_weights_only",
+        "original_bytes": 1909422105,
+        "path": "/workspace/majepa_value_sweep_20260906/runs/frep-a1-2s3z-seed0/train/run/ckpt/20260906T151853F986542/agent.pkl",
+        "reclaimed_bytes": 1306046303,
+        "restore": "gzip -dc agent.pkl.gz > agent.pkl; optimizer state is absent",
+        "retained_tensors": 488,
+        "sha256": "6f9c135962241f7848f61827e855fa203704bd8fdb9d51a4fd6f18c60257b28e",
+        "step": 50000,
+        "tensor_equality_verified": true
+      },
+      {
+        "after_final100": true,
+        "archive": "/workspace/majepa_recurrent_capacity_20260905/runs/recurrent_wmlr1e4_actor2x256-2s3z-seed0/train/run/ckpt/20260905T130352F418193/agent.pkl.gz",
+        "at": 1788725951.474028,
+        "compressed_bytes": 519698498,
+        "exact_optimizer_resume": false,
+        "kind": "all_model_weights_only",
+        "original_bytes": 1636299376,
+        "path": "/workspace/majepa_recurrent_capacity_20260905/runs/recurrent_wmlr1e4_actor2x256-2s3z-seed0/train/run/ckpt/20260905T130352F418193/agent.pkl",
+        "reclaimed_bytes": 1116600878,
+        "restore": "gzip -dc agent.pkl.gz > agent.pkl; optimizer state is absent",
+        "retained_tensors": 474,
+        "sha256": "1d5188ad905b8de0cb391a2833ac3306769133dae472d905e470c13ffac3ecc9",
+        "step": 50000,
+        "tensor_equality_verified": true
+      }
+    ],
+    "redundant_installer": {
+      "bytes": 4115224017,
+      "path": "/workspace/bootstrap/SC2.4.10.zip",
+      "reason": "Installed runtime already present; experiment data unaffected",
+      "sha256": "1052f249f30a242bf5e17cc3315324919f9689307ca6dbcdb30bb41ea3004884"
+    },
+    "strong_reference_and_diagnostic_input_checkpoints_unchanged": true,
+    "updated_at": 1788725958.577518
+  },
+  "storage_used_bytes_after_cleanup": 151849034240,
+  "automatic_monitor": {
+    "status": "unavailable",
+    "id": "ma-jepa-interface-verification",
+    "reason": "App update returned that this automation no longer exists; remote workers run independently"
+  },
+  "final_verification": {
+    "at": 1788726093.6319482,
+    "workers": [
+      {
+        "gpu": 0,
+        "phase": "waiting_for_current_matrix",
+        "pid": 736274,
+        "updated_at": 1788726071.5240095
+      },
+      {
+        "gpu": 1,
+        "phase": "waiting_for_current_matrix",
+        "pid": 736275,
+        "updated_at": 1788726071.52451
+      },
+      {
+        "gpu": 2,
+        "phase": "waiting_for_current_matrix",
+        "pid": 736276,
+        "updated_at": 1788726071.5238354
+      },
+      {
+        "gpu": 3,
+        "phase": "waiting_for_current_matrix",
+        "pid": 736277,
+        "updated_at": 1788726071.5279243
+      },
+      {
+        "gpu": 4,
+        "phase": "waiting_for_current_matrix",
+        "pid": 736278,
+        "updated_at": 1788726071.5258884
+      },
+      {
+        "gpu": 5,
+        "phase": "waiting_for_current_matrix",
+        "pid": 736279,
+        "updated_at": 1788726071.5257232
+      }
+    ],
+    "counts": {
+      "pending": 24
+    }
+  }
+}

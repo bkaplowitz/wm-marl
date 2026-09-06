@@ -91,3 +91,25 @@ Queue: /workspace/majepa_coverage_followup_20260906/queue.json.
 Dependency: /workspace/majepa_interface_verify_20260906/queue.json.
 Launcher: scripts/run_coverage_followup.py.
 W&B group: https://wandb.ai/osaze-obahor/majepa-ppo-treatments/groups/ma-jepa-coverage-followup-20260906.
+
+## Deployment and storage record
+
+Frozen source: /workspace/ma_jepa_coverage_followup_3d4aeda_20260906,
+commit 3d4aedadab7db7c118345c88c6d030788cf5fc19. Package SHA256:
+101751eba8d04bb6f4db7348760703fc15e97d25d6ac00c80bd1ab289c227eb8.
+Only main.py, configs.yaml and replay.py differ from the current learner
+package. One actual replay check verified broader coverage, eviction and
+unchanged behavior draws; all 48 train/final100 configuration comparisons
+passed. Six worker processes were verified waiting for the current matrix.
+
+To make room without discarding model evidence, four byte-identical old
+diagnostic checkpoint copies were replaced by hard links to the preserved
+canonical checkpoint, reclaiming 7,020,856,384 bytes with all original paths
+and full checkpoint contents retained. Under the user's prior unsuccessful
+checkpoint cleanup authorization, ten completed weak/abandoned configurations
+also retain all model tensors exactly while their optimizer state is released.
+The strong references and original diagnostic input checkpoints stay full.
+The already-installed SC2 download archive is redundant and can be removed;
+the installed game, dependencies, replay and metrics stay intact. Per-path
+scores, equality checks, sizes and hashes are recorded in the deployment and
+the pod's storage_followup_cleanup.json. No local checkpoint archive is made.
