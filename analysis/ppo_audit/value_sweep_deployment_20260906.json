@@ -1,0 +1,72 @@
+{
+  "created_utc": "2026-09-06T10:41:53.541705+00:00",
+  "commit": "47af44ea650f2f8484bbf43288a7563e03c68bf1",
+  "source": "/workspace/ma_jepa_value_sweep_47af44e",
+  "root": "/workspace/majepa_value_sweep_20260906",
+  "source_sha256": "f1c2b3f5f925cc707eeef69473a7ef6a0562406ee92c9abb2e3c2b76321b7b3d",
+  "archive_sha256": "3731d77c3d2de4423e7821bea56d18a8ef025723ea3d16d7b16911b6410b07e5",
+  "staged": {
+    "source": "/workspace/ma_jepa_value_sweep_47af44e",
+    "commit": "47af44ea650f2f8484bbf43288a7563e03c68bf1",
+    "sha256": "f1c2b3f5f925cc707eeef69473a7ef6a0562406ee92c9abb2e3c2b76321b7b3d"
+  },
+  "validation": "Focused PPO/factual/RNG checks and complete combined BPTT2 learner update passed; actual configuration resolution follows.",
+  "initialization": "{\"initialized\": 48, \"maximum_runs\": 72, \"root\": \"/workspace/majepa_value_sweep_20260906\"}",
+  "workers": [
+    {
+      "gpu": 3,
+      "pid": 536339,
+      "log": "/workspace/majepa_value_sweep_20260906/workers/gpu3.log"
+    },
+    {
+      "gpu": 0,
+      "pid": 536340,
+      "log": "/workspace/majepa_value_sweep_20260906/workers/gpu0.log"
+    },
+    {
+      "gpu": 1,
+      "pid": 536341,
+      "log": "/workspace/majepa_value_sweep_20260906/workers/gpu1.log"
+    },
+    {
+      "gpu": 2,
+      "pid": 536342,
+      "log": "/workspace/majepa_value_sweep_20260906/workers/gpu2.log"
+    },
+    {
+      "gpu": 4,
+      "pid": 536343,
+      "log": "/workspace/majepa_value_sweep_20260906/workers/gpu4.log"
+    },
+    {
+      "gpu": 5,
+      "pid": 536344,
+      "log": "/workspace/majepa_value_sweep_20260906/workers/gpu5.log"
+    }
+  ],
+  "heartbeat_automation": "ma-jepa-sweep-decision",
+  "screen_runs": 48,
+  "maximum_runs": 72,
+  "decision_window_hours": 48,
+  "protocol": "analysis/ppo_audit/value_sweep_protocol_20260906.md",
+  "wandb_group": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/groups/ma-jepa-value-sweep-20260906",
+  "startup_verification": {
+    "at": "2026-09-06T11:02:27.030998+00:00",
+    "first_run_status": {
+      "status": "train",
+      "updated_at": 1788691354.2849913
+    },
+    "first_run_metrics": {
+      "step": 6650,
+      "counters/environment_steps": 6650.0,
+      "counters/learner_update_calls": 207.0,
+      "counters/ppo_update_calls": 207.0,
+      "train/opt/finite": 1.0,
+      "train/ppo/actor_epochs": 5.0,
+      "train/ppo/critic_epochs": 5.0,
+      "train/ppo/critic/final_factual_relative_ess": 0.8754892582312609,
+      "train/ppo/critic/final_factual_rho_mean": 0.7416120274708822
+    }
+  },
+  "decision_deadline_utc_epoch": 1788864143.719265
+}
