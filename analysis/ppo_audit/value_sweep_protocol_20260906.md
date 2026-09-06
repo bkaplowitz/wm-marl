@@ -89,3 +89,28 @@ A complete BPTT2 learner update passed with the combined new controls, including
 separate actor/critic update counters, representation gradients, finite losses,
 and both imagined and factual critic regularizers. Real-map performance remains
 unmeasured at preparation time; deployment status is recorded separately.
+
+## Diagnostic amendment, 6 September 2026
+
+Read `seed_instability_diagnosis_20260906.md` and
+`seed_diagnostic_results_20260906.json` when interpreting this sweep. Matched-root
+oracle audits identify compounding predicted-observation feedback errors and
+premature imagined deaths in weak `3s_vs_3z` checkpoints, with a same-direction
+but less conclusive replication on `3s_vs_5z`. These errors concentrate on roots
+collected by stronger policies: distinguish replay coverage/extrapolation from
+the weak model's own on-policy error, and do not infer temporal causality from
+the final-checkpoint comparison. Frozen factual value calibration
+does not show a blanket value-overoptimism explanation. These findings change
+the priority for the next controlled comparison, but do not establish a training
+fix or modify the existing sweep arms or promotion rule.
+
+A passive checkpoint keeper at
+`/workspace/majepa_seed_checkpoint_archive_20260906` retains existing completed
+checkpoints for `3s_vs_3z` seeds 0/1, arms base/actor1/ret-ent/frep-a1. Windows
+are 5–15k, 15–25k, 25–35k, and 35–45k; at most one checkpoint per run/window,
+32 total and 64 GiB. It uses hardlinks without changing training or diagnostic
+RNG, and expires at the existing decision deadline. Its launcher is
+`/workspace/retain_diagnostic_checkpoints_20260906.py` (initial PID 629317).
+Monitor manifest freshness/errors and completion alongside queue health. Missing
+checkpoints before these selected jobs start are expected. Do not replace final
+evaluations with a retained checkpoint selected by curve performance.

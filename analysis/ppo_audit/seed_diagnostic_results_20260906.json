@@ -1,0 +1,3716 @@
+{
+  "calibration": [
+    {
+      "name": "calibration-3s_vs_3z-s0",
+      "episodes": 32,
+      "win_rate": 0.21875,
+      "return_mean": 14.473230928182602,
+      "discount": 0.996996996996997,
+      "calibration": {
+        "live": {
+          "h15_bootstrap": {
+            "alive": {
+              "bias": 0.23104475432111074,
+              "correlation": 0.9609935316011666,
+              "count": 7102,
+              "explained_variance": 0.9152489072007365,
+              "mae": 0.8044533445109533,
+              "prediction_mean": 6.72135066986084,
+              "rmse": 1.1305664992399551,
+              "target_mean": 6.490305807371504
+            },
+            "all": {
+              "bias": 0.12660273006509598,
+              "correlation": 0.9576065092397056,
+              "count": 11031,
+              "explained_variance": 0.9100140927359814,
+              "mae": 0.7390520236384375,
+              "prediction_mean": 5.307170391082764,
+              "rmse": 1.1010890442078962,
+              "target_mean": 5.180567480216979
+            },
+            "dead": {
+              "bias": -0.062185067406580405,
+              "correlation": 0.7509512852104471,
+              "count": 3929,
+              "explained_variance": 0.5639230909035364,
+              "mae": 0.6208336014351777,
+              "prediction_mean": 2.7509195804595947,
+              "rmse": 1.045699666771886,
+              "target_mean": 2.8131046144874223
+            },
+            "episode_initial": {
+              "bias": -0.6417915469621209,
+              "correlation": 0.12753665371553669,
+              "count": 96,
+              "explained_variance": 0.014174632073874927,
+              "mae": 0.6771871383686733,
+              "prediction_mean": 12.81470775604248,
+              "rmse": 0.7540619959400133,
+              "target_mean": 13.456499690434791
+            },
+            "terminal": {
+              "count": 0
+            }
+          },
+          "h5_bootstrap": {
+            "alive": {
+              "bias": 0.06310690912194998,
+              "correlation": 0.9850236656589181,
+              "count": 7102,
+              "explained_variance": 0.9699327311044497,
+              "mae": 0.47035839641350397,
+              "prediction_mean": 6.72135066986084,
+              "rmse": 0.6938837636641012,
+              "target_mean": 6.658243652570665
+            },
+            "all": {
+              "bias": 0.03413822316044288,
+              "correlation": 0.983981301413046,
+              "count": 11031,
+              "explained_variance": 0.9678613669892228,
+              "mae": 0.42366268809390084,
+              "prediction_mean": 5.307170391082764,
+              "rmse": 0.6795256015420426,
+              "target_mean": 5.273031987121632
+            },
+            "dead": {
+              "bias": -0.018225128251779958,
+              "correlation": 0.873351150311398,
+              "count": 3929,
+              "explained_variance": 0.7624928097160106,
+              "mae": 0.33925624358236556,
+              "prediction_mean": 2.7509195804595947,
+              "rmse": 0.6527711201420402,
+              "target_mean": 2.769144675332622
+            },
+            "episode_initial": {
+              "bias": -1.1113242754204185,
+              "correlation": -0.1219097258116057,
+              "count": 96,
+              "explained_variance": -0.031999076220242006,
+              "mae": 1.1113242754204185,
+              "prediction_mean": 12.81470775604248,
+              "rmse": 1.1652572177674823,
+              "target_mean": 13.926032418893092
+            },
+            "terminal": {
+              "count": 0
+            }
+          },
+          "monte_carlo": {
+            "alive": {
+              "bias": -0.004798486450542871,
+              "correlation": 0.8220394149387846,
+              "count": 7102,
+              "explained_variance": 0.659948807495804,
+              "mae": 1.9532594644601577,
+              "prediction_mean": 6.72135066986084,
+              "rmse": 2.4604203990762,
+              "target_mean": 6.7261490481431565
+            },
+            "all": {
+              "bias": -0.042660621812436766,
+              "correlation": 0.83831512225685,
+              "count": 11031,
+              "explained_variance": 0.6939695906659714,
+              "mae": 1.6935357052852282,
+              "prediction_mean": 5.307170391082764,
+              "rmse": 2.2536172674955712,
+              "target_mean": 5.349830832094512
+            },
+            "dead": {
+              "bias": -0.1110996356429713,
+              "correlation": 0.5564194819409908,
+              "count": 3929,
+              "explained_variance": 0.3094540942954528,
+              "mae": 1.2240630308998004,
+              "prediction_mean": 2.7509195804595947,
+              "rmse": 1.8211580795753837,
+              "target_mean": 2.8620191827238135
+            },
+            "episode_initial": {
+              "bias": 0.14947652219766377,
+              "correlation": -0.05586896312153631,
+              "count": 96,
+              "explained_variance": -0.0014737324241200778,
+              "mae": 2.18255088602641,
+              "prediction_mean": 12.81470775604248,
+              "rmse": 2.742955144681776,
+              "target_mean": 12.665231621275007
+            },
+            "terminal": {
+              "bias": 1.513783775890867,
+              "correlation": null,
+              "count": 96,
+              "explained_variance": null,
+              "mae": 1.513783775890867,
+              "prediction_mean": 1.5137839317321777,
+              "rmse": 1.6936880051730152,
+              "target_mean": 0.0
+            }
+          }
+        },
+        "slow": {
+          "h15_bootstrap": {
+            "alive": {
+              "bias": 0.23104475432111074,
+              "correlation": 0.9609935316011666,
+              "count": 7102,
+              "explained_variance": 0.9152489072007365,
+              "mae": 0.8044533445109533,
+              "prediction_mean": 6.72135066986084,
+              "rmse": 1.1305664992399551,
+              "target_mean": 6.490305807371504
+            },
+            "all": {
+              "bias": 0.12660273006509598,
+              "correlation": 0.9576065092397056,
+              "count": 11031,
+              "explained_variance": 0.9100140927359814,
+              "mae": 0.7390520236384375,
+              "prediction_mean": 5.307170391082764,
+              "rmse": 1.1010890442078962,
+              "target_mean": 5.180567480216979
+            },
+            "dead": {
+              "bias": -0.062185067406580405,
+              "correlation": 0.7509512852104471,
+              "count": 3929,
+              "explained_variance": 0.5639230909035364,
+              "mae": 0.6208336014351777,
+              "prediction_mean": 2.7509195804595947,
+              "rmse": 1.045699666771886,
+              "target_mean": 2.8131046144874223
+            },
+            "episode_initial": {
+              "bias": -0.6417915469621209,
+              "correlation": 0.12753665371553669,
+              "count": 96,
+              "explained_variance": 0.014174632073874927,
+              "mae": 0.6771871383686733,
+              "prediction_mean": 12.81470775604248,
+              "rmse": 0.7540619959400133,
+              "target_mean": 13.456499690434791
+            },
+            "terminal": {
+              "count": 0
+            }
+          },
+          "h5_bootstrap": {
+            "alive": {
+              "bias": 0.06310690912194998,
+              "correlation": 0.9850236656589181,
+              "count": 7102,
+              "explained_variance": 0.9699327311044497,
+              "mae": 0.47035839641350397,
+              "prediction_mean": 6.72135066986084,
+              "rmse": 0.6938837636641012,
+              "target_mean": 6.658243652570665
+            },
+            "all": {
+              "bias": 0.03413822316044288,
+              "correlation": 0.983981301413046,
+              "count": 11031,
+              "explained_variance": 0.9678613669892228,
+              "mae": 0.42366268809390084,
+              "prediction_mean": 5.307170391082764,
+              "rmse": 0.6795256015420426,
+              "target_mean": 5.273031987121632
+            },
+            "dead": {
+              "bias": -0.018225128251779958,
+              "correlation": 0.873351150311398,
+              "count": 3929,
+              "explained_variance": 0.7624928097160106,
+              "mae": 0.33925624358236556,
+              "prediction_mean": 2.7509195804595947,
+              "rmse": 0.6527711201420402,
+              "target_mean": 2.769144675332622
+            },
+            "episode_initial": {
+              "bias": -1.1113242754204185,
+              "correlation": -0.1219097258116057,
+              "count": 96,
+              "explained_variance": -0.031999076220242006,
+              "mae": 1.1113242754204185,
+              "prediction_mean": 12.81470775604248,
+              "rmse": 1.1652572177674823,
+              "target_mean": 13.926032418893092
+            },
+            "terminal": {
+              "count": 0
+            }
+          },
+          "monte_carlo": {
+            "alive": {
+              "bias": -0.004798486450542871,
+              "correlation": 0.8220394149387846,
+              "count": 7102,
+              "explained_variance": 0.659948807495804,
+              "mae": 1.9532594644601577,
+              "prediction_mean": 6.72135066986084,
+              "rmse": 2.4604203990762,
+              "target_mean": 6.7261490481431565
+            },
+            "all": {
+              "bias": -0.042660621812436766,
+              "correlation": 0.83831512225685,
+              "count": 11031,
+              "explained_variance": 0.6939695906659714,
+              "mae": 1.6935357052852282,
+              "prediction_mean": 5.307170391082764,
+              "rmse": 2.2536172674955712,
+              "target_mean": 5.349830832094512
+            },
+            "dead": {
+              "bias": -0.1110996356429713,
+              "correlation": 0.5564194819409908,
+              "count": 3929,
+              "explained_variance": 0.3094540942954528,
+              "mae": 1.2240630308998004,
+              "prediction_mean": 2.7509195804595947,
+              "rmse": 1.8211580795753837,
+              "target_mean": 2.8620191827238135
+            },
+            "episode_initial": {
+              "bias": 0.14947652219766377,
+              "correlation": -0.05586896312153631,
+              "count": 96,
+              "explained_variance": -0.0014737324241200778,
+              "mae": 2.18255088602641,
+              "prediction_mean": 12.81470775604248,
+              "rmse": 2.742955144681776,
+              "target_mean": 12.665231621275007
+            },
+            "terminal": {
+              "bias": 1.513783775890867,
+              "correlation": null,
+              "count": 96,
+              "explained_variance": null,
+              "mae": 1.513783775890867,
+              "prediction_mean": 1.5137839317321777,
+              "rmse": 1.6936880051730152,
+              "target_mean": 0.0
+            }
+          }
+        }
+      },
+      "frozen_verified": true
+    },
+    {
+      "name": "calibration-3s_vs_3z-s1",
+      "episodes": 32,
+      "win_rate": 0.5625,
+      "return_mean": 17.334099650382996,
+      "discount": 0.996996996996997,
+      "calibration": {
+        "live": {
+          "h15_bootstrap": {
+            "alive": {
+              "bias": 0.26607789403139914,
+              "correlation": 0.9461871529468883,
+              "count": 7403,
+              "explained_variance": 0.8866376758090528,
+              "mae": 1.1351753018380362,
+              "prediction_mean": 8.666744232177734,
+              "rmse": 1.6698706766244966,
+              "target_mean": 8.400666056266706
+            },
+            "all": {
+              "bias": 0.11811784883156183,
+              "correlation": 0.9515283394222877,
+              "count": 10029,
+              "explained_variance": 0.8963776724586374,
+              "mae": 1.0387936126876443,
+              "prediction_mean": 7.060502052307129,
+              "rmse": 1.5983711469516375,
+              "target_mean": 6.942383856083797
+            },
+            "dead": {
+              "bias": -0.29899875993248815,
+              "correlation": 0.6621492948610036,
+              "count": 2626,
+              "explained_variance": 0.42934856049907133,
+              "mae": 0.7670823999000002,
+              "prediction_mean": 2.532317638397217,
+              "rmse": 1.3769624204166193,
+              "target_mean": 2.8313164044638084
+            },
+            "episode_initial": {
+              "bias": -1.1869150211856558,
+              "correlation": -0.02090798905632679,
+              "count": 96,
+              "explained_variance": -0.04927059066173878,
+              "mae": 1.1869150211856558,
+              "prediction_mean": 15.190205574035645,
+              "rmse": 1.2106493466533454,
+              "target_mean": 16.377121052190244
+            },
+            "terminal": {
+              "count": 0
+            }
+          },
+          "h5_bootstrap": {
+            "alive": {
+              "bias": 0.0577507171919201,
+              "correlation": 0.9819166535974881,
+              "count": 7403,
+              "explained_variance": 0.9638972933547053,
+              "mae": 0.5934479141596668,
+              "prediction_mean": 8.666744232177734,
+              "rmse": 0.9702242053139163,
+              "target_mean": 8.608993233106187
+            },
+            "all": {
+              "bias": 0.01807420693244131,
+              "correlation": 0.983737196476461,
+              "count": 10029,
+              "explained_variance": 0.9673540864511656,
+              "mae": 0.5402698693750233,
+              "prediction_mean": 7.060502052307129,
+              "rmse": 0.9333887258604521,
+              "target_mean": 7.042427497982917
+            },
+            "dead": {
+              "bias": -0.09377849887522106,
+              "correlation": 0.8392016963244711,
+              "count": 2626,
+              "explained_variance": 0.6998365709168105,
+              "mae": 0.39035476444710365,
+              "prediction_mean": 2.532317638397217,
+              "rmse": 0.8206927970845469,
+              "target_mean": 2.6260961434065413
+            },
+            "episode_initial": {
+              "bias": -0.5278419095055868,
+              "correlation": -0.2067103414785621,
+              "count": 96,
+              "explained_variance": -2.1620983207179867,
+              "mae": 0.5278419095055868,
+              "prediction_mean": 15.190205574035645,
+              "rmse": 0.5318854946526558,
+              "target_mean": 15.718047940510175
+            },
+            "terminal": {
+              "count": 0
+            }
+          },
+          "monte_carlo": {
+            "alive": {
+              "bias": -0.30478492767961085,
+              "correlation": 0.849374550257265,
+              "count": 7403,
+              "explained_variance": 0.6604968982830557,
+              "mae": 2.163951731718217,
+              "prediction_mean": 8.666744232177734,
+              "rmse": 2.721320981482064,
+              "target_mean": 8.971528877977718
+            },
+            "all": {
+              "bias": -0.4765325822418479,
+              "correlation": 0.8678103262072229,
+              "count": 10029,
+              "explained_variance": 0.713681634340972,
+              "mae": 2.0209913805950555,
+              "prediction_mean": 7.060502052307129,
+              "rmse": 2.6437625960693754,
+              "target_mean": 7.537034287157206
+            },
+            "dead": {
+              "bias": -0.9607092336981472,
+              "correlation": 0.5822287537951132,
+              "count": 2626,
+              "explained_variance": 0.33189945520428366,
+              "mae": 1.617969492032693,
+              "prediction_mean": 2.532317638397217,
+              "rmse": 2.411726751478076,
+              "target_mean": 3.4930268782294673
+            },
+            "episode_initial": {
+              "bias": 0.17553561771980572,
+              "correlation": -0.27598143585423957,
+              "count": 96,
+              "explained_variance": -0.00995150972991321,
+              "mae": 2.5897516388168156,
+              "prediction_mean": 15.190205574035645,
+              "rmse": 2.7114206751153707,
+              "target_mean": 15.014670413284781
+            },
+            "terminal": {
+              "bias": 2.3552363608032465,
+              "correlation": null,
+              "count": 96,
+              "explained_variance": null,
+              "mae": 2.3552363608032465,
+              "prediction_mean": 2.355236291885376,
+              "rmse": 2.9214248376532965,
+              "target_mean": 0.0
+            }
+          }
+        },
+        "slow": {
+          "h15_bootstrap": {
+            "alive": {
+              "bias": 0.26607789403139914,
+              "correlation": 0.9461871529468883,
+              "count": 7403,
+              "explained_variance": 0.8866376758090528,
+              "mae": 1.1351753018380362,
+              "prediction_mean": 8.666744232177734,
+              "rmse": 1.6698706766244966,
+              "target_mean": 8.400666056266706
+            },
+            "all": {
+              "bias": 0.11811784883156183,
+              "correlation": 0.9515283394222877,
+              "count": 10029,
+              "explained_variance": 0.8963776724586374,
+              "mae": 1.0387936126876443,
+              "prediction_mean": 7.060502052307129,
+              "rmse": 1.5983711469516375,
+              "target_mean": 6.942383856083797
+            },
+            "dead": {
+              "bias": -0.29899875993248815,
+              "correlation": 0.6621492948610036,
+              "count": 2626,
+              "explained_variance": 0.42934856049907133,
+              "mae": 0.7670823999000002,
+              "prediction_mean": 2.532317638397217,
+              "rmse": 1.3769624204166193,
+              "target_mean": 2.8313164044638084
+            },
+            "episode_initial": {
+              "bias": -1.1869150211856558,
+              "correlation": -0.02090798905632679,
+              "count": 96,
+              "explained_variance": -0.04927059066173878,
+              "mae": 1.1869150211856558,
+              "prediction_mean": 15.190205574035645,
+              "rmse": 1.2106493466533454,
+              "target_mean": 16.377121052190244
+            },
+            "terminal": {
+              "count": 0
+            }
+          },
+          "h5_bootstrap": {
+            "alive": {
+              "bias": 0.0577507171919201,
+              "correlation": 0.9819166535974881,
+              "count": 7403,
+              "explained_variance": 0.9638972933547053,
+              "mae": 0.5934479141596668,
+              "prediction_mean": 8.666744232177734,
+              "rmse": 0.9702242053139163,
+              "target_mean": 8.608993233106187
+            },
+            "all": {
+              "bias": 0.01807420693244131,
+              "correlation": 0.983737196476461,
+              "count": 10029,
+              "explained_variance": 0.9673540864511656,
+              "mae": 0.5402698693750233,
+              "prediction_mean": 7.060502052307129,
+              "rmse": 0.9333887258604521,
+              "target_mean": 7.042427497982917
+            },
+            "dead": {
+              "bias": -0.09377849887522106,
+              "correlation": 0.8392016963244711,
+              "count": 2626,
+              "explained_variance": 0.6998365709168105,
+              "mae": 0.39035476444710365,
+              "prediction_mean": 2.532317638397217,
+              "rmse": 0.8206927970845469,
+              "target_mean": 2.6260961434065413
+            },
+            "episode_initial": {
+              "bias": -0.5278419095055868,
+              "correlation": -0.2067103414785621,
+              "count": 96,
+              "explained_variance": -2.1620983207179867,
+              "mae": 0.5278419095055868,
+              "prediction_mean": 15.190205574035645,
+              "rmse": 0.5318854946526558,
+              "target_mean": 15.718047940510175
+            },
+            "terminal": {
+              "count": 0
+            }
+          },
+          "monte_carlo": {
+            "alive": {
+              "bias": -0.30478492767961085,
+              "correlation": 0.849374550257265,
+              "count": 7403,
+              "explained_variance": 0.6604968982830557,
+              "mae": 2.163951731718217,
+              "prediction_mean": 8.666744232177734,
+              "rmse": 2.721320981482064,
+              "target_mean": 8.971528877977718
+            },
+            "all": {
+              "bias": -0.4765325822418479,
+              "correlation": 0.8678103262072229,
+              "count": 10029,
+              "explained_variance": 0.713681634340972,
+              "mae": 2.0209913805950555,
+              "prediction_mean": 7.060502052307129,
+              "rmse": 2.6437625960693754,
+              "target_mean": 7.537034287157206
+            },
+            "dead": {
+              "bias": -0.9607092336981472,
+              "correlation": 0.5822287537951132,
+              "count": 2626,
+              "explained_variance": 0.33189945520428366,
+              "mae": 1.617969492032693,
+              "prediction_mean": 2.532317638397217,
+              "rmse": 2.411726751478076,
+              "target_mean": 3.4930268782294673
+            },
+            "episode_initial": {
+              "bias": 0.17553561771980572,
+              "correlation": -0.27598143585423957,
+              "count": 96,
+              "explained_variance": -0.00995150972991321,
+              "mae": 2.5897516388168156,
+              "prediction_mean": 15.190205574035645,
+              "rmse": 2.7114206751153707,
+              "target_mean": 15.014670413284781
+            },
+            "terminal": {
+              "bias": 2.3552363608032465,
+              "correlation": null,
+              "count": 96,
+              "explained_variance": null,
+              "mae": 2.3552363608032465,
+              "prediction_mean": 2.355236291885376,
+              "rmse": 2.9214248376532965,
+              "target_mean": 0.0
+            }
+          }
+        }
+      },
+      "frozen_verified": true
+    },
+    {
+      "name": "calibration-3s_vs_3z-s2",
+      "episodes": 32,
+      "win_rate": 0.0625,
+      "return_mean": 13.05733010172844,
+      "discount": 0.996996996996997,
+      "calibration": {
+        "live": {
+          "h15_bootstrap": {
+            "alive": {
+              "bias": 0.19346815466750458,
+              "correlation": 0.9501337614687244,
+              "count": 6426,
+              "explained_variance": 0.9015178083797062,
+              "mae": 0.8148339120526917,
+              "prediction_mean": 6.4391374588012695,
+              "rmse": 1.2369729627362125,
+              "target_mean": 6.245669659671159
+            },
+            "all": {
+              "bias": 0.13353345498880329,
+              "correlation": 0.959484720470783,
+              "count": 9351,
+              "explained_variance": 0.9191469726369206,
+              "mae": 0.7073596583291454,
+              "prediction_mean": 5.102534294128418,
+              "rmse": 1.0930087624737745,
+              "target_mean": 4.969000594041727
+            },
+            "dead": {
+              "bias": 0.0018615301562102816,
+              "correlation": 0.8632322811817885,
+              "count": 2925,
+              "explained_variance": 0.7437730804973557,
+              "mae": 0.4712469901488001,
+              "prediction_mean": 2.1661183834075928,
+              "rmse": 0.6765689593769607,
+              "target_mean": 2.164256862166607
+            },
+            "episode_initial": {
+              "bias": -0.2844247159179494,
+              "correlation": -0.01971154611779628,
+              "count": 96,
+              "explained_variance": -0.008686189871347505,
+              "mae": 0.34762873308746745,
+              "prediction_mean": 12.024646759033203,
+              "rmse": 0.4007442647502559,
+              "target_mean": 12.3090711371915
+            },
+            "terminal": {
+              "count": 0
+            }
+          },
+          "h5_bootstrap": {
+            "alive": {
+              "bias": 0.059711814467250005,
+              "correlation": 0.9822389722486901,
+              "count": 6426,
+              "explained_variance": 0.9647733987067879,
+              "mae": 0.46458470453386363,
+              "prediction_mean": 6.4391374588012695,
+              "rmse": 0.7320903776396079,
+              "target_mean": 6.379425999871412
+            },
+            "all": {
+              "bias": 0.0415109978273415,
+              "correlation": 0.9848150527818958,
+              "count": 9351,
+              "explained_variance": 0.9697966061091406,
+              "mae": 0.4139604558630717,
+              "prediction_mean": 5.102534294128418,
+              "rmse": 0.667618846261325,
+              "target_mean": 5.061023051203188
+            },
+            "dead": {
+              "bias": 0.0015252037322809912,
+              "correlation": 0.9193302319556068,
+              "count": 2925,
+              "explained_variance": 0.8437957812243868,
+              "mae": 0.3027428757063163,
+              "prediction_mean": 2.1661183834075928,
+              "rmse": 0.49745503916679984,
+              "target_mean": 2.164593188590536
+            },
+            "episode_initial": {
+              "bias": -0.44964624322513363,
+              "correlation": -0.05530681099872783,
+              "count": 96,
+              "explained_variance": -0.026613488242449357,
+              "mae": 0.44964624322513363,
+              "prediction_mean": 12.024646759033203,
+              "rmse": 0.4858318757052046,
+              "target_mean": 12.474292664498682
+            },
+            "terminal": {
+              "count": 0
+            }
+          },
+          "monte_carlo": {
+            "alive": {
+              "bias": 0.3722610609523065,
+              "correlation": 0.8600549443635516,
+              "count": 6426,
+              "explained_variance": 0.7250953239146665,
+              "mae": 1.5156187968712143,
+              "prediction_mean": 6.4391374588012695,
+              "rmse": 2.083945093424091,
+              "target_mean": 6.066876753386357
+            },
+            "all": {
+              "bias": 0.31896880271159195,
+              "correlation": 0.8927021900265104,
+              "count": 9351,
+              "explained_variance": 0.7866464417214869,
+              "mae": 1.2585648902800275,
+              "prediction_mean": 5.102534294128418,
+              "rmse": 1.79730779697255,
+              "target_mean": 4.783565246318939
+            },
+            "dead": {
+              "bias": 0.20188981076122217,
+              "correlation": 0.7669895413727402,
+              "count": 2925,
+              "explained_variance": 0.5650044172960722,
+              "mae": 0.69383723087662,
+              "prediction_mean": 2.1661183834075928,
+              "rmse": 0.8866861861065621,
+              "target_mean": 1.9642285815615954
+            },
+            "episode_initial": {
+              "bias": 0.33144824425842534,
+              "correlation": -0.07353430060674451,
+              "count": 96,
+              "explained_variance": -0.0015648887005574874,
+              "mae": 1.5965242447386168,
+              "prediction_mean": 12.024646759033203,
+              "rmse": 2.15830451252641,
+              "target_mean": 11.693198177015125
+            },
+            "terminal": {
+              "bias": 1.4422894710054,
+              "correlation": null,
+              "count": 96,
+              "explained_variance": null,
+              "mae": 1.4422894710054,
+              "prediction_mean": 1.4422893524169922,
+              "rmse": 1.4889128147580284,
+              "target_mean": 0.0
+            }
+          }
+        },
+        "slow": {
+          "h15_bootstrap": {
+            "alive": {
+              "bias": 0.19346815466750458,
+              "correlation": 0.9501337614687244,
+              "count": 6426,
+              "explained_variance": 0.9015178083797062,
+              "mae": 0.8148339120526917,
+              "prediction_mean": 6.4391374588012695,
+              "rmse": 1.2369729627362125,
+              "target_mean": 6.245669659671159
+            },
+            "all": {
+              "bias": 0.13353345498880329,
+              "correlation": 0.959484720470783,
+              "count": 9351,
+              "explained_variance": 0.9191469726369206,
+              "mae": 0.7073596583291454,
+              "prediction_mean": 5.102534294128418,
+              "rmse": 1.0930087624737745,
+              "target_mean": 4.969000594041727
+            },
+            "dead": {
+              "bias": 0.0018615301562102816,
+              "correlation": 0.8632322811817885,
+              "count": 2925,
+              "explained_variance": 0.7437730804973557,
+              "mae": 0.4712469901488001,
+              "prediction_mean": 2.1661183834075928,
+              "rmse": 0.6765689593769607,
+              "target_mean": 2.164256862166607
+            },
+            "episode_initial": {
+              "bias": -0.2844247159179494,
+              "correlation": -0.01971154611779628,
+              "count": 96,
+              "explained_variance": -0.008686189871347505,
+              "mae": 0.34762873308746745,
+              "prediction_mean": 12.024646759033203,
+              "rmse": 0.4007442647502559,
+              "target_mean": 12.3090711371915
+            },
+            "terminal": {
+              "count": 0
+            }
+          },
+          "h5_bootstrap": {
+            "alive": {
+              "bias": 0.059711814467250005,
+              "correlation": 0.9822389722486901,
+              "count": 6426,
+              "explained_variance": 0.9647733987067879,
+              "mae": 0.46458470453386363,
+              "prediction_mean": 6.4391374588012695,
+              "rmse": 0.7320903776396079,
+              "target_mean": 6.379425999871412
+            },
+            "all": {
+              "bias": 0.0415109978273415,
+              "correlation": 0.9848150527818958,
+              "count": 9351,
+              "explained_variance": 0.9697966061091406,
+              "mae": 0.4139604558630717,
+              "prediction_mean": 5.102534294128418,
+              "rmse": 0.667618846261325,
+              "target_mean": 5.061023051203188
+            },
+            "dead": {
+              "bias": 0.0015252037322809912,
+              "correlation": 0.9193302319556068,
+              "count": 2925,
+              "explained_variance": 0.8437957812243868,
+              "mae": 0.3027428757063163,
+              "prediction_mean": 2.1661183834075928,
+              "rmse": 0.49745503916679984,
+              "target_mean": 2.164593188590536
+            },
+            "episode_initial": {
+              "bias": -0.44964624322513363,
+              "correlation": -0.05530681099872783,
+              "count": 96,
+              "explained_variance": -0.026613488242449357,
+              "mae": 0.44964624322513363,
+              "prediction_mean": 12.024646759033203,
+              "rmse": 0.4858318757052046,
+              "target_mean": 12.474292664498682
+            },
+            "terminal": {
+              "count": 0
+            }
+          },
+          "monte_carlo": {
+            "alive": {
+              "bias": 0.3722610609523065,
+              "correlation": 0.8600549443635516,
+              "count": 6426,
+              "explained_variance": 0.7250953239146665,
+              "mae": 1.5156187968712143,
+              "prediction_mean": 6.4391374588012695,
+              "rmse": 2.083945093424091,
+              "target_mean": 6.066876753386357
+            },
+            "all": {
+              "bias": 0.31896880271159195,
+              "correlation": 0.8927021900265104,
+              "count": 9351,
+              "explained_variance": 0.7866464417214869,
+              "mae": 1.2585648902800275,
+              "prediction_mean": 5.102534294128418,
+              "rmse": 1.79730779697255,
+              "target_mean": 4.783565246318939
+            },
+            "dead": {
+              "bias": 0.20188981076122217,
+              "correlation": 0.7669895413727402,
+              "count": 2925,
+              "explained_variance": 0.5650044172960722,
+              "mae": 0.69383723087662,
+              "prediction_mean": 2.1661183834075928,
+              "rmse": 0.8866861861065621,
+              "target_mean": 1.9642285815615954
+            },
+            "episode_initial": {
+              "bias": 0.33144824425842534,
+              "correlation": -0.07353430060674451,
+              "count": 96,
+              "explained_variance": -0.0015648887005574874,
+              "mae": 1.5965242447386168,
+              "prediction_mean": 12.024646759033203,
+              "rmse": 2.15830451252641,
+              "target_mean": 11.693198177015125
+            },
+            "terminal": {
+              "bias": 1.4422894710054,
+              "correlation": null,
+              "count": 96,
+              "explained_variance": null,
+              "mae": 1.4422894710054,
+              "prediction_mean": 1.4422893524169922,
+              "rmse": 1.4889128147580284,
+              "target_mean": 0.0
+            }
+          }
+        }
+      },
+      "frozen_verified": true
+    },
+    {
+      "name": "calibration-3s_vs_5z-s0",
+      "episodes": 32,
+      "win_rate": 0.03125,
+      "return_mean": 19.26585841178894,
+      "discount": 0.996996996996997,
+      "calibration": {
+        "live": {
+          "h15_bootstrap": {
+            "alive": {
+              "bias": 0.1911736683359027,
+              "correlation": 0.9195448662247896,
+              "count": 13606,
+              "explained_variance": 0.8451501156071237,
+              "mae": 0.9025101314097561,
+              "prediction_mean": 9.697672843933105,
+              "rmse": 1.4528270340661678,
+              "target_mean": 9.506498572657627
+            },
+            "all": {
+              "bias": 0.1786775089016283,
+              "correlation": 0.9127008638849804,
+              "count": 22650,
+              "explained_variance": 0.8328910714869764,
+              "mae": 0.9585517899669331,
+              "prediction_mean": 8.55634593963623,
+              "rmse": 1.5431181081610064,
+              "target_mean": 8.377668505266723
+            },
+            "dead": {
+              "bias": 0.15987800146435086,
+              "correlation": 0.8548042923726525,
+              "count": 9044,
+              "explained_variance": 0.7306345882576841,
+              "mae": 1.042862140069648,
+              "prediction_mean": 6.839309215545654,
+              "rmse": 1.669781589812055,
+              "target_mean": 6.679430789994652
+            },
+            "episode_initial": {
+              "bias": -0.8816224953547254,
+              "correlation": 0.1741127872744325,
+              "count": 96,
+              "explained_variance": 0.026363655313673684,
+              "mae": 0.8816224953547254,
+              "prediction_mean": 15.457501411437988,
+              "rmse": 0.9157308061390649,
+              "target_mean": 16.3391237577811
+            },
+            "terminal": {
+              "count": 0
+            }
+          },
+          "h5_bootstrap": {
+            "alive": {
+              "bias": 0.05297047122785762,
+              "correlation": 0.9711377751863431,
+              "count": 13606,
+              "explained_variance": 0.9431066713057952,
+              "mae": 0.4503473677562226,
+              "prediction_mean": 9.697672843933105,
+              "rmse": 0.8477063676829528,
+              "target_mean": 9.644701769765671
+            },
+            "all": {
+              "bias": 0.053484642764704174,
+              "correlation": 0.9672449800372738,
+              "count": 22650,
+              "explained_variance": 0.9355597551829975,
+              "mae": 0.4700869149703854,
+              "prediction_mean": 8.55634593963623,
+              "rmse": 0.9126522000997284,
+              "target_mean": 8.502861371403647
+            },
+            "dead": {
+              "bias": 0.0542581741590357,
+              "correlation": 0.9386222275131172,
+              "count": 9044,
+              "explained_variance": 0.88099971229295,
+              "mae": 0.4997835402905864,
+              "prediction_mean": 6.839309215545654,
+              "rmse": 1.002462777018746,
+              "target_mean": 6.785050617299967
+            },
+            "episode_initial": {
+              "bias": -0.5452676350744162,
+              "correlation": -0.15346982172425047,
+              "count": 96,
+              "explained_variance": -0.06416888077608185,
+              "mae": 0.5452676350744162,
+              "prediction_mean": 15.457501411437988,
+              "rmse": 0.5814097109092387,
+              "target_mean": 16.00276889750079
+            },
+            "terminal": {
+              "count": 0
+            }
+          },
+          "monte_carlo": {
+            "alive": {
+              "bias": 1.8966071030994363,
+              "correlation": 0.8336365674823351,
+              "count": 13606,
+              "explained_variance": 0.6949418619356116,
+              "mae": 2.269792171345608,
+              "prediction_mean": 9.697672843933105,
+              "rmse": 2.959005363002671,
+              "target_mean": 7.801065137894093
+            },
+            "all": {
+              "bias": 1.8269025408900081,
+              "correlation": 0.8137601534292025,
+              "count": 22650,
+              "explained_variance": 0.6592256690699534,
+              "mae": 2.3076057499081,
+              "prediction_mean": 8.55634593963623,
+              "rmse": 2.960437517575143,
+              "target_mean": 6.7294434732783435
+            },
+            "dead": {
+              "bias": 1.722037406721335,
+              "correlation": 0.6759212203207394,
+              "count": 9044,
+              "explained_variance": 0.42542763862416466,
+              "mae": 2.3644933604699387,
+              "prediction_mean": 6.839309215545654,
+              "rmse": 2.962590779364024,
+              "target_mean": 5.117271384737667
+            },
+            "episode_initial": {
+              "bias": 0.915925916718277,
+              "correlation": 0.11208042860626805,
+              "count": 96,
+              "explained_variance": 0.0032065350785883684,
+              "mae": 1.2976722298371393,
+              "prediction_mean": 15.457501411437988,
+              "rmse": 2.0329446794512265,
+              "target_mean": 14.541575345708102
+            },
+            "terminal": {
+              "bias": 4.409290239214897,
+              "correlation": null,
+              "count": 96,
+              "explained_variance": null,
+              "mae": 4.409290239214897,
+              "prediction_mean": 4.409290313720703,
+              "rmse": 4.859824045570933,
+              "target_mean": 0.0
+            }
+          }
+        },
+        "slow": {
+          "h15_bootstrap": {
+            "alive": {
+              "bias": 0.1911736683359027,
+              "correlation": 0.9195448662247896,
+              "count": 13606,
+              "explained_variance": 0.8451501156071237,
+              "mae": 0.9025101314097561,
+              "prediction_mean": 9.697672843933105,
+              "rmse": 1.4528270340661678,
+              "target_mean": 9.506498572657627
+            },
+            "all": {
+              "bias": 0.1786775089016283,
+              "correlation": 0.9127008638849804,
+              "count": 22650,
+              "explained_variance": 0.8328910714869764,
+              "mae": 0.9585517899669331,
+              "prediction_mean": 8.55634593963623,
+              "rmse": 1.5431181081610064,
+              "target_mean": 8.377668505266723
+            },
+            "dead": {
+              "bias": 0.15987800146435086,
+              "correlation": 0.8548042923726525,
+              "count": 9044,
+              "explained_variance": 0.7306345882576841,
+              "mae": 1.042862140069648,
+              "prediction_mean": 6.839309215545654,
+              "rmse": 1.669781589812055,
+              "target_mean": 6.679430789994652
+            },
+            "episode_initial": {
+              "bias": -0.8816224953547254,
+              "correlation": 0.1741127872744325,
+              "count": 96,
+              "explained_variance": 0.026363655313673684,
+              "mae": 0.8816224953547254,
+              "prediction_mean": 15.457501411437988,
+              "rmse": 0.9157308061390649,
+              "target_mean": 16.3391237577811
+            },
+            "terminal": {
+              "count": 0
+            }
+          },
+          "h5_bootstrap": {
+            "alive": {
+              "bias": 0.05297047122785762,
+              "correlation": 0.9711377751863431,
+              "count": 13606,
+              "explained_variance": 0.9431066713057952,
+              "mae": 0.4503473677562226,
+              "prediction_mean": 9.697672843933105,
+              "rmse": 0.8477063676829528,
+              "target_mean": 9.644701769765671
+            },
+            "all": {
+              "bias": 0.053484642764704174,
+              "correlation": 0.9672449800372738,
+              "count": 22650,
+              "explained_variance": 0.9355597551829975,
+              "mae": 0.4700869149703854,
+              "prediction_mean": 8.55634593963623,
+              "rmse": 0.9126522000997284,
+              "target_mean": 8.502861371403647
+            },
+            "dead": {
+              "bias": 0.0542581741590357,
+              "correlation": 0.9386222275131172,
+              "count": 9044,
+              "explained_variance": 0.88099971229295,
+              "mae": 0.4997835402905864,
+              "prediction_mean": 6.839309215545654,
+              "rmse": 1.002462777018746,
+              "target_mean": 6.785050617299967
+            },
+            "episode_initial": {
+              "bias": -0.5452676350744162,
+              "correlation": -0.15346982172425047,
+              "count": 96,
+              "explained_variance": -0.06416888077608185,
+              "mae": 0.5452676350744162,
+              "prediction_mean": 15.457501411437988,
+              "rmse": 0.5814097109092387,
+              "target_mean": 16.00276889750079
+            },
+            "terminal": {
+              "count": 0
+            }
+          },
+          "monte_carlo": {
+            "alive": {
+              "bias": 1.8966071030994363,
+              "correlation": 0.8336365674823351,
+              "count": 13606,
+              "explained_variance": 0.6949418619356116,
+              "mae": 2.269792171345608,
+              "prediction_mean": 9.697672843933105,
+              "rmse": 2.959005363002671,
+              "target_mean": 7.801065137894093
+            },
+            "all": {
+              "bias": 1.8269025408900081,
+              "correlation": 0.8137601534292025,
+              "count": 22650,
+              "explained_variance": 0.6592256690699534,
+              "mae": 2.3076057499081,
+              "prediction_mean": 8.55634593963623,
+              "rmse": 2.960437517575143,
+              "target_mean": 6.7294434732783435
+            },
+            "dead": {
+              "bias": 1.722037406721335,
+              "correlation": 0.6759212203207394,
+              "count": 9044,
+              "explained_variance": 0.42542763862416466,
+              "mae": 2.3644933604699387,
+              "prediction_mean": 6.839309215545654,
+              "rmse": 2.962590779364024,
+              "target_mean": 5.117271384737667
+            },
+            "episode_initial": {
+              "bias": 0.915925916718277,
+              "correlation": 0.11208042860626805,
+              "count": 96,
+              "explained_variance": 0.0032065350785883684,
+              "mae": 1.2976722298371393,
+              "prediction_mean": 15.457501411437988,
+              "rmse": 2.0329446794512265,
+              "target_mean": 14.541575345708102
+            },
+            "terminal": {
+              "bias": 4.409290239214897,
+              "correlation": null,
+              "count": 96,
+              "explained_variance": null,
+              "mae": 4.409290239214897,
+              "prediction_mean": 4.409290313720703,
+              "rmse": 4.859824045570933,
+              "target_mean": 0.0
+            }
+          }
+        }
+      },
+      "frozen_verified": true
+    },
+    {
+      "name": "calibration-3s_vs_5z-s2",
+      "episodes": 32,
+      "win_rate": 0.53125,
+      "return_mean": 20.67757746577263,
+      "discount": 0.996996996996997,
+      "calibration": {
+        "live": {
+          "h15_bootstrap": {
+            "alive": {
+              "bias": 0.21488175556746586,
+              "correlation": 0.9362003168158345,
+              "count": 15286,
+              "explained_variance": 0.8764707049358508,
+              "mae": 0.8205756334691148,
+              "prediction_mean": 10.711610794067383,
+              "rmse": 1.412618198857048,
+              "target_mean": 10.49672882784433
+            },
+            "all": {
+              "bias": 0.18129678250496725,
+              "correlation": 0.941428528931228,
+              "count": 20985,
+              "explained_variance": 0.8862054402270133,
+              "mae": 0.8439047923466673,
+              "prediction_mean": 9.465354919433594,
+              "rmse": 1.4114135901839948,
+              "target_mean": 9.284058570592537
+            },
+            "dead": {
+              "bias": 0.09121432975301888,
+              "correlation": 0.835937239417303,
+              "count": 5699,
+              "explained_variance": 0.6984030902338985,
+              "mae": 0.9064788443912836,
+              "prediction_mean": 6.122618198394775,
+              "rmse": 1.408177470015146,
+              "target_mean": 6.031404148351639
+            },
+            "episode_initial": {
+              "bias": -0.9470866166474622,
+              "correlation": 0.23391936015885803,
+              "count": 96,
+              "explained_variance": 0.018283926678277496,
+              "mae": 0.9470866166474622,
+              "prediction_mean": 16.397916793823242,
+              "rmse": 0.9613289428265811,
+              "target_mean": 17.34500362902107
+            },
+            "terminal": {
+              "count": 0
+            }
+          },
+          "h5_bootstrap": {
+            "alive": {
+              "bias": 0.06171622619258641,
+              "correlation": 0.9755460444886134,
+              "count": 15286,
+              "explained_variance": 0.9516542893554346,
+              "mae": 0.44599641712167093,
+              "prediction_mean": 10.711610794067383,
+              "rmse": 0.8461586282190453,
+              "target_mean": 10.649894357219207
+            },
+            "all": {
+              "bias": 0.05294793966296952,
+              "correlation": 0.9778487522897733,
+              "count": 20985,
+              "explained_variance": 0.9561863212630848,
+              "mae": 0.44870357064031074,
+              "prediction_mean": 9.465354919433594,
+              "rmse": 0.8470734970333899,
+              "target_mean": 9.412407413434535
+            },
+            "dead": {
+              "bias": 0.029429422749173477,
+              "correlation": 0.931320370937759,
+              "count": 5699,
+              "explained_variance": 0.8672922622547357,
+              "mae": 0.45596476535621316,
+              "prediction_mean": 6.122618198394775,
+              "rmse": 0.8495225156118439,
+              "target_mean": 6.0931890553554835
+            },
+            "episode_initial": {
+              "bias": -0.8657742799351039,
+              "correlation": 0.09410351968437691,
+              "count": 96,
+              "explained_variance": -0.033501310261363715,
+              "mae": 0.8657742799351039,
+              "prediction_mean": 16.397916793823242,
+              "rmse": 0.8983156834375043,
+              "target_mean": 17.26369129230871
+            },
+            "terminal": {
+              "count": 0
+            }
+          },
+          "monte_carlo": {
+            "alive": {
+              "bias": 1.8924911086619214,
+              "correlation": 0.8239928210184412,
+              "count": 15286,
+              "explained_variance": 0.674788431213178,
+              "mae": 2.1046063830079933,
+              "prediction_mean": 10.711610794067383,
+              "rmse": 3.0470919187835785,
+              "target_mean": 8.819119474749872
+            },
+            "all": {
+              "bias": 1.706113276391544,
+              "correlation": 0.8465163310971067,
+              "count": 20985,
+              "explained_variance": 0.7087928522779505,
+              "mae": 2.014247989042258,
+              "prediction_mean": 9.465354919433594,
+              "rmse": 2.8450283069235502,
+              "target_mean": 7.759242076705959
+            },
+            "dead": {
+              "bias": 1.206206004223623,
+              "correlation": 0.7346869573596234,
+              "count": 5699,
+              "explained_variance": 0.5349137375798909,
+              "mae": 1.7718864501476754,
+              "prediction_mean": 6.122618198394775,
+              "rmse": 2.213769270833019,
+              "target_mean": 4.916412473881035
+            },
+            "episode_initial": {
+              "bias": 0.7668580034258161,
+              "correlation": 0.007769570783139433,
+              "count": 96,
+              "explained_variance": -0.0008942927245323418,
+              "mae": 1.4635699650947418,
+              "prediction_mean": 16.397916793823242,
+              "rmse": 1.983079750486429,
+              "target_mean": 15.631059008947792
+            },
+            "terminal": {
+              "bias": 4.939812126259009,
+              "correlation": null,
+              "count": 96,
+              "explained_variance": null,
+              "mae": 4.939812126259009,
+              "prediction_mean": 4.939812183380127,
+              "rmse": 5.31051873690885,
+              "target_mean": 0.0
+            }
+          }
+        },
+        "slow": {
+          "h15_bootstrap": {
+            "alive": {
+              "bias": 0.21488175556746586,
+              "correlation": 0.9362003168158345,
+              "count": 15286,
+              "explained_variance": 0.8764707049358508,
+              "mae": 0.8205756334691148,
+              "prediction_mean": 10.711610794067383,
+              "rmse": 1.412618198857048,
+              "target_mean": 10.49672882784433
+            },
+            "all": {
+              "bias": 0.18129678250496725,
+              "correlation": 0.941428528931228,
+              "count": 20985,
+              "explained_variance": 0.8862054402270133,
+              "mae": 0.8439047923466673,
+              "prediction_mean": 9.465354919433594,
+              "rmse": 1.4114135901839948,
+              "target_mean": 9.284058570592537
+            },
+            "dead": {
+              "bias": 0.09121432975301888,
+              "correlation": 0.835937239417303,
+              "count": 5699,
+              "explained_variance": 0.6984030902338985,
+              "mae": 0.9064788443912836,
+              "prediction_mean": 6.122618198394775,
+              "rmse": 1.408177470015146,
+              "target_mean": 6.031404148351639
+            },
+            "episode_initial": {
+              "bias": -0.9470866166474622,
+              "correlation": 0.23391936015885803,
+              "count": 96,
+              "explained_variance": 0.018283926678277496,
+              "mae": 0.9470866166474622,
+              "prediction_mean": 16.397916793823242,
+              "rmse": 0.9613289428265811,
+              "target_mean": 17.34500362902107
+            },
+            "terminal": {
+              "count": 0
+            }
+          },
+          "h5_bootstrap": {
+            "alive": {
+              "bias": 0.06171622619258641,
+              "correlation": 0.9755460444886134,
+              "count": 15286,
+              "explained_variance": 0.9516542893554346,
+              "mae": 0.44599641712167093,
+              "prediction_mean": 10.711610794067383,
+              "rmse": 0.8461586282190453,
+              "target_mean": 10.649894357219207
+            },
+            "all": {
+              "bias": 0.05294793966296952,
+              "correlation": 0.9778487522897733,
+              "count": 20985,
+              "explained_variance": 0.9561863212630848,
+              "mae": 0.44870357064031074,
+              "prediction_mean": 9.465354919433594,
+              "rmse": 0.8470734970333899,
+              "target_mean": 9.412407413434535
+            },
+            "dead": {
+              "bias": 0.029429422749173477,
+              "correlation": 0.931320370937759,
+              "count": 5699,
+              "explained_variance": 0.8672922622547357,
+              "mae": 0.45596476535621316,
+              "prediction_mean": 6.122618198394775,
+              "rmse": 0.8495225156118439,
+              "target_mean": 6.0931890553554835
+            },
+            "episode_initial": {
+              "bias": -0.8657742799351039,
+              "correlation": 0.09410351968437691,
+              "count": 96,
+              "explained_variance": -0.033501310261363715,
+              "mae": 0.8657742799351039,
+              "prediction_mean": 16.397916793823242,
+              "rmse": 0.8983156834375043,
+              "target_mean": 17.26369129230871
+            },
+            "terminal": {
+              "count": 0
+            }
+          },
+          "monte_carlo": {
+            "alive": {
+              "bias": 1.8924911086619214,
+              "correlation": 0.8239928210184412,
+              "count": 15286,
+              "explained_variance": 0.674788431213178,
+              "mae": 2.1046063830079933,
+              "prediction_mean": 10.711610794067383,
+              "rmse": 3.0470919187835785,
+              "target_mean": 8.819119474749872
+            },
+            "all": {
+              "bias": 1.706113276391544,
+              "correlation": 0.8465163310971067,
+              "count": 20985,
+              "explained_variance": 0.7087928522779505,
+              "mae": 2.014247989042258,
+              "prediction_mean": 9.465354919433594,
+              "rmse": 2.8450283069235502,
+              "target_mean": 7.759242076705959
+            },
+            "dead": {
+              "bias": 1.206206004223623,
+              "correlation": 0.7346869573596234,
+              "count": 5699,
+              "explained_variance": 0.5349137375798909,
+              "mae": 1.7718864501476754,
+              "prediction_mean": 6.122618198394775,
+              "rmse": 2.213769270833019,
+              "target_mean": 4.916412473881035
+            },
+            "episode_initial": {
+              "bias": 0.7668580034258161,
+              "correlation": 0.007769570783139433,
+              "count": 96,
+              "explained_variance": -0.0008942927245323418,
+              "mae": 1.4635699650947418,
+              "prediction_mean": 16.397916793823242,
+              "rmse": 1.983079750486429,
+              "target_mean": 15.631059008947792
+            },
+            "terminal": {
+              "bias": 4.939812126259009,
+              "correlation": null,
+              "count": 96,
+              "explained_variance": null,
+              "mae": 4.939812126259009,
+              "prediction_mean": 4.939812183380127,
+              "rmse": 5.31051873690885,
+              "target_mean": 0.0
+            }
+          }
+        }
+      },
+      "frozen_verified": true
+    }
+  ],
+  "common_world": [
+    {
+      "map": "3s_vs_3z",
+      "reference_seed": 1,
+      "scores": [
+        {
+          "seed": 0,
+          "path": "oracle_alive_only",
+          "horizon": 1,
+          "false_deaths": 3,
+          "actually_alive": 209,
+          "false_death_rate": 0.014354066985645933,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.008517266731332717,
+          "finite_reward_sum_rmse": 0.17441641149243753
+        },
+        {
+          "seed": 0,
+          "path": "oracle_alive_only",
+          "horizon": 2,
+          "false_deaths": 6,
+          "actually_alive": 207,
+          "false_death_rate": 0.028985507246376812,
+          "missed_deaths": 1,
+          "actually_dead": 2,
+          "liveness_brier": 0.022145165830366586,
+          "finite_reward_sum_rmse": 0.2148722317201036
+        },
+        {
+          "seed": 0,
+          "path": "oracle_alive_only",
+          "horizon": 4,
+          "false_deaths": 16,
+          "actually_alive": 202,
+          "false_death_rate": 0.07920792079207921,
+          "missed_deaths": 1,
+          "actually_dead": 7,
+          "liveness_brier": 0.058037971590080624,
+          "finite_reward_sum_rmse": 0.24922804304819407
+        },
+        {
+          "seed": 0,
+          "path": "oracle_alive_only",
+          "horizon": 5,
+          "false_deaths": 20,
+          "actually_alive": 201,
+          "false_death_rate": 0.09950248756218906,
+          "missed_deaths": 0,
+          "actually_dead": 8,
+          "liveness_brier": 0.07589784355864093,
+          "finite_reward_sum_rmse": 0.2789972668333157
+        },
+        {
+          "seed": 0,
+          "path": "oracle_alive_only",
+          "horizon": 8,
+          "false_deaths": 35,
+          "actually_alive": 195,
+          "false_death_rate": 0.1794871794871795,
+          "missed_deaths": 2,
+          "actually_dead": 14,
+          "liveness_brier": 0.12477651509361125,
+          "finite_reward_sum_rmse": 0.35179096373112034
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_alive",
+          "horizon": 1,
+          "false_deaths": 3,
+          "actually_alive": 209,
+          "false_death_rate": 0.014354066985645933,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.008517266731332717,
+          "finite_reward_sum_rmse": 0.17441641149243753
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_alive",
+          "horizon": 2,
+          "false_deaths": 2,
+          "actually_alive": 207,
+          "false_death_rate": 0.00966183574879227,
+          "missed_deaths": 1,
+          "actually_dead": 2,
+          "liveness_brier": 0.00898733860087491,
+          "finite_reward_sum_rmse": 0.21311960619297496
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_alive",
+          "horizon": 4,
+          "false_deaths": 3,
+          "actually_alive": 202,
+          "false_death_rate": 0.01485148514851485,
+          "missed_deaths": 2,
+          "actually_dead": 7,
+          "liveness_brier": 0.013983708314373823,
+          "finite_reward_sum_rmse": 0.24569671596177153
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_alive",
+          "horizon": 5,
+          "false_deaths": 4,
+          "actually_alive": 201,
+          "false_death_rate": 0.01990049751243781,
+          "missed_deaths": 0,
+          "actually_dead": 8,
+          "liveness_brier": 0.010411328720369732,
+          "finite_reward_sum_rmse": 0.26486003234048416
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_alive",
+          "horizon": 8,
+          "false_deaths": 2,
+          "actually_alive": 195,
+          "false_death_rate": 0.010256410256410256,
+          "missed_deaths": 2,
+          "actually_dead": 14,
+          "liveness_brier": 0.012721968691104882,
+          "finite_reward_sum_rmse": 0.3050371323266499
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_only",
+          "horizon": 1,
+          "false_deaths": 3,
+          "actually_alive": 209,
+          "false_death_rate": 0.014354066985645933,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.008517266731332717,
+          "finite_reward_sum_rmse": 0.17441641149243753
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_only",
+          "horizon": 2,
+          "false_deaths": 4,
+          "actually_alive": 207,
+          "false_death_rate": 0.01932367149758454,
+          "missed_deaths": 1,
+          "actually_dead": 2,
+          "liveness_brier": 0.019972780647295386,
+          "finite_reward_sum_rmse": 0.21149258456274994
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_only",
+          "horizon": 4,
+          "false_deaths": 5,
+          "actually_alive": 202,
+          "false_death_rate": 0.024752475247524754,
+          "missed_deaths": 2,
+          "actually_dead": 7,
+          "liveness_brier": 0.026241545473177877,
+          "finite_reward_sum_rmse": 0.2480703412271265
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_only",
+          "horizon": 5,
+          "false_deaths": 5,
+          "actually_alive": 201,
+          "false_death_rate": 0.024875621890547265,
+          "missed_deaths": 0,
+          "actually_dead": 8,
+          "liveness_brier": 0.023372144382687157,
+          "finite_reward_sum_rmse": 0.2726919072247365
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_only",
+          "horizon": 8,
+          "false_deaths": 5,
+          "actually_alive": 195,
+          "false_death_rate": 0.02564102564102564,
+          "missed_deaths": 2,
+          "actually_dead": 14,
+          "liveness_brier": 0.033463610366421814,
+          "finite_reward_sum_rmse": 0.30363758863907386
+        },
+        {
+          "seed": 0,
+          "path": "self_fed",
+          "horizon": 1,
+          "false_deaths": 3,
+          "actually_alive": 209,
+          "false_death_rate": 0.014354066985645933,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.008517266731332717,
+          "finite_reward_sum_rmse": 0.17441641149243753
+        },
+        {
+          "seed": 0,
+          "path": "self_fed",
+          "horizon": 2,
+          "false_deaths": 6,
+          "actually_alive": 207,
+          "false_death_rate": 0.028985507246376812,
+          "missed_deaths": 1,
+          "actually_dead": 2,
+          "liveness_brier": 0.027430565194897845,
+          "finite_reward_sum_rmse": 0.2136181427859848
+        },
+        {
+          "seed": 0,
+          "path": "self_fed",
+          "horizon": 4,
+          "false_deaths": 16,
+          "actually_alive": 202,
+          "false_death_rate": 0.07920792079207921,
+          "missed_deaths": 2,
+          "actually_dead": 7,
+          "liveness_brier": 0.07263085588420641,
+          "finite_reward_sum_rmse": 0.2474313779547437
+        },
+        {
+          "seed": 0,
+          "path": "self_fed",
+          "horizon": 5,
+          "false_deaths": 21,
+          "actually_alive": 201,
+          "false_death_rate": 0.1044776119402985,
+          "missed_deaths": 1,
+          "actually_dead": 8,
+          "liveness_brier": 0.09256449075269671,
+          "finite_reward_sum_rmse": 0.276506525798605
+        },
+        {
+          "seed": 0,
+          "path": "self_fed",
+          "horizon": 8,
+          "false_deaths": 36,
+          "actually_alive": 195,
+          "false_death_rate": 0.18461538461538463,
+          "missed_deaths": 2,
+          "actually_dead": 14,
+          "liveness_brier": 0.16953546305300995,
+          "finite_reward_sum_rmse": 0.3552815892737143
+        },
+        {
+          "seed": 0,
+          "path": "teacher_factual",
+          "horizon": 1,
+          "false_deaths": 3,
+          "actually_alive": 209,
+          "false_death_rate": 0.014354066985645933,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.008525648366372015,
+          "finite_reward_sum_rmse": 0.17448718573992017
+        },
+        {
+          "seed": 0,
+          "path": "teacher_factual",
+          "horizon": 2,
+          "false_deaths": 2,
+          "actually_alive": 207,
+          "false_death_rate": 0.00966183574879227,
+          "missed_deaths": 1,
+          "actually_dead": 2,
+          "liveness_brier": 0.00903292636354311,
+          "finite_reward_sum_rmse": 0.21349401431264428
+        },
+        {
+          "seed": 0,
+          "path": "teacher_factual",
+          "horizon": 4,
+          "false_deaths": 3,
+          "actually_alive": 202,
+          "false_death_rate": 0.01485148514851485,
+          "missed_deaths": 2,
+          "actually_dead": 7,
+          "liveness_brier": 0.013948059757709737,
+          "finite_reward_sum_rmse": 0.24659176358531973
+        },
+        {
+          "seed": 0,
+          "path": "teacher_factual",
+          "horizon": 5,
+          "false_deaths": 4,
+          "actually_alive": 201,
+          "false_death_rate": 0.01990049751243781,
+          "missed_deaths": 0,
+          "actually_dead": 8,
+          "liveness_brier": 0.01056409378514912,
+          "finite_reward_sum_rmse": 0.2661324407321223
+        },
+        {
+          "seed": 0,
+          "path": "teacher_factual",
+          "horizon": 8,
+          "false_deaths": 2,
+          "actually_alive": 195,
+          "false_death_rate": 0.010256410256410256,
+          "missed_deaths": 2,
+          "actually_dead": 14,
+          "liveness_brier": 0.011989688759551224,
+          "finite_reward_sum_rmse": 0.30672209534669503
+        },
+        {
+          "seed": 1,
+          "path": "oracle_alive_only",
+          "horizon": 1,
+          "false_deaths": 4,
+          "actually_alive": 209,
+          "false_death_rate": 0.019138755980861243,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.011255665387853093,
+          "finite_reward_sum_rmse": 0.17054870783497258
+        },
+        {
+          "seed": 1,
+          "path": "oracle_alive_only",
+          "horizon": 2,
+          "false_deaths": 5,
+          "actually_alive": 207,
+          "false_death_rate": 0.024154589371980676,
+          "missed_deaths": 0,
+          "actually_dead": 2,
+          "liveness_brier": 0.016623029607719247,
+          "finite_reward_sum_rmse": 0.20242900671066988
+        },
+        {
+          "seed": 1,
+          "path": "oracle_alive_only",
+          "horizon": 4,
+          "false_deaths": 3,
+          "actually_alive": 202,
+          "false_death_rate": 0.01485148514851485,
+          "missed_deaths": 2,
+          "actually_dead": 7,
+          "liveness_brier": 0.021747530405099535,
+          "finite_reward_sum_rmse": 0.25071831065128847
+        },
+        {
+          "seed": 1,
+          "path": "oracle_alive_only",
+          "horizon": 5,
+          "false_deaths": 4,
+          "actually_alive": 201,
+          "false_death_rate": 0.01990049751243781,
+          "missed_deaths": 0,
+          "actually_dead": 8,
+          "liveness_brier": 0.016443013122582766,
+          "finite_reward_sum_rmse": 0.2651185662123141
+        },
+        {
+          "seed": 1,
+          "path": "oracle_alive_only",
+          "horizon": 8,
+          "false_deaths": 5,
+          "actually_alive": 195,
+          "false_death_rate": 0.02564102564102564,
+          "missed_deaths": 2,
+          "actually_dead": 14,
+          "liveness_brier": 0.024221197757785914,
+          "finite_reward_sum_rmse": 0.3349581414209379
+        },
+        {
+          "seed": 1,
+          "path": "oracle_observation_alive",
+          "horizon": 1,
+          "false_deaths": 4,
+          "actually_alive": 209,
+          "false_death_rate": 0.019138755980861243,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.011255665387853093,
+          "finite_reward_sum_rmse": 0.17054870783497258
+        },
+        {
+          "seed": 1,
+          "path": "oracle_observation_alive",
+          "horizon": 2,
+          "false_deaths": 4,
+          "actually_alive": 207,
+          "false_death_rate": 0.01932367149758454,
+          "missed_deaths": 0,
+          "actually_dead": 2,
+          "liveness_brier": 0.012767727063010019,
+          "finite_reward_sum_rmse": 0.19600142896097747
+        },
+        {
+          "seed": 1,
+          "path": "oracle_observation_alive",
+          "horizon": 4,
+          "false_deaths": 4,
+          "actually_alive": 202,
+          "false_death_rate": 0.019801980198019802,
+          "missed_deaths": 1,
+          "actually_dead": 7,
+          "liveness_brier": 0.015656589346532048,
+          "finite_reward_sum_rmse": 0.2151737921298881
+        },
+        {
+          "seed": 1,
+          "path": "oracle_observation_alive",
+          "horizon": 5,
+          "false_deaths": 4,
+          "actually_alive": 201,
+          "false_death_rate": 0.01990049751243781,
+          "missed_deaths": 0,
+          "actually_dead": 8,
+          "liveness_brier": 0.014426525107590316,
+          "finite_reward_sum_rmse": 0.2334256044259983
+        },
+        {
+          "seed": 1,
+          "path": "oracle_observation_alive",
+          "horizon": 8,
+          "false_deaths": 2,
+          "actually_alive": 195,
+          "false_death_rate": 0.010256410256410256,
+          "missed_deaths": 1,
+          "actually_dead": 14,
+          "liveness_brier": 0.012529394833372443,
+          "finite_reward_sum_rmse": 0.3018256875933265
+        },
+        {
+          "seed": 1,
+          "path": "oracle_observation_only",
+          "horizon": 1,
+          "false_deaths": 4,
+          "actually_alive": 209,
+          "false_death_rate": 0.019138755980861243,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.011255665387853093,
+          "finite_reward_sum_rmse": 0.17054870783497258
+        },
+        {
+          "seed": 1,
+          "path": "oracle_observation_only",
+          "horizon": 2,
+          "false_deaths": 4,
+          "actually_alive": 207,
+          "false_death_rate": 0.01932367149758454,
+          "missed_deaths": 0,
+          "actually_dead": 2,
+          "liveness_brier": 0.02028055080403026,
+          "finite_reward_sum_rmse": 0.19755810336463359
+        },
+        {
+          "seed": 1,
+          "path": "oracle_observation_only",
+          "horizon": 4,
+          "false_deaths": 4,
+          "actually_alive": 202,
+          "false_death_rate": 0.019801980198019802,
+          "missed_deaths": 1,
+          "actually_dead": 7,
+          "liveness_brier": 0.021565294898086524,
+          "finite_reward_sum_rmse": 0.21243654144794433
+        },
+        {
+          "seed": 1,
+          "path": "oracle_observation_only",
+          "horizon": 5,
+          "false_deaths": 4,
+          "actually_alive": 201,
+          "false_death_rate": 0.01990049751243781,
+          "missed_deaths": 0,
+          "actually_dead": 8,
+          "liveness_brier": 0.01806480502690998,
+          "finite_reward_sum_rmse": 0.22941958415926575
+        },
+        {
+          "seed": 1,
+          "path": "oracle_observation_only",
+          "horizon": 8,
+          "false_deaths": 4,
+          "actually_alive": 195,
+          "false_death_rate": 0.020512820512820513,
+          "missed_deaths": 1,
+          "actually_dead": 14,
+          "liveness_brier": 0.02207541000090191,
+          "finite_reward_sum_rmse": 0.28582426768068064
+        },
+        {
+          "seed": 1,
+          "path": "self_fed",
+          "horizon": 1,
+          "false_deaths": 4,
+          "actually_alive": 209,
+          "false_death_rate": 0.019138755980861243,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.011255665387853093,
+          "finite_reward_sum_rmse": 0.17054870783497258
+        },
+        {
+          "seed": 1,
+          "path": "self_fed",
+          "horizon": 2,
+          "false_deaths": 5,
+          "actually_alive": 207,
+          "false_death_rate": 0.024154589371980676,
+          "missed_deaths": 0,
+          "actually_dead": 2,
+          "liveness_brier": 0.02253555900761103,
+          "finite_reward_sum_rmse": 0.20347988883810136
+        },
+        {
+          "seed": 1,
+          "path": "self_fed",
+          "horizon": 4,
+          "false_deaths": 3,
+          "actually_alive": 202,
+          "false_death_rate": 0.01485148514851485,
+          "missed_deaths": 2,
+          "actually_dead": 7,
+          "liveness_brier": 0.024106616504039603,
+          "finite_reward_sum_rmse": 0.2469332915048015
+        },
+        {
+          "seed": 1,
+          "path": "self_fed",
+          "horizon": 5,
+          "false_deaths": 4,
+          "actually_alive": 201,
+          "false_death_rate": 0.01990049751243781,
+          "missed_deaths": 1,
+          "actually_dead": 8,
+          "liveness_brier": 0.024039737413402634,
+          "finite_reward_sum_rmse": 0.2610867474057158
+        },
+        {
+          "seed": 1,
+          "path": "self_fed",
+          "horizon": 8,
+          "false_deaths": 5,
+          "actually_alive": 195,
+          "false_death_rate": 0.02564102564102564,
+          "missed_deaths": 4,
+          "actually_dead": 14,
+          "liveness_brier": 0.03539904938988559,
+          "finite_reward_sum_rmse": 0.32749230334541196
+        },
+        {
+          "seed": 1,
+          "path": "teacher_factual",
+          "horizon": 1,
+          "false_deaths": 4,
+          "actually_alive": 209,
+          "false_death_rate": 0.019138755980861243,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.011245836615217664,
+          "finite_reward_sum_rmse": 0.1706256359597379
+        },
+        {
+          "seed": 1,
+          "path": "teacher_factual",
+          "horizon": 2,
+          "false_deaths": 4,
+          "actually_alive": 207,
+          "false_death_rate": 0.01932367149758454,
+          "missed_deaths": 0,
+          "actually_dead": 2,
+          "liveness_brier": 0.012838930248694386,
+          "finite_reward_sum_rmse": 0.19584266475713366
+        },
+        {
+          "seed": 1,
+          "path": "teacher_factual",
+          "horizon": 4,
+          "false_deaths": 4,
+          "actually_alive": 202,
+          "false_death_rate": 0.019801980198019802,
+          "missed_deaths": 1,
+          "actually_dead": 7,
+          "liveness_brier": 0.015647930092031748,
+          "finite_reward_sum_rmse": 0.21481842075716742
+        },
+        {
+          "seed": 1,
+          "path": "teacher_factual",
+          "horizon": 5,
+          "false_deaths": 4,
+          "actually_alive": 201,
+          "false_death_rate": 0.01990049751243781,
+          "missed_deaths": 0,
+          "actually_dead": 8,
+          "liveness_brier": 0.014378816230503707,
+          "finite_reward_sum_rmse": 0.23196518026151833
+        },
+        {
+          "seed": 1,
+          "path": "teacher_factual",
+          "horizon": 8,
+          "false_deaths": 2,
+          "actually_alive": 195,
+          "false_death_rate": 0.010256410256410256,
+          "missed_deaths": 1,
+          "actually_dead": 14,
+          "liveness_brier": 0.012093495057024665,
+          "finite_reward_sum_rmse": 0.2998433988350597
+        },
+        {
+          "seed": 2,
+          "path": "oracle_alive_only",
+          "horizon": 1,
+          "false_deaths": 5,
+          "actually_alive": 209,
+          "false_death_rate": 0.023923444976076555,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.017057679697808706,
+          "finite_reward_sum_rmse": 0.19336854416943916
+        },
+        {
+          "seed": 2,
+          "path": "oracle_alive_only",
+          "horizon": 2,
+          "false_deaths": 6,
+          "actually_alive": 207,
+          "false_death_rate": 0.028985507246376812,
+          "missed_deaths": 2,
+          "actually_dead": 2,
+          "liveness_brier": 0.030754359627100786,
+          "finite_reward_sum_rmse": 0.2049347533354612
+        },
+        {
+          "seed": 2,
+          "path": "oracle_alive_only",
+          "horizon": 4,
+          "false_deaths": 9,
+          "actually_alive": 202,
+          "false_death_rate": 0.04455445544554455,
+          "missed_deaths": 2,
+          "actually_dead": 7,
+          "liveness_brier": 0.04422150056376069,
+          "finite_reward_sum_rmse": 0.24516704799220398
+        },
+        {
+          "seed": 2,
+          "path": "oracle_alive_only",
+          "horizon": 5,
+          "false_deaths": 13,
+          "actually_alive": 201,
+          "false_death_rate": 0.06467661691542288,
+          "missed_deaths": 1,
+          "actually_dead": 8,
+          "liveness_brier": 0.055237189554253344,
+          "finite_reward_sum_rmse": 0.2989003483128758
+        },
+        {
+          "seed": 2,
+          "path": "oracle_alive_only",
+          "horizon": 8,
+          "false_deaths": 16,
+          "actually_alive": 195,
+          "false_death_rate": 0.08205128205128205,
+          "missed_deaths": 2,
+          "actually_dead": 14,
+          "liveness_brier": 0.07858490106918063,
+          "finite_reward_sum_rmse": 0.3490093859055594
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_alive",
+          "horizon": 1,
+          "false_deaths": 5,
+          "actually_alive": 209,
+          "false_death_rate": 0.023923444976076555,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.017057679697808706,
+          "finite_reward_sum_rmse": 0.19336854416943916
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_alive",
+          "horizon": 2,
+          "false_deaths": 5,
+          "actually_alive": 207,
+          "false_death_rate": 0.024154589371980676,
+          "missed_deaths": 1,
+          "actually_dead": 2,
+          "liveness_brier": 0.02381128200306093,
+          "finite_reward_sum_rmse": 0.19189447611815585
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_alive",
+          "horizon": 4,
+          "false_deaths": 4,
+          "actually_alive": 202,
+          "false_death_rate": 0.019801980198019802,
+          "missed_deaths": 2,
+          "actually_dead": 7,
+          "liveness_brier": 0.023192797817939634,
+          "finite_reward_sum_rmse": 0.24875476616290046
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_alive",
+          "horizon": 5,
+          "false_deaths": 5,
+          "actually_alive": 201,
+          "false_death_rate": 0.024875621890547265,
+          "missed_deaths": 1,
+          "actually_dead": 8,
+          "liveness_brier": 0.024189928740191744,
+          "finite_reward_sum_rmse": 0.2995502986764349
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_alive",
+          "horizon": 8,
+          "false_deaths": 4,
+          "actually_alive": 195,
+          "false_death_rate": 0.020512820512820513,
+          "missed_deaths": 1,
+          "actually_dead": 14,
+          "liveness_brier": 0.020560174413043853,
+          "finite_reward_sum_rmse": 0.37136453419522725
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_only",
+          "horizon": 1,
+          "false_deaths": 5,
+          "actually_alive": 209,
+          "false_death_rate": 0.023923444976076555,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.017057679697808706,
+          "finite_reward_sum_rmse": 0.19336854416943916
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_only",
+          "horizon": 2,
+          "false_deaths": 5,
+          "actually_alive": 207,
+          "false_death_rate": 0.024154589371980676,
+          "missed_deaths": 1,
+          "actually_dead": 2,
+          "liveness_brier": 0.030967402933322462,
+          "finite_reward_sum_rmse": 0.1918885238895801
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_only",
+          "horizon": 4,
+          "false_deaths": 5,
+          "actually_alive": 202,
+          "false_death_rate": 0.024752475247524754,
+          "missed_deaths": 3,
+          "actually_dead": 7,
+          "liveness_brier": 0.033348955569601484,
+          "finite_reward_sum_rmse": 0.24974173617196418
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_only",
+          "horizon": 5,
+          "false_deaths": 6,
+          "actually_alive": 201,
+          "false_death_rate": 0.029850746268656716,
+          "missed_deaths": 1,
+          "actually_dead": 8,
+          "liveness_brier": 0.03151705427544168,
+          "finite_reward_sum_rmse": 0.30015389261113395
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_only",
+          "horizon": 8,
+          "false_deaths": 5,
+          "actually_alive": 195,
+          "false_death_rate": 0.02564102564102564,
+          "missed_deaths": 1,
+          "actually_dead": 14,
+          "liveness_brier": 0.02820927745773523,
+          "finite_reward_sum_rmse": 0.37239793356469864
+        },
+        {
+          "seed": 2,
+          "path": "self_fed",
+          "horizon": 1,
+          "false_deaths": 5,
+          "actually_alive": 209,
+          "false_death_rate": 0.023923444976076555,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.017057679697808706,
+          "finite_reward_sum_rmse": 0.19336854416943916
+        },
+        {
+          "seed": 2,
+          "path": "self_fed",
+          "horizon": 2,
+          "false_deaths": 6,
+          "actually_alive": 207,
+          "false_death_rate": 0.028985507246376812,
+          "missed_deaths": 2,
+          "actually_dead": 2,
+          "liveness_brier": 0.03322757864404305,
+          "finite_reward_sum_rmse": 0.20493075116123832
+        },
+        {
+          "seed": 2,
+          "path": "self_fed",
+          "horizon": 4,
+          "false_deaths": 9,
+          "actually_alive": 202,
+          "false_death_rate": 0.04455445544554455,
+          "missed_deaths": 3,
+          "actually_dead": 7,
+          "liveness_brier": 0.05175582363296634,
+          "finite_reward_sum_rmse": 0.24655983905448856
+        },
+        {
+          "seed": 2,
+          "path": "self_fed",
+          "horizon": 5,
+          "false_deaths": 13,
+          "actually_alive": 201,
+          "false_death_rate": 0.06467661691542288,
+          "missed_deaths": 4,
+          "actually_dead": 8,
+          "liveness_brier": 0.07143468864121653,
+          "finite_reward_sum_rmse": 0.2969829443625128
+        },
+        {
+          "seed": 2,
+          "path": "self_fed",
+          "horizon": 8,
+          "false_deaths": 17,
+          "actually_alive": 195,
+          "false_death_rate": 0.08717948717948718,
+          "missed_deaths": 4,
+          "actually_dead": 14,
+          "liveness_brier": 0.09519092386653771,
+          "finite_reward_sum_rmse": 0.3679076642794618
+        },
+        {
+          "seed": 2,
+          "path": "teacher_factual",
+          "horizon": 1,
+          "false_deaths": 5,
+          "actually_alive": 209,
+          "false_death_rate": 0.023923444976076555,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.017104581352083485,
+          "finite_reward_sum_rmse": 0.19328876848476415
+        },
+        {
+          "seed": 2,
+          "path": "teacher_factual",
+          "horizon": 2,
+          "false_deaths": 5,
+          "actually_alive": 207,
+          "false_death_rate": 0.024154589371980676,
+          "missed_deaths": 1,
+          "actually_dead": 2,
+          "liveness_brier": 0.02383728297542955,
+          "finite_reward_sum_rmse": 0.19196058441915653
+        },
+        {
+          "seed": 2,
+          "path": "teacher_factual",
+          "horizon": 4,
+          "false_deaths": 4,
+          "actually_alive": 202,
+          "false_death_rate": 0.019801980198019802,
+          "missed_deaths": 2,
+          "actually_dead": 7,
+          "liveness_brier": 0.02325853840337858,
+          "finite_reward_sum_rmse": 0.2489976463281715
+        },
+        {
+          "seed": 2,
+          "path": "teacher_factual",
+          "horizon": 5,
+          "false_deaths": 5,
+          "actually_alive": 201,
+          "false_death_rate": 0.024875621890547265,
+          "missed_deaths": 1,
+          "actually_dead": 8,
+          "liveness_brier": 0.024405417690175703,
+          "finite_reward_sum_rmse": 0.3004008191401103
+        },
+        {
+          "seed": 2,
+          "path": "teacher_factual",
+          "horizon": 8,
+          "false_deaths": 4,
+          "actually_alive": 195,
+          "false_death_rate": 0.020512820512820513,
+          "missed_deaths": 1,
+          "actually_dead": 14,
+          "liveness_brier": 0.01992065210414611,
+          "finite_reward_sum_rmse": 0.3717868548034389
+        }
+      ],
+      "h5_by_source_policy": [
+        {
+          "seed": 0,
+          "path": "oracle_alive_only",
+          "source_policy": "policy-seed0.npz",
+          "roots": 33,
+          "false_deaths": 2,
+          "actually_alive": 71,
+          "liveness_brier": 0.02091649471988266
+        },
+        {
+          "seed": 0,
+          "path": "oracle_alive_only",
+          "source_policy": "policy-seed1.npz",
+          "roots": 28,
+          "false_deaths": 11,
+          "actually_alive": 58,
+          "liveness_brier": 0.14718573647876854
+        },
+        {
+          "seed": 0,
+          "path": "oracle_alive_only",
+          "source_policy": "policy-seed2.npz",
+          "roots": 35,
+          "false_deaths": 7,
+          "actually_alive": 72,
+          "liveness_brier": 0.0752907641888733
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_alive",
+          "source_policy": "policy-seed0.npz",
+          "roots": 33,
+          "false_deaths": 1,
+          "actually_alive": 71,
+          "liveness_brier": 0.008231643943913711
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_alive",
+          "source_policy": "policy-seed1.npz",
+          "roots": 28,
+          "false_deaths": 0,
+          "actually_alive": 58,
+          "liveness_brier": 0.0025979607530860114
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_alive",
+          "source_policy": "policy-seed2.npz",
+          "roots": 35,
+          "false_deaths": 3,
+          "actually_alive": 72,
+          "liveness_brier": 0.01925352046792719
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_only",
+          "source_policy": "policy-seed0.npz",
+          "roots": 33,
+          "false_deaths": 1,
+          "actually_alive": 71,
+          "liveness_brier": 0.013015421861155807
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_only",
+          "source_policy": "policy-seed1.npz",
+          "roots": 28,
+          "false_deaths": 0,
+          "actually_alive": 58,
+          "liveness_brier": 0.002598109591008148
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_only",
+          "source_policy": "policy-seed2.npz",
+          "roots": 35,
+          "false_deaths": 4,
+          "actually_alive": 72,
+          "liveness_brier": 0.05175977940572402
+        },
+        {
+          "seed": 0,
+          "path": "self_fed",
+          "source_policy": "policy-seed0.npz",
+          "roots": 33,
+          "false_deaths": 2,
+          "actually_alive": 71,
+          "liveness_brier": 0.02599171888801188
+        },
+        {
+          "seed": 0,
+          "path": "self_fed",
+          "source_policy": "policy-seed1.npz",
+          "roots": 28,
+          "false_deaths": 12,
+          "actually_alive": 58,
+          "liveness_brier": 0.1864360481368621
+        },
+        {
+          "seed": 0,
+          "path": "self_fed",
+          "source_policy": "policy-seed2.npz",
+          "roots": 35,
+          "false_deaths": 7,
+          "actually_alive": 72,
+          "liveness_brier": 0.08553407395451347
+        },
+        {
+          "seed": 0,
+          "path": "teacher_factual",
+          "source_policy": "policy-seed0.npz",
+          "roots": 33,
+          "false_deaths": 1,
+          "actually_alive": 71,
+          "liveness_brier": 0.008237166820179928
+        },
+        {
+          "seed": 0,
+          "path": "teacher_factual",
+          "source_policy": "policy-seed1.npz",
+          "roots": 28,
+          "false_deaths": 0,
+          "actually_alive": 58,
+          "liveness_brier": 0.0026454551777892023
+        },
+        {
+          "seed": 0,
+          "path": "teacher_factual",
+          "source_policy": "policy-seed2.npz",
+          "roots": 35,
+          "false_deaths": 3,
+          "actually_alive": 72,
+          "liveness_brier": 0.01965147840659666
+        },
+        {
+          "seed": 1,
+          "path": "oracle_alive_only",
+          "source_policy": "policy-seed0.npz",
+          "roots": 33,
+          "false_deaths": 1,
+          "actually_alive": 71,
+          "liveness_brier": 0.010487150412948577
+        },
+        {
+          "seed": 1,
+          "path": "oracle_alive_only",
+          "source_policy": "policy-seed1.npz",
+          "roots": 28,
+          "false_deaths": 0,
+          "actually_alive": 58,
+          "liveness_brier": 1.434420985872246e-05
+        },
+        {
+          "seed": 1,
+          "path": "oracle_alive_only",
+          "source_policy": "policy-seed2.npz",
+          "roots": 35,
+          "false_deaths": 3,
+          "actually_alive": 72,
+          "liveness_brier": 0.03650303483654492
+        },
+        {
+          "seed": 1,
+          "path": "oracle_observation_alive",
+          "source_policy": "policy-seed0.npz",
+          "roots": 33,
+          "false_deaths": 1,
+          "actually_alive": 71,
+          "liveness_brier": 0.00746620965415923
+        },
+        {
+          "seed": 1,
+          "path": "oracle_observation_alive",
+          "source_policy": "policy-seed1.npz",
+          "roots": 28,
+          "false_deaths": 0,
+          "actually_alive": 58,
+          "liveness_brier": 7.708117703935831e-05
+        },
+        {
+          "seed": 1,
+          "path": "oracle_observation_alive",
+          "source_policy": "policy-seed2.npz",
+          "roots": 35,
+          "false_deaths": 3,
+          "actually_alive": 72,
+          "liveness_brier": 0.03382806574296881
+        },
+        {
+          "seed": 1,
+          "path": "oracle_observation_only",
+          "source_policy": "policy-seed0.npz",
+          "roots": 33,
+          "false_deaths": 1,
+          "actually_alive": 71,
+          "liveness_brier": 0.015277195474057016
+        },
+        {
+          "seed": 1,
+          "path": "oracle_observation_only",
+          "source_policy": "policy-seed1.npz",
+          "roots": 28,
+          "false_deaths": 0,
+          "actually_alive": 58,
+          "liveness_brier": 0.0002329431131014914
+        },
+        {
+          "seed": 1,
+          "path": "oracle_observation_only",
+          "source_policy": "policy-seed2.npz",
+          "roots": 35,
+          "false_deaths": 3,
+          "actually_alive": 72,
+          "liveness_brier": 0.03590588350466259
+        },
+        {
+          "seed": 1,
+          "path": "self_fed",
+          "source_policy": "policy-seed0.npz",
+          "roots": 33,
+          "false_deaths": 1,
+          "actually_alive": 71,
+          "liveness_brier": 0.015744929886727724
+        },
+        {
+          "seed": 1,
+          "path": "self_fed",
+          "source_policy": "policy-seed1.npz",
+          "roots": 28,
+          "false_deaths": 0,
+          "actually_alive": 58,
+          "liveness_brier": 0.01666315601901663
+        },
+        {
+          "seed": 1,
+          "path": "self_fed",
+          "source_policy": "policy-seed2.npz",
+          "roots": 35,
+          "false_deaths": 3,
+          "actually_alive": 72,
+          "liveness_brier": 0.03905772440252942
+        },
+        {
+          "seed": 1,
+          "path": "teacher_factual",
+          "source_policy": "policy-seed0.npz",
+          "roots": 33,
+          "false_deaths": 1,
+          "actually_alive": 71,
+          "liveness_brier": 0.007423292720997843
+        },
+        {
+          "seed": 1,
+          "path": "teacher_factual",
+          "source_policy": "policy-seed1.npz",
+          "roots": 28,
+          "false_deaths": 0,
+          "actually_alive": 58,
+          "liveness_brier": 8.000554374826644e-05
+        },
+        {
+          "seed": 1,
+          "path": "teacher_factual",
+          "source_policy": "policy-seed2.npz",
+          "roots": 35,
+          "false_deaths": 3,
+          "actually_alive": 72,
+          "liveness_brier": 0.033733037778243685
+        },
+        {
+          "seed": 2,
+          "path": "oracle_alive_only",
+          "source_policy": "policy-seed0.npz",
+          "roots": 33,
+          "false_deaths": 1,
+          "actually_alive": 71,
+          "liveness_brier": 0.02580410971605901
+        },
+        {
+          "seed": 2,
+          "path": "oracle_alive_only",
+          "source_policy": "policy-seed1.npz",
+          "roots": 28,
+          "false_deaths": 8,
+          "actually_alive": 58,
+          "liveness_brier": 0.09616171864310498
+        },
+        {
+          "seed": 2,
+          "path": "oracle_alive_only",
+          "source_policy": "policy-seed2.npz",
+          "roots": 35,
+          "false_deaths": 4,
+          "actually_alive": 72,
+          "liveness_brier": 0.05261045902939034
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_alive",
+          "source_policy": "policy-seed0.npz",
+          "roots": 33,
+          "false_deaths": 1,
+          "actually_alive": 71,
+          "liveness_brier": 0.025223284988276126
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_alive",
+          "source_policy": "policy-seed1.npz",
+          "roots": 28,
+          "false_deaths": 3,
+          "actually_alive": 58,
+          "liveness_brier": 0.04119594593561312
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_alive",
+          "source_policy": "policy-seed2.npz",
+          "roots": 35,
+          "false_deaths": 1,
+          "actually_alive": 72,
+          "liveness_brier": 0.008913130645361466
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_only",
+          "source_policy": "policy-seed0.npz",
+          "roots": 33,
+          "false_deaths": 1,
+          "actually_alive": 71,
+          "liveness_brier": 0.025925719260520792
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_only",
+          "source_policy": "policy-seed1.npz",
+          "roots": 28,
+          "false_deaths": 3,
+          "actually_alive": 58,
+          "liveness_brier": 0.05003937450908732
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_only",
+          "source_policy": "policy-seed2.npz",
+          "roots": 35,
+          "false_deaths": 2,
+          "actually_alive": 72,
+          "liveness_brier": 0.022061409582805138
+        },
+        {
+          "seed": 2,
+          "path": "self_fed",
+          "source_policy": "policy-seed0.npz",
+          "roots": 33,
+          "false_deaths": 1,
+          "actually_alive": 71,
+          "liveness_brier": 0.051276178109733554
+        },
+        {
+          "seed": 2,
+          "path": "self_fed",
+          "source_policy": "policy-seed1.npz",
+          "roots": 28,
+          "false_deaths": 8,
+          "actually_alive": 58,
+          "liveness_brier": 0.11829987742927026
+        },
+        {
+          "seed": 2,
+          "path": "self_fed",
+          "source_policy": "policy-seed2.npz",
+          "roots": 35,
+          "false_deaths": 4,
+          "actually_alive": 72,
+          "liveness_brier": 0.053938771747341074
+        },
+        {
+          "seed": 2,
+          "path": "teacher_factual",
+          "source_policy": "policy-seed0.npz",
+          "roots": 33,
+          "false_deaths": 1,
+          "actually_alive": 71,
+          "liveness_brier": 0.025199147052937677
+        },
+        {
+          "seed": 2,
+          "path": "teacher_factual",
+          "source_policy": "policy-seed1.npz",
+          "roots": 28,
+          "false_deaths": 3,
+          "actually_alive": 58,
+          "liveness_brier": 0.0411995198508873
+        },
+        {
+          "seed": 2,
+          "path": "teacher_factual",
+          "source_policy": "policy-seed2.npz",
+          "roots": 35,
+          "false_deaths": 1,
+          "actually_alive": 72,
+          "liveness_brier": 0.009561483098851152
+        }
+      ],
+      "paired_differences": [
+        {
+          "seed": 0,
+          "reference_seed": 1,
+          "h5_false_death_rate": {
+            "difference": 0.0845771144278607,
+            "episode_bootstrap_95_interval": [
+              0.04390243902439025,
+              0.13333333333333333
+            ],
+            "episodes": 55,
+            "roots": 96
+          },
+          "h5_liveness_brier": {
+            "difference": 0.06852475333929407,
+            "episode_bootstrap_95_interval": [
+              0.03372434827057351,
+              0.10998433475549961
+            ],
+            "episodes": 55,
+            "roots": 96
+          },
+          "h5_finite_reward_sum_rmse": {
+            "difference": 0.015419778392889216,
+            "episode_bootstrap_95_interval": [
+              -0.03346724062482676,
+              0.07313123728674012
+            ],
+            "episodes": 55,
+            "roots": 96
+          }
+        },
+        {
+          "seed": 2,
+          "reference_seed": 1,
+          "h5_false_death_rate": {
+            "difference": 0.04477611940298507,
+            "episode_bootstrap_95_interval": [
+              0.01694915254237288,
+              0.08108108108108109
+            ],
+            "episodes": 55,
+            "roots": 96
+          },
+          "h5_liveness_brier": {
+            "difference": 0.0473949512278139,
+            "episode_bootstrap_95_interval": [
+              0.017778617455603163,
+              0.08503654047231245
+            ],
+            "episodes": 55,
+            "roots": 96
+          },
+          "h5_finite_reward_sum_rmse": {
+            "difference": 0.03589619695679702,
+            "episode_bootstrap_95_interval": [
+              -0.020816668785401577,
+              0.09535537515606003
+            ],
+            "episodes": 55,
+            "roots": 96
+          }
+        }
+      ],
+      "model_source_sha256": "e2f5f776903907b22de3d5509299f7ee2906a2f07fc0f659fa13f290e727ffd1",
+      "cohort": {
+        "roots": 96,
+        "episodes": 55,
+        "root_live_agents": 209,
+        "roots_per_source_policy": {
+          "policy-seed0.npz": 33,
+          "policy-seed1.npz": 28,
+          "policy-seed2.npz": 35
+        }
+      }
+    },
+    {
+      "map": "3s_vs_5z",
+      "reference_seed": 2,
+      "scores": [
+        {
+          "seed": 0,
+          "path": "oracle_alive_only",
+          "horizon": 1,
+          "false_deaths": 0,
+          "actually_alive": 182,
+          "false_death_rate": 0.0,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.001301147865480982,
+          "finite_reward_sum_rmse": 0.09493889740301899
+        },
+        {
+          "seed": 0,
+          "path": "oracle_alive_only",
+          "horizon": 2,
+          "false_deaths": 6,
+          "actually_alive": 182,
+          "false_death_rate": 0.03296703296703297,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.025096865472816768,
+          "finite_reward_sum_rmse": 0.11099158417728039
+        },
+        {
+          "seed": 0,
+          "path": "oracle_alive_only",
+          "horizon": 4,
+          "false_deaths": 5,
+          "actually_alive": 181,
+          "false_death_rate": 0.027624309392265192,
+          "missed_deaths": 0,
+          "actually_dead": 1,
+          "liveness_brier": 0.02527511379850163,
+          "finite_reward_sum_rmse": 0.14025367083071882
+        },
+        {
+          "seed": 0,
+          "path": "oracle_alive_only",
+          "horizon": 5,
+          "false_deaths": 10,
+          "actually_alive": 180,
+          "false_death_rate": 0.05555555555555555,
+          "missed_deaths": 1,
+          "actually_dead": 2,
+          "liveness_brier": 0.04973442582261078,
+          "finite_reward_sum_rmse": 0.16697675437628565
+        },
+        {
+          "seed": 0,
+          "path": "oracle_alive_only",
+          "horizon": 8,
+          "false_deaths": 14,
+          "actually_alive": 178,
+          "false_death_rate": 0.07865168539325842,
+          "missed_deaths": 0,
+          "actually_dead": 4,
+          "liveness_brier": 0.05337145773095219,
+          "finite_reward_sum_rmse": 0.20540681149992512
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_alive",
+          "horizon": 1,
+          "false_deaths": 0,
+          "actually_alive": 182,
+          "false_death_rate": 0.0,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.001301147865480982,
+          "finite_reward_sum_rmse": 0.09493889740301899
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_alive",
+          "horizon": 2,
+          "false_deaths": 0,
+          "actually_alive": 182,
+          "false_death_rate": 0.0,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.0016616617482949258,
+          "finite_reward_sum_rmse": 0.11087910260012049
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_alive",
+          "horizon": 4,
+          "false_deaths": 2,
+          "actually_alive": 181,
+          "false_death_rate": 0.011049723756906077,
+          "missed_deaths": 0,
+          "actually_dead": 1,
+          "liveness_brier": 0.004918689415075652,
+          "finite_reward_sum_rmse": 0.13309054082826377
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_alive",
+          "horizon": 5,
+          "false_deaths": 0,
+          "actually_alive": 180,
+          "false_death_rate": 0.0,
+          "missed_deaths": 1,
+          "actually_dead": 2,
+          "liveness_brier": 0.004940788214695299,
+          "finite_reward_sum_rmse": 0.15420891179787377
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_alive",
+          "horizon": 8,
+          "false_deaths": 0,
+          "actually_alive": 178,
+          "false_death_rate": 0.0,
+          "missed_deaths": 0,
+          "actually_dead": 4,
+          "liveness_brier": 0.00028821493896864553,
+          "finite_reward_sum_rmse": 0.18352568465141408
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_only",
+          "horizon": 1,
+          "false_deaths": 0,
+          "actually_alive": 182,
+          "false_death_rate": 0.0,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.001301147865480982,
+          "finite_reward_sum_rmse": 0.09493889740301899
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_only",
+          "horizon": 2,
+          "false_deaths": 0,
+          "actually_alive": 182,
+          "false_death_rate": 0.0,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.0016616617482949258,
+          "finite_reward_sum_rmse": 0.11087910260012049
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_only",
+          "horizon": 4,
+          "false_deaths": 2,
+          "actually_alive": 181,
+          "false_death_rate": 0.011049723756906077,
+          "missed_deaths": 0,
+          "actually_dead": 1,
+          "liveness_brier": 0.007627975594440729,
+          "finite_reward_sum_rmse": 0.13310882515113226
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_only",
+          "horizon": 5,
+          "false_deaths": 2,
+          "actually_alive": 180,
+          "false_death_rate": 0.011111111111111112,
+          "missed_deaths": 1,
+          "actually_dead": 2,
+          "liveness_brier": 0.015924029845760277,
+          "finite_reward_sum_rmse": 0.1540799927354299
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_only",
+          "horizon": 8,
+          "false_deaths": 2,
+          "actually_alive": 178,
+          "false_death_rate": 0.011235955056179775,
+          "missed_deaths": 0,
+          "actually_dead": 4,
+          "liveness_brier": 0.01125491464991256,
+          "finite_reward_sum_rmse": 0.186393065673841
+        },
+        {
+          "seed": 0,
+          "path": "self_fed",
+          "horizon": 1,
+          "false_deaths": 0,
+          "actually_alive": 182,
+          "false_death_rate": 0.0,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.001301147865480982,
+          "finite_reward_sum_rmse": 0.09493889740301899
+        },
+        {
+          "seed": 0,
+          "path": "self_fed",
+          "horizon": 2,
+          "false_deaths": 6,
+          "actually_alive": 182,
+          "false_death_rate": 0.03296703296703297,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.025096865472816768,
+          "finite_reward_sum_rmse": 0.11099158417728039
+        },
+        {
+          "seed": 0,
+          "path": "self_fed",
+          "horizon": 4,
+          "false_deaths": 11,
+          "actually_alive": 181,
+          "false_death_rate": 0.06077348066298342,
+          "missed_deaths": 1,
+          "actually_dead": 1,
+          "liveness_brier": 0.062140315125171576,
+          "finite_reward_sum_rmse": 0.14331725172222617
+        },
+        {
+          "seed": 0,
+          "path": "self_fed",
+          "horizon": 5,
+          "false_deaths": 15,
+          "actually_alive": 180,
+          "false_death_rate": 0.08333333333333333,
+          "missed_deaths": 1,
+          "actually_dead": 2,
+          "liveness_brier": 0.08271930215585431,
+          "finite_reward_sum_rmse": 0.15748178809302393
+        },
+        {
+          "seed": 0,
+          "path": "self_fed",
+          "horizon": 8,
+          "false_deaths": 23,
+          "actually_alive": 178,
+          "false_death_rate": 0.12921348314606743,
+          "missed_deaths": 1,
+          "actually_dead": 4,
+          "liveness_brier": 0.11891436253624783,
+          "finite_reward_sum_rmse": 0.20136080843945076
+        },
+        {
+          "seed": 0,
+          "path": "teacher_factual",
+          "horizon": 1,
+          "false_deaths": 0,
+          "actually_alive": 182,
+          "false_death_rate": 0.0,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.0013133093608963897,
+          "finite_reward_sum_rmse": 0.09488533306877468
+        },
+        {
+          "seed": 0,
+          "path": "teacher_factual",
+          "horizon": 2,
+          "false_deaths": 0,
+          "actually_alive": 182,
+          "false_death_rate": 0.0,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.0016387243488919993,
+          "finite_reward_sum_rmse": 0.11066276146555333
+        },
+        {
+          "seed": 0,
+          "path": "teacher_factual",
+          "horizon": 4,
+          "false_deaths": 2,
+          "actually_alive": 181,
+          "false_death_rate": 0.011049723756906077,
+          "missed_deaths": 0,
+          "actually_dead": 1,
+          "liveness_brier": 0.004862885826368704,
+          "finite_reward_sum_rmse": 0.13327502431020172
+        },
+        {
+          "seed": 0,
+          "path": "teacher_factual",
+          "horizon": 5,
+          "false_deaths": 0,
+          "actually_alive": 180,
+          "false_death_rate": 0.0,
+          "missed_deaths": 1,
+          "actually_dead": 2,
+          "liveness_brier": 0.00499554285375528,
+          "finite_reward_sum_rmse": 0.1538281709830964
+        },
+        {
+          "seed": 0,
+          "path": "teacher_factual",
+          "horizon": 8,
+          "false_deaths": 0,
+          "actually_alive": 178,
+          "false_death_rate": 0.0,
+          "missed_deaths": 0,
+          "actually_dead": 4,
+          "liveness_brier": 0.00023227566756735217,
+          "finite_reward_sum_rmse": 0.18255256455398644
+        },
+        {
+          "seed": 2,
+          "path": "oracle_alive_only",
+          "horizon": 1,
+          "false_deaths": 1,
+          "actually_alive": 182,
+          "false_death_rate": 0.005494505494505495,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.0047531220644825975,
+          "finite_reward_sum_rmse": 0.11408686647735167
+        },
+        {
+          "seed": 2,
+          "path": "oracle_alive_only",
+          "horizon": 2,
+          "false_deaths": 1,
+          "actually_alive": 182,
+          "false_death_rate": 0.005494505494505495,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.005491821615181917,
+          "finite_reward_sum_rmse": 0.1085956677373406
+        },
+        {
+          "seed": 2,
+          "path": "oracle_alive_only",
+          "horizon": 4,
+          "false_deaths": 3,
+          "actually_alive": 181,
+          "false_death_rate": 0.016574585635359115,
+          "missed_deaths": 0,
+          "actually_dead": 1,
+          "liveness_brier": 0.012326576651014075,
+          "finite_reward_sum_rmse": 0.16688439536439095
+        },
+        {
+          "seed": 2,
+          "path": "oracle_alive_only",
+          "horizon": 5,
+          "false_deaths": 0,
+          "actually_alive": 180,
+          "false_death_rate": 0.0,
+          "missed_deaths": 1,
+          "actually_dead": 2,
+          "liveness_brier": 0.007923362979442489,
+          "finite_reward_sum_rmse": 0.21142689673012682
+        },
+        {
+          "seed": 2,
+          "path": "oracle_alive_only",
+          "horizon": 8,
+          "false_deaths": 2,
+          "actually_alive": 178,
+          "false_death_rate": 0.011235955056179775,
+          "missed_deaths": 0,
+          "actually_dead": 4,
+          "liveness_brier": 0.01077987402390043,
+          "finite_reward_sum_rmse": 0.21085996965088313
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_alive",
+          "horizon": 1,
+          "false_deaths": 1,
+          "actually_alive": 182,
+          "false_death_rate": 0.005494505494505495,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.0047531220644825975,
+          "finite_reward_sum_rmse": 0.11408686647735167
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_alive",
+          "horizon": 2,
+          "false_deaths": 1,
+          "actually_alive": 182,
+          "false_death_rate": 0.005494505494505495,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.0051199144262429235,
+          "finite_reward_sum_rmse": 0.10795133524123726
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_alive",
+          "horizon": 4,
+          "false_deaths": 1,
+          "actually_alive": 181,
+          "false_death_rate": 0.0055248618784530384,
+          "missed_deaths": 0,
+          "actually_dead": 1,
+          "liveness_brier": 0.0040762742004494075,
+          "finite_reward_sum_rmse": 0.15702010238162553
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_alive",
+          "horizon": 5,
+          "false_deaths": 0,
+          "actually_alive": 180,
+          "false_death_rate": 0.0,
+          "missed_deaths": 1,
+          "actually_dead": 2,
+          "liveness_brier": 0.006252173204028509,
+          "finite_reward_sum_rmse": 0.24205839523540074
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_alive",
+          "horizon": 8,
+          "false_deaths": 0,
+          "actually_alive": 178,
+          "false_death_rate": 0.0,
+          "missed_deaths": 0,
+          "actually_dead": 4,
+          "liveness_brier": 0.0007288271963876542,
+          "finite_reward_sum_rmse": 0.2494107240473659
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_only",
+          "horizon": 1,
+          "false_deaths": 1,
+          "actually_alive": 182,
+          "false_death_rate": 0.005494505494505495,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.0047531220644825975,
+          "finite_reward_sum_rmse": 0.11408686647735167
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_only",
+          "horizon": 2,
+          "false_deaths": 2,
+          "actually_alive": 182,
+          "false_death_rate": 0.01098901098901099,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.010614407538325108,
+          "finite_reward_sum_rmse": 0.10653005821262716
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_only",
+          "horizon": 4,
+          "false_deaths": 3,
+          "actually_alive": 181,
+          "false_death_rate": 0.016574585635359115,
+          "missed_deaths": 1,
+          "actually_dead": 1,
+          "liveness_brier": 0.01958417235739134,
+          "finite_reward_sum_rmse": 0.15603835692696788
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_only",
+          "horizon": 5,
+          "false_deaths": 3,
+          "actually_alive": 180,
+          "false_death_rate": 0.016666666666666666,
+          "missed_deaths": 1,
+          "actually_dead": 2,
+          "liveness_brier": 0.022691310356037615,
+          "finite_reward_sum_rmse": 0.24123963828666192
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_only",
+          "horizon": 8,
+          "false_deaths": 4,
+          "actually_alive": 178,
+          "false_death_rate": 0.02247191011235955,
+          "missed_deaths": 0,
+          "actually_dead": 4,
+          "liveness_brier": 0.022689126111000275,
+          "finite_reward_sum_rmse": 0.2499979799612275
+        },
+        {
+          "seed": 2,
+          "path": "self_fed",
+          "horizon": 1,
+          "false_deaths": 1,
+          "actually_alive": 182,
+          "false_death_rate": 0.005494505494505495,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.0047531220644825975,
+          "finite_reward_sum_rmse": 0.11408686647735167
+        },
+        {
+          "seed": 2,
+          "path": "self_fed",
+          "horizon": 2,
+          "false_deaths": 2,
+          "actually_alive": 182,
+          "false_death_rate": 0.01098901098901099,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.010986291356478295,
+          "finite_reward_sum_rmse": 0.10739242234675109
+        },
+        {
+          "seed": 2,
+          "path": "self_fed",
+          "horizon": 4,
+          "false_deaths": 5,
+          "actually_alive": 181,
+          "false_death_rate": 0.027624309392265192,
+          "missed_deaths": 1,
+          "actually_dead": 1,
+          "liveness_brier": 0.027738225500873633,
+          "finite_reward_sum_rmse": 0.16610716650691118
+        },
+        {
+          "seed": 2,
+          "path": "self_fed",
+          "horizon": 5,
+          "false_deaths": 5,
+          "actually_alive": 180,
+          "false_death_rate": 0.027777777777777776,
+          "missed_deaths": 2,
+          "actually_dead": 2,
+          "liveness_brier": 0.03653728688865308,
+          "finite_reward_sum_rmse": 0.21033260641715915
+        },
+        {
+          "seed": 2,
+          "path": "self_fed",
+          "horizon": 8,
+          "false_deaths": 8,
+          "actually_alive": 178,
+          "false_death_rate": 0.0449438202247191,
+          "missed_deaths": 1,
+          "actually_dead": 4,
+          "liveness_brier": 0.04796122210879895,
+          "finite_reward_sum_rmse": 0.21287819152869553
+        },
+        {
+          "seed": 2,
+          "path": "teacher_factual",
+          "horizon": 1,
+          "false_deaths": 1,
+          "actually_alive": 182,
+          "false_death_rate": 0.005494505494505495,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.004679855942154819,
+          "finite_reward_sum_rmse": 0.11386691692904424
+        },
+        {
+          "seed": 2,
+          "path": "teacher_factual",
+          "horizon": 2,
+          "false_deaths": 1,
+          "actually_alive": 182,
+          "false_death_rate": 0.005494505494505495,
+          "missed_deaths": 0,
+          "actually_dead": 0,
+          "liveness_brier": 0.005125222168797814,
+          "finite_reward_sum_rmse": 0.1078342212999503
+        },
+        {
+          "seed": 2,
+          "path": "teacher_factual",
+          "horizon": 4,
+          "false_deaths": 1,
+          "actually_alive": 181,
+          "false_death_rate": 0.0055248618784530384,
+          "missed_deaths": 0,
+          "actually_dead": 1,
+          "liveness_brier": 0.003962610314064343,
+          "finite_reward_sum_rmse": 0.15716727684875884
+        },
+        {
+          "seed": 2,
+          "path": "teacher_factual",
+          "horizon": 5,
+          "false_deaths": 0,
+          "actually_alive": 180,
+          "false_death_rate": 0.0,
+          "missed_deaths": 1,
+          "actually_dead": 2,
+          "liveness_brier": 0.0063139319524981655,
+          "finite_reward_sum_rmse": 0.24417282256501013
+        },
+        {
+          "seed": 2,
+          "path": "teacher_factual",
+          "horizon": 8,
+          "false_deaths": 0,
+          "actually_alive": 178,
+          "false_death_rate": 0.0,
+          "missed_deaths": 0,
+          "actually_dead": 4,
+          "liveness_brier": 0.001135265976385664,
+          "finite_reward_sum_rmse": 0.25268876483119573
+        }
+      ],
+      "h5_by_source_policy": [
+        {
+          "seed": 0,
+          "path": "oracle_alive_only",
+          "source_policy": "policy-seed0.npz",
+          "roots": 59,
+          "false_deaths": 0,
+          "actually_alive": 98,
+          "liveness_brier": 1.997652455753438e-06
+        },
+        {
+          "seed": 0,
+          "path": "oracle_alive_only",
+          "source_policy": "policy-seed2.npz",
+          "roots": 37,
+          "false_deaths": 10,
+          "actually_alive": 82,
+          "liveness_brier": 0.10775559202112497
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_alive",
+          "source_policy": "policy-seed0.npz",
+          "roots": 59,
+          "false_deaths": 0,
+          "actually_alive": 98,
+          "liveness_brier": 1.6083271020471441e-06
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_alive",
+          "source_policy": "policy-seed2.npz",
+          "roots": 37,
+          "false_deaths": 0,
+          "actually_alive": 82,
+          "liveness_brier": 0.010703164750220758
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_only",
+          "source_policy": "policy-seed0.npz",
+          "roots": 59,
+          "false_deaths": 0,
+          "actually_alive": 98,
+          "liveness_brier": 1.6083271020471441e-06
+        },
+        {
+          "seed": 0,
+          "path": "oracle_observation_only",
+          "source_policy": "policy-seed2.npz",
+          "roots": 37,
+          "false_deaths": 2,
+          "actually_alive": 82,
+          "liveness_brier": 0.03450018828419488
+        },
+        {
+          "seed": 0,
+          "path": "self_fed",
+          "source_policy": "policy-seed0.npz",
+          "roots": 59,
+          "false_deaths": 0,
+          "actually_alive": 98,
+          "liveness_brier": 1.997652455753438e-06
+        },
+        {
+          "seed": 0,
+          "path": "self_fed",
+          "source_policy": "policy-seed2.npz",
+          "roots": 37,
+          "false_deaths": 15,
+          "actually_alive": 82,
+          "liveness_brier": 0.17922282407648596
+        },
+        {
+          "seed": 0,
+          "path": "teacher_factual",
+          "source_policy": "policy-seed0.npz",
+          "roots": 59,
+          "false_deaths": 0,
+          "actually_alive": 98,
+          "liveness_brier": 1.614174636893504e-06
+        },
+        {
+          "seed": 0,
+          "path": "teacher_factual",
+          "source_policy": "policy-seed2.npz",
+          "roots": 37,
+          "false_deaths": 0,
+          "actually_alive": 82,
+          "liveness_brier": 0.0108217929793934
+        },
+        {
+          "seed": 2,
+          "path": "oracle_alive_only",
+          "source_policy": "policy-seed0.npz",
+          "roots": 59,
+          "false_deaths": 0,
+          "actually_alive": 98,
+          "liveness_brier": 0.00452940379869567
+        },
+        {
+          "seed": 2,
+          "path": "oracle_alive_only",
+          "source_policy": "policy-seed2.npz",
+          "roots": 37,
+          "false_deaths": 0,
+          "actually_alive": 82,
+          "liveness_brier": 0.01188298202364711
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_alive",
+          "source_policy": "policy-seed0.npz",
+          "roots": 59,
+          "false_deaths": 0,
+          "actually_alive": 98,
+          "liveness_brier": 0.001429107513336005
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_alive",
+          "source_policy": "policy-seed2.npz",
+          "roots": 37,
+          "false_deaths": 0,
+          "actually_alive": 82,
+          "liveness_brier": 0.011879083176503097
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_only",
+          "source_policy": "policy-seed0.npz",
+          "roots": 59,
+          "false_deaths": 2,
+          "actually_alive": 98,
+          "liveness_brier": 0.021754620886927038
+        },
+        {
+          "seed": 2,
+          "path": "oracle_observation_only",
+          "source_policy": "policy-seed2.npz",
+          "roots": 37,
+          "false_deaths": 1,
+          "actually_alive": 82,
+          "liveness_brier": 0.02378411473666662
+        },
+        {
+          "seed": 2,
+          "path": "self_fed",
+          "source_policy": "policy-seed0.npz",
+          "roots": 59,
+          "false_deaths": 4,
+          "actually_alive": 98,
+          "liveness_brier": 0.04311884605731718
+        },
+        {
+          "seed": 2,
+          "path": "self_fed",
+          "source_policy": "policy-seed2.npz",
+          "roots": 37,
+          "false_deaths": 1,
+          "actually_alive": 82,
+          "liveness_brier": 0.028858801191878287
+        },
+        {
+          "seed": 2,
+          "path": "teacher_factual",
+          "source_policy": "policy-seed0.npz",
+          "roots": 59,
+          "false_deaths": 0,
+          "actually_alive": 98,
+          "liveness_brier": 0.001550989179811163
+        },
+        {
+          "seed": 2,
+          "path": "teacher_factual",
+          "source_policy": "policy-seed2.npz",
+          "roots": 37,
+          "false_deaths": 0,
+          "actually_alive": 82,
+          "liveness_brier": 0.011870698520633003
+        }
+      ],
+      "paired_differences": [
+        {
+          "seed": 0,
+          "reference_seed": 2,
+          "h5_false_death_rate": {
+            "difference": 0.05555555555555555,
+            "episode_bootstrap_95_interval": [
+              0.0,
+              0.12195799457994583
+            ],
+            "episodes": 45,
+            "roots": 96
+          },
+          "h5_liveness_brier": {
+            "difference": 0.04618201526720123,
+            "episode_bootstrap_95_interval": [
+              -0.0055063444895658165,
+              0.10453241689348182
+            ],
+            "episodes": 45,
+            "roots": 96
+          },
+          "h5_finite_reward_sum_rmse": {
+            "difference": -0.05285081832413521,
+            "episode_bootstrap_95_interval": [
+              -0.16351118227422395,
+              0.056649910477420795
+            ],
+            "episodes": 45,
+            "roots": 96
+          }
+        }
+      ],
+      "model_source_sha256": "e2f5f776903907b22de3d5509299f7ee2906a2f07fc0f659fa13f290e727ffd1",
+      "cohort": {
+        "roots": 96,
+        "episodes": 45,
+        "root_live_agents": 182,
+        "roots_per_source_policy": {
+          "policy-seed0.npz": 59,
+          "policy-seed2.npz": 37
+        }
+      }
+    }
+  ],
+  "limits": "Diagnostics of fixed checkpoints and recorded actions. Oracle interventions isolate simulator feedback errors, not a measured change in policy win rate. Model comparisons use matched raw roots; different maps remain separate. Bootstrap resamples whole contributing episodes, not agents or individual states. All five calibrations use 32 fresh sampled-policy episodes, not the greedy final100 protocol."
+}

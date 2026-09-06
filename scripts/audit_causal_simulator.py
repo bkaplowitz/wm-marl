@@ -55,7 +55,8 @@ def outcome_predictions(reward, continuation, present, source_alive, next_alive,
 
 
 def make_auditor(
-    config, observation_dim, action_count, horizon, outcome_semantics="corrected_team"
+    config, observation_dim, action_count, horizon, outcome_semantics="corrected_team",
+    factor_oracles=False,
 ):
     """Build checkpoint-compatible local and joint modules, without a learner."""
     import elements
@@ -235,7 +236,7 @@ def make_auditor(
             nn.cast(teacher["embedding"]), nn.cast(window(local_history["deter"], 1))
         )
 
-        def rollout(oracle):
+        def rollout(oracle_observation=False, oracle_alive=False):
             def step(current, inputs):
                 local, central, current_alive, reset = current
                 action, actual_token, actual_alive, key = inputs
@@ -255,9 +256,9 @@ def make_auditor(
                     training=False,
                     active=source_present[0],
                 )
-                token = actual_token if oracle else prediction["embedding"][0]
+                token = actual_token if oracle_observation else prediction["embedding"][0]
                 local, logits = complete(cache, deter, token, key)
-                next_alive = actual_alive[None] if oracle else output["alive"]
+                next_alive = actual_alive[None] if oracle_alive else output["alive"]
                 output = {name: value[0] for name, value in output.items()}
                 output.update(embedding=prediction["embedding"][0], posterior=logits)
                 return (local, central, next_alive, jnp.zeros_like(reset)), output
@@ -278,9 +279,12 @@ def make_auditor(
 
         paths = {
             "teacher_factual": teacher,
-            "self_fed": rollout(False),
-            "oracle_observation_alive": rollout(True),
+            "self_fed": rollout(),
+            "oracle_observation_alive": rollout(True, True),
         }
+        if factor_oracles:
+            paths["oracle_observation_only"] = rollout(True, False)
+            paths["oracle_alive_only"] = rollout(False, True)
         actual_reward = window(reward, 1).astype(jnp.float32)
         actual_continuation = (~window(terminal, 1)).astype(jnp.float32)
         if config.agent.contdisc:
@@ -440,6 +444,11 @@ def main(argv=None):
     parser.add_argument("--external", type=Path)
     parser.add_argument("--platform", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument(
+        "--factor-oracles", action="store_true",
+        help="Separately replace feedback observations or feedback liveness to "
+        "isolate their contributions; predicted outputs remain scored normally.",
+    )
+    parser.add_argument(
         "--outcome-semantics",
         choices=("corrected_team", "original_slots"),
         default="corrected_team",
@@ -486,7 +495,8 @@ def main(argv=None):
     observation_dim = episodes[0].data["observation"].shape[-1]
     action_count = episodes[0].data["action_mask"].shape[-1]
     forward, initialize = make_auditor(
-        config, observation_dim, action_count, horizon, args.outcome_semantics
+        config, observation_dim, action_count, horizon, args.outcome_semantics,
+        factor_oracles=args.factor_oracles,
     )
     padded_length = 64 * (
         (max(len(episode.data["observation"]) for episode in episodes) + 63) // 64
@@ -532,6 +542,7 @@ def main(argv=None):
         "horizons": args.horizons,
         "seed": args.seed,
         "outcome_semantics": args.outcome_semantics,
+        "factor_oracles": args.factor_oracles,
         "outcome_semantics_description": (
             "Present-slot team pooling; zero reward for all-dead sources and zero "
             "continuation when no next controllable agent remains."
