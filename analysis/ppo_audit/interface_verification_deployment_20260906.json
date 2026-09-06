@@ -1,0 +1,636 @@
+{
+  "experiment_root": "/workspace/majepa_interface_verify_20260906",
+  "host": "root@154.54.102.56",
+  "ssh_port": 14808,
+  "ssh_key": "~/.runpod/ssh/runpodctl-ssh-key",
+  "wandb_group": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/groups/ma-jepa-interface-verify-20260906",
+  "learner_commit": "e4c2b93c09c6c29acb4a66be26674d4572d33e66",
+  "runtime": {
+    "at": 1788715296.6855044,
+    "commit": "fca371685ec7b58cadd3fdcc0ad883a7959d46c4",
+    "scripts": {
+      "scripts/run_interface_verification.py": "4a670d96d17c8a6484b1ccabbac4659192cdf1d1f68b63d0620907966ab46ec0",
+      "scripts/verify_interface_offline.py": "7f014a323f3857685c108877d75a2ff2d249f114ae14a95c2f24a44a5fef42ea"
+    },
+    "source": "/workspace/ma_jepa_interface_verify_storage_v2_20260906",
+    "source_sha256": "a92e67bf662e842491cd291b313b88791c0ea745101f959d0a7c9fbd82776358",
+    "workers": [
+      {
+        "gpu": 0,
+        "log": "/workspace/majepa_interface_verify_20260906/workers/gpu0.storage-v2.log",
+        "pid": 661110
+      },
+      {
+        "gpu": 1,
+        "log": "/workspace/majepa_interface_verify_20260906/workers/gpu1.storage-v2.log",
+        "pid": 661111
+      },
+      {
+        "gpu": 2,
+        "log": "/workspace/majepa_interface_verify_20260906/workers/gpu2.storage-v2.log",
+        "pid": 661112
+      },
+      {
+        "gpu": 3,
+        "log": "/workspace/majepa_interface_verify_20260906/workers/gpu3.storage-v2.log",
+        "pid": 661113
+      },
+      {
+        "gpu": 4,
+        "log": "/workspace/majepa_interface_verify_20260906/workers/gpu4.storage-v2.log",
+        "pid": 661114
+      },
+      {
+        "gpu": 5,
+        "log": "/workspace/majepa_interface_verify_20260906/workers/gpu5.storage-v2.log",
+        "pid": 661115
+      }
+    ]
+  },
+  "storage_recovery": {
+    "results": [
+      {
+        "name": "preflight",
+        "original_bytes": 1753909752,
+        "at": 1788714605.4479566,
+        "recovered": true,
+        "original_sha256": "855f125b200de9b714723afa8f827363fa853381e679565b5f7aa3b18e3d582f",
+        "compact_bytes": 292871094,
+        "compact_sha256": "748234ba0e30bc50611ab0eb4b827b4603712187185eafc97d41d260a40e5b82",
+        "all_frozen_keys_verified": true
+      },
+      {
+        "name": "off-3s_vs_3z-s0-base-own",
+        "original_bytes": 1753909752,
+        "at": 1788714612.5899403,
+        "recovered": true,
+        "original_sha256": "c01c737ba30122e44704e44dae749fdb8a451ff3f42e5649c098aa78ea873d22",
+        "compact_bytes": 292871094,
+        "compact_sha256": "b38caa14ca615095b30617bb35a8d8e13a46339ce7cfdc0768afdd4c97c1d2e0",
+        "all_frozen_keys_verified": true
+      },
+      {
+        "name": "off-3s_vs_3z-s0-align-own",
+        "original_bytes": 1753909752,
+        "at": 1788714619.385914,
+        "recovered": true,
+        "original_sha256": "7bfe118acf36714a70de2cc60f9f783a7e6fe9c7a113c51553fdc5e3f962990c",
+        "compact_bytes": 292871094,
+        "compact_sha256": "53b30387c81d3710f176ae5f3565141176fcc671b3c83cb43a4381f136f8aa33",
+        "all_frozen_keys_verified": true
+      },
+      {
+        "name": "off-3s_vs_3z-s0-base-mixed",
+        "original_bytes": 1753909752,
+        "at": 1788714625.5811431,
+        "recovered": true,
+        "original_sha256": "fafc5ddd8f48fbd549f395a087a65b00dc2f35b83bc8168525d1782ddf8b25ed",
+        "compact_bytes": 292871094,
+        "compact_sha256": "1ee702c485840f9fe98105f94f795ffae47883b108ee57b1ac98b78530da3112",
+        "all_frozen_keys_verified": true
+      },
+      {
+        "name": "off-3s_vs_3z-s0-align-mixed",
+        "original_bytes": 1543503872,
+        "at": 1788714631.6469097,
+        "recovered": false,
+        "error": "UnpicklingError('pickle data was truncated')",
+        "partial_copy": "/tmp/majepa_storage_recovery_20260906/off-3s_vs_3z-s0-align-mixed.partial.pkl",
+        "partial_sha256": "e088ca59858fe20f3c52ecc04148fb71fa6b1579a6b2d3a0dfe8dac1d2eeee71"
+      },
+      {
+        "name": "off-3s_vs_3z-s2-base-own",
+        "original_bytes": 1753909752,
+        "at": 1788714636.341867,
+        "recovered": true,
+        "original_sha256": "4810ea71f23c286bbf4e48735e0a38f3b20bba25d2abc6269dfdf1618cb7ba41",
+        "compact_bytes": 292871094,
+        "compact_sha256": "2076a5ce82842617c0d882df8d886c6c3d62532542f0ab5471511ee131961f25",
+        "all_frozen_keys_verified": true
+      },
+      {
+        "name": "off-3s_vs_3z-s2-align-own",
+        "original_bytes": 1006632960,
+        "at": 1788714642.442951,
+        "recovered": false,
+        "error": "UnpicklingError('pickle data was truncated')",
+        "partial_copy": "/tmp/majepa_storage_recovery_20260906/off-3s_vs_3z-s2-align-own.partial.pkl",
+        "partial_sha256": "c211f9cc458d4c67b6f9048930c83607564f506df2f7cf9915d11fbf0ea676dc"
+      }
+    ],
+    "partial_archive": "/tmp/majepa_storage_recovery_20260906",
+    "at": 1788714645.5848947
+  },
+  "checkpoint_cleanup": {
+    "authorized_by": "User: just delete checkpoints of attempts that were unsuccessful anyways",
+    "started_at": 1788715589.6324518,
+    "phase": "complete",
+    "reclaimed_bytes": 61639544883,
+    "protected_inputs": [
+      "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-3s_vs_3z-seed0",
+      "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-3s_vs_3z-seed1",
+      "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-3s_vs_3z-seed2",
+      "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-3s_vs_5z-seed0",
+      "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-3s_vs_5z-seed2"
+    ],
+    "files": [
+      {
+        "paths": [
+          "/workspace/majepa_interrupted_for_interface_20260906/bptt2-MMM2-seed2/20260906T164003F479591/agent.pkl",
+          "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-MMM2-seed2/train/run/ckpt/20260906T164003F479591/agent.pkl"
+        ],
+        "bytes": 1759037676,
+        "sha256": "383c12d09b0507dfeb8305db48124bfa2c712b5f62ac429ae19194ec21b25392",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_interrupted_for_interface_20260906/fact-3s_vs_3z-seed0/20260906T164933F107692/agent.pkl",
+          "/workspace/majepa_value_sweep_20260906/runs/fact-3s_vs_3z-seed0/train/run/ckpt/20260906T164933F107692/agent.pkl"
+        ],
+        "bytes": 1753921325,
+        "sha256": "b619b3a063b27535a407dfb6fa72cbef20f3199dddedf82c8ad335f2fd94a9df",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_interrupted_for_interface_20260906/frep-ent-2s3z-seed0/20260906T163806F285713/agent.pkl",
+          "/workspace/majepa_value_sweep_20260906/runs/frep-ent-2s3z-seed0/train/run/ckpt/20260906T163806F285713/agent.pkl"
+        ],
+        "bytes": 1909422105,
+        "sha256": "cce730610f5fd9406366d08eb62bc9de45c05c2d66963ed060beb6fc0f8eb029",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_interrupted_for_interface_20260906/fact-vreg-2s3z-seed0/20260906T164912F815333/agent.pkl",
+          "/workspace/majepa_value_sweep_20260906/runs/fact-vreg-2s3z-seed0/train/run/ckpt/20260906T164912F815333/agent.pkl"
+        ],
+        "bytes": 1755214096,
+        "sha256": "88db6c2359f241e42b8127c4adad4087570fea9624b1489b24691c7d225d7e3a",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_interrupted_for_interface_20260906/vreg-2s3z-seed0/20260906T165105F585042/agent.pkl",
+          "/workspace/majepa_value_sweep_20260906/runs/vreg-2s3z-seed0/train/run/ckpt/20260906T165105F585042/agent.pkl"
+        ],
+        "bytes": 1755214096,
+        "sha256": "f7f1f02ae2c4f76b6028732df15584c9203edf5a75be446753ab6594b0933f47",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_value_sweep_20260906/runs/ret-ent-2s3z-seed0/train/run/ckpt/20260906T164824F076792/agent.pkl"
+        ],
+        "bytes": 1755214212,
+        "sha256": "6b3cc01ddcd63652ffce2173d26227ecb84bde40faa515e68011e484529fcd96",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_value_sweep_20260906/runs/retperc-2s3z-seed0/train/run/ckpt/20260906T161740F778018/agent.pkl"
+        ],
+        "bytes": 1755214212,
+        "sha256": "20d1871a970074ff4f19e0c2146e62beaf245f430fbb1bea9dbe0fe3ea97cb50",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_value_sweep_20260906/runs/entlow-2s3z-seed0/train/run/ckpt/20260906T153532F841176/agent.pkl"
+        ],
+        "bytes": 1755214096,
+        "sha256": "163a62c141989325fa06d8890c46b9de4dc31aec4f397339d2a4e2219ec23b5e",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_value_sweep_20260906/runs/actor1-2s3z-seed0/train/run/ckpt/20260906T144127F102359/agent.pkl"
+        ],
+        "bytes": 1755214096,
+        "sha256": "65eacaa0c685fb2eb231265308e8ae7d0dda0553de12090d3df4a7384b10c0a2",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_value_sweep_20260906/runs/factrep-2s3z-seed0/train/run/ckpt/20260906T134508F494353/agent.pkl"
+        ],
+        "bytes": 1909422105,
+        "sha256": "7a034c9573e8a894cb889cdeb60e4273e79d4a39a7a9d47cb6047ed48e4e4f4c",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_value_sweep_20260906/runs/fact-2s3z-seed0/train/run/ckpt/20260906T121419F531682/agent.pkl"
+        ],
+        "bytes": 1755214096,
+        "sha256": "4c3b82008aa461f9304e524ed3c4129799802ab5af9e0459019e3697f7689678",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-corridor-seed2/train/run/ckpt/20260906T153054F299028/agent.pkl"
+        ],
+        "bytes": 1760590780,
+        "sha256": "5c37553f438b823b06f336a873f2df080fe09e3816492266668136537326e89a",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-5m_vs_6m-seed2/train/run/ckpt/20260906T140223F462219/agent.pkl"
+        ],
+        "bytes": 1755007388,
+        "sha256": "5fe518e79802c1a90c54911d5dedcd68f8035807091e74e5520d445a97db3bd5",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-5m_vs_6m-seed1/train/run/ckpt/20260906T075555F099823/agent.pkl"
+        ],
+        "bytes": 1755007388,
+        "sha256": "60fb26af4b8697c7312ee53c0d0983cddd08abcc9c951a951d2048a6322fe07c",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-3s_vs_5z-seed1/train/run/ckpt/20260906T072049F464361/agent.pkl"
+        ],
+        "bytes": 1754486767,
+        "sha256": "611c0bb320cc5be7787a0bdef5603aea3053031e6cc7a4c2918ac8a51555e401",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-MMM2-seed1/train/run/ckpt/20260906T120636F614766/agent.pkl"
+        ],
+        "bytes": 1759037676,
+        "sha256": "20207adc34390e3c7ab22a297bbd041130837713360aa2aac95f3636570d6628",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-3s_vs_4z-seed2/train/run/ckpt/20260906T011029F877334/agent.pkl"
+        ],
+        "bytes": 1754204045,
+        "sha256": "e1d9af10d9216c3f2c93c6699e3fc0b86af6682d3dcc029733b47ce249bbebd3",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-3s_vs_4z-seed1/train/run/ckpt/20260905T222429F986242/agent.pkl"
+        ],
+        "bytes": 1754204045,
+        "sha256": "4dfe2e081b08ffc529f1b872bd983880c3b2634a876cb8ca8c2392158f4cecf8",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-corridor-seed0/train/run/ckpt/20260905T192953F753440/agent.pkl"
+        ],
+        "bytes": 1760590778,
+        "sha256": "0b1f7ba76bf7e496cf95b0ad293909b9ecec8050432f4ee1f7ab40b909831347",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-5m_vs_6m-seed0/train/run/ckpt/20260905T223634F117401/agent.pkl"
+        ],
+        "bytes": 1755007388,
+        "sha256": "e157b8c763d5d2d0701dfbabf1738ba47ccc5753758600b4e93edfd758459bdb",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-3s_vs_4z-seed0/train/run/ckpt/20260905T161523F097240/agent.pkl"
+        ],
+        "bytes": 1754204045,
+        "sha256": "2f184251c38724ec06fcbe15ad89fdfb90ff89d9883498dc13be221b0ce338a5",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_bptt2_matrix_20260905/runs/bptt2-MMM2-seed0/train/run/ckpt/20260905T223937F299768/agent.pkl"
+        ],
+        "bytes": 1759037676,
+        "sha256": "6cb7beb3ff19680a7e5ac78280727c408ec85eeaacd5215eff5232fc5aca6942",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_recurrent_env8_20260905/runs/recurrent_env8-2s3z-seed0/train/run/ckpt/20260905T130538F316546/agent.pkl"
+        ],
+        "bytes": 1755214096,
+        "sha256": "8b1cbe769dfe1193136e5642de0857899420dacd90e5f0697c05ecd2f3add88a",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_recurrent_capacity_20260905/runs/recurrent_actor2x256-2s3z-seed0/train/run/ckpt/20260905T130454F768103/agent.pkl"
+        ],
+        "bytes": 1636299376,
+        "sha256": "ea59203aa1ad8fe7a735c889dd53ed93ff8ed34ef53747ca8a1ee63102de109f",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_recurrent_capacity_20260905/runs/recurrent_wmlr1e4-2s3z-seed0/train/run/ckpt/20260905T130932F157273/agent.pkl"
+        ],
+        "bytes": 1755214096,
+        "sha256": "0a57008f4d66143f9082dc5c45ef7ef870de7da3c6485b009fb5948701b5de18",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_recurrent_combinations_20260905/runs/recurrent_fresh_bptt2-2s3z-seed0/train/run/ckpt/20260905T121231F105155/agent.pkl"
+        ],
+        "bytes": 1755214096,
+        "sha256": "5b26610382659c81cc4f16fc62abec735a8819abf64d92ee613392ae63672144",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_recurrent_extensions_20260905/runs/recurrent_ema05-2s3z-seed0/train/run/ckpt/20260905T113430F351902/agent.pkl"
+        ],
+        "bytes": 1755214096,
+        "sha256": "de8abb5114f9d8de785528e4355e5dfc272d71afad36411404203d9ca42a9e83",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_recurrent_extensions_20260905/runs/recurrent_env16-2s3z-seed0/train/run/ckpt/20260905T123050F080386/agent.pkl"
+        ],
+        "bytes": 1755214096,
+        "sha256": "ffe68b450e3505e269b46819290977d094ce0b62602fce9ee269bb5f91972c47",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_recurrent_extensions_20260905/runs/recurrent_fresh_history-2s3z-seed0/train/run/ckpt/20260905T122015F830121/agent.pkl"
+        ],
+        "bytes": 1755214096,
+        "sha256": "28d9877a7b6f8ed1416a15da73a44478f0d3d025e9475e09b2d8b851c1dca327",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_prefill_recurrent_ema_20260905/runs/prefill_ema-8m-seed0/train/run/ckpt/20260905T103932F312944/agent.pkl"
+        ],
+        "bytes": 1756210360,
+        "sha256": "bf4c8a9e0de440dca1836787284382ad78f2fbaabadd725f80994c271420872c",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_prefill_recurrent_ema_20260905/runs/prefill_ema-2s3z-seed0/train/run/ckpt/20260905T103725F216447/agent.pkl"
+        ],
+        "bytes": 1755214096,
+        "sha256": "3e4c9fe06c67c03afe1f0ef5fbd28730e1474befd5d07697c537dc6f0ff8d881",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_value_calibration_20260905/team_return_anchor-2s3z-seed1/frozen/ckpt/20260905T085005F524901/agent.pkl",
+          "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return_anchor-2s3z-seed1/train/run/ckpt/20260905T085005F524901/agent.pkl"
+        ],
+        "bytes": 1755214096,
+        "sha256": "46b2e6a31ddcaa8acf53c936908e60d5c2b769aba112e3634750e6a5be65f8df",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_value_calibration_20260905/original_base-2s3z-seed1/frozen/ckpt/20260905T084909F063960/agent.pkl",
+          "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/original_base-2s3z-seed1/train/run/ckpt/20260905T084909F063960/agent.pkl"
+        ],
+        "bytes": 1755214096,
+        "sha256": "2492c556d4e58d7916ae7c5943250f1f200e28c1a14238312d1dd9f7a78e22b1",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return-2s3z-seed1/train/run/ckpt/20260905T084810F760761/agent.pkl"
+        ],
+        "bytes": 1755214096,
+        "sha256": "01f511075e9444d2eb9211e4c702741bcdae0bc411cdbeacab5ef8d839e61f0d",
+        "deleted": true
+      },
+      {
+        "paths": [
+          "/workspace/majepa_ppo_correction_2663ae5_20260905/runs/team_return-2s3z-seed0/train/run/ckpt/20260905T084810F038965/agent.pkl"
+        ],
+        "bytes": 1755214096,
+        "sha256": "3beed0ce5fc9c85b5df4f98de8bcf1afce6ba041277f6423fdfaa3037ec7b266",
+        "deleted": true
+      }
+    ],
+    "finished_at": 1788715712.4961288
+  },
+  "startup": {
+    "at": 1788715915.7541575,
+    "jobs": [
+      {
+        "name": "base-3s_vs_3z-seed0",
+        "kind": "online",
+        "status": "running",
+        "gpu": 3,
+        "worker_pid": 661113,
+        "started_at": 1788715834.651079,
+        "error": null
+      },
+      {
+        "name": "align-3s_vs_3z-seed0",
+        "kind": "online",
+        "status": "running",
+        "gpu": 0,
+        "worker_pid": 661110,
+        "started_at": 1788715838.30738,
+        "error": null
+      },
+      {
+        "name": "base-3s_vs_3z-seed1",
+        "kind": "online",
+        "status": "running",
+        "gpu": 4,
+        "worker_pid": 661114,
+        "started_at": 1788715839.8081458,
+        "error": null
+      },
+      {
+        "name": "align-3s_vs_3z-seed1",
+        "kind": "online",
+        "status": "running",
+        "gpu": 2,
+        "worker_pid": 661112,
+        "started_at": 1788715839.9895415,
+        "error": null
+      },
+      {
+        "name": "base-3s_vs_3z-seed2",
+        "kind": "online",
+        "status": "running",
+        "gpu": 5,
+        "worker_pid": 661115,
+        "started_at": 1788715841.7066987,
+        "error": null
+      },
+      {
+        "name": "align-3s_vs_3z-seed2",
+        "kind": "online",
+        "status": "running",
+        "gpu": 1,
+        "worker_pid": 661111,
+        "started_at": 1788715842.8981962,
+        "error": null
+      }
+    ],
+    "workers": [
+      {
+        "gpu": 0,
+        "log": "/workspace/majepa_interface_verify_20260906/workers/gpu0.storage-v2.log",
+        "pid": 661110,
+        "alive": true
+      },
+      {
+        "gpu": 1,
+        "log": "/workspace/majepa_interface_verify_20260906/workers/gpu1.storage-v2.log",
+        "pid": 661111,
+        "alive": true
+      },
+      {
+        "gpu": 2,
+        "log": "/workspace/majepa_interface_verify_20260906/workers/gpu2.storage-v2.log",
+        "pid": 661112,
+        "alive": true
+      },
+      {
+        "gpu": 3,
+        "log": "/workspace/majepa_interface_verify_20260906/workers/gpu3.storage-v2.log",
+        "pid": 661113,
+        "alive": true
+      },
+      {
+        "gpu": 4,
+        "log": "/workspace/majepa_interface_verify_20260906/workers/gpu4.storage-v2.log",
+        "pid": 661114,
+        "alive": true
+      },
+      {
+        "gpu": 5,
+        "log": "/workspace/majepa_interface_verify_20260906/workers/gpu5.storage-v2.log",
+        "pid": 661115,
+        "alive": true
+      }
+    ],
+    "counts": {
+      "complete": 12,
+      "running": 6,
+      "pending": 18,
+      "failed": 0
+    },
+    "gpus": "0, 0 %, 465 MiB\n1, 0 %, 465 MiB\n2, 0 %, 465 MiB\n3, 0 %, 465 MiB\n4, 0 %, 465 MiB\n5, 0 %, 465 MiB\n"
+  },
+  "storage_component": {
+    "source": "/workspace/majepa_verification_storage_1f3cb90",
+    "commit": "1f3cb90c2fe268ed98324be5743ce706015b90ae",
+    "status": "/workspace/majepa_interface_verify_20260906/checkpoint_retention.json"
+  },
+  "original_claim_deadline": 1788853343.719265,
+  "original_decision_deadline": 1788864143.719265,
+  "automatic_monitor": "ma-jepa-interface-verification",
+  "latest_verification": {
+    "at": 1788716393.4772797,
+    "queue_counts": {
+      "complete": 12,
+      "running": 6,
+      "pending": 18,
+      "failed": 0
+    },
+    "storage_ready": true,
+    "storage_deployment": {
+      "pid": 680051,
+      "script": "/workspace/majepa_verification_storage_1f3cb90/compact_verification_checkpoints_20260906.py",
+      "sha256": "fdca8213807443da8c37c2c85a9ea17a829ef240d5d838c868fb72c2a181b1a5",
+      "commit": "1f3cb90c2fe268ed98324be5743ce706015b90ae",
+      "at": 1788716279.8805282
+    },
+    "storage_retention": {
+      "created_at": 1788715798.690863,
+      "records": [],
+      "errors": [],
+      "pid": 680051,
+      "phase": "running",
+      "updated_at": 1788716370.1464837,
+      "source": "/workspace/majepa_verification_storage_1f3cb90/compact_verification_checkpoints_20260906.py",
+      "full_final_seeds": [
+        0
+      ],
+      "completed_weights_only_seeds": [
+        1,
+        2
+      ]
+    },
+    "storage_sizing": {
+      "full_checkpoint_bytes": 1753921325,
+      "compressed_weights_bytes": 555971572,
+      "history_54_snapshots_bytes": 30022464888,
+      "final_24_full_bytes_estimate": 43200000000,
+      "inputs_unchanged": true
+    },
+    "jobs": [
+      {
+        "name": "base-3s_vs_3z-seed0",
+        "gpu": 3,
+        "worker_pid": 661113,
+        "stage": "compiling",
+        "latest_metrics": [],
+        "log_bytes": 3951,
+        "log_tail": ".cc:73] \n********************************\n[Compiling module jit_fn] Very slow compile? If you want to file a bug, run with envvar XLA_FLAGS=--xla_dump_to=/tmp/foo and attach the results.\n********************************\n"
+      },
+      {
+        "name": "align-3s_vs_3z-seed0",
+        "gpu": 0,
+        "worker_pid": 661110,
+        "stage": "compiling",
+        "latest_metrics": [],
+        "log_bytes": 3952,
+        "log_tail": ".cc:73] \n********************************\n[Compiling module jit_fn] Very slow compile? If you want to file a bug, run with envvar XLA_FLAGS=--xla_dump_to=/tmp/foo and attach the results.\n********************************\n"
+      },
+      {
+        "name": "base-3s_vs_3z-seed1",
+        "gpu": 4,
+        "worker_pid": 661114,
+        "stage": "compiling",
+        "latest_metrics": [],
+        "log_bytes": 3951,
+        "log_tail": ".cc:73] \n********************************\n[Compiling module jit_fn] Very slow compile? If you want to file a bug, run with envvar XLA_FLAGS=--xla_dump_to=/tmp/foo and attach the results.\n********************************\n"
+      },
+      {
+        "name": "align-3s_vs_3z-seed1",
+        "gpu": 2,
+        "worker_pid": 661112,
+        "stage": "compiling",
+        "latest_metrics": [],
+        "log_bytes": 3952,
+        "log_tail": ".cc:73] \n********************************\n[Compiling module jit_fn] Very slow compile? If you want to file a bug, run with envvar XLA_FLAGS=--xla_dump_to=/tmp/foo and attach the results.\n********************************\n"
+      },
+      {
+        "name": "base-3s_vs_3z-seed2",
+        "gpu": 5,
+        "worker_pid": 661115,
+        "stage": "compiling",
+        "latest_metrics": [],
+        "log_bytes": 3951,
+        "log_tail": ".cc:73] \n********************************\n[Compiling module jit_fn] Very slow compile? If you want to file a bug, run with envvar XLA_FLAGS=--xla_dump_to=/tmp/foo and attach the results.\n********************************\n"
+      },
+      {
+        "name": "align-3s_vs_3z-seed2",
+        "gpu": 1,
+        "worker_pid": 661111,
+        "stage": "compiling",
+        "latest_metrics": [],
+        "log_bytes": 3952,
+        "log_tail": ".cc:73] \n********************************\n[Compiling module jit_fn] Very slow compile? If you want to file a bug, run with envvar XLA_FLAGS=--xla_dump_to=/tmp/foo and attach the results.\n********************************\n"
+      }
+    ],
+    "gpus": "0, 0 %, 4573 MiB\n1, 0 %, 4573 MiB\n2, 0 %, 4573 MiB\n3, 0 %, 4573 MiB\n4, 0 %, 4573 MiB\n5, 0 %, 4573 MiB\n"
+  }
+}
