@@ -48,6 +48,7 @@ def test_locked_profile_values(tmp_path: Path) -> None:
     resolved = _resolve_config_profiles(_load_configs(), spec.configs)
 
     assert spec.configs == ["smac_vector", "ma_jepa"]
+    assert spec.train_envs == resolved.run.envs == 16
     assert resolved.replay_context == 192
     assert resolved.replay.sampling == "recent_world_uniform_behavior"
     assert resolved.run.train_ratio == 128
@@ -123,8 +124,10 @@ def test_runtime_rejects_invalid_budgets_before_initialization(steps):
         train_loop(None, None, None, None, None, SimpleNamespace(steps=steps))
 
 
-@pytest.mark.parametrize("envs", [1, 4, 16])
-def test_parallel_training_cli_preserves_the_total_budget(tmp_path: Path, envs: int):
+@pytest.mark.parametrize("envs", [None, 1, 4, 16])
+def test_parallel_training_cli_preserves_the_total_budget(
+    tmp_path: Path, envs: int | None
+):
     experiment = tmp_path / "parallel"
     assert (
         train(
@@ -133,8 +136,7 @@ def test_parallel_training_cli_preserves_the_total_budget(tmp_path: Path, envs: 
                 "smac_3m",
                 "--num-agents",
                 "3",
-                "--train-envs",
-                str(envs),
+                *(["--train-envs", str(envs)] if envs is not None else []),
                 "--total-env-steps",
                 "50000",
                 "--eval-envs",
@@ -155,10 +157,11 @@ def test_parallel_training_cli_preserves_the_total_budget(tmp_path: Path, envs: 
     resolved = elements.Flags(
         _resolve_config_profiles(_load_configs(), flags.configs)
     ).parse(other)
-    assert resolved.run.envs == envs
+    expected_envs = 16 if envs is None else envs
+    assert resolved.run.envs == expected_envs
     assert resolved.run.steps == 50000
     assert resolved.run.train_ratio == 128
-    assert manifest["train_envs"] == envs
+    assert manifest["train_envs"] == expected_envs
     assert manifest["train_env_steps_budget"] == 50000
     assert manifest["replay_prefill_steps"] == 5000
     assert manifest["train_agent_steps_budget"] == 150000

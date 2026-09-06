@@ -19,7 +19,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--train-envs",
         type=int,
-        default=1,
+        default=16,
         help="Parallel training environments sharing the total environment-step budget.",
     )
     parser.add_argument("--experiment-dir", type=Path)

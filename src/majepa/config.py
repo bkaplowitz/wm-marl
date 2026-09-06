@@ -43,7 +43,7 @@ class MAJEPARunSpec:
     algorithm: str = "ma-jepa"
     seed: int = 0
     train_steps: int = 50_000
-    train_envs: int = 1
+    train_envs: int = 16
     platform: str = "cuda"
     infrastructure_root: Path = field(default_factory=infrastructure_root)
     python: Path = field(default_factory=runtime_python)

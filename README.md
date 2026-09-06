@@ -109,7 +109,7 @@ uv run majepa-train \
 Each copy runs in its own process with seed `seed + worker_index`. Policy
 inference is batched, while recurrent state, resets, and replay sequences stay
 separate for each environment. All workers feed one learner and replay store.
-`--train-envs` defaults to 1; `--eval-envs` controls evaluation separately.
+`--train-envs` defaults to 16; `--eval-envs` controls evaluation separately.
 
 The total budget is shared across training environments, so 16 workers split
 50,000 steps rather than each collecting 50,000. The environment clock
