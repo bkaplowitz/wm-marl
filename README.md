@@ -91,6 +91,34 @@ uv run majepa-train \
 The command always resolves `smac_vector + ma_jepa`; there is no public
 architecture or ablation selector.
 
+Use `--train-envs` to collect from multiple copies of the same task in parallel:
+
+```bash
+uv run majepa-train \
+  --task smac_3m \
+  --num-agents 3 \
+  --train-envs 16 \
+  --total-env-steps 50000
+```
+
+Each copy runs in its own process with seed `seed + worker_index`. Policy
+inference is batched, while recurrent state, resets, and replay sequences stay
+separate for each environment. All workers feed one learner and replay store.
+`--train-envs` defaults to 1; `--eval-envs` controls evaluation separately.
+
+The total budget is shared across training environments, so 16 workers split
+50,000 steps rather than each collecting 50,000. The environment clock
+includes reset observations. Collection stops exactly at the budget: when the
+last batch is uneven, only the required workers take another step. For example,
+43 records across three environments split as 15, 14, and 14. More workers need
+more CPU and memory.
+
+Replay prefill is 10% of the total collection budget, rounded up and included in
+that budget. A 50,000-record run collects at least 5,000 records before any
+learner updates. Replay must also contain enough complete sequences to form
+training batches, and actor–critic learning retains its configured start step.
+Prefill does not accumulate a backlog of learner updates.
+
 ## Evaluate
 
 ```bash
