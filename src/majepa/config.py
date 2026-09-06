@@ -11,6 +11,12 @@ from majepa.runtime import absolute_path, infrastructure_root, runtime_python
 PUBLIC_ALGORITHMS = ("ma-jepa",)
 
 
+def replay_prefill_steps(train_steps: int) -> int:
+    """Collect ten percent of the total budget before learning, rounded up."""
+
+    return (int(train_steps) + 9) // 10
+
+
 def algorithm_config_profiles(algorithm: str) -> list[str]:
     """Return the canonical profiles for the only supported algorithm."""
 
@@ -37,6 +43,7 @@ class MAJEPARunSpec:
     algorithm: str = "ma-jepa"
     seed: int = 0
     train_steps: int = 50_000
+    train_envs: int = 1
     platform: str = "cuda"
     infrastructure_root: Path = field(default_factory=infrastructure_root)
     python: Path = field(default_factory=runtime_python)
@@ -66,6 +73,8 @@ class MAJEPARunSpec:
             raise ValueError("MA-JEPA requires at least two agents")
         if self.train_steps < 1:
             raise ValueError("train_steps must be positive")
+        if self.train_envs < 1:
+            raise ValueError("train_envs must be positive")
         if self.curve_eval_interval < 0:
             raise ValueError("curve_eval_interval must be non-negative")
         if self.platform not in {"cpu", "cuda", "tpu"}:
@@ -151,6 +160,8 @@ class MAJEPARunSpec:
             str(self.num_agents),
             "--run.steps",
             str(self.train_steps),
+            "--run.envs",
+            str(self.train_envs),
             "--jax.platform",
             self.platform,
             "--logger.outputs",
@@ -242,6 +253,8 @@ class MAJEPARunSpec:
             "task": self.task,
             "seed": self.seed,
             "train_env_steps_budget": self.train_steps,
+            "replay_prefill_steps": replay_prefill_steps(self.train_steps),
+            "train_envs": self.train_envs,
             "train_agent_steps_budget": self.train_steps * self.num_agents,
             "num_agents": self.num_agents,
             "environment_profile": self.environment_profile,

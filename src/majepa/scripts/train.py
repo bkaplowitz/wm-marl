@@ -16,6 +16,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--num-agents", type=int, required=True)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--total-env-steps", type=int, default=50_000)
+    parser.add_argument(
+        "--train-envs",
+        type=int,
+        default=1,
+        help="Parallel training environments sharing the total environment-step budget.",
+    )
     parser.add_argument("--experiment-dir", type=Path)
     parser.add_argument(
         "--output-root",
@@ -51,6 +57,7 @@ def main(argv: list[str] | None = None) -> int:
         num_agents=args.num_agents,
         seed=args.seed,
         train_steps=args.total_env_steps,
+        train_envs=args.train_envs,
         platform=args.platform,
         infrastructure_root=args.infrastructure_root,
         python=args.python,
