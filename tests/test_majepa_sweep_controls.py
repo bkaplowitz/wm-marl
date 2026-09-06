@@ -65,6 +65,32 @@ def test_report_transport_cannot_advance_training_batch_counter(monkeypatch):
     assert counters == [(1 << 32) + x for x in range(3)]
 
 
+def test_world_mixture_broadens_coverage_without_changing_behavior_draws():
+    def sample(mix):
+        replay = DualViewReplay(length=4, capacity=100, chunksize=8,
+            recency_decay=0.9, seed=17, isolate_report_rng=True,
+            world_uniform_mix=mix)
+        for index in range(140):
+            replay.add(dict(marker=np.int32(index), is_first=np.bool_(index == 0),
+                is_last=np.bool_(False), is_terminal=np.bool_(False)), worker=0)
+        assert len(replay.sampler) == len(replay.behavior_sampler)
+        if mix:
+            assert len(replay.sampler) == len(replay.world_uniform_sampler)
+        world, behavior = [], []
+        for _ in range(1000):
+            world.append(int(replay.sample(1, "train_world")["marker"][0, 0]))
+            replay.sample(1, "report")
+            behavior.append(int(replay.sample(1, "train_behavior")["marker"][0, 0]))
+        return np.asarray(world), behavior, replay.stats()
+
+    recent, behavior, _ = sample(0.0)
+    mixed, mixed_behavior, stats = sample(0.5)
+    assert behavior == mixed_behavior
+    assert mixed.mean() < recent.mean() - 10
+    assert 0.45 < stats["world_uniform_fraction"] < 0.55
+    assert stats["world_samples"] == stats["behavior_samples"] == 1000
+
+
 def test_return_percentiles_ignore_padding_and_empty_batches():
     normalizer = Normalize(
         impl="perc",

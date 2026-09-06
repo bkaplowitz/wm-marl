@@ -125,11 +125,15 @@ class DualViewReplay(embodied.replay.Replay):
         recency_decay=0.9998,
         seed=0,
         isolate_report_rng=False,
+        world_uniform_mix=0.0,
         **kwargs,
     ):
         decay = float(recency_decay)
         if not 0.0 < decay <= 1.0:
             raise ValueError("recency_decay must be in (0, 1]")
+        self.world_uniform_mix = float(world_uniform_mix)
+        if not 0.0 <= self.world_uniform_mix <= 1.0:
+            raise ValueError("world_uniform_mix must be finite and in [0, 1]")
         if kwargs.pop("online", False):
             raise ValueError("dual-view replay requires replay.online=False")
         replay_length = int(kwargs["length"])
@@ -153,8 +157,17 @@ class DualViewReplay(embodied.replay.Replay):
             if isolate_report_rng
             else None
         )
+        # Independent selectors ensure broader world coverage does not consume
+        # behavior/report randomness. At mix=0 the existing draws are untouched.
+        self.world_uniform_sampler = (
+            embodied.selectors.Uniform(seed=int(seed) + 3)
+            if self.world_uniform_mix else None
+        )
+        self.world_mixture_rng = np.random.default_rng(int(seed) + 4)
+        self.world_mixture_lock = threading.Lock()
         self._view_stats = {
             "world_samples": 0,
+            "world_uniform_samples": 0,
             "behavior_samples": 0,
             "world_ages": [],
             "behavior_ages": [],
@@ -171,6 +184,8 @@ class DualViewReplay(embodied.replay.Replay):
         self.behavior_sampler[itemid] = ()
         if self.report_sampler is not None:
             self.report_sampler[itemid] = ()
+        if self.world_uniform_sampler is not None:
+            self.world_uniform_sampler[itemid] = ()
 
     def _remove(self):
         """Evict the same FIFO item from both selector views."""
@@ -179,6 +194,8 @@ class DualViewReplay(embodied.replay.Replay):
         del self.behavior_sampler[itemid]
         if self.report_sampler is not None:
             del self.report_sampler[itemid]
+        if self.world_uniform_sampler is not None:
+            del self.world_uniform_sampler[itemid]
         super()._remove()
 
     def _sample(self, mode):
@@ -188,6 +205,12 @@ class DualViewReplay(embodied.replay.Replay):
         is_world = mode in self._WORLD_MODES
         selector = self.sampler if is_world else self.behavior_sampler
         is_training = mode in {"train", "train_world", "train_behavior"}
+        uniform_world = False
+        if is_world and self.world_uniform_sampler is not None:
+            with self.world_mixture_lock:
+                uniform_world = self.world_mixture_rng.random() < self.world_uniform_mix
+            if uniform_world:
+                selector = self.world_uniform_sampler
         if not is_training and self.report_sampler is not None:
             selector = self.report_sampler
         if is_training:
@@ -206,6 +229,8 @@ class DualViewReplay(embodied.replay.Replay):
                     view = "world" if is_world else "behavior"
                     with self._view_stats_lock:
                         self._view_stats[f"{view}_samples"] += 1
+                        if uniform_world:
+                            self._view_stats["world_uniform_samples"] += 1
                         self._view_stats[f"{view}_ages"].append(age)
                 return sequence, False
             except KeyError:
@@ -219,12 +244,18 @@ class DualViewReplay(embodied.replay.Replay):
             values = self._view_stats
             self._view_stats = {
                 "world_samples": 0,
+                "world_uniform_samples": 0,
                 "behavior_samples": 0,
                 "world_ages": [],
                 "behavior_ages": [],
             }
 
         result["world_samples"] = values["world_samples"]
+        result["world_uniform_samples"] = values["world_uniform_samples"]
+        result["world_uniform_fraction"] = (
+            values["world_uniform_samples"] / values["world_samples"]
+            if values["world_samples"] else 0.0
+        )
         result["behavior_samples"] = values["behavior_samples"]
         inserts = result["inserts"]
         for view in ("world", "behavior"):

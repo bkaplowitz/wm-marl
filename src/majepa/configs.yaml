@@ -32,6 +32,7 @@ defaults:
     chunksize: 1024
     sampling: uniform
     recency_decay: 0.9998
+    world_uniform_mix: 0.0
 
   run:
     steps: 5e4

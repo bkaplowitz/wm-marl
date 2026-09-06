@@ -255,6 +255,9 @@ def make_replay(config, folder, mode="train"):
     )
 
     sampling = str(config.replay.sampling)
+    world_uniform_mix = float(config.replay.world_uniform_mix)
+    if world_uniform_mix and sampling != "recent_world_uniform_behavior":
+        raise ValueError("world_uniform_mix requires dual-view replay")
     if mode == "train" and sampling == "recent":
         from .replay import RecentReplay
 
@@ -274,6 +277,7 @@ def make_replay(config, folder, mode="train"):
             recency_decay=float(config.replay.recency_decay),
             seed=int(config.seed),
             isolate_report_rng=bool(config.run.isolate_report_rng),
+            world_uniform_mix=world_uniform_mix,
         )
     if sampling != "uniform" and mode == "train":
         raise ValueError(f"unsupported replay sampling: {sampling!r}")
