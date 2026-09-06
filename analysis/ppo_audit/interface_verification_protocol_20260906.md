@@ -73,9 +73,14 @@ two-step BPTT window. This differs from the older `consumer_kl_scale`, which
 compares embeddings on the same predicted deterministic history. That older
 flag remains zero and its existing BPTT2 restriction remains in force.
 
-Preserve every 5k checkpoint for both arms/all seeds on `3s_vs_3z`, including
-early states before divergence. Other maps retain the normal latest/final
-checkpoint. All checkpoint selection for reported wins is fixed final, never
+Preserve every 5k model-weight snapshot for both arms/all seeds on `3s_vs_3z`,
+including early states before divergence. The latest and final checkpoints
+retain optimizer state. Superseded 5k snapshots retain every non-optimizer
+parameter exactly in `agent.pkl.gz`, with a `WEIGHTS_ONLY.json` manifest and
+verified tensor equality; they support frozen audits or fresh-optimizer forks,
+not exact optimizer continuation. Superseded non-5k periodic saves are discarded.
+Other maps retain the normal latest/final checkpoint. All checkpoint selection
+for reported wins is fixed final, never
 the largest curve value. Paired replay inputs must be frozen explicitly for
 later forks; checkpoint retention alone does not preserve historical replay.
 
@@ -95,7 +100,12 @@ unbounded arms, or extend the existing compute authorization. Incomplete data
 remain incomplete. Completed jobs are never restarted to seek a favorable seed.
 
 Active queue: `/workspace/majepa_interface_verify_20260906/queue.json`.
-Frozen source: `/workspace/ma_jepa_interface_verify_20260906`.
+Frozen learner source: `/workspace/ma_jepa_interface_verify_20260906`, commit
+`e4c2b93c09c6c29acb4a66be26674d4572d33e66`. The versioned recovery launcher is
+`/workspace/ma_jepa_interface_verify_storage_v2_20260906`, commit
+`fca371685ec7b58cadd3fdcc0ad883a7959d46c4`. Its learner package is byte-identical
+to the original snapshot (SHA256
+`a92e67bf662e842491cd291b313b88791c0ea745101f959d0a7c9fbd82776358`).
 W&B group: https://wandb.ai/osaze-obahor/majepa-ppo-treatments/groups/ma-jepa-interface-verify-20260906
 Launcher: `scripts/run_interface_verification.py`.
 Offline training: `scripts/verify_interface_offline.py`.
@@ -109,3 +119,30 @@ a versioned way; do not silently change the algorithm or substitute a result.
 Do not restart the superseded value sweep or old checkpoint keeper. Notify on
 material findings, failures, completion or a required decision; unchanged state
 does not require a user update.
+
+## Storage incident and explicit cleanup authorization
+
+The initial six offline cells completed 500 finite updates each, then a real
+volume quota failure interrupted checkpoint saves/audits. Four complete outputs
+were recovered without additional training, verifying all frozen parameters and
+retained tensors. Two truncated outputs were preserved in `/tmp` and retried
+with identical data, RNG and optimizer budgets under separate attempt IDs.
+Offline artifacts now store only the simulator parameters needed by the audit.
+They are not full PPO checkpoints. See the root `storage_recovery.json`,
+`queue.before-storage-recovery.json`, and `deployment.storage-v2.json`.
+
+The user subsequently instructed: "just delete checkpoints of attempts that
+were unsuccessful anyways". Accordingly, 35 unsuccessful/abandoned checkpoint
+inodes (including their hard-linked copies) were deleted, reclaiming
+61,639,544,883 bytes. All metrics, replay, configurations, evaluation results,
+strong reference models and the five diagnostic input checkpoints remain.
+The exact paths, reasons and pre-deletion SHA256s are recorded in
+`checkpoint_cleanup.json`; this authorization supersedes the blanket historical
+checkpoint preservation instruction above. No local checkpoint archive was
+started. Do not repeat deletion or restore the rejected archive plan.
+
+Run `scripts/compact_verification_checkpoints_20260906.py` for bounded new-history
+storage. Its status and retention records are in `checkpoint_retention.json`.
+The supervisor's `storage_ready` guard opens only after verified cleanup and a
+live compactor. Monitor its health alongside the six workers. The storage
+amendment changes no training update, model RNG, seed, evaluation or objective.
