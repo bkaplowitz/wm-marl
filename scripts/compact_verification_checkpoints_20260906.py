@@ -1,8 +1,9 @@
 """Keep final/resumable checkpoints and compressed 5k model-weight histories.
 
-Only the new verification's primary-map history is managed here. Historical
-5k weights retain every non-optimizer tensor exactly, but are explicitly not
-optimizer-resumable. The latest checkpoint is never altered.
+Historical 5k weights retain every non-optimizer tensor exactly, but are
+explicitly not optimizer-resumable. Training checkpoints are never altered
+while latest. After final100 completes, seeds 1/2 retain model weights; seed 0
+of both arms on every map also retains optimizer state for continuation.
 """
 import fcntl
 import gzip
@@ -29,17 +30,17 @@ def latest(root):
     name = (root / 'latest').read_text().strip()
     checkpoint = root / name
     assert (checkpoint / 'done').exists()
-    assert (checkpoint / 'agent.pkl').is_file()
+    assert (checkpoint / 'agent.pkl').is_file() or (checkpoint / 'agent.pkl.gz').is_file()
     return checkpoint
 
 
-def retain(source, ckpt_root):
-    if source.parent == latest(ckpt_root):
+def retain(source, ckpt_root, *, completed_final=False):
+    if not completed_final and source.parent == latest(ckpt_root):
         return None
     original_stat = source.stat()
     with (source.parent / 'step.pkl').open('rb') as stream:
         step = int(pickle.load(stream))
-    if step % 5000 != 0 or step == 0:
+    if not completed_final and (step % 5000 != 0 or step == 0):
         # Superseded periodic saves are temporary; curve saves remain below.
         if source.parent == latest(ckpt_root):
             return None
@@ -63,7 +64,7 @@ def retain(source, ckpt_root):
     assert restored['params'].keys() == kept.keys()
     assert all(np.array_equal(kept[k], restored['params'][k]) for k in kept)
     assert source.stat().st_mtime_ns == original_stat.st_mtime_ns
-    if source.parent == latest(ckpt_root):
+    if not completed_final and source.parent == latest(ckpt_root):
         partial.unlink()
         return None
     checksum = hashlib.sha256()
@@ -76,6 +77,7 @@ def retain(source, ckpt_root):
         retained_tensors=len(kept), tensor_equality_verified=True,
         original_bytes=original_stat.st_size, compressed_bytes=archive.stat().st_size,
         reclaimed_bytes=original_stat.st_size-archive.stat().st_size,
+        after_final100=completed_final, exact_optimizer_resume=False,
         restore='gzip -dc agent.pkl.gz > agent.pkl; optimizer state is absent')
     write(source.parent / 'WEIGHTS_ONLY.json', record)
     source.unlink()
@@ -89,7 +91,7 @@ def main():
     state = (json.loads(path.read_text()) if path.exists()
              else dict(created_at=time.time(), records=[], errors=[]))
     state.update(pid=os.getpid(), phase='running', updated_at=time.time(),
-                 source=__file__, final_checkpoints_untouched=True)
+                 source=__file__, full_final_seeds=[0], completed_weights_only_seeds=[1, 2])
     write(path, state)
     stopping = False
 
@@ -106,7 +108,8 @@ def main():
                 break
             jobs = [j for j in queue['jobs'] if j['kind'] == 'online']
             for job in jobs:
-                if job['map'] != '3s_vs_3z':
+                compact_final = job['status'] == 'complete' and job['seed'] in (1, 2)
+                if job['map'] != '3s_vs_3z' and not compact_final:
                     continue
                 folder = ROOT / 'runs' / job['name'] / 'train/run/ckpt'
                 if not (folder / 'latest').exists():
@@ -115,7 +118,8 @@ def main():
                     source = done.parent / 'agent.pkl'
                     if not source.exists():
                         continue
-                    record = retain(source, folder)
+                    is_final = done.parent == latest(folder)
+                    record = retain(source, folder, completed_final=compact_final and is_final)
                     if record:
                         state['records'].append(record)
                         print(json.dumps(record), flush=True)

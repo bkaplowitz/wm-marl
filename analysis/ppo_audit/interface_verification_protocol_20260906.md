@@ -74,12 +74,16 @@ compares embeddings on the same predicted deterministic history. That older
 flag remains zero and its existing BPTT2 restriction remains in force.
 
 Preserve every 5k model-weight snapshot for both arms/all seeds on `3s_vs_3z`,
-including early states before divergence. The latest and final checkpoints
-retain optimizer state. Superseded 5k snapshots retain every non-optimizer
+including early states before divergence. The latest checkpoint retains optimizer
+state throughout training and final evaluation. Superseded 5k snapshots retain every non-optimizer
 parameter exactly in `agent.pkl.gz`, with a `WEIGHTS_ONLY.json` manifest and
 verified tensor equality; they support frozen audits or fresh-optimizer forks,
 not exact optimizer continuation. Superseded non-5k periodic saves are discarded.
-Other maps retain the normal latest/final checkpoint. All checkpoint selection
+After final100 completes, both arms' seed 0 on every map retain full resumable
+checkpoints. Completed seeds 1/2 retain every model parameter exactly in the
+same compressed weights-only format. This result-independent storage rule
+does not discard weak-seed models or select which results are reported. Other
+maps retain the normal latest checkpoint during training. All checkpoint selection
 for reported wins is fixed final, never
 the largest curve value. Paired replay inputs must be frozen explicitly for
 later forks; checkpoint retention alone does not preserve historical replay.
@@ -146,3 +150,8 @@ storage. Its status and retention records are in `checkpoint_retention.json`.
 The supervisor's `storage_ready` guard opens only after verified cleanup and a
 live compactor. Monitor its health alongside the six workers. The storage
 amendment changes no training update, model RNG, seed, evaluation or objective.
+Measured compression of a full model's non-optimizer weights is 555,971,572
+bytes. Keeping full optimizer state for every final alongside all 5k histories
+would exceed the reclaimed quota; retaining eight full seed-0 finals and the
+sixteen remaining complete weight sets bounds the expected checkpoint footprint
+to approximately 53 GB, plus replay and transient checkpoint saves.
