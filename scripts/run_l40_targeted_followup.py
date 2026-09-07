@@ -90,6 +90,9 @@ def state_change(root, index, **values):
 
 def job(root, index, gpu):
     entry = json.loads((root / 'queue.json').read_text())['jobs'][index]
+    if entry['kind'] == 'parallel_env':
+        from run_parallel_env_stability import job as parallel_job
+        return parallel_job(root, index, gpu)
     run = Spec(**entry['spec'])
     args = job_args(run, gpu, root)
     base.train_command = train_command

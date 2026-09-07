@@ -377,6 +377,7 @@ def main():
     parser.add_argument('--compare-checkpoint', type=Path)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--wandb-id', required=True)
+    parser.add_argument('--wandb-group', default=GROUP)
     parser.add_argument('--label', required=True)
     parser.add_argument('--roots', type=int, default=8)
     parser.add_argument('--candidates', type=int, default=3)
@@ -393,7 +394,7 @@ def main():
                   benchmark_eligible=False,
                   script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                   **{k:str(v) for k,v in vars(args).items()})
-    run = wandb.init(entity='osaze-obahor', project='majepa-ppo-treatments', group=GROUP,
+    run = wandb.init(entity='osaze-obahor', project='majepa-ppo-treatments', group=args.wandb_group,
         id=args.wandb_id, name=args.wandb_id, job_type='diagnostics', config=status,
         tags=['diagnostic','frozen','L40'])
     def emit(values):
