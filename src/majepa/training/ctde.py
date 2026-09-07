@@ -24,6 +24,23 @@ import jax.numpy as jnp
 f32 = jnp.float32
 
 
+def imagined_action_mask(probability, alive, seed=None):
+    """Select imagined support; factual root masks never pass through here.
+
+    None preserves the original threshold rule without consuming randomness.
+    A key samples independent Bernoulli availability events. Both modes retain
+    the established empty-mask fallback and absorbing dead-agent no-op support.
+    """
+    mask = (
+        probability >= 0.5
+        if seed is None
+        else jax.random.bernoulli(seed, probability)
+    )
+    noop = jnp.zeros_like(mask).at[..., 0].set(True)
+    mask = jnp.where(mask.any(axis=-1, keepdims=True), mask, noop)
+    return jax.lax.stop_gradient(jnp.where(alive[..., None], mask, noop))
+
+
 class TwoStepAnchors(NamedTuple):
     """Fixed-size replay anchor sample.
 

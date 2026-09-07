@@ -144,10 +144,9 @@ class Frozen:
                 total += weight * reward
                 weight *= continuation
                 output = model.ctde_mask(hidden, 2)
-                mask = output.output.logit >= 0
-                noop = jnp.zeros_like(mask).at[..., 0].set(True)
-                mask = jnp.where(mask.any(-1, keepdims=True), mask, noop)
-                mask = jnp.where(next_alive[..., None], mask, noop)
+                from majepa.training.ctde import imagined_action_mask
+                mask = imagined_action_mask(jax.nn.sigmoid(output.output.logit), next_alive,
+                    nj.seed() if model.ctde_imagination_mask_sampling == 'bernoulli' else None)
                 alive, reset = next_alive, jnp.zeros_like(reset)
             features = model.team.fold_tree_batch({k: local[k] for k in ('deter', 'stoch')})
             values = model.critic({k: v[:, None] for k, v in features.items()}, 2, slow=True,
@@ -202,6 +201,7 @@ def state_signature(env, obs):
 def make_roots(frozen, count, emit):
     import jax
     roots, banks = [], []
+    maximum_probability, normalized_entropy = [], []
     for episode in range(count * 2):
         seed = 180001 + episode
         env = frozen.env(seed)
@@ -213,6 +213,12 @@ def make_roots(frozen, count, emit):
                 history.append({k: np.asarray(v).copy() for k, v in obs.items()})
                 signatures.append(state_signature(env, obs))
                 carry, prob, _ = frozen.infer(carry, obs, 9001 + t)
+                legal_count = obs['action_mask'].sum(-1)
+                eligible = obs['controllable_alive'] & (legal_count > 1)
+                p = np.asarray(prob, dtype=np.float64)
+                maximum_probability.extend(p.max(-1)[eligible].tolist())
+                entropy = -(p * np.log(np.maximum(p, 1e-30))).sum(-1)
+                normalized_entropy.extend((entropy[eligible] / np.log(legal_count[eligible])).tolist())
                 action = draw(prob, seed + 10000 + t)
                 if t in (12, 24, 40, 64) and len(roots) < count and not obs['is_last']:
                     candidates = np.flatnonzero(obs['controllable_alive'] & (obs['action_mask'].sum(-1) > 1))
@@ -232,6 +238,11 @@ def make_roots(frozen, count, emit):
         finally:
             env.close()
         emit({'collection/roots': len(roots), 'collection/episodes': episode + 1})
+        if maximum_probability:
+            emit({'selection/active_decisions': len(maximum_probability),
+                  'selection/mean_max_probability': float(np.mean(maximum_probability)),
+                  'selection/fraction_max_probability_ge95': float(np.mean(np.asarray(maximum_probability) >= .95)),
+                  'selection/mean_normalized_entropy': float(np.mean(normalized_entropy))})
         if len(roots) >= count:
             return roots, banks
     raise RuntimeError(f'Only {len(roots)} suitable roots found')

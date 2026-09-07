@@ -41,6 +41,7 @@ from ..models.heads import (
 from ..training.ctde import (
     detach_self_feed,
     gather_anchors,
+    imagined_action_mask,
     predicted_controllable_alive,
     sample_two_step_anchors,
     shared_team_outcomes,
@@ -226,6 +227,15 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         self.ctde_mask_calibration = bool(
             marl.ctde.mask_calibration.enabled if self.ctde_enabled else False
         )
+        self.ctde_imagination_mask_sampling = marl.ctde.get(
+            "imagination_mask_sampling", "threshold"
+        )
+        if self.ctde_imagination_mask_sampling not in {"threshold", "bernoulli"}:
+            raise ValueError("imagination_mask_sampling must be threshold or bernoulli")
+        if self.ctde_imagination_mask_sampling == "bernoulli" and (
+            not self.ctde_enabled or self.ctde_mask_calibration
+        ):
+            raise ValueError("Bernoulli availability requires the standard CTDE prediction head")
         if self.ctde_self_fed_enabled and self.ctde_mask_calibration:
             raise ValueError(
                 "Self-fed training requires the baseline hard CTDE mask path; "
@@ -2797,7 +2807,13 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 1,
                 action_mask=folded_mask,
             )
-            folded_action = sample(distribution)
+            # The standard CTDE path has exactly one categorical action. Use
+            # its existing draw key for a separate availability substream, so
+            # enabling the treatment does not shift other learner RNG draws.
+            action_seed = nj.seed()
+            folded_action = {
+                self.ctde_action_key: distribution[self.ctde_action_key].sample(action_seed)
+            }
             grouped_action = self.team.unfold_batch(folded_action[self.ctde_action_key])
 
             folded_carry = self.team.fold_tree_batch(local_carry)
@@ -2843,13 +2859,14 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             )
             mask_output = self.ctde_mask(hidden, 2)
             mask_probability = jax.nn.sigmoid(mask_output.output.logit)
-            next_mask = jax.lax.stop_gradient(mask_probability >= 0.5)
-            noop = jnp.zeros_like(next_mask)
-            noop = noop.at[..., 0].set(True)
-            next_mask = jnp.where(
-                next_mask.any(axis=-1, keepdims=True), next_mask, noop
+            # Store the realized mask in auxiliary below. PPO must condition on
+            # that same mask in every epoch, never redraw it for likelihoods.
+            next_mask = imagined_action_mask(
+                mask_probability,
+                next_alive,
+                jax.random.fold_in(action_seed, 0x4D41534B)
+                if self.ctde_imagination_mask_sampling == "bernoulli" else None,
             )
-            next_mask = jnp.where(next_alive[..., None], next_mask, noop)
 
             next_state = (
                 next_carry,
@@ -3260,6 +3277,9 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
 
         attack_start = min(6, self.ctde_action_count)
         return {
+            "imagined_action/bernoulli_availability": jnp.asarray(
+                self.ctde_imagination_mask_sampling == "bernoulli", jnp.float32
+            ),
             "imagined_action/noop_fraction": fraction(action == 0),
             "imagined_action/stop_fraction": fraction(action == 1),
             "imagined_action/move_fraction": fraction(

@@ -125,8 +125,16 @@ def _assert_finite(tree):
         assert np.isfinite(array.astype(np.float32)).all()
 
 
-def test_full_learner_jit_warmup_and_ppo_with_death_and_episode_resets():
-    learner, obs_space, act_space = _tiny_learner()
+@pytest.mark.parametrize("mask_mode", ["threshold", "bernoulli"])
+def test_full_learner_jit_warmup_and_ppo_with_death_and_episode_resets(mask_mode):
+    learner, obs_space, act_space = _tiny_learner({
+        "agent.marl.ctde.imagination_mask_sampling": mask_mode,
+        "agent.marl.ctde.self_fed.enabled": True,
+        "agent.marl.ctde.self_fed.horizons": [2],
+        "agent.marl.ctde.self_fed.anchors": 2,
+        "agent.marl.ctde.self_fed.bptt_steps": 2,
+        "agent.marl.ctde.self_fed.trajectory_kl_scale": 0.1,
+    })
     data = _synthetic_replay(learner, obs_space, act_space)
     carry = learner.init_train(2)
     state = nj.init(learner.train)({}, carry, data, seed=702)
