@@ -20,3 +20,9 @@ The original claim cutoff (2026-09-08 07:42:23 UTC) and decision deadline (2026-
 W&B group: https://wandb.ai/osaze-obahor/majepa-ppo-treatments/groups/ma-jepa-parallel-env-stability-20260907
 
 Primary readout is each seed's final win rate and the mean, range, and variability across the three paired seeds. Three replicates provide an initial stability screen, not a definitive variance estimate. Intermediate curves distinguish temporary success from sustained performance. Policy-drift measurements test whether greater collection diversity also reduces executable-policy movement; parallel collection does not directly constrain that movement.
+
+## User reprioritization: all four GPUs for eight environments
+
+The user subsequently deferred new one-environment controls and requested all four GPUs for the six eight-environment runs. The deployed queue now assigns `env8-3s_vs_4z-seed0` to GPU 3 and retains the three `env8-2s3z` seeds on GPUs 0–2 after MMM final100. The two remaining eight-environment `3s_vs_4z` seeds follow on GPUs 1 and 2. All one-environment entries, including extra reference reanalysis, are deferred; existing results/diagnostics are preserved. The active factual-value treatment is interrupted with its saved checkpoints retained, and remaining value treatments are deferred.
+
+Only the new L40 `3s_vs_4z` seed-0 control had completed. The L40 `2s3z` seed-0 control was still pending and is now deferred too. Thus the immediate readout uses the completed control and historical results; it is not a full matched-seed causal comparison. The original three seed blocks, 50k budgets, 100-episode final evaluations and six eight-environment runs remain unchanged. The previous queue is preserved as `queue.before_env8_priority.json` on the pod.
