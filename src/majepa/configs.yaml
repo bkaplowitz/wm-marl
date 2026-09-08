@@ -142,7 +142,8 @@ defaults:
     report: True
     report_gradnorms: False
 
-# Single supported MA-JEPA publication architecture.
+# Maintained development reference, pinned to the completed am1 Bernoulli runs.
+# See analysis/ppo_audit/reinforce_regression_review_20260908.md.
 ma_jepa:
   replay_context: 192
   replay:
@@ -150,15 +151,26 @@ ma_jepa:
     online: False
     sampling: recent_world_uniform_behavior
     recency_decay: 0.9998
+    world_uniform_mix: 0.5
   run:
+    steps: 50000
+    envs: 1
     train_ratio: 128
+    world_model_start_step: 5000
     ppo_start_step: 5000
+    isolate_report_rng: True
+    curve_eval_interval: 5000
+    curve_eval_eps: 32
+    eval_envs: 4
+    curve_eval_seed_offset: 50000
+    checkpoint_at_curve_eval: True
   agent:
     imag_length: 5
     action_mask_reduction: balanced
     policy: {units: 1024}
     collection_unimix: 0.05
-    opt: {lr: 4e-5}
+    opt: {lr: 4e-5, warmup: 0}
+    ppo: {actor_epochs: 5, critic_epochs: 5}
     loss_scales:
       ctde_embedding: 2.0
       ctde_interface: 1.0
@@ -183,14 +195,14 @@ ma_jepa:
       execution: strict_decentralized
       ctde:
         rollout_steps: 1
-        self_fed: {enabled: False, horizons: [2, 4, 5], anchors: 8, scale: 0.1, consumer_kl_scale: 0.0, trajectory_kl_scale: 0.0, fresh_history: False, bptt_steps: 1}
+        self_fed: {enabled: True, horizons: [2, 4, 5], anchors: 8, scale: 0.1, consumer_kl_scale: 0.0, trajectory_kl_scale: 0.1, fresh_history: False, bptt_steps: 2}
         multistep: {anchors: 0}
         mask_calibration: {enabled: False, horizons: [1, 4, 8, 15], soft_liveness: False}
-        imagination_mask_sampling: threshold
+        imagination_mask_sampling: bernoulli
         joint: {width: 256, heads: 4, agent_layers: 2, temporal_layers: 12, context: 16, ffup: 4, dropout: 0.1, action_conditioning: add, act: silu, norm: rms, winit: trunc_normal_in}
         head: {layers: 2, units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
         critic: {width: 256, heads: 4, layers: 2, ffup: 4, dropout: 0.0, value_layers: 2, value_units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
-        opt: {lr: 4e-5, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
+        opt: {lr: 4e-5, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 0, anneal: 0}
         teammate_belief: {enabled: True, actor_residual: True, layers: 2, units: 512, outscale: 0.0, logit_clip: 5.0, adapter_layers: 1, adapter_units: 256, act: silu, norm: rms, winit: trunc_normal_in}
         multistep_jepa:
           enabled: True

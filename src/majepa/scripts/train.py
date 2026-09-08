@@ -22,10 +22,10 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=repository_root() / "runs" / "majepa",
     )
-    parser.add_argument("--save-every-seconds", type=int, default=1_800)
+    parser.add_argument("--save-every-seconds", type=int, default=900)
     parser.add_argument("--wandb-project")
     parser.add_argument("--wandb-entity")
-    parser.add_argument("--eval-interval", type=int, default=0)
+    parser.add_argument("--eval-interval", type=int, default=5_000)
     parser.add_argument("--eval-episodes", type=int)
     parser.add_argument("--eval-envs", type=int)
     parser.add_argument("--eval-seed-offset", type=int)

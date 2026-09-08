@@ -40,10 +40,10 @@ class MAJEPARunSpec:
     platform: str = "cuda"
     infrastructure_root: Path = field(default_factory=infrastructure_root)
     python: Path = field(default_factory=runtime_python)
-    save_every_seconds: int | None = 1_800
+    save_every_seconds: int | None = 900
     wandb_project: str | None = None
     wandb_entity: str | None = None
-    curve_eval_interval: int = 0
+    curve_eval_interval: int = 5_000
     curve_eval_episodes: int | None = None
     curve_eval_envs: int | None = None
     curve_eval_seed_offset: int | None = None
@@ -75,7 +75,7 @@ class MAJEPARunSpec:
         if self.curve_eval_episodes is None:
             object.__setattr__(self, "curve_eval_episodes", 32 if smac else 20)
         if self.curve_eval_envs is None:
-            object.__setattr__(self, "curve_eval_envs", 1 if smac else 4)
+            object.__setattr__(self, "curve_eval_envs", 4)
         if self.curve_eval_seed_offset is None:
             object.__setattr__(
                 self, "curve_eval_seed_offset", 50_000 if smac else 10_000
@@ -151,6 +151,8 @@ class MAJEPARunSpec:
             str(self.num_agents),
             "--run.steps",
             str(self.train_steps),
+            "--run.curve_eval_interval",
+            str(self.curve_eval_interval),
             "--jax.platform",
             self.platform,
             "--logger.outputs",
@@ -171,8 +173,6 @@ class MAJEPARunSpec:
         if self.curve_eval_interval:
             command.extend(
                 [
-                    "--run.curve_eval_interval",
-                    str(self.curve_eval_interval),
                     "--run.curve_eval_eps",
                     str(self.curve_eval_episodes),
                     "--run.eval_envs",
@@ -191,7 +191,14 @@ class MAJEPARunSpec:
             "version": self.ctde_version,
             "rollout_steps": self.ctde_rollout_steps,
             "two_step_anchors": 0,
-            "self_fed_training": False,
+            "self_fed_training": True,
+            "self_fed_bptt_steps": 2,
+            "self_fed_horizons": [2, 4, 5],
+            "self_fed_anchors": 8,
+            "self_fed_scale": 0.1,
+            "trajectory_kl_scale": 0.1,
+            "fresh_history": False,
+            "imagination_mask_sampling": "bernoulli",
             "agent_attention": {"width": 256, "layers": 2, "heads": 4},
             "temporal_transformer": {
                 "width": 256,
@@ -207,6 +214,8 @@ class MAJEPARunSpec:
             "actor_units": 1024,
             "actor_learning_rate": 3e-5,
             "critic_learning_rate": 3e-5,
+            "world_model_start_step": 5000,
+            "world_optimizer_warmup": 0,
             "ppo_start_step": 5000,
             "imagination_horizon": 5,
             "ppo": {
@@ -220,6 +229,8 @@ class MAJEPARunSpec:
                 "shared_team_returns_after_death": True,
                 "replay_value_scale": 0.3,
                 "replay_value_lambda": 0.95,
+                "factual_value": False,
+                "factual_representation_scale": 0.0,
             },
             "action_counterfactuals": "all_legal_mean",
             "action_counterfactual_scale": 0.25,
@@ -265,6 +276,9 @@ class MAJEPARunSpec:
             "sigreg_aggregation": "per_agent",
             "replay_context": 192,
             "replay_sampling": self.effective_replay_sampling,
+            "world_uniform_mix": 0.5,
+            "isolate_report_rng": True,
+            "development_reference": "am1-bernoulli-20260907",
             "recency_decay": (
                 0.9998
                 if self.effective_replay_sampling

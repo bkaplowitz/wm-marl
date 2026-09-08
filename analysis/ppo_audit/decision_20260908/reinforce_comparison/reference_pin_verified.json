@@ -1,0 +1,191 @@
+{
+  "matches_executed_reference_except_runtime": true,
+  "compared_config_keys": 312,
+  "differences": {
+    "jax.prealloc": [
+      true,
+      false
+    ],
+    "logdir": [
+      "unused",
+      "/workspace/majepa_evidence_review_20260908/unused/run"
+    ],
+    "logger.filter": [
+      "score|return|length|fps|ratio|sample_age|replay/behavior_|schedule/|counters/|replay_views/|train/loss/|train/opt/|train/ppo/|train/ctde/|report/ctde/|central_critic/|battle_won|win_rate|legacy_|corrected_|enemy_|ally_|timeout|action_|attack_target_|eval/|episode/|final_eval/|replay/world_uniform_|imagined_action/",
+      "score|return|length|fps|ratio|train/loss/|train/rand/|schedule/|train/ppo/|train/opt/|train/posterior_jepa/|train/dynamics_jepa/|train/ctde/|report/ctde/|central_critic/|report/world_model/|report/openloop/|battle_won|win_rate|legacy_|corrected_|enemy_|ally_|timeout|action_|attack_target_|eval/"
+    ],
+    "logger.outputs": [
+      [
+        "jsonl",
+        "wandb"
+      ],
+      [
+        "jsonl",
+        "scope"
+      ]
+    ]
+  },
+  "curve_eval_zero_disables": true,
+  "manifest": {
+    "implementation": "MA-JEPA",
+    "algorithm": "ma-jepa",
+    "experiment_dir": "/workspace/majepa_evidence_review_20260908/unused",
+    "logdir": "/workspace/majepa_evidence_review_20260908/unused/run",
+    "infrastructure_root": "/workspace/ma_jepa_value_grounding_retest_20260908/external/dreamerv3",
+    "python": "/workspace/majepa-runtime/bin/python",
+    "task": "smac_2s3z",
+    "seed": 0,
+    "train_env_steps_budget": 50000,
+    "train_agent_steps_budget": 250000,
+    "num_agents": 5,
+    "environment_profile": "smac_vector",
+    "configs": [
+      "smac_vector",
+      "ma_jepa"
+    ],
+    "marl_stage": "ctde",
+    "ctde_version": "ma-jepa",
+    "ctde_rollout_steps": 1,
+    "ctde": {
+      "version": "ma-jepa",
+      "rollout_steps": 1,
+      "two_step_anchors": 0,
+      "self_fed_training": true,
+      "self_fed_bptt_steps": 2,
+      "self_fed_horizons": [
+        2,
+        4,
+        5
+      ],
+      "self_fed_anchors": 8,
+      "self_fed_scale": 0.1,
+      "trajectory_kl_scale": 0.1,
+      "fresh_history": false,
+      "imagination_mask_sampling": "bernoulli",
+      "agent_attention": {
+        "width": 256,
+        "layers": 2,
+        "heads": 4
+      },
+      "temporal_transformer": {
+        "width": 256,
+        "layers": 12,
+        "heads": 4,
+        "context": 16
+      },
+      "optimizer_groups": [
+        "local_world",
+        "joint_world",
+        "actor",
+        "critic"
+      ],
+      "learning_rate": 4e-05,
+      "teammate_belief": true,
+      "multi_step_jepa": true,
+      "role_aware_peer_plan": true,
+      "actor_units": 1024,
+      "actor_learning_rate": 3e-05,
+      "critic_learning_rate": 3e-05,
+      "world_model_start_step": 5000,
+      "world_optimizer_warmup": 0,
+      "ppo_start_step": 5000,
+      "imagination_horizon": 5,
+      "ppo": {
+        "epochs": 5,
+        "clip_epsilon": 0.2,
+        "entropy_coefficient": 0.01,
+        "lambda": 0.95,
+        "target_critic_rate": 1.0,
+        "world_update_before_imagination": true,
+        "frozen_imagined_batch": true,
+        "shared_team_returns_after_death": true,
+        "replay_value_scale": 0.3,
+        "replay_value_lambda": 0.95,
+        "factual_value": false,
+        "factual_representation_scale": 0.0
+      },
+      "action_counterfactuals": "all_legal_mean",
+      "action_counterfactual_scale": 0.25
+    },
+    "world_model": "parallel_transformer",
+    "world_model_objective": "embedding",
+    "embedding_target": "ema",
+    "embedding_loss": "cosine",
+    "posterior_jepa": true,
+    "dynamics_jepa": true,
+    "spatial_jepa": false,
+    "spatial_mask_ratio": 0.5,
+    "sigreg": true,
+    "sigreg_aggregation": "per_agent",
+    "replay_context": 192,
+    "replay_sampling": "recent_world_uniform_behavior",
+    "world_uniform_mix": 0.5,
+    "isolate_report_rng": true,
+    "development_reference": "am1-bernoulli-20260907",
+    "recency_decay": 0.9998,
+    "actor_objective": "clipped_imagined_ppo",
+    "optimizer_topology": "separated",
+    "train_ratio": 128.0,
+    "learner_batches_per_environment_step": 0.125,
+    "actor_updates_per_environment_step": 0.625,
+    "critic_updates_per_environment_step": 0.625,
+    "execution": "strict decentralized parameter-shared actors",
+    "policy_information": "one observation-local latent history per agent",
+    "policy_peer_access": false,
+    "policy_modules": [
+      "enc",
+      "dyn",
+      "pol",
+      "ctde_teammate_belief",
+      "ctde_teammate_actor"
+    ],
+    "evaluation_protocol": {
+      "policy_mode": "deterministic",
+      "interval": 5000,
+      "episodes": 32,
+      "envs": 4,
+      "seed_offset": 50000
+    },
+    "platform": "cuda",
+    "save_every_seconds": 900,
+    "wandb_project": null,
+    "wandb_entity": null,
+    "command": [
+      "/workspace/majepa-runtime/bin/python",
+      "-m",
+      "majepa.main",
+      "--logdir",
+      "/workspace/majepa_evidence_review_20260908/unused/run",
+      "--configs",
+      "smac_vector",
+      "ma_jepa",
+      "--task",
+      "smac_2s3z",
+      "--seed",
+      "0",
+      "--agent.num_agents",
+      "5",
+      "--run.steps",
+      "50000",
+      "--run.curve_eval_interval",
+      "5000",
+      "--jax.platform",
+      "cuda",
+      "--logger.outputs",
+      "jsonl",
+      "scope",
+      "--logger.filter",
+      "score|return|length|fps|ratio|train/loss/|train/rand/|schedule/|train/ppo/|train/opt/|train/posterior_jepa/|train/dynamics_jepa/|train/ctde/|report/ctde/|central_critic/|report/world_model/|report/openloop/|battle_won|win_rate|legacy_|corrected_|enemy_|ally_|timeout|action_|attack_target_|eval/",
+      "--run.save_every",
+      "900",
+      "--run.curve_eval_eps",
+      "32",
+      "--run.eval_envs",
+      "4",
+      "--run.curve_eval_seed_offset",
+      "50000",
+      "--run.curve_eval_policy_mode",
+      "eval"
+    ]
+  }
+}

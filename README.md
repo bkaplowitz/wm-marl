@@ -6,6 +6,15 @@ single architecture used in the paper: stopped EMA cosine targets, a
 joint-action-conditioned CTDE world model, all-legal action discrimination, a
 centralized critic, and shared decentralized actors.
 
+The maintained development configuration is pinned to the completed
+`am1-bernoulli` runs: one environment, 5k replay prefill inside the step budget,
+BPTT2 self-fed training with factual-history alignment, half-uniform/half-recent
+world replay, and sampled imagined availability. It keeps H5 imagination and
+full-copy critic targets. Factual V-trace and representation-value auxiliaries
+remain disabled. This is the current development reference; it has not established
+best performance on every map. See the results and limitations in
+`analysis/ppo_audit/reinforce_regression_review_20260908.md`.
+
 ## How it works
 
 ```mermaid
@@ -93,8 +102,8 @@ uv run majepa-train \
   --num-agents 3 \
   --seed 0 \
   --total-env-steps 50000 \
-  --eval-interval 1000 \
-  --eval-episodes 16 \
+  --eval-interval 5000 \
+  --eval-episodes 32 \
   --eval-envs 4
 ```
 
@@ -105,7 +114,7 @@ architecture or ablation selector.
 
 ```bash
 uv run majepa-evaluate runs/majepa/smac_3m/seed_0/<run> \
-  --episodes 128 \
+  --episodes 100 \
   --envs 4 \
   --eval-seed 100000
 ```
