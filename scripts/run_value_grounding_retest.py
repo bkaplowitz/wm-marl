@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import pickle
-import subprocess
 import time
 
 import run_sampled_availability as sampled
@@ -59,7 +58,8 @@ def resolve(run, gpu, root):
     for phase, command in commands:
         parsed, rest = elements.Flags(configs=['smac_vector', 'ma_jepa']).parse_known(command[3:])
         c = elements.Flags(_resolve_config_profiles(_load_configs(), parsed.configs)).parse(rest)
-        before, after = reference[phase]['config'], c.flat
+        before = reference[phase]['config']
+        after = json.loads(json.dumps(c.flat))
         differences = {k: [before.get(k), after.get(k)] for k in set(before) | set(after)
             if before.get(k) != after.get(k)}
         assert differences == changes, differences
