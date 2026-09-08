@@ -1,0 +1,110 @@
+[
+  {
+    "episodes": 100,
+    "group": "ma-jepa-coverage-followup-20260906",
+    "id": "cv2-mix-align-3s_vs_4z-s0-final100",
+    "state": "finished",
+    "url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/cv2-mix-align-3s_vs_4z-s0-final100",
+    "win_rate": 0,
+    "wins": 0
+  },
+  {
+    "episodes": 100,
+    "group": "ma-jepa-coverage-followup-20260906",
+    "id": "cv2-mix-align-3s_vs_4z-s1-final100",
+    "state": "finished",
+    "url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/cv2-mix-align-3s_vs_4z-s1-final100",
+    "win_rate": 0,
+    "wins": 0
+  },
+  {
+    "episodes": 100,
+    "group": "ma-jepa-coverage-followup-20260906",
+    "id": "cv2-mix-align-3s_vs_4z-s2-final100",
+    "state": "finished",
+    "url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/cv2-mix-align-3s_vs_4z-s2-final100",
+    "win_rate": 0.3,
+    "wins": 30
+  },
+  {
+    "episodes": 100,
+    "group": "ma-jepa-coverage-followup-20260906",
+    "id": "cv2-mix-align-2s3z-s1-final100",
+    "state": "finished",
+    "url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/cv2-mix-align-2s3z-s1-final100",
+    "win_rate": 0.29,
+    "wins": 29
+  },
+  {
+    "episodes": 100,
+    "group": "ma-jepa-coverage-followup-20260906",
+    "id": "cv2-mix-align-2s3z-s0-final100",
+    "state": "finished",
+    "url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/cv2-mix-align-2s3z-s0-final100",
+    "win_rate": 0.22,
+    "wins": 22
+  },
+  {
+    "episodes": 100,
+    "group": "ma-jepa-coverage-followup-20260906",
+    "id": "cv2-mix-align-2s3z-s2-final100",
+    "state": "finished",
+    "url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/cv2-mix-align-2s3z-s2-final100",
+    "win_rate": 0.46,
+    "wins": 46
+  },
+  {
+    "episodes": 100,
+    "group": "ma-jepa-coverage-followup-20260906",
+    "id": "cv2-mix-align-3s_vs_3z-s0-final100",
+    "state": "finished",
+    "url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/cv2-mix-align-3s_vs_3z-s0-final100",
+    "win_rate": 0.93,
+    "wins": 93
+  },
+  {
+    "episodes": 100,
+    "group": "ma-jepa-coverage-followup-20260906",
+    "id": "cv2-mix-align-3s_vs_3z-s1-final100",
+    "state": "finished",
+    "url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/cv2-mix-align-3s_vs_3z-s1-final100",
+    "win_rate": 0.7,
+    "wins": 70
+  },
+  {
+    "episodes": 100,
+    "group": "ma-jepa-coverage-followup-20260906",
+    "id": "cv2-mix-align-3s_vs_3z-s2-final100",
+    "state": "finished",
+    "url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/cv2-mix-align-3s_vs_3z-s2-final100",
+    "win_rate": 0.8,
+    "wins": 80
+  },
+  {
+    "episodes": 100,
+    "group": "ma-jepa-coverage-followup-20260906",
+    "id": "l40d-mem95-MMM-s2-final100",
+    "state": "finished",
+    "url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/l40d-mem95-MMM-s2-final100",
+    "win_rate": 0.58,
+    "wins": 58
+  },
+  {
+    "episodes": 100,
+    "group": "ma-jepa-coverage-followup-20260906",
+    "id": "l40d-mem95-MMM-s0-final100",
+    "state": "finished",
+    "url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/l40d-mem95-MMM-s0-final100",
+    "win_rate": 0.64,
+    "wins": 64
+  },
+  {
+    "episodes": 100,
+    "group": "ma-jepa-coverage-followup-20260906",
+    "id": "l40d-mem95-MMM-s1-final100",
+    "state": "finished",
+    "url": "https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/l40d-mem95-MMM-s1-final100",
+    "win_rate": 0.45,
+    "wins": 45
+  }
+]

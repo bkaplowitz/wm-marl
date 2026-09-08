@@ -15,6 +15,9 @@ remain disabled. This is the current development reference; it has not establish
 best performance on every map. See the results and limitations in
 `analysis/ppo_audit/reinforce_regression_review_20260908.md`.
 
+The `ma-jepa-ref` branch preserves this configuration. All completed per-seed
+results and their W&B links are in the [reference results inventory](analysis/ppo_audit/reference_20260908/RESULTS.md).
+
 ## How it works
 
 ```mermaid
