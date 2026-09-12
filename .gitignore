@@ -11,3 +11,8 @@ build/
 dist/
 runs/
 artifacts/
+wandb/
+logs/
+*.ckpt
+*.npz
+*.npy

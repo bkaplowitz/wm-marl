@@ -74,12 +74,6 @@ def _load_configs(extra_config_path=None):
     return configs
 
 
-def _worker_seed(seed: int, index: int) -> int:
-    """Match the pinned DreamerV3 environment-worker seed mapping."""
-
-    return hash((int(seed), int(index))) % (2**32 - 1)
-
-
 def _validate_script(script: str, num_agents: int) -> None:
     if num_agents < 2:
         raise ValueError("MA-JEPA requires at least two agents")
@@ -93,14 +87,15 @@ def main(argv=None, extra_config_path=None):
     [elements.print(line) for line in MARLCore.banner]
 
     configs = _load_configs(extra_config_path)
-    parsed, other = elements.Flags(
-        configs=["defaults", "smac_vector", "ma_jepa"]
-    ).parse_known(argv)
+    parsed, other = elements.Flags(configs=["reference"]).parse_known(argv)
     config = _resolve_config_profiles(configs, parsed.configs)
     config = elements.Flags(config).parse(other)
-    config = config.update(
-        logdir=(config.logdir.format(timestamp=elements.timestamp()))
-    )
+    return run(config)
+
+
+def run(config):
+    """Run an already resolved configuration (also used by checkpoint evaluation)."""
+    config = config.update(logdir=config.logdir.format(timestamp=elements.timestamp()))
 
     if "JOB_COMPLETION_INDEX" in os.environ:
         config = config.update(replica=int(os.environ["JOB_COMPLETION_INDEX"]))
@@ -178,10 +173,6 @@ def make_agent(config):
     }
     act_space = {k: v for k, v in env.act_space.items() if k != "reset"}
     env.close()
-    if config.random_agent:
-        return embodied.RandomAgent(obs_space, act_space)
-    cpdir = elements.Path(config.logdir)
-    cpdir = cpdir.parent if config.replicas > 1 else cpdir
     return Algorithm(
         obs_space,
         act_space,
@@ -216,18 +207,9 @@ def make_logger(config):
             )
         elif output == "tensorboard":
             outputs.append(elements.logger.TensorBoardOutput(logdir, config.logger.fps))
-        elif output == "expa":
-            exp = logdir.split("/")[-4]
-            run = "/".join(logdir.split("/")[-3:])
-            proj = "embodied" if logdir.startswith(("/cns/", "gs://")) else "debug"
-            outputs.append(
-                elements.logger.ExpaOutput(
-                    exp, run, proj, config.logger.user, config.flat
-                )
-            )
         elif output == "wandb":
             name = os.environ.get("WANDB_NAME") or "/".join(logdir.split("/")[-4:])
-            outputs.append(elements.logger.WandBOutput(name))
+            outputs.append(elements.logger.WandBOutput(name, config=dict(config)))
         elif output == "scope":
             outputs.append(elements.logger.ScopeOutput(elements.Path(logdir)))
         else:
@@ -255,16 +237,9 @@ def make_replay(config, folder, mode="train"):
     )
 
     sampling = str(config.replay.sampling)
-    if mode == "train" and sampling == "recent":
-        from .replay import RecentReplay
-
-        if int(capacity) != 50_000:
-            raise ValueError("recent replay requires replay.size=50000")
-        return RecentReplay(
-            **kwargs,
-            recency_decay=float(config.replay.recency_decay),
-            seed=int(config.seed),
-        )
+    world_uniform_mix = float(config.replay.world_uniform_mix)
+    if world_uniform_mix and sampling != "recent_world_uniform_behavior":
+        raise ValueError("world_uniform_mix requires dual-view replay")
     if mode == "train" and sampling == "recent_world_uniform_behavior":
         from .replay import DualViewReplay
 
@@ -273,6 +248,8 @@ def make_replay(config, folder, mode="train"):
             optimized_length=int(consec * batlen),
             recency_decay=float(config.replay.recency_decay),
             seed=int(config.seed),
+            isolate_report_rng=bool(config.run.isolate_report_rng),
+            world_uniform_mix=world_uniform_mix,
         )
     if sampling != "uniform" and mode == "train":
         raise ValueError(f"unsupported replay sampling: {sampling!r}")
@@ -284,11 +261,7 @@ def make_env(config, index, **overrides):
     kwargs = config.env.get(suite, {})
     kwargs.update(overrides)
     if kwargs.pop("use_seed", False):
-        kwargs["seed"] = (
-            int(config.seed) + int(index)
-            if suite == "smac"
-            else _worker_seed(config.seed, index)
-        )
+        kwargs["seed"] = int(config.seed) + int(index)
     if suite == "smac":
         from .envs.smac import SMACEnv
 

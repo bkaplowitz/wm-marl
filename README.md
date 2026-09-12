@@ -1,158 +1,130 @@
 # MA-JEPA
 
-MA-JEPA is a decoder-free joint-embedding predictive world model for
-cooperative multi-agent reinforcement learning. This repository contains the
-single architecture used in the paper: stopped EMA cosine targets, a
-joint-action-conditioned CTDE world model, all-legal action discrimination, a
-centralized critic, and shared decentralized actors.
+Decoder-free multi-agent world modelling with a shared decentralized actor and
+PPO on imagined team trajectories. `clean_jepa` contains the implementation used
+by the September 12, 2026 size / learning-rate runs. It is a cleanup of the deployed
+source, with explicit configurations and a reproducible evaluation entry point.
 
-## How it works
+The maintained model has a local encoder and history for each agent, a shared
+joint JEPA predictor during training, and a centralized critic. It learns future
+embeddings and aligns the resulting local posterior distributions. There is no
+observation decoder or learned teammate-belief module.
 
-```mermaid
-flowchart TB
-    ENV["Environment"] --> OBS["Local observation and legal-action mask"]
+See [architecture](docs/architecture.md), [results and next experiments](docs/research-notes.md),
+and [source provenance and validation](docs/provenance.md).
 
-    subgraph EXEC["Decentralized execution — independently for every agent"]
-        OBS --> ENC["Shared local encoder"]
-        ENC --> LAT["Local latent state"]
-        LAT --> ACTOR["Shared actor"]
-        OBS --> ACTOR
-        ACTOR --> ACTION["Greedy legal action"]
-    end
+## Install
 
-    ACTION --> ENV
-
-    subgraph TRAIN["Centralized training only"]
-        LAT --> LOCAL["Causal local world model"]
-        ACTION --> LOCAL
-        LOCAL --> IMAG["Imagined local trajectories"]
-        IMAG --> SNAPSHOT["Frozen actions, masks, and old policy logits"]
-        IMAG --> CRITIC["Centralized target critic and GAE"]
-        SNAPSHOT --> PPO["5-epoch clipped PPO"]
-        CRITIC --> PPO
-
-        LAT --> SYNC["Synchronize agents, actions, and liveness"]
-        ACTION --> SYNC
-        SYNC --> JOINT["Joint action-conditioned predictor"]
-        JOINT --> PRED["Future embeddings at h = 1, 2, 4, 8"]
-
-        FUTURE["Future local observations"] --> EMA["Stopped EMA encoder"]
-        EMA --> TARGET["Target future embeddings"]
-        PRED -.->|cosine prediction| JEPA["JEPA loss"]
-        TARGET -.-> JEPA
-
-        SYNC --> LEGAL["Replace the focal tail action with every legal alternative"]
-        LEGAL --> CFPRED["Same predictor, shared weights"]
-        CFPRED -.->|legal counterfactuals| MARGIN["Action-discrimination margin"]
-        PRED -.->|factual action| MARGIN
-        TARGET -.-> MARGIN
-
-        LAT -.-> SIGREG["SIGReg anti-collapse regularization"]
-        JEPA -.-> UPDATE["World-model update"]
-        MARGIN -.-> UPDATE
-        SIGREG -.-> UPDATE
-        PPO -.-> POLICYUPDATE["Separate actor and critic updates"]
-    end
-
-    UPDATE -.-> ENC
-    UPDATE -.-> JOINT
-    POLICYUPDATE -.-> ACTOR
-```
-
-The encoder learns predictive rather than reconstructive features: its online
-prediction must match a stopped EMA target by cosine similarity. The
-all-legal margin additionally requires the factual action to predict that
-target better than every other legal focal-agent action at the intervened
-future step, making the latent dynamics sensitive to control. SIGReg preserves
-representation diversity.
-The joint predictor and centralized critic are training-only; execution keeps
-only the shared encoder, local state, legal-action mask, and shared actor.
-Each learner batch updates the world model first, then creates one detached
-JEPA imagination. PPO reuses that immutable batch for five clipped actor and
-critic epochs. Per-agent presence and controllability mask dead-agent actions
-and terminate their value bootstrap without ending the rest of the team rollout.
-
-## Setup
+Use Python 3.11. Run these commands from the repository root:
 
 ```bash
 git submodule update --init --recursive
-uv sync --python 3.11 --extra dev --extra smac --extra cuda12
+uv sync --locked --extra dev --extra smac --extra cuda12
+export PYTHONPATH="$PWD/external/dreamerv3${PYTHONPATH:+:$PYTHONPATH}"
 export SC2PATH=/path/to/StarCraftII
 ```
 
+Install StarCraft II and the SMAC maps separately, following the
+[SMAC instructions](https://github.com/oxwhirl/smac#installation).
+`external/dreamerv3` supplies the pinned Embodied/JAX runtime; its algorithms are
+not alternative first-party learners. Keep this checkout and `PYTHONPATH` when
+using either command-line entry point. CPU development needs only `--extra dev`;
+CUDA training also requires a compatible NVIDIA driver.
+
 ## Train
 
+The reference profile is WM4096, 32 categorical variables with 64 classes each,
+actor 3 × 512, and world-model LR `1e-4`:
+
 ```bash
-uv run majepa-train \
-  --task smac_3m \
-  --num-agents 3 \
+uv run --no-sync majepa-train \
+  --configs reference \
+  --task smac_2s3z \
+  --agent.num_agents 5 \
   --seed 0 \
-  --total-env-steps 50000 \
-  --eval-interval 1000 \
-  --eval-episodes 16 \
-  --eval-envs 4
+  --logdir ./runs/reference-2s3z-seed0
 ```
 
-The command always resolves `smac_vector + ma_jepa`; there is no public
-architecture or ablation selector.
+For `3s_vs_4z`, use `--task smac_3s_vs_4z --agent.num_agents 3`.
+Use a fresh log directory for each independent run. The training runtime resumes
+an existing checkpoint when reusing a training directory.
 
-Use `--train-envs` to collect from multiple copies of the same task in parallel:
+| Profile | Local deterministic width | Local and joint WM LR |
+| --- | ---: | ---: |
+| `reference` | 4096 | `1e-4` |
+| `wm_lr15e5` | 4096 | `1.5e-4` |
+| `wm2048` | 2048 | `1e-4` |
+| `wm2048_lr15e5` | 2048 | `1.5e-4` |
+
+These profiles retain the same 64 latent classes, actor, critic, loss weights,
+and data budget. They are separate experiments; smaller width or higher LR is
+not automatically promoted into the reference profile.
+
+The default budget is 50,000 driver records including a 5,000-record replay
+prefill, with one collection environment. Curve evaluations use 32 greedy
+held-out episodes every 5,000 records. The driver clock includes reset records;
+log `counters/environment_steps` as well when comparing sample budgets.
+A 200k experiment uses `--run.steps 200000`; prefill remains explicitly 5k.
+
+Configuration flags use dotted names from
+[src/majepa/configs.yaml](src/majepa/configs.yaml). For example:
 
 ```bash
-uv run majepa-train \
-  --task smac_3m \
-  --num-agents 3 \
-  --train-envs 16 \
-  --total-env-steps 50000
+uv run --no-sync majepa-train --configs reference \
+  --agent.opt.lr 0.0001 \
+  --agent.marl.ctde.opt.lr 0.00015 \
+  --agent.ppo.actor_lr 0.00003 \
+  --agent.ppo.critic_lr 0.00003 \
+  --logdir ./runs/separate-world-rates-seed0
 ```
 
-Each copy runs in its own process with seed `seed + worker_index`. Policy
-inference is batched, while recurrent state, resets, and replay sequences stay
-separate for each environment. All workers feed one learner and replay store.
-`--train-envs` defaults to 16; `--eval-envs` controls evaluation separately.
+Local JSON logs are enabled by default. For W&B, authenticate using `wandb login`,
+set `WANDB_ENTITY`, `WANDB_PROJECT`, and optionally `WANDB_RUN_GROUP`, then add
+`--logger.outputs jsonl wandb`. The resolved configuration is saved locally and
+sent to W&B. Use distinct `WANDB_RUN_ID` / `WANDB_NAME` values for each training
+and evaluation process, or leave them unset.
 
-The total budget is shared across training environments, so 16 workers split
-50,000 steps rather than each collecting 50,000. The environment clock
-includes reset observations. Collection stops exactly at the budget: when the
-last batch is uneven, only the required workers take another step. For example,
-43 records across three environments split as 15, 14, and 14. More workers need
-more CPU and memory.
-
-Replay prefill is 10% of the total collection budget, rounded up and included in
-that budget. A 50,000-record run collects at least 5,000 records before any
-learner updates. Replay must also contain enough complete sequences to form
-training batches, and PPO retains its separate configured start step. Prefill
-does not accumulate a backlog of learner updates.
-
-## Evaluate
+## Evaluate the final checkpoint
 
 ```bash
-uv run majepa-evaluate runs/majepa/smac_3m/seed_0/<run> \
-  --episodes 128 \
-  --envs 4 \
-  --eval-seed 100000
+uv run --no-sync majepa-evaluate ./runs/reference-2s3z-seed0
 ```
 
-## Layout
+This uses the saved training configuration and the latest complete checkpoint,
+100 greedy episodes, up to four evaluation environments, and worker seed offset
+100,000. Results go to `final100/evaluation_summary.json` and
+`final100/evaluation_episodes.jsonl`, plus the configured loggers. Existing output
+is not overwritten. Use `--output-dir` for a separate evaluation.
+
+The final checkpoint is evaluated rather than selecting the best training-curve
+point. `--episodes`, `--envs`, and `--seed-offset` can override the protocol.
+
+## Code layout
 
 ```text
-src/majepa/agent.py       local world model and decentralized actor
-src/majepa/marl/          synchronized CTDE training
-src/majepa/models/        predictive models and centralized critic
-src/majepa/training/      objectives and optimization
-src/majepa/envs/          environment adapters
-src/majepa/configs.yaml   locked architecture and runtime defaults
-tests/                    focused correctness tests
+src/majepa/main.py          configuration, environments, logging, entry points
+src/majepa/agent.py         shared local modules and state
+src/majepa/marl/            team axes, joint simulator, centralized critic
+src/majepa/models/          encoder, JEPA predictors, heads, latent distributions
+src/majepa/world_model/     causal local transformer and posterior
+src/majepa/training/        representation, self-fed learning, PPO, optimizers
+src/majepa/replay.py        independent world-model and behavior replay views
+src/majepa/train.py         collection, learner scheduling, checkpoints
+src/majepa/evaluation.py    training-curve and final evaluation protocols
+tests/                     focused algorithm and runtime correctness checks
 ```
+
+Standard model, PPO, availability, and outcome metrics remain available. One-off
+experiment launchers, remote queues, archived treatments, and standalone diagnostic
+programs are outside this branch. Existing experiment data remains in W&B and the
+original checkouts.
 
 ## Check
 
 ```bash
-uv run pytest -q
-uv run ruff check .
-uv run ruff format --check .
+uv run --no-sync pytest -q
+uv run --no-sync ruff check src tests
+uv run --no-sync ruff format --check src tests
 ```
-
-## License
 
 MIT. See [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).

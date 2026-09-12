@@ -1,17 +1,5 @@
-"""Maintained MA-JEPA world-model boundary."""
+"""Strict-causal local Transformer dynamics and their replay representation."""
 
-from .backend import WorldModelBackend
-from .transformer import ParallelTransformerDynamics, parallel_backend
+from .transformer import ParallelTransformerDynamics, feature_tensor, replay_entries
 
-
-def world_model_backend() -> WorldModelBackend:
-    """Return canonical MA-JEPA's causal Transformer backend."""
-
-    return parallel_backend()
-
-
-__all__ = [
-    "ParallelTransformerDynamics",
-    "WorldModelBackend",
-    "world_model_backend",
-]
+__all__ = ["ParallelTransformerDynamics", "feature_tensor", "replay_entries"]

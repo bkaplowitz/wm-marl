@@ -13,7 +13,8 @@ from .training.optimization import OptimizationMixin
 from .training.policy import PolicyMixin
 from .training.replay import ReplayMixin
 from .training.reporting import ReportingMixin
-from .world_model import world_model_backend
+from .models.encoder import Encoder
+from .world_model import ParallelTransformerDynamics, feature_tensor
 
 
 class Agent(
@@ -35,63 +36,45 @@ class Agent(
         self.obs_space = obs_space
         self.act_space = act_space
         self.config = config
-        self.replay_sampling = str(getattr(config, "replay_sampling", "uniform"))
-        self.two_branch_replay = self.replay_sampling == "recent_world_uniform_behavior"
+        if str(config.replay_sampling) != "recent_world_uniform_behavior":
+            raise ValueError("MA-JEPA requires independent world and behavior replay")
         self.ppo_start_step = int(getattr(config, "ppo_start_step", 0))
         if self.ppo_start_step < 0:
             raise ValueError("ppo_start_step must be nonnegative")
-        if not getattr(self, "ctde_enabled", False):
-            raise ValueError("MA-JEPA PPO requires multi-agent CTDE")
-        if getattr(self, "ctde_mask_calibration", False):
-            raise ValueError(
-                "MA-JEPA PPO requires fixed categorical support during each "
-                "proximal batch; probabilistic mask calibration is unsupported"
-            )
-        if not self.two_branch_replay:
-            raise ValueError(
-                "MA-JEPA PPO requires separated world and behavior replay views"
-            )
         if int(config.ppo.epochs) < 1:
             raise ValueError("PPO requires at least one optimization epoch")
+        self.ppo_actor_epochs = int(config.ppo.get("actor_epochs", 0)) or int(
+            config.ppo.epochs
+        )
+        self.ppo_critic_epochs = int(config.ppo.get("critic_epochs", 0)) or int(
+            config.ppo.epochs
+        )
+        if min(self.ppo_actor_epochs, self.ppo_critic_epochs) < 1:
+            raise ValueError("Actor and critic epoch counts must be positive")
         if not 0.0 < float(config.ppo.clip_epsilon) < 1.0:
             raise ValueError("PPO clip_epsilon must be in (0, 1)")
         if float(config.ppo.entropy_coefficient) < 0.0:
             raise ValueError("PPO entropy_coefficient must be nonnegative")
-        entropy_schedule = config.ppo.entropy_schedule
-        if float(entropy_schedule.initial) < 0.0:
-            raise ValueError("PPO initial entropy coefficient must be nonnegative")
-        if float(entropy_schedule.final) < 0.0:
-            raise ValueError("PPO final entropy coefficient must be nonnegative")
-        if int(entropy_schedule.decay_steps) < 1:
-            raise ValueError("PPO entropy decay_steps must be positive")
-        if str(entropy_schedule.schedule) not in {"linear", "cosine"}:
-            raise ValueError("PPO entropy schedule must be 'linear' or 'cosine'")
-        self.world_model = world_model_backend()
-        self.objective = "embedding"
-        self.embedding_target = "ema"
-        self.embedding_loss = "cosine"
-        self.posterior_jepa = True
-        self.dynamics_jepa = True
-        self.sigreg = True
-        self.dec = None
-
+        if float(config.ppo.replay_value_scale) < 0.0:
+            raise ValueError("PPO replay_value_scale must be nonnegative")
+        if not 0.0 <= float(config.ppo.replay_value_lam) <= 1.0:
+            raise ValueError("PPO replay_value_lam must be in [0, 1]")
+        if float(config.ppo.replay_value_scale) and int(config.imag_last) == 1:
+            raise ValueError(
+                "replay value learning requires at least two imagination roots"
+            )
         enc_space = {
             key: value
             for key, value in self.obs_space.items()
             if key not in MODEL_EXCLUDED_FIELDS
         }
-        self.enc = self.world_model.encoder("simple")(
-            enc_space, **config.enc.simple, name="enc"
-        )
-        self.spatial_jepa = bool(self.enc.imgkeys)
+        self.enc = Encoder(enc_space, **config.enc.simple, name="enc")
         self.enc_output_dim = self.enc.calculate_encoder_output_dim()
-        self.target_enc = self.world_model.encoder("simple")(
-            enc_space, **config.enc.simple, name="target_enc"
-        )
+        self.target_enc = Encoder(enc_space, **config.enc.simple, name="target_enc")
         self.slowenc = embodied.jax.SlowModel(
             self.target_enc, source=self.enc, **config.target_encoder
         )
-        self.dyn = self.world_model.dynamics_model("parallel_transformer")(
+        self.dyn = ParallelTransformerDynamics(
             self.act_space,
             self.enc_output_dim,
             **config.dyn.parallel_transformer,
@@ -106,7 +89,7 @@ class Agent(
                 f"context * layers ({required_burnin}), got "
                 f"{config.replay_context}"
             )
-        self.feat2tensor = self.world_model.feature_tensor
+        self.feat2tensor = feature_tensor
         scalar = elements.Space(np.float32, ())
         binary = elements.Space(bool, (), 0, 2)
         self.rew = embodied.jax.MLPHead(scalar, **config.rewhead, name="rew")
@@ -124,7 +107,6 @@ class Agent(
         else:
             self.actmask = None
         self.val, self.slowval = self._make_value_models(scalar, config)
-
         additional_modules = self.additional_modules()
         self.modules = [
             self.dyn,
@@ -137,43 +119,13 @@ class Agent(
         if self.actmask is not None:
             self.modules.append(self.actmask)
         self.modules.extend(additional_modules)
-        ctde_modules = tuple(getattr(self, "ctde_modules", ()))
-        ctde_actor_modules = tuple(getattr(self, "ctde_actor_modules", ()))
-        ctde_module_ids = {id(module) for module in ctde_modules}
-        ctde_actor_module_ids = {id(module) for module in ctde_actor_modules}
-        additional_module_ids = {id(module) for module in additional_modules}
-        if not ctde_module_ids.issubset(additional_module_ids):
-            raise ValueError("CTDE optimizer modules must be additional modules")
-        if not ctde_actor_module_ids.issubset(additional_module_ids):
-            raise ValueError("CTDE actor modules must be additional modules")
-        if ctde_module_ids.intersection(ctde_actor_module_ids):
-            raise ValueError("CTDE world and actor modules must be disjoint")
-        world_modules = [self.dyn, self.enc, self.rew, self.con]
-        if self.actmask is not None:
-            world_modules.append(self.actmask)
-        world_modules.extend(
-            module
-            for module in additional_modules
-            if id(module) not in ctde_module_ids | ctde_actor_module_ids
+        self.opt = self._build_ctde_optimizer(
+            self.modules,
+            [self.dyn, self.enc, self.rew, self.con, self.actmask],
+            list(self.ctde_modules),
+            [self.pol],
+            [self.val],
         )
-
-        if ctde_modules:
-            self.opt = self._build_ctde_optimizer(
-                self.modules,
-                world_modules,
-                list(ctde_modules),
-                [self.pol, *ctde_actor_modules],
-                [self.val],
-            )
-        else:
-            # Preserve the confirmed competitive local construction and optimizer
-            # path exactly for singleton and parameter-shared multi-agent runs.
-            self.opt = embodied.jax.Optimizer(
-                self.modules,
-                self._build_optimizer(config),
-                summary_depth=1,
-                name="opt",
-            )
         self.scales = config.loss_scales.copy()
         if self.actmask is not None:
             self.scales["action_mask"] = float(
@@ -199,7 +151,7 @@ class Agent(
             "consec": elements.Space(np.int32),
             "stepid": elements.Space(np.uint8, 20),
         }
-        if self.ppo_start_step or bool(self.config.ppo.entropy_schedule.enabled):
+        if self.ppo_start_step:
             # Runtime-only control input. It is injected after replay sampling,
             # so it never becomes replay content or changes sampled sequences.
             spaces["_environment_step"] = elements.Space(np.int32)
@@ -236,25 +188,6 @@ class Agent(
 
     def report_rows(self, batch_size):
         return min(batch_size, 6)
-
-    def _make_value_models(self, scalar, config):
-        """Construct the maintained fast and slow value models."""
-
-        value = embodied.jax.MLPHead(scalar, **config.value, name="val")
-        slowvalue = embodied.jax.SlowModel(
-            embodied.jax.MLPHead(scalar, **config.value, name="slowval"),
-            source=value,
-            **config.slowvalue,
-        )
-        return value, slowvalue
-
-    def critic(self, features, bdims, *, slow=False, context=None):
-        """Evaluate the maintained value model."""
-        value_head = self.slowval if slow else self.val
-        inputs = self.feat2tensor(features) if isinstance(features, dict) else features
-        if context is not None:
-            inputs = jnp.concatenate([inputs, context], axis=-1)
-        return value_head(inputs, bdims)
 
     def _action_mask_key(self):
         if "action_mask" not in self.obs_space:

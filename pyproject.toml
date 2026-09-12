@@ -4,25 +4,25 @@ requires = ["setuptools>=69", "wheel"]
 
 [project]
 dependencies = [
-  "chex",
+  "chex==0.1.90",
   "einops",
-  "elements>=3.19.1",
-  "granular>=0.20.3",
+  "elements==3.22.0",
+  "granular==0.23.1",
   "jax==0.4.36",
-  "ninjax>=3.5.1",
-  "numpy<2",
-  "optax",
-  "portal>=3.5.0",
+  "ninjax==3.6.3",
+  "numpy==1.26.4",
+  "optax==0.2.5",
+  "portal==3.8.1",
   "ruamel.yaml",
-  "scope>=0.4.4",
-  "wandb>=0.18",
+  "scope==0.7.1",
+  "wandb==0.25.0",
 ]
 description = "MA-JEPA: decoder-free JEPA world models for multi-agent RL."
 license = "MIT"
 name = "majepa"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
-version = "0.1.0"
+version = "0.2.0"
 
 [project.optional-dependencies]
 cuda12 = ["jax[cuda12]==0.4.36"]
@@ -33,6 +33,7 @@ dev = [
   "ruff==0.15.18",
 ]
 smac = [
+  "protobuf==3.20.3",
   "s2clientprotocol==5.0.14.93333.0",
   "smac @ git+https://github.com/oxwhirl/smac.git@d6aab33f76abc3849c50463a8592a84f59a5ef84",
 ]
@@ -49,7 +50,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = ["src", "external/dreamerv3"]
 
 [tool.basedpyright]
 exclude = [".venv"]

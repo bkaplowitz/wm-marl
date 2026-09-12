@@ -10,36 +10,6 @@ f32 = jnp.float32
 sg = jax.lax.stop_gradient
 
 
-def scheduled_entropy_coefficient(
-    environment_step,
-    *,
-    initial,
-    final,
-    decay_steps,
-    schedule="cosine",
-):
-    """Anneal the PPO entropy bonus against total environment transitions."""
-
-    initial = float(initial)
-    final = float(final)
-    decay_steps = int(decay_steps)
-    schedule = str(schedule)
-    if initial < 0.0 or final < 0.0:
-        raise ValueError("entropy coefficients must be nonnegative")
-    if decay_steps < 1:
-        raise ValueError("entropy decay_steps must be positive")
-    progress = jnp.clip(
-        jnp.asarray(environment_step, f32) / float(decay_steps), 0.0, 1.0
-    )
-    if schedule == "linear":
-        weight = 1.0 - progress
-    elif schedule == "cosine":
-        weight = 0.5 * (1.0 + jnp.cos(jnp.pi * progress))
-    else:
-        raise ValueError("entropy schedule must be 'linear' or 'cosine'")
-    return jnp.asarray(final, f32) + (initial - final) * weight
-
-
 def _same_shape(name, *values):
     shapes = {tuple(jnp.shape(value)) for value in values}
     if len(shapes) != 1:
@@ -72,26 +42,35 @@ def generalized_advantage_estimate(
     target_value,
     state_valid,
     *,
+    decision_state_valid=None,
     lam=0.95,
 ):
     """Build frozen GAE targets from one JEPA imagination.
 
     Inputs are state-aligned ``[B, H + 1]`` arrays. ``reward[:, t + 1]`` and
     ``continuation[:, t + 1]`` describe the transition leaving decision state
-    ``t``. Per-agent death is represented by ``state_valid`` and therefore
-    cuts bootstrapping even when the team episode itself continues.
+    ``t``. ``state_valid`` describes states with a defined value/return. In
+    cooperative tasks this includes dead agents while their team continues.
+    Optional ``decision_state_valid`` has the same state-aligned shape and
+    additionally masks actor decisions, without cutting their earlier team
+    return when an individual agent dies. Episode termination is represented
+    by ``continuation``; absent/padded states are masked by ``state_valid``.
     """
 
     reward = jnp.asarray(reward, f32)
     continuation = jnp.asarray(continuation, f32)
     target_value = jnp.asarray(target_value, f32)
     state_valid = jnp.asarray(state_valid, bool)
+    if decision_state_valid is None:
+        decision_state_valid = state_valid
+    decision_state_valid = jnp.asarray(decision_state_valid, bool)
     _same_shape(
-        "PPO reward, continuation, target value, and state validity",
+        "PPO reward, continuation, target value, and state/decision validity",
         reward,
         continuation,
         target_value,
         state_valid,
+        decision_state_valid,
     )
     if reward.ndim != 2 or reward.shape[1] < 2:
         raise ValueError(
@@ -102,7 +81,8 @@ def generalized_advantage_estimate(
     if not 0.0 <= lam <= 1.0:
         raise ValueError("PPO lambda must be in [0, 1]")
 
-    decision_valid = state_valid[:, :-1]
+    value_valid = state_valid[:, :-1]
+    decision_valid = value_valid & decision_state_valid[:, :-1]
     next_valid = state_valid[:, 1:]
     discount = continuation[:, 1:] * next_valid.astype(f32)
     delta = reward[:, 1:] + discount * target_value[:, 1:] - target_value[:, :-1]
@@ -119,7 +99,7 @@ def generalized_advantage_estimate(
         (
             delta[:, ::-1].T,
             discount[:, ::-1].T,
-            decision_valid[:, ::-1].T,
+            value_valid[:, ::-1].T,
         ),
     )
     advantage = reversed_advantage[::-1].T
@@ -135,10 +115,12 @@ def generalized_advantage_estimate(
             ],
             axis=1,
         )
-    trajectory_weight *= decision_valid.astype(f32)
+    # The same state occupancy weights also train the critic on dead-agent
+    # states. Actor losses apply decision_valid separately.
+    trajectory_weight *= value_valid.astype(f32)
     return (
         sg(returns),
-        sg(advantage),
+        sg(jnp.where(decision_valid, advantage, 0.0)),
         sg(decision_valid),
         sg(trajectory_weight),
     )

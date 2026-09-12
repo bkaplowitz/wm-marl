@@ -786,7 +786,7 @@ wheels = [
 
 [[package]]
 name = "majepa"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "chex" },
@@ -814,31 +814,33 @@ dev = [
     { name = "ruff" },
 ]
 smac = [
+    { name = "protobuf" },
     { name = "s2clientprotocol" },
     { name = "smac" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "chex" },
+    { name = "chex", specifier = "==0.1.90" },
     { name = "einops" },
-    { name = "elements", specifier = ">=3.19.1" },
-    { name = "granular", specifier = ">=0.20.3" },
+    { name = "elements", specifier = "==3.22.0" },
+    { name = "granular", specifier = "==0.23.1" },
     { name = "jax", specifier = "==0.4.36" },
     { name = "jax", extras = ["cuda12"], marker = "extra == 'cuda12'", specifier = "==0.4.36" },
     { name = "jaxlib", marker = "extra == 'dev'", specifier = "==0.4.36" },
-    { name = "ninjax", specifier = ">=3.5.1" },
-    { name = "numpy", specifier = "<2" },
-    { name = "optax" },
-    { name = "portal", specifier = ">=3.5.0" },
+    { name = "ninjax", specifier = "==3.6.3" },
+    { name = "numpy", specifier = "==1.26.4" },
+    { name = "optax", specifier = "==0.2.5" },
+    { name = "portal", specifier = "==3.8.1" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.6" },
+    { name = "protobuf", marker = "extra == 'smac'", specifier = "==3.20.3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "ruamel-yaml" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.18" },
     { name = "s2clientprotocol", marker = "extra == 'smac'", specifier = "==5.0.14.93333.0" },
-    { name = "scope", specifier = ">=0.4.4" },
+    { name = "scope", specifier = "==0.7.1" },
     { name = "smac", marker = "extra == 'smac'", git = "https://github.com/oxwhirl/smac.git?rev=d6aab33f76abc3849c50463a8592a84f59a5ef84" },
-    { name = "wandb", specifier = ">=0.18" },
+    { name = "wandb", specifier = "==0.25.0" },
 ]
 provides-extras = ["cuda12", "dev", "smac"]
 

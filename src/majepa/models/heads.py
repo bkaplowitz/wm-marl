@@ -1,4 +1,4 @@
-"""MA-JEPA output heads with effective categorical uniform mixing."""
+"""Categorical policy heads, legal-action conditioning, and availability loss."""
 
 from typing import Callable
 
@@ -12,8 +12,6 @@ import numpy as np
 class Head(upstream.Head):
     """Pinned DreamerV3 head with categorical ``unimix`` wired through."""
 
-    minstd: float = 1.0
-    maxstd: float = 1.0
     unimix: float = 0.0
     bins: int = 255
     outscale: float = 1.0
@@ -25,12 +23,6 @@ class Head(upstream.Head):
         shape = (*self.space.shape, classes[0].item())
         logits = self.sub("logits", upstream.nets.Linear, shape, **self.kw)(x)
         output = outs.Categorical(logits, self.unimix)
-        # Keep the pre-unimix parameterization available to additive policy
-        # treatments. Reapplying the configured unimix after a residual is the
-        # only way to preserve the actor's exploration floor without double
-        # mixing its already transformed ``output.logits``.
-        output.raw_logits = logits
-        output.unimix = float(self.unimix)
         output.minent = 0
         output.maxent = np.log(logits.shape[-1])
         return output
@@ -100,63 +92,6 @@ def apply_action_mask(distributions, mask, action_key):
     )
     mask = jnp.where(mask.any(axis=-1, keepdims=True), mask, fallback)
     masked = outs.Categorical(jnp.where(mask, distribution.logits, -1e30))
-    if hasattr(distribution, "raw_logits"):
-        masked.raw_logits = distribution.raw_logits
-    for name in ("minent", "maxent"):
-        if hasattr(distribution, name):
-            setattr(masked, name, getattr(distribution, name))
-    return dict(distributions, **{action_key: masked})
-
-
-def apply_legal_unimix(distributions, action_key, amount):
-    """Mix a collection policy uniformly over its currently legal actions."""
-
-    amount = float(amount)
-    if amount <= 0.0:
-        return distributions
-    distribution = distributions[action_key]
-    legal = distribution.logits > -1e20
-    raw_logits = getattr(distribution, "raw_logits", distribution.logits)
-    policy = jax.nn.softmax(jnp.where(legal, raw_logits, -1e30), axis=-1)
-    uniform = legal / legal.sum(axis=-1, keepdims=True)
-    probabilities = (1.0 - amount) * policy + amount * uniform
-    logits = jnp.log(jnp.where(legal, probabilities, 1.0))
-    mixed = outs.Categorical(jnp.where(legal, logits, -1e30))
-    for name in ("minent", "maxent"):
-        if hasattr(distribution, name):
-            setattr(mixed, name, getattr(distribution, name))
-    return dict(distributions, **{action_key: mixed})
-
-
-def apply_predicted_action_mask(
-    distributions,
-    availability_logits,
-    action_key,
-    *,
-    probability_floor=1e-6,
-):
-    """Use uncertain future availability without creating hard support changes.
-
-    Environment-provided masks can safely remove actions because collection and
-    evaluation observe the same mask. During imagination, availability is itself
-    predicted. A hard threshold can therefore make an action sampled during the
-    rollout have zero probability when the policy is evaluated again for the
-    actor loss. Weighting by a floored availability probability keeps that loss
-    finite while still discouraging actions predicted to be unavailable.
-    """
-
-    distribution = distributions[action_key]
-    if not isinstance(distribution, outs.Categorical):
-        raise TypeError("action masks require a categorical policy output")
-    availability_logits = jnp.asarray(availability_logits)
-    if availability_logits.shape != distribution.logits.shape:
-        raise ValueError(
-            f"action availability shape {availability_logits.shape} does not "
-            f"match logits {distribution.logits.shape}"
-        )
-    availability = jax.nn.sigmoid(availability_logits)
-    availability = jnp.clip(availability, probability_floor, 1.0)
-    masked = outs.Categorical(distribution.logits + jnp.log(availability))
     for name in ("minent", "maxent"):
         if hasattr(distribution, name):
             setattr(masked, name, getattr(distribution, name))
@@ -231,8 +166,6 @@ def balanced_binary_event_loss(per_event, target):
 __all__ = [
     "MLPHead",
     "apply_action_mask",
-    "apply_legal_unimix",
-    "apply_predicted_action_mask",
     "balanced_binary_event_loss",
     "binary_vector_loss",
 ]

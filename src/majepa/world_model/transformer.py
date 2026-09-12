@@ -5,7 +5,6 @@ imagination use the same Transformer parameters through a bounded KV cache.
 """
 
 import math
-from types import MappingProxyType
 
 import elements
 import embodied.jax.nets as nn
@@ -14,16 +13,14 @@ import jax.numpy as jnp
 import ninjax as nj
 import numpy as np
 
-from ..models import visual
 from ..models.latent import CategoricalLatent
-from .backend import WorldModelBackend
 
 
 f32 = jnp.float32
 sg = jax.lax.stop_gradient
 
 
-def _feature_tensor(features):
+def feature_tensor(features):
     return jnp.concatenate(
         [
             nn.cast(features["deter"]),
@@ -50,7 +47,7 @@ class CausalTransformer(nj.Module):
     def __init__(self, pair_dim, **kw):
         self.pair_dim = pair_dim
         self.kw = kw
-        if self.condition_mode not in {"add", "adaln"}:
+        if self.condition_mode != "add":
             raise ValueError(
                 "causal Transformer condition_mode must be 'add' or 'adaln'"
             )
@@ -121,25 +118,12 @@ class CausalTransformer(nj.Module):
         value_snapshots = []
         for index in range(self.layers):
             with nj.scope(f"layer{index}"):
-                modulation = None
-                if condition is not None and self.condition_mode == "add":
+                if condition is not None:
                     x = x + self.sub(
                         "condition", nn.Linear, self.units, winit=self.winit
                     )(condition)
-                elif condition is not None:
-                    modulation = self.sub(
-                        "condition_adaln",
-                        nn.Linear,
-                        6 * self.units,
-                        winit=self.winit,
-                        outscale=0.0,
-                    )(nn.act(self.act)(condition))
-                    modulation = jnp.split(modulation, 6, axis=-1)
                 residual = x
                 normed = self.sub("attention_norm", nn.Norm, self.norm)(x)
-                if modulation is not None:
-                    shift, scale, attention_gate = modulation[:3]
-                    normed = normed * (1 + scale) + shift
                 qkv = self.sub("qkv", nn.Linear, 3 * self.units, winit=self.winit)(
                     normed
                 )
@@ -161,22 +145,15 @@ class CausalTransformer(nj.Module):
                 attended = self.sub(
                     "attention_out", nn.Linear, self.units, winit=self.winit
                 )(attended)
-                if modulation is not None:
-                    attended = attention_gate * attended
                 x = residual + attended
 
                 residual = x
                 x = self.sub("ffn_norm", nn.Norm, self.norm)(x)
-                if modulation is not None:
-                    shift, scale, ffn_gate = modulation[3:]
-                    x = x * (1 + scale) + shift
                 x = self.sub(
                     "ffn_in", nn.Linear, self.units * self.ffup, winit=self.winit
                 )(x)
                 x = nn.act(self.act)(x)
                 x = self.sub("ffn_out", nn.Linear, self.units, winit=self.winit)(x)
-                if modulation is not None:
-                    x = ffn_gate * x
                 x = residual + x
 
                 key_window = key_bank[:, snapshot_indices]
@@ -234,25 +211,12 @@ class CausalTransformer(nj.Module):
         next_values = []
         for index in range(self.layers):
             with nj.scope(f"layer{index}"):
-                modulation = None
-                if condition is not None and self.condition_mode == "add":
+                if condition is not None:
                     x = x + self.sub(
                         "condition", nn.Linear, self.units, winit=self.winit
                     )(condition)
-                elif condition is not None:
-                    modulation = self.sub(
-                        "condition_adaln",
-                        nn.Linear,
-                        6 * self.units,
-                        winit=self.winit,
-                        outscale=0.0,
-                    )(nn.act(self.act)(condition))
-                    modulation = jnp.split(modulation, 6, axis=-1)
                 residual = x
                 normed = self.sub("attention_norm", nn.Norm, self.norm)(x)
-                if modulation is not None:
-                    shift, scale, attention_gate = modulation[:3]
-                    normed = normed * (1 + scale) + shift
                 qkv = self.sub("qkv", nn.Linear, 3 * self.units, winit=self.winit)(
                     normed
                 )
@@ -279,22 +243,15 @@ class CausalTransformer(nj.Module):
                 attended = self.sub(
                     "attention_out", nn.Linear, self.units, winit=self.winit
                 )(attended)
-                if modulation is not None:
-                    attended = attention_gate * attended
                 x = residual + attended
 
                 residual = x
                 x = self.sub("ffn_norm", nn.Norm, self.norm)(x)
-                if modulation is not None:
-                    shift, scale, ffn_gate = modulation[3:]
-                    x = x * (1 + scale) + shift
                 x = self.sub(
                     "ffn_in", nn.Linear, self.units * self.ffup, winit=self.winit
                 )(x)
                 x = nn.act(self.act)(x)
                 x = self.sub("ffn_out", nn.Linear, self.units, winit=self.winit)(x)
-                if modulation is not None:
-                    x = ffn_gate * x
                 x = residual + x
                 next_keys.append(keys)
                 next_values.append(values)
@@ -326,9 +283,6 @@ class ParallelTransformerDynamics(CategoricalLatent):
     outscale: float = 1.0
     imglayers: int = 2
     obslayers: int = 1
-    dynlayers: int = 1
-    absolute: bool = False
-    blocks: int = 8
     free_nats: float = 1.0
     model: int = 512
     layers: int = 2
@@ -339,10 +293,8 @@ class ParallelTransformerDynamics(CategoricalLatent):
 
     def __init__(self, act_space, enc_output, **kw):
         super().__init__(act_space, enc_output, **kw)
-        if self.posterior_context not in {"observation", "history"}:
-            raise ValueError(
-                "posterior_context must be either 'observation' or 'history'"
-            )
+        if self.posterior_context != "history":
+            raise ValueError("The local posterior requires each agent's history")
         self.action_dim = sum(
             _action_feature_dim(space) for space in act_space.values()
         )
@@ -438,51 +390,26 @@ class ParallelTransformerDynamics(CategoricalLatent):
         if single:
             return self._observe_single(carry, tokens, action, reset, training, active)
 
-        if self.posterior_context == "history":
-
-            def advance(state, inputs):
-                current_tokens, current_action, current_reset, current_active = inputs
-                state, entry, feat, posterior = self._observe_single(
-                    state,
-                    current_tokens,
-                    current_action,
-                    current_reset,
-                    training,
-                    current_active,
-                )
-                return state, (entry, feat, posterior)
-
-            if active is None:
-                active = jnp.ones_like(reset, bool)
-            carry, (entries, feat, posterior) = nj.scan(
-                advance,
-                carry,
-                (tokens, action, reset, active),
-                axis=1,
+        def advance(state, inputs):
+            current_tokens, current_action, current_reset, current_active = inputs
+            state, entry, feat, posterior = self._observe_single(
+                state,
+                current_tokens,
+                current_action,
+                current_reset,
+                training,
+                current_active,
             )
-            return carry, entries, feat, posterior
+            return state, (entry, feat, posterior)
 
-        posterior = self._posterior(tokens)
-        stoch = nn.cast(self._dist(posterior).sample(seed=nj.seed()))
-        previous_stoch = jnp.concatenate(
-            [carry["stoch"][:, None], stoch[:, :-1]], axis=1
-        )
-        pair = self._temporal_pair(previous_stoch, action, training=training)
         if active is None:
             active = jnp.ones_like(reset, bool)
-        cache, deter, snapshots = self._temporal().sequence(
-            self._cache(carry), pair, reset
+        carry, (entries, feat, posterior) = nj.scan(
+            advance,
+            carry,
+            (tokens, action, reset, active),
+            axis=1,
         )
-        feat = nn.cast({"deter": deter, "stoch": stoch, "logit": posterior})
-        entries = {
-            "deter": f32(deter),
-            "stoch": f32(stoch),
-            "pair": f32(pair),
-            "reset": reset,
-            "active": active,
-            **snapshots,
-        }
-        carry = nn.cast({"deter": deter[:, -1], "stoch": stoch[:, -1], **cache})
         return carry, entries, feat, posterior
 
     def _observe_single(self, carry, tokens, action, reset, training, active=None):
@@ -741,19 +668,5 @@ def _where_active(active, current, previous):
     return jax.tree.map(select, current, previous)
 
 
-def _replay_entries(entries):
+def replay_entries(entries):
     return {key: entries[key] for key in ("stoch", "pair", "reset", "position")}
-
-
-_PARALLEL_BACKEND = WorldModelBackend(
-    name="parallel_transformer",
-    encoders=MappingProxyType({"simple": visual.Encoder}),
-    decoders=MappingProxyType({}),
-    dynamics=MappingProxyType({"parallel_transformer": ParallelTransformerDynamics}),
-    feature_tensor=_feature_tensor,
-    replay_entries=_replay_entries,
-)
-
-
-def parallel_backend():
-    return _PARALLEL_BACKEND
