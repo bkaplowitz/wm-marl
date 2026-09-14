@@ -266,6 +266,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             parser.error("--policy-optimizer cem requires a world-model arm")
         if args.env.startswith("gymnax:"):
             parser.error("--policy-optimizer cem supports continuous actions only")
+        if args.latent_encoder is not None:
+            parser.error(
+                "--policy-optimizer cem does not support --latent-encoder: the "
+                "planner feeds raw observations to the world model"
+            )
+        if args.tokenizer == "genie":
+            parser.error(
+                "--policy-optimizer cem does not support --tokenizer genie: the "
+                "planner feeds raw observations to the world model"
+            )
+        if args.cem_samples < 1:
+            parser.error("--cem-samples must be >= 1")
+        if args.cem_topk < 2:
+            parser.error("--cem-topk must be >= 2 (ddof=1 std is NaN at topk=1)")
+        if args.cem_topk > args.cem_samples:
+            parser.error("--cem-topk must be <= --cem-samples")
+        if args.cem_iters < 1:
+            parser.error("--cem-iters must be >= 1")
+        if args.cem_horizon is not None and args.cem_horizon < 1:
+            parser.error("--cem-horizon must be >= 1")
+        if args.cem_receding_horizon is not None and args.cem_receding_horizon < 1:
+            parser.error("--cem-receding-horizon must be >= 1")
+        if (
+            args.cem_horizon is not None
+            and args.cem_receding_horizon is not None
+            and args.cem_receding_horizon > args.cem_horizon
+        ):
+            parser.error("--cem-receding-horizon must be <= --cem-horizon")
     return args
 
 
@@ -1196,13 +1224,19 @@ def run_one(args: argparse.Namespace, *, run_dir: Path, run_index: int) -> dict:
         cem_config: CEMConfig | None = None
         cem_plan_fn = None
         if use_cem:
-            cem_horizon = args.cem_horizon or args.imag_horizon
+            cem_horizon = (
+                args.cem_horizon if args.cem_horizon is not None else args.imag_horizon
+            )
             cem_config = CEMConfig(
                 num_samples=args.cem_samples,
                 topk=args.cem_topk,
                 num_iters=args.cem_iters,
                 horizon=cem_horizon,
-                receding_horizon=args.cem_receding_horizon or cem_horizon,
+                receding_horizon=(
+                    args.cem_receding_horizon
+                    if args.cem_receding_horizon is not None
+                    else cem_horizon
+                ),
                 init_std=1.0,
                 action_low=float(np.asarray(adapter.action_low).min()),
                 action_high=float(np.asarray(adapter.action_high).max()),

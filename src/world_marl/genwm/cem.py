@@ -33,10 +33,36 @@ class CEMConfig:
     topk: int = 30
     num_iters: int = 30
     horizon: int = 5
-    receding_horizon: int = 5
+    receding_horizon: int | None = None  # defaults to horizon; see __post_init__
     init_std: float = 1.0
     action_low: float = -1.0
     action_high: float = 1.0
+
+    def __post_init__(self) -> None:
+        if self.receding_horizon is None:
+            object.__setattr__(self, "receding_horizon", self.horizon)
+        if self.num_samples < 1:
+            raise ValueError(
+                f"CEMConfig.num_samples must be >= 1, got {self.num_samples}"
+            )
+        if not (2 <= self.topk <= self.num_samples):
+            raise ValueError(
+                "CEMConfig.topk must satisfy 2 <= topk <= num_samples (ddof=1 "
+                f"std is NaN at topk=1), got topk={self.topk}, "
+                f"num_samples={self.num_samples}"
+            )
+        if self.num_iters < 1:
+            raise ValueError(
+                f"CEMConfig.num_iters must be >= 1, got {self.num_iters}"
+            )
+        if self.horizon < 1:
+            raise ValueError(f"CEMConfig.horizon must be >= 1, got {self.horizon}")
+        if not (1 <= self.receding_horizon <= self.horizon):
+            raise ValueError(
+                "CEMConfig.receding_horizon must satisfy 1 <= receding_horizon "
+                f"<= horizon, got receding_horizon={self.receding_horizon}, "
+                f"horizon={self.horizon}"
+            )
 
 
 def sample_candidates(
@@ -162,6 +188,11 @@ class CEMPlanner:
     execute ``receding_horizon`` of them, replan. When ``receding_horizon <
     horizon`` the next solve warm-starts from the unexecuted tail of the
     previous plan (zero-padded), mirroring the reference's init_action path.
+
+    Known limitation: ``act`` only sees ``flat_obs``, not episode-done flags,
+    so it cannot detect an env auto-reset mid-plan. Across a reset boundary the
+    planner keeps executing (and warm-starts from) its stale pre-reset plan
+    for up to ``horizon - 1`` steps before its next scheduled replan.
     """
 
     def __init__(

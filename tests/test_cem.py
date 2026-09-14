@@ -20,6 +20,7 @@ from world_marl.genwm import (
     sample_candidates,
 )
 from world_marl.scripts.train_single_genwm import (
+    _collect_transitions,
     _evaluate_policy,
     parse_args,
 )
@@ -72,6 +73,26 @@ def test_discounted_return_matches_hand_computation():
     # weights: t0 -> 1, t1 -> gamma * c0 = 0.9, t2 -> gamma^2 * c0 * c1 = 0.405
     value = discounted_return(rewards, continues, gamma=0.9)
     np.testing.assert_allclose(np.asarray(value), [1.0 + 0.9 + 0.405], rtol=1e-6)
+
+
+def test_cem_config_rejects_topk_one():
+    with pytest.raises(ValueError, match="topk"):
+        CEMConfig(num_samples=64, topk=1, num_iters=5, horizon=3)
+
+
+def test_cem_config_rejects_topk_greater_than_samples():
+    with pytest.raises(ValueError, match="topk"):
+        CEMConfig(num_samples=8, topk=16, num_iters=5, horizon=3)
+
+
+def test_cem_config_rejects_receding_horizon_greater_than_horizon():
+    with pytest.raises(ValueError, match="receding_horizon"):
+        CEMConfig(horizon=3, receding_horizon=5)
+
+
+def test_cem_config_receding_horizon_defaults_to_horizon():
+    config = CEMConfig(horizon=3)
+    assert config.receding_horizon == 3
 
 
 def _tiny_setup():
@@ -267,6 +288,54 @@ def test_parse_args_rejects_cem_discrete_env():
         )
 
 
+def test_parse_args_rejects_cem_latent_encoder():
+    with pytest.raises(SystemExit):
+        parse_args(
+            [
+                "--env",
+                "brax:reacher",
+                "--arm",
+                "continuous-transformer",
+                "--policy-optimizer",
+                "cem",
+                "--latent-encoder",
+                "/fake/jepa/checkpoint",
+            ]
+        )
+
+
+def test_parse_args_rejects_cem_genie_tokenizer():
+    with pytest.raises(SystemExit):
+        parse_args(
+            [
+                "--env",
+                "brax:reacher",
+                "--arm",
+                "discrete-transformer",
+                "--policy-optimizer",
+                "cem",
+                "--tokenizer",
+                "genie",
+            ]
+        )
+
+
+def test_parse_args_rejects_cem_topk_one():
+    with pytest.raises(SystemExit):
+        parse_args(
+            [
+                "--env",
+                "brax:reacher",
+                "--arm",
+                "continuous-transformer",
+                "--policy-optimizer",
+                "cem",
+                "--cem-topk",
+                "1",
+            ]
+        )
+
+
 class _CountingActFnAdapter:
     """Minimal host-loop adapter: 2 envs, episodes end every 4 steps."""
 
@@ -325,3 +394,38 @@ def test_evaluate_policy_uses_act_fn_override():
     assert np.isfinite(value)
     assert len(calls) > 0
     assert all(shape == (2, 5) for shape in calls)
+
+
+def test_collect_transitions_uses_act_fn_override():
+    adapter = _CountingActFnAdapter()
+    calls = []
+
+    def act_fn(flat_obs):
+        calls.append(flat_obs.shape)
+        return np.zeros((adapter.num_envs, adapter.action_dim), dtype=np.float32)
+
+    num_steps = 4
+    replay = _collect_transitions(
+        adapter,
+        num_steps=num_steps,
+        rng=np.random.default_rng(0),
+        action_mode="continuous",
+        act_fn=act_fn,
+    )
+    assert len(calls) == num_steps
+    assert all(shape == (2, 5) for shape in calls)
+
+    rows = num_steps * adapter.num_envs
+    assert set(replay) == {
+        "observations",
+        "actions",
+        "rewards",
+        "dones",
+        "next_observations",
+    }
+    assert replay["observations"].shape == (rows, 5)
+    assert replay["actions"].shape == (rows, adapter.action_dim)
+    assert replay["next_observations"].shape == (rows, 5)
+    assert replay["rewards"].shape == (rows,)
+    assert replay["dones"].shape == (rows,)
+    np.testing.assert_allclose(replay["actions"], 0.0)
