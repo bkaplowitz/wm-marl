@@ -36,6 +36,9 @@ class Agent(
         self.obs_space = obs_space
         self.act_space = act_space
         self.config = config
+        self.imag_action_samples = config.get("imag_action_samples", 1)
+        if self.imag_action_samples not in (1, 2):
+            raise ValueError("imag_action_samples must be 1 or 2")
         if str(config.replay_sampling) != "recent_world_uniform_behavior":
             raise ValueError("MA-JEPA requires independent world and behavior replay")
         self.ppo_start_step = int(getattr(config, "ppo_start_step", 0))

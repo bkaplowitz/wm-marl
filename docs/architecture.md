@@ -68,7 +68,9 @@ One world-model update is followed by a newly generated, detached imagination
 batch. Each root uses recorded history and a true initial legal-action mask.
 Later availability masks are independently Bernoulli-sampled from predicted
 probabilities, then combined with predicted liveness. Empty support has a no-op
-fallback. At each step the actor draws two actions per agent without replacement
+fallback. `agent.imag_action_samples` accepts `1` or `2` (default `2`). Setting it
+to `1` restores single-action imagination and skips the second simulation and
+training sample. With `2`, the actor draws two actions per agent without replacement
 from the masked categorical distribution. Both joint action samples are simulated
 from the same source state and history; only the first successor advances the
 trajectory. The first sample keeps its GAE target. The second uses its own reward,

@@ -41,6 +41,7 @@ defaults:
         units: 1024
         winit: trunc_normal_in
     horizon: 333
+    imag_action_samples: 2
     imag_last: 0
     imag_length: 5
     loss_scales:
@@ -226,8 +227,7 @@ defaults:
       - 0
   logdir: ./runs/{timestamp}
   logger:
-    filter:
-      score|return|length|fps|ratio|sample_age|replay/behavior_|schedule/|counters/|replay_views/|train/loss/|train/opt/|train/ppo/|train/ctde/|report/ctde/|central_critic/|battle_won|win_rate|legacy_|corrected_|enemy_|ally_|timeout|action_|attack_target_|eval/|episode/|final_eval/|replay/world_uniform_|imagined_action/
+    filter: score|return|length|fps|ratio|sample_age|replay/behavior_|schedule/|counters/|replay_views/|train/loss/|train/opt/|train/ppo/|train/ctde/|report/ctde/|central_critic/|battle_won|win_rate|legacy_|corrected_|enemy_|ally_|timeout|action_|attack_target_|eval/|episode/|final_eval/|replay/world_uniform_|imagined_action/
     fps: 15
     outputs:
       - jsonl

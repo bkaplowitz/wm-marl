@@ -1246,6 +1246,17 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 action_mask=self.team.fold_batch(state[4]),
             )
             action_seed = nj.seed()
+            if self.imag_action_samples == 1:
+                next_state, outputs = step(
+                    state,
+                    {
+                        self.ctde_action_key: distribution[self.ctde_action_key].sample(
+                            action_seed
+                        )
+                    },
+                    action_seed,
+                )
+                return next_state, (outputs, None, None)
             first, second, second_weight = sample_imagination_actions(
                 self.team.unfold_batch(distribution[self.ctde_action_key].logits),
                 action_seed,
@@ -1305,7 +1316,9 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             "controllable_alive": jnp.concatenate(
                 [alive[:, None], alive_sequence], axis=1
             ),
-            "alternative": {
+        }
+        if alternative is not None:
+            auxiliary["alternative"] = {
                 "features": jax.tree.map(self.team.fold_sequence, alternative[0]),
                 "action": self.team.fold_sequence(alternative[1][self.ctde_action_key]),
                 "reward": self.team.fold_sequence(alternative[2]),
@@ -1313,8 +1326,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 "present": alternative[5],
                 "controllable_alive": alternative[6],
                 "weight": self.team.fold_sequence(second_weight),
-            },
-        }
+            }
         return local_carry, features, actions, auxiliary
 
     def imagination_policy_distribution(self, policy_inputs, auxiliary):

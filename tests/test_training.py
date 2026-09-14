@@ -9,6 +9,7 @@ import jax
 import jax.numpy as jnp
 import ninjax as nj
 import numpy as np
+import pytest
 
 from majepa.main import _load_configs, _resolve_config_profiles
 from majepa.marl.axes import BEHAVIOR_REPLAY_PREFIX, split_prefixed_data
@@ -204,9 +205,27 @@ def test_second_imagined_action_cannot_change_the_realized_trajectory():
         np.testing.assert_array_equal(actual, changed)
 
 
-def test_full_learner_jit_warmup_and_ppo_with_death_and_episode_resets():
+@pytest.mark.parametrize("samples", [0, 3])
+def test_learner_rejects_unsupported_imagined_action_sample_count(samples):
+    with pytest.raises(ValueError, match="imag_action_samples must be 1 or 2"):
+        _tiny_learner({"agent.imag_action_samples": samples})
+
+
+def test_saved_config_without_sample_count_remains_loadable():
+    learner, obs_space, act_space = _tiny_learner()
+    saved = elements.Config(
+        {k: v for k, v in learner.config.flat.items() if k != "imag_action_samples"}
+    )
+    restored = object.__new__(MARLCore)
+    MARLCore.__init__(restored, obs_space, act_space, saved)
+    assert restored.imag_action_samples == 1
+
+
+@pytest.mark.parametrize("samples", [1, 2])
+def test_full_learner_jit_warmup_and_ppo_with_death_and_episode_resets(samples):
     learner, obs_space, act_space = _tiny_learner(
         {
+            "agent.imag_action_samples": samples,
             "agent.marl.ctde.imagination_mask_sampling": "bernoulli",
             "agent.marl.ctde.self_fed.horizons": [2],
             "agent.marl.ctde.self_fed.anchors": 2,
@@ -216,7 +235,16 @@ def test_full_learner_jit_warmup_and_ppo_with_death_and_episode_resets():
     )
     data = _synthetic_replay(learner, obs_space, act_space)
     carry = learner.init_train(2)
-    state = nj.init(learner.train)({}, carry, data, seed=702)
+    if samples == 1:
+        with patch(
+            "majepa.marl.core.sample_imagination_actions",
+            side_effect=AssertionError(
+                "Single-sample mode invoked the two-action sampler"
+            ),
+        ):
+            state = nj.init(learner.train)({}, carry, data, seed=702)
+    else:
+        state = nj.init(learner.train)({}, carry, data, seed=702)
     train = jax.jit(nj.pure(learner.train))
 
     frozen_state, (carry, _, frozen_metrics) = train(state, carry, data, seed=703)
@@ -256,17 +284,18 @@ def test_full_learner_jit_warmup_and_ppo_with_death_and_episode_resets():
     )(updated_state, seed=705)
     _assert_finite((batch, batch_metrics, actor_metrics, critic_metrics))
     roots = 2 * learner.config.batch_length * learner.team.size
-    assert batch["action"].shape == (2 * roots, learner.config.imag_length)
-    primary, secondary = np.split(np.asarray(batch["action"]), 2)
-    multiple = np.asarray(batch["action_mask"][:roots]).sum(axis=-1) > 1
-    np.testing.assert_array_equal(primary != secondary, multiple)
-    np.testing.assert_array_equal(
-        batch["valid"][roots:], batch["valid"][:roots] & multiple
-    )
-    for key in ("policy_inputs", "action_mask", "old_logits"):
-        np.testing.assert_array_equal(batch[key][:roots], batch[key][roots:])
-    for value in batch["critic_features"].values():
-        np.testing.assert_array_equal(value[:roots], value[roots:])
+    assert batch["action"].shape == (samples * roots, learner.config.imag_length)
+    if samples == 2:
+        primary, secondary = np.split(np.asarray(batch["action"]), 2)
+        multiple = np.asarray(batch["action_mask"][:roots]).sum(axis=-1) > 1
+        np.testing.assert_array_equal(primary != secondary, multiple)
+        np.testing.assert_array_equal(
+            batch["valid"][roots:], batch["valid"][:roots] & multiple
+        )
+        for key in ("policy_inputs", "action_mask", "old_logits"):
+            np.testing.assert_array_equal(batch[key][:roots], batch[key][roots:])
+        for value in batch["critic_features"].values():
+            np.testing.assert_array_equal(value[:roots], value[roots:])
     # Re-evaluation before any optimizer step must reproduce the exact policy
     # distribution that sampled the frozen imagination, including its masks.
     np.testing.assert_allclose(actor_metrics["ratio"], 1.0, atol=1e-6)
@@ -286,14 +315,15 @@ def test_full_learner_jit_warmup_and_ppo_with_death_and_episode_resets():
         alternative["continuation"] = jnp.zeros_like(alternative["continuation"])
         return result
 
-    with patch.object(learner, "imagine_with_aux", terminal_alternative):
-        _, (terminal_batch, _, _, _) = jax.jit(nj.pure(inspect_batch))(
-            updated_state, seed=705
+    if samples == 2:
+        with patch.object(learner, "imagine_with_aux", terminal_alternative):
+            _, (terminal_batch, _, _, _) = jax.jit(nj.pure(inspect_batch))(
+                updated_state, seed=705
+            )
+        np.testing.assert_array_equal(terminal_batch["target_return"][roots:], 7.0)
+        np.testing.assert_array_equal(
+            terminal_batch["target_return"][:roots], batch["target_return"][:roots]
         )
-    np.testing.assert_array_equal(terminal_batch["target_return"][roots:], 7.0)
-    np.testing.assert_array_equal(
-        terminal_batch["target_return"][:roots], batch["target_return"][:roots]
-    )
 
     _, (report_carry, report_metrics) = jax.jit(nj.pure(learner.report))(
         updated_state, carry, data, seed=706

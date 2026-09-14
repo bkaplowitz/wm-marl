@@ -50,6 +50,10 @@ uv run --no-sync majepa-train \
 ```
 
 For `3s_vs_4z`, use `--task smac_3s_vs_4z --agent.num_agents 3`.
+Set `--agent.imag_action_samples 1` for single-action imagination, or `2` (the
+default) to train on two actions per agent sampled without replacement. With two
+samples, only the first successor continues the imagined trajectory; the second
+uses its own reward and successor-value bootstrap for training.
 Use a fresh log directory for each independent run. The training runtime resumes
 an existing checkpoint when reusing a training directory.
 

@@ -471,35 +471,36 @@ class LearnerMixin:
                 "trajectory_weight": trajectory_weight,
             }
         )
-        alternative = auxiliary["alternative"]
-        alternative_value = self.critic(
-            alternative["features"],
-            2,
-            slow=True,
-            context={
-                key: alternative[key] for key in ("present", "controllable_alive")
-            },
-        ).pred()
-        alternative_return = alternative["reward"] + (
-            alternative["continuation"]
-            * self.team.fold_sequence(alternative["present"])
-            * alternative_value
-        )
-        alternative_valid = alternative["weight"] > 0.0
-        alternative_batch = {
-            **batch,
-            "action": alternative["action"],
-            "target_return": alternative_return,
-            "advantage": jnp.where(
-                valid & alternative_valid,
-                alternative_return - target_value[:, :-1],
-                0.0,
-            ),
-            "valid": valid & alternative_valid,
-            "critic_valid": state_valid[:, :-1] & alternative_valid,
-            "trajectory_weight": trajectory_weight * alternative["weight"],
-        }
-        batch = sg(concat([batch, alternative_batch], 0))
+        alternative = auxiliary.get("alternative")
+        if alternative is not None:
+            alternative_value = self.critic(
+                alternative["features"],
+                2,
+                slow=True,
+                context={
+                    key: alternative[key] for key in ("present", "controllable_alive")
+                },
+            ).pred()
+            alternative_return = alternative["reward"] + (
+                alternative["continuation"]
+                * self.team.fold_sequence(alternative["present"])
+                * alternative_value
+            )
+            alternative_valid = alternative["weight"] > 0.0
+            alternative_batch = {
+                **batch,
+                "action": alternative["action"],
+                "target_return": alternative_return,
+                "advantage": jnp.where(
+                    valid & alternative_valid,
+                    alternative_return - target_value[:, :-1],
+                    0.0,
+                ),
+                "valid": valid & alternative_valid,
+                "critic_valid": state_valid[:, :-1] & alternative_valid,
+                "trajectory_weight": trajectory_weight * alternative["weight"],
+            }
+            batch = sg(concat([batch, alternative_batch], 0))
         batch["advantage"] = normalize_advantage(
             batch["advantage"], batch["valid"], batch["trajectory_weight"]
         )
@@ -534,7 +535,11 @@ class LearnerMixin:
             ),
             "ppo/batch_valid_fraction": valid.astype(jnp.float32).mean(),
             "ppo/batch_effective_weight": trajectory_weight.mean(),
-            "ppo/second_sample_weight": alternative["weight"].mean(),
+            "ppo/second_sample_weight": (
+                alternative["weight"].mean()
+                if alternative is not None
+                else jnp.float32(0)
+            ),
             "ppo/batch_illegal_action_fraction": (
                 valid.astype(jnp.float32) * (~sampled_legal).astype(jnp.float32)
             ).sum()

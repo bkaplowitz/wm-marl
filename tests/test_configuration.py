@@ -1,13 +1,22 @@
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from majepa.main import _load_configs, _resolve_config_profiles
 from majepa.scripts.evaluate import evaluation_config
+from majepa.scripts.train import main as train_main
 
 
 def _config(profile="reference"):
     return _resolve_config_profiles(_load_configs(), [profile])
+
+
+@pytest.mark.parametrize("samples", [1, 2])
+def test_training_setup_accepts_imagined_action_sample_count(samples):
+    with patch("majepa.main.run") as run:
+        train_main(["--agent.imag_action_samples", str(samples)])
+    assert run.call_args.args[0].agent.imag_action_samples == samples
 
 
 @pytest.mark.parametrize(
