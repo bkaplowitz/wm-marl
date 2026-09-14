@@ -452,7 +452,6 @@ class LearnerMixin:
             )
         )
         advantage_scale = jnp.asarray(1.0, jnp.float32)
-        advantage = normalize_advantage(advantage, valid, trajectory_weight)
 
         def decisions(tree):
             return jax.tree.map(lambda value: value[:, :-1], tree)
@@ -470,9 +469,41 @@ class LearnerMixin:
                 "valid": valid,
                 "critic_valid": state_valid[:, :-1],
                 "trajectory_weight": trajectory_weight,
-                "entropy_coefficient": entropy_coefficient,
             }
         )
+        alternative = auxiliary["alternative"]
+        alternative_value = self.critic(
+            alternative["features"],
+            2,
+            slow=True,
+            context={
+                key: alternative[key] for key in ("present", "controllable_alive")
+            },
+        ).pred()
+        alternative_return = alternative["reward"] + (
+            alternative["continuation"]
+            * self.team.fold_sequence(alternative["present"])
+            * alternative_value
+        )
+        alternative_valid = alternative["weight"] > 0.0
+        alternative_batch = {
+            **batch,
+            "action": alternative["action"],
+            "target_return": alternative_return,
+            "advantage": jnp.where(
+                valid & alternative_valid,
+                alternative_return - target_value[:, :-1],
+                0.0,
+            ),
+            "valid": valid & alternative_valid,
+            "critic_valid": state_valid[:, :-1] & alternative_valid,
+            "trajectory_weight": trajectory_weight * alternative["weight"],
+        }
+        batch = sg(concat([batch, alternative_batch], 0))
+        batch["advantage"] = normalize_advantage(
+            batch["advantage"], batch["valid"], batch["trajectory_weight"]
+        )
+        batch["entropy_coefficient"] = entropy_coefficient
         if float(self.config.ppo.replay_value_scale):
             batch["replay_value"] = self._prepare_replay_value_batch(
                 repfeat, obs, target_return[:, 0], starts_count
@@ -493,7 +524,7 @@ class LearnerMixin:
                 reward[:, 1:], valid, trajectory_weight
             ),
             "ppo/batch_return": masked_weighted_mean(
-                target_return, valid, trajectory_weight
+                batch["target_return"], batch["valid"], batch["trajectory_weight"]
             ),
             "ppo/batch_target_value": masked_weighted_mean(
                 target_value[:, :-1], valid, trajectory_weight
@@ -503,6 +534,7 @@ class LearnerMixin:
             ),
             "ppo/batch_valid_fraction": valid.astype(jnp.float32).mean(),
             "ppo/batch_effective_weight": trajectory_weight.mean(),
+            "ppo/second_sample_weight": alternative["weight"].mean(),
             "ppo/batch_illegal_action_fraction": (
                 valid.astype(jnp.float32) * (~sampled_legal).astype(jnp.float32)
             ).sum()

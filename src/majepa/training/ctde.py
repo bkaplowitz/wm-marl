@@ -11,6 +11,34 @@ import jax.numpy as jnp
 f32 = jnp.float32
 
 
+def sample_imagination_actions(logits, seed):
+    """Draw two actions per agent from effective masked [..., agent, action] logits.
+
+    The second draw excludes the first. Its training weight corrects the joint
+    second-draw marginal back to the original joint policy. Singleton agents
+    retain their forced action in the simulator but receive no second loss.
+    """
+    logits = jnp.asarray(logits, f32)
+    multiple = (logits > -1e20).sum(axis=-1) > 1
+    first = jax.random.categorical(seed, logits)
+    excluded = jnp.eye(logits.shape[-1], dtype=bool)
+    conditional_logits = jnp.where(excluded, -1e30, logits[..., None, :])
+    conditional_logits = jnp.where(
+        multiple[..., None, None], conditional_logits, logits[..., None, :]
+    )
+    second_logits = jnp.take_along_axis(
+        conditional_logits, first[..., None, None], axis=-2
+    )[..., 0, :]
+    second = jax.random.categorical(jax.random.fold_in(seed, 1), second_logits)
+    logp = jax.nn.log_softmax(logits)
+    logq = jax.scipy.special.logsumexp(
+        logp[..., :, None] + jax.nn.log_softmax(conditional_logits), axis=-2
+    )
+    logweight = jnp.take_along_axis(logp - logq, second[..., None], axis=-1)[..., 0]
+    weight = jnp.where(multiple, jnp.exp(logweight.sum(axis=-1, keepdims=True)), 0.0)
+    return jax.tree.map(jax.lax.stop_gradient, (first, second, weight))
+
+
 def imagined_action_mask(probability, alive, seed=None):
     """Select imagined support; factual root masks never pass through here.
 

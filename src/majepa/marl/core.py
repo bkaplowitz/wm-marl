@@ -33,6 +33,7 @@ from ..models.heads import (
 )
 from ..training.ctde import (
     imagined_action_mask,
+    sample_imagination_actions,
     shared_team_outcomes,
 )
 from ..training.multistep_jepa import (
@@ -1155,7 +1156,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         central_carry = context["joint_carry"]
         reset = context["reset"].astype(bool)
 
-        def transition(state, _):
+        def step(state, folded_action, action_seed):
             (
                 local_carry,
                 joint_carry,
@@ -1169,21 +1170,6 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 "stoch": local_carry["stoch"],
             }
             folded_features = self.team.fold_tree_batch(local_features)
-            folded_mask = self.team.fold_batch(current_mask)
-            distribution = self.policy_distribution(
-                self.feat2tensor(folded_features),
-                1,
-                action_mask=folded_mask,
-            )
-            # The standard CTDE path has exactly one categorical action. Use
-            # its existing draw key for a separate availability substream, so
-            # availability sampling does not shift other learner RNG draws.
-            action_seed = nj.seed()
-            folded_action = {
-                self.ctde_action_key: distribution[self.ctde_action_key].sample(
-                    action_seed
-                )
-            }
             grouped_action = self.team.unfold_batch(folded_action[self.ctde_action_key])
 
             folded_carry = self.team.fold_tree_batch(local_carry)
@@ -1252,6 +1238,30 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             )
             return next_state, outputs
 
+        def transition(state, _):
+            local_features = {key: state[0][key] for key in ("deter", "stoch")}
+            distribution = self.policy_distribution(
+                self.feat2tensor(self.team.fold_tree_batch(local_features)),
+                1,
+                action_mask=self.team.fold_batch(state[4]),
+            )
+            action_seed = nj.seed()
+            first, second, second_weight = sample_imagination_actions(
+                self.team.unfold_batch(distribution[self.ctde_action_key].logits),
+                action_seed,
+            )
+            next_state, outputs = step(
+                state,
+                {self.ctde_action_key: self.team.fold_batch(first)},
+                action_seed,
+            )
+            _, alternative = step(
+                state,
+                {self.ctde_action_key: self.team.fold_batch(second)},
+                jax.random.fold_in(action_seed, 2),
+            )
+            return next_state, (outputs, alternative, second_weight)
+
         state = (
             grouped_carry,
             central_carry,
@@ -1267,6 +1277,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             horizon,
             axis=1,
         )
+        outputs, alternative, second_weight = outputs
         (
             next_features,
             actions,
@@ -1294,6 +1305,15 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             "controllable_alive": jnp.concatenate(
                 [alive[:, None], alive_sequence], axis=1
             ),
+            "alternative": {
+                "features": jax.tree.map(self.team.fold_sequence, alternative[0]),
+                "action": self.team.fold_sequence(alternative[1][self.ctde_action_key]),
+                "reward": self.team.fold_sequence(alternative[2]),
+                "continuation": self.team.fold_sequence(alternative[3]),
+                "present": alternative[5],
+                "controllable_alive": alternative[6],
+                "weight": self.team.fold_sequence(second_weight),
+            },
         }
         return local_carry, features, actions, auxiliary
 

@@ -16,6 +16,44 @@ from majepa.training.ppo import (
 )
 from majepa.marl.axes import TeamAxis
 from majepa.marl.core import MARLCore
+from majepa.training.ctde import sample_imagination_actions
+
+
+def test_two_imagined_actions_are_distinct_legal_and_correct_joint_proposal():
+    probability = jnp.asarray([[0.8, 0.2, 0.0], [0.8, 0.2, 0.0], [0.0, 0.0, 1.0]])
+    logits = jnp.broadcast_to(
+        jnp.where(probability > 0, jnp.log(probability), -1e30), (4096, 3, 3)
+    )
+    sample = jax.jit(sample_imagination_actions)
+    first, second, weight = sample(logits, jax.random.key(19))
+    assert bool((first[:, :2] != second[:, :2]).all())
+    assert bool((first[:, :2] < 2).all() & (second[:, :2] < 2).all())
+    np.testing.assert_array_equal(first[:, 2], 2)
+    np.testing.assert_array_equal(second[:, 2], 2)
+    np.testing.assert_array_equal(weight[:, 2], 0.0)
+    expected_joint_weight = np.prod(
+        np.where(np.asarray(second[:, :2]) == 0, 4.0, 0.25), axis=-1
+    )
+    np.testing.assert_allclose(weight[:, 0], expected_joint_weight, rtol=1e-6)
+    np.testing.assert_array_equal(weight[:, 0], weight[:, 1])
+    np.testing.assert_allclose((first[:, :2] == 0).mean(axis=0), 0.8, atol=0.025)
+    for actual, repeated in zip(
+        (first, second, weight), sample(logits, jax.random.key(19))
+    ):
+        np.testing.assert_array_equal(actual, repeated)
+
+    logits = jnp.broadcast_to(jnp.log(jnp.asarray([0.5, 0.3, 0.2])), (4096, 1, 3))
+    first, second, weight = sample(logits, jax.random.key(20))
+    assert bool((first != second).all())
+    marginal = np.asarray([19 / 56, 3 / 8, 2 / 7])
+    np.testing.assert_allclose(
+        np.bincount(np.asarray(second).ravel(), minlength=3) / 4096,
+        marginal,
+        atol=0.025,
+    )
+    np.testing.assert_allclose(
+        weight, (np.asarray([0.5, 0.3, 0.2]) / marginal)[second], rtol=1e-6
+    )
 
 
 def test_gae_counts_last_transition_and_cuts_absent_state_bootstrap() -> None:

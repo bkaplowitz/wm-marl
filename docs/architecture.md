@@ -68,8 +68,20 @@ One world-model update is followed by a newly generated, detached imagination
 batch. Each root uses recorded history and a true initial legal-action mask.
 Later availability masks are independently Bernoulli-sampled from predicted
 probabilities, then combined with predicted liveness. Empty support has a no-op
-fallback. The actor samples from the masked categorical distribution; the sampled
-masks, actions, features, old logits, and advantages stay fixed across PPO passes.
+fallback. At each step the actor draws two actions per agent without replacement
+from the masked categorical distribution. Both joint action samples are simulated
+from the same source state and history; only the first successor advances the
+trajectory. The first sample keeps its GAE target. The second uses its own reward,
+continuation, and successor critic value for a one-step target. An agent with only
+one legal action contributes only its first training sample.
+
+Both samples use the original actor probabilities in PPO. The second sample's
+loss weight corrects its joint marginal sampling probability back to the original
+joint policy; this weight is the product of the per-agent original/second-marginal
+probability ratios. The correction is uncapped and can have high variance for
+concentrated policies. Both samples inherit the first trajectory's source-state
+occupancy weight. Masks, actions, features, old logits, proposal weights, and
+advantages stay fixed across PPO passes.
 
 The policy is a 3 × 512 MLP. The centralized critic uses width-256 attention,
 two attention layers, a 2 × 256 value MLP, and a 255-bin symexp/two-hot output.
