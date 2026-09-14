@@ -52,9 +52,7 @@ class CEMConfig:
                 f"num_samples={self.num_samples}"
             )
         if self.num_iters < 1:
-            raise ValueError(
-                f"CEMConfig.num_iters must be >= 1, got {self.num_iters}"
-            )
+            raise ValueError(f"CEMConfig.num_iters must be >= 1, got {self.num_iters}")
         if self.horizon < 1:
             raise ValueError(f"CEMConfig.horizon must be >= 1, got {self.horizon}")
         if not (1 <= self.receding_horizon <= self.horizon):
