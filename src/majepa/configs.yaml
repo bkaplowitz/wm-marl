@@ -1,5 +1,5 @@
-# Reference: completed WM4096 / 1e-4 runs, 2026-09-12.
-# Profiles below reproduce the ongoing size/LR sweep; they are not promoted defaults.
+# Selected reference: WM4096 / 1e-4, confirmed through 2026-09-14.
+# Other profiles retain historical size/LR ablations; they are not defaults.
 defaults:
   agent:
     action_mask_reduction: balanced
@@ -244,7 +244,7 @@ defaults:
   replicas: 1
   report_length: 32
   run:
-    checkpoint_at_curve_eval: true
+    checkpoint_at_curve_eval: false
     curve_eval_eps: 32
     curve_eval_interval: 5000
     curve_eval_policy_mode: eval
@@ -263,7 +263,7 @@ defaults:
     ppo_start_step: 5000
     report_batches: 1
     report_every: 300
-    save_every: 900
+    save_every: 5000
     steps: 50000
     train_ratio: 128
     usage:

@@ -1,16 +1,16 @@
 # MA-JEPA
 
 Decoder-free multi-agent world modelling with a shared decentralized actor and
-PPO on imagined team trajectories. `clean_jepa` contains the implementation used
-by the September 12, 2026 size / learning-rate runs. It is a cleanup of the deployed
-source, with explicit configurations and a reproducible evaluation entry point.
+PPO on imagined team trajectories. `clean_jepa` contains a cleaned implementation
+of the selected deployed reference, with settings pinned through September 14,
+2026 and a checkpoint-based evaluation entry point.
 
 The maintained model has a local encoder and history for each agent, a shared
 joint JEPA predictor during training, and a centralized critic. It learns future
 embeddings and aligns the resulting local posterior distributions. There is no
 observation decoder or learned teammate-belief module.
 
-See [architecture](docs/architecture.md), [results and next experiments](docs/research-notes.md),
+See [architecture](docs/architecture.md), [September 12 research notes](docs/research-notes.md),
 and [source provenance and validation](docs/provenance.md).
 
 ## Install
@@ -34,7 +34,11 @@ CUDA training also requires a compatible NVIDIA driver.
 ## Train
 
 The reference profile is WM4096, 32 categorical variables with 64 classes each,
-actor 3 × 512, and world-model LR `1e-4`:
+actor 3 × 512, and both local and joint world-model LRs `1e-4`. It uses BPTT2,
+imagination horizon 5, actor/critic LRs `3e-5`, PPO clipping 0.2, and fixed entropy
+coefficient 0.003. Dense posterior alignment is weighted 0.05 and action margin
+0.1. WM replay mixes 50% uniform and 50% recent samples; imagination roots are
+independently uniform. The original background replay sampling is retained.
 
 ```bash
 uv run --no-sync majepa-train \
@@ -65,6 +69,23 @@ prefill, with one collection environment. Curve evaluations use 32 greedy
 held-out episodes every 5,000 records. The driver clock includes reset records;
 log `counters/environment_steps` as well when comparing sample budgets.
 A 200k experiment uses `--run.steps 200000`; prefill remains explicitly 5k.
+Checkpoint saving follows the successful seed-2 run: every 5,000 wall-clock
+seconds and at training completion, without saving a checkpoint at every curve
+evaluation. The latest checkpoint is retained.
+
+On the original deployed source, this configuration produced final 2s3z win rates
+of **63%, 69%, and 79%** for seeds 0, 1, and 2: a **70.3% mean** at 50k records,
+using 100 evaluation episodes per seed. [Seeds 0/1](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/groups/ma-jepa-actor512-wm4096-wmlr1e4-20260912)
+and [seed 2](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/st14-wm1e4-2s3z-s2-final100).
+This is the selected reference, not a claim of the best setting on every map.
+The new entropy-annealing experiment is not enabled in this branch's defaults.
+
+The seed controls model, action, environment and replay RNGs. Asynchronous replay
+can still read different buffer contents depending on scheduling, so the same
+seed does not guarantee an identical training trajectory or win rate. Neither
+the reverted synchronous-sampling intervention nor the draft seed changes are
+included. These results belong to the deployed source; see the cleanup parity
+checks and their limits in [provenance](docs/provenance.md).
 
 Configuration flags use dotted names from
 [src/majepa/configs.yaml](src/majepa/configs.yaml). For example:
