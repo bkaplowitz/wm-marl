@@ -1,6 +1,7 @@
 """First-party Embodied training loop with a guaranteed final checkpoint."""
 
 import collections
+import os
 import time
 from functools import partial as bind
 
@@ -160,11 +161,17 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
             "_behavior_replay/",
         )
     snapshot_replay = replay_stream_mode in {"snapshot_prefetch", "snapshot_staggered"}
-    if replay_stream_mode not in {"prefetch", "snapshot_prefetch", "snapshot_staggered"}:
+    if replay_stream_mode not in {
+        "prefetch",
+        "snapshot_prefetch",
+        "snapshot_staggered",
+    }:
         raise ValueError(f"Unknown replay stream mode: {replay_stream_mode}")
     if snapshot_replay:
         from .streams import (
-            ReplaySnapshotStream, ReplaySnapshotTrace, synchronous_report_stream,
+            ReplaySnapshotStream,
+            ReplaySnapshotTrace,
+            synchronous_report_stream,
         )
 
         if int(getattr(args, "replicas", 1)) != 1:
@@ -176,10 +183,13 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
             raise ValueError("replay_trace_batches must be nonnegative")
         trace = ReplaySnapshotTrace(logdir / "replay_snapshots.jsonl", trace_limit)
         stream_train = ReplaySnapshotStream(
-            agent, train_source, trace if trace_limit else None,
+            agent,
+            train_source,
+            trace if trace_limit else None,
             behavior_source=behavior_source,
             startup_behavior_min_starts=(
-                int(args.replay_startup_behavior_min_starts) if staggered_replay else 1),
+                int(args.replay_startup_behavior_min_starts) if staggered_replay else 1
+            ),
         )
         stream_report = iter(synchronous_report_stream(agent, report_source))
     elif bool(getattr(args, "isolate_report_rng", False)):
@@ -237,9 +247,12 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
                 replay.update(outputs["replay"])
             train_agg.add(metrics, prefix="train")
             if snapshot_replay:
-                train_agg.add({
-                    "snapshot_replay/sample_age_records": current_step - sampled_at,
-                }, prefix="train")
+                train_agg.add(
+                    {
+                        "snapshot_replay/sample_age_records": current_step - sampled_at,
+                    },
+                    prefix="train",
+                )
 
     driver.on_step(trainfn)
 
@@ -360,4 +373,9 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
 
     if bool(args.final_save):
         _save_checkpoint(checkpoint)
+        if os.environ.get("MAJEPA_CAMPAIGN_MANIFEST"):
+            from .main import record_campaign_artifact
+
+            final_checkpoint = logdir / "ckpt" / (logdir / "ckpt/latest").read().strip()
+            record_campaign_artifact(logdir, "checkpoint", [final_checkpoint])
     logger.close()

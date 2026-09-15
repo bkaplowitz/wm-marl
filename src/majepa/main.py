@@ -1,3 +1,4 @@
+import json
 import os
 import pathlib
 import re
@@ -138,30 +139,38 @@ def main(argv=None, extra_config_path=None):
         num_agents=config.agent.num_agents,
     )
 
-    if config.script == "train":
-        from . import train as first_party_train
+    exit_code = 1
+    try:
+        if config.script == "train":
+            from . import train as first_party_train
 
-        first_party_train.train(
-            bind(make_agent, config),
-            bind(make_replay, config, "replay"),
-            bind(make_env, config),
-            bind(make_stream, config),
-            bind(make_logger, config),
-            args,
-        )
+            first_party_train.train(
+                bind(make_agent, config),
+                bind(make_replay, config, "replay"),
+                bind(make_env, config),
+                bind(make_stream, config),
+                bind(make_logger, config),
+                args,
+            )
 
-    elif config.script == "eval_only":
-        from . import evaluation
+        elif config.script == "eval_only":
+            from . import evaluation
 
-        evaluation.eval_only(
-            bind(make_agent, config),
-            bind(make_env, config),
-            bind(make_logger, config),
-            args,
-        )
+            evaluation.eval_only(
+                bind(make_agent, config),
+                bind(make_env, config),
+                bind(make_logger, config),
+                args,
+            )
+        else:
+            raise NotImplementedError(config.script)
+        exit_code = 0
+    finally:
+        if os.environ.get("MAJEPA_CAMPAIGN_MANIFEST"):
+            import wandb
 
-    else:
-        raise NotImplementedError(config.script)
+            if wandb.run is not None:
+                wandb.run.finish(exit_code=exit_code)
 
 
 def make_agent(config):
@@ -207,6 +216,18 @@ def make_logger(config):
     logdir = config.logdir
     multiplier = config.env.get(config.task.split("_")[0], {}).get("repeat", 1)
     outputs = []
+    provenance_path = os.environ.get("MAJEPA_CAMPAIGN_MANIFEST")
+    recorded_config = dict(config)
+    if provenance_path:
+        if "wandb" not in config.logger.outputs:
+            raise ValueError("campaign recording requires the wandb logger")
+        if os.environ.get("WANDB_MODE", "online") != "online":
+            raise ValueError("campaign recording requires online W&B")
+        if config.script == "train" and not config.run.final_save:
+            raise ValueError("campaign recording requires run.final_save")
+        recorded_config["campaign_provenance"] = json.loads(
+            pathlib.Path(provenance_path).read_text()
+        )
     outputs.append(elements.logger.TerminalOutput(config.logger.filter, "Agent"))
     for output in config.logger.outputs:
         if output == "jsonl":
@@ -227,13 +248,57 @@ def make_logger(config):
             )
         elif output == "wandb":
             name = os.environ.get("WANDB_NAME") or "/".join(logdir.split("/")[-4:])
-            outputs.append(elements.logger.WandBOutput(name))
+            outputs.append(elements.logger.WandBOutput(name, config=recorded_config))
         elif output == "scope":
             outputs.append(elements.logger.ScopeOutput(elements.Path(logdir)))
         else:
             raise NotImplementedError(output)
     logger = elements.Logger(step, outputs, multiplier)
+    if provenance_path:
+        record_campaign_artifact(
+            logdir,
+            "source",
+            [
+                pathlib.Path(logdir) / "config.yaml",
+                pathlib.Path(provenance_path),
+                pathlib.Path(os.environ["MAJEPA_SOURCE_ARCHIVE"]),
+            ],
+        )
     return logger
+
+
+def record_campaign_artifact(logdir, kind, paths):
+    if not os.environ.get("MAJEPA_CAMPAIGN_MANIFEST"):
+        return
+    import wandb
+
+    run = wandb.run
+    if run is None:
+        raise RuntimeError("campaign artifact requires an active W&B run")
+    run.summary[f"artifacts/{kind}_verified"] = False
+    artifact = wandb.Artifact(f"{run.id}-{kind}", type=kind)
+    for path in paths:
+        path = pathlib.Path(str(path))
+        if path.is_dir():
+            artifact.add_dir(str(path), name=path.name)
+        else:
+            artifact.add_file(str(path), name=path.name)
+    expected = {name: entry.digest for name, entry in artifact.manifest.entries.items()}
+    uploaded = run.log_artifact(artifact).wait(timeout=600)
+    qualified_name = f"{run.entity}/{run.project}/{uploaded.name}"
+    remote = wandb.Api().artifact(qualified_name)
+    actual = {name: entry.digest for name, entry in remote.manifest.entries.items()}
+    if not expected or remote.digest != uploaded.digest or actual != expected:
+        raise RuntimeError(f"remote artifact verification failed: {qualified_name}")
+    receipt_path = pathlib.Path(str(logdir)) / "artifact_verification.json"
+    receipts = json.loads(receipt_path.read_text()) if receipt_path.exists() else {}
+    receipts[kind] = {
+        "artifact": qualified_name,
+        "digest": remote.digest,
+        "files": sorted(actual),
+    }
+    receipt_path.write_text(json.dumps(receipts, indent=2, sort_keys=True) + "\n")
+    run.summary[f"artifacts/{kind}_verified"] = True
 
 
 def make_replay(config, folder, mode="train"):

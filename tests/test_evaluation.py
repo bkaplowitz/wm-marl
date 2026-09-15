@@ -306,3 +306,41 @@ def test_eval_only_rejects_negative_worker_offset() -> None:
                 logdir="unused",
             ),
         )
+
+
+@pytest.mark.parametrize("upload_fails", [False, True])
+def test_eval_only_uploads_complete_results(monkeypatch, tmp_path, upload_fails):
+    from majepa import main
+
+    monkeypatch.setattr(evaluation.embodied, "Driver", _Driver)
+    monkeypatch.setattr(evaluation.elements, "Checkpoint", _Checkpoint)
+    artifacts = []
+
+    def record(logdir, kind, paths):
+        artifacts.append((str(logdir), kind))
+        assert {path.name for path in paths} == {
+            "evaluation_summary.json",
+            "evaluation_episodes.jsonl",
+        }
+        assert all(path.exists() for path in paths)
+        if upload_fails:
+            raise RuntimeError("upload failed")
+
+    monkeypatch.setattr(main, "record_campaign_artifact", record)
+    logger = _RecordingLogger(tmp_path)
+    args = SimpleNamespace(
+        from_checkpoint="/checkpoints/final",
+        eval_eps=2,
+        envs=1,
+        eval_worker_offset=100_000,
+        eval_policy_mode="eval",
+        debug=True,
+        logdir=str(tmp_path),
+    )
+    if upload_fails:
+        with pytest.raises(RuntimeError, match="upload failed"):
+            evaluation.eval_only(_Agent, lambda index: None, lambda: logger, args)
+    else:
+        evaluation.eval_only(_Agent, lambda index: None, lambda: logger, args)
+    assert artifacts == [(str(tmp_path), "evaluation")]
+    assert logger.events[-1] == ("close", True, True)

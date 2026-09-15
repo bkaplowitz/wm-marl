@@ -294,6 +294,8 @@ def evaluate_current_policy(
 def eval_only(make_agent, make_env, make_logger, args):
     """Evaluate one explicit checkpoint and write its complete summary."""
 
+    from .main import record_campaign_artifact
+
     if not args.from_checkpoint:
         raise ValueError("evaluation requires run.from_checkpoint")
     if args.eval_eps < 1 or args.envs < 1:
@@ -433,6 +435,11 @@ def eval_only(make_agent, make_env, make_logger, args):
             prefix="final_eval",
         )
         logger.write()
+        record_campaign_artifact(
+            logdir,
+            "evaluation",
+            [logdir / "evaluation_summary.json", logdir / "evaluation_episodes.jsonl"],
+        )
     finally:
         if driver is not None:
             driver.close()
