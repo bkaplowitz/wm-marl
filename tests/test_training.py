@@ -176,11 +176,11 @@ def test_second_imagined_action_cannot_change_the_realized_trajectory():
     )
 
     def change_only_second_action(logits, seed):
-        first, second, weight = sample_imagination_actions(logits, seed)
+        first, second, valid = sample_imagination_actions(logits, seed)
         candidates = (logits > -1e20) & ~jax.nn.one_hot(first, 8, dtype=bool)
         candidates &= ~jax.nn.one_hot(second, 8, dtype=bool)
         second = jnp.where(candidates.any(-1), candidates.argmax(-1), second)
-        return first, second, weight
+        return first, second, valid
 
     with patch(
         "majepa.marl.core.sample_imagination_actions", change_only_second_action
@@ -292,7 +292,7 @@ def test_full_learner_jit_warmup_and_ppo_with_death_and_episode_resets(samples):
         np.testing.assert_array_equal(
             batch["valid"][roots:], batch["valid"][:roots] & multiple
         )
-        for key in ("policy_inputs", "action_mask", "old_logits"):
+        for key in ("policy_inputs", "action_mask", "old_logits", "trajectory_weight"):
             np.testing.assert_array_equal(batch[key][:roots], batch[key][roots:])
         for value in batch["critic_features"].values():
             np.testing.assert_array_equal(value[:roots], value[roots:])

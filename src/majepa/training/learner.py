@@ -486,7 +486,7 @@ class LearnerMixin:
                 * self.team.fold_sequence(alternative["present"])
                 * alternative_value
             )
-            alternative_valid = alternative["weight"] > 0.0
+            alternative_valid = alternative["valid"]
             alternative_batch = {
                 **batch,
                 "action": alternative["action"],
@@ -498,7 +498,6 @@ class LearnerMixin:
                 ),
                 "valid": valid & alternative_valid,
                 "critic_valid": state_valid[:, :-1] & alternative_valid,
-                "trajectory_weight": trajectory_weight * alternative["weight"],
             }
             batch = sg(concat([batch, alternative_batch], 0))
         batch["advantage"] = normalize_advantage(
@@ -535,8 +534,8 @@ class LearnerMixin:
             ),
             "ppo/batch_valid_fraction": valid.astype(jnp.float32).mean(),
             "ppo/batch_effective_weight": trajectory_weight.mean(),
-            "ppo/second_sample_weight": (
-                alternative["weight"].mean()
+            "ppo/second_sample_valid_fraction": (
+                alternative["valid"].astype(jnp.float32).mean()
                 if alternative is not None
                 else jnp.float32(0)
             ),

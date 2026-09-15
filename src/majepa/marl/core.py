@@ -1257,7 +1257,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                     action_seed,
                 )
                 return next_state, (outputs, None, None)
-            first, second, second_weight = sample_imagination_actions(
+            first, second, second_valid = sample_imagination_actions(
                 self.team.unfold_batch(distribution[self.ctde_action_key].logits),
                 action_seed,
             )
@@ -1271,7 +1271,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 {self.ctde_action_key: self.team.fold_batch(second)},
                 jax.random.fold_in(action_seed, 2),
             )
-            return next_state, (outputs, alternative, second_weight)
+            return next_state, (outputs, alternative, second_valid)
 
         state = (
             grouped_carry,
@@ -1288,7 +1288,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             horizon,
             axis=1,
         )
-        outputs, alternative, second_weight = outputs
+        outputs, alternative, second_valid = outputs
         (
             next_features,
             actions,
@@ -1325,7 +1325,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 "continuation": self.team.fold_sequence(alternative[3]),
                 "present": alternative[5],
                 "controllable_alive": alternative[6],
-                "weight": self.team.fold_sequence(second_weight),
+                "valid": self.team.fold_sequence(second_valid),
             }
         return local_carry, features, actions, auxiliary
 

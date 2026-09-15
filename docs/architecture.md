@@ -77,13 +77,14 @@ trajectory. The first sample keeps its GAE target. The second uses its own rewar
 continuation, and successor critic value for a one-step target. An agent with only
 one legal action contributes only its first training sample.
 
-Both samples use the original actor probabilities in PPO. The second sample's
-loss weight corrects its joint marginal sampling probability back to the original
-joint policy; this weight is the product of the per-agent original/second-marginal
-probability ratios. The correction is uncapped and can have high variance for
-concentrated policies. Both samples inherit the first trajectory's source-state
-occupancy weight. Masks, actions, features, old logits, proposal weights, and
-advantages stay fixed across PPO passes.
+Both samples use the original actor probabilities in PPO's old/new likelihood
+ratio and inherit the same source-state occupancy weight. There is no additional
+probability-based loss weight: a rare but legal second action remains a training
+sample. Its validity depends only on a distinct action being available, together
+with the usual state-validity masks. Because sampling without replacement changes
+the action distribution, the second sample adds a PPO-style training term rather
+than an unbiased extra on-policy sample. Masks, actions, features, old logits,
+validity, and advantages stay fixed across PPO passes.
 
 The policy is a 3 × 512 MLP. The centralized critic uses width-256 attention,
 two attention layers, a 2 × 256 value MLP, and a 255-bin symexp/two-hot output.
