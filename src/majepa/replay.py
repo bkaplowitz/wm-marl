@@ -65,6 +65,34 @@ class ExponentialRecency:
             del self.items[step]
 
 
+class TruncatedGeometric(ExponentialRecency):
+    """Sample finite-buffer indices with truncated-geometric weights.
+
+    The paper parameterizes the distribution by an ``alpha`` slope over
+    oldest-to-newest indices, ``p(i) proportional to
+    2 ** (alpha * i / (capacity - 1))``.  ``ExponentialRecency`` samples age
+    from ``decay ** age`` instead, so converting with
+    ``decay = 2 ** (-alpha / (capacity - 1))`` gives exactly the same
+    distribution while retaining the selector's stable inverse-CDF sampler.
+    ``capacity`` is the replay capacity, whereas the currently populated
+    prefix is truncated naturally by ``ExponentialRecency.__call__``.
+    """
+
+    def __init__(self, alpha=10.0, capacity=250_000, seed=0, track_ages=True):
+        alpha = float(alpha)
+        capacity = int(capacity)
+        if not np.isfinite(alpha) or alpha < 0.0:
+            raise ValueError("truncated-geometric alpha must be finite and nonnegative")
+        if capacity < 2:
+            raise ValueError("truncated-geometric capacity must be at least 2")
+        decay = float(np.exp2(-alpha / (capacity - 1)))
+        if not 0.0 < decay <= 1.0:
+            raise ValueError("truncated-geometric decay underflowed")
+        self.alpha = alpha
+        self.capacity = capacity
+        super().__init__(decay, seed=seed, track_ages=track_ages)
+
+
 class RecentReplay(embodied.replay.Replay):
     """Single-stream replay with exponentially decayed sampling by item age."""
 
@@ -107,11 +135,12 @@ class RecentReplay(embodied.replay.Replay):
 class DualViewReplay(embodied.replay.Replay):
     """One replay store exposed through separate world and behavior views.
 
-    The world-model view samples recent sequence starts using exponential
-    recency weighting. The behavior view samples the same physical items
-    uniformly with an independent selector. Keeping the selectors here, next
-    to the single item table, makes it impossible for the two views to drift
-    onto different replay contents.
+    The world-model view samples recent sequence starts using either the
+    existing exponential age weighting or a truncated-geometric weighting.
+    The behavior view samples the same physical items uniformly with an
+    independent selector. Keeping the selectors here, next to the single item
+    table, makes it impossible for the two views to drift onto different replay
+    contents.
     """
 
     dual_view = True
@@ -123,6 +152,8 @@ class DualViewReplay(embodied.replay.Replay):
         *,
         optimized_length=None,
         recency_decay=0.9998,
+        world_sampler="exponential",
+        truncated_geometric_alpha=10.0,
         seed=0,
         isolate_report_rng=False,
         world_uniform_mix=0.0,
@@ -137,13 +168,28 @@ class DualViewReplay(embodied.replay.Replay):
         if kwargs.pop("online", False):
             raise ValueError("dual-view replay requires replay.online=False")
         replay_length = int(kwargs["length"])
+        replay_capacity = int(kwargs["capacity"])
         self.optimized_length = int(optimized_length or replay_length)
         if not 0 < self.optimized_length <= replay_length:
             raise ValueError(
                 "optimized_length must be positive and no larger than replay length"
             )
+        world_sampler = str(world_sampler)
+        if world_sampler not in {"exponential", "truncated_geometric"}:
+            raise ValueError(f"unsupported world sampler: {world_sampler!r}")
+        self.world_sampler = world_sampler
+        self.truncated_geometric_alpha = float(truncated_geometric_alpha)
+        if world_sampler == "truncated_geometric":
+            selector = TruncatedGeometric(
+                alpha=self.truncated_geometric_alpha,
+                capacity=replay_capacity,
+                seed=seed,
+                track_ages=False,
+            )
+        else:
+            selector = ExponentialRecency(decay, seed=seed, track_ages=False)
         super().__init__(
-            selector=ExponentialRecency(decay, seed=seed, track_ages=False),
+            selector=selector,
             online=False,
             seed=seed,
             **kwargs,
@@ -161,7 +207,8 @@ class DualViewReplay(embodied.replay.Replay):
         # behavior/report randomness. At mix=0 the existing draws are untouched.
         self.world_uniform_sampler = (
             embodied.selectors.Uniform(seed=int(seed) + 3)
-            if self.world_uniform_mix else None
+            if self.world_uniform_mix
+            else None
         )
         self.world_mixture_rng = np.random.default_rng(int(seed) + 4)
         self.world_mixture_lock = threading.Lock()
@@ -254,7 +301,8 @@ class DualViewReplay(embodied.replay.Replay):
         result["world_uniform_samples"] = values["world_uniform_samples"]
         result["world_uniform_fraction"] = (
             values["world_uniform_samples"] / values["world_samples"]
-            if values["world_samples"] else 0.0
+            if values["world_samples"]
+            else 0.0
         )
         result["behavior_samples"] = values["behavior_samples"]
         inserts = result["inserts"]
@@ -279,4 +327,9 @@ class DualViewReplay(embodied.replay.Replay):
         return result
 
 
-__all__ = ["DualViewReplay", "ExponentialRecency", "RecentReplay"]
+__all__ = [
+    "DualViewReplay",
+    "ExponentialRecency",
+    "RecentReplay",
+    "TruncatedGeometric",
+]

@@ -135,7 +135,7 @@ class TeamAxisAdapter:
         data, behavior = split_prefixed_data(data)
         if self.two_branch_replay and not behavior:
             raise ValueError(
-                "recent_world_uniform_behavior requires an independent "
+                "dual-view replay requires an independent "
                 f"{BEHAVIOR_REPLAY_PREFIX} batch"
             )
         if behavior and not self.two_branch_replay:
@@ -399,8 +399,8 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         if self.ctde_multistep_jepa_enabled:
             if not self.two_branch_replay:
                 raise ValueError(
-                    "multi-step JEPA is defined only on the recent world branch of "
-                    "recent_world_uniform_behavior replay"
+                    "multi-step JEPA is defined only on the world branch of "
+                    "dual-view replay"
                 )
             if int(config.batch_length) <= self.ctde_multistep_jepa_max_horizon:
                 raise ValueError(
@@ -410,12 +410,10 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 )
         if self.two_branch_replay:
             if not self.ctde_enabled:
-                raise ValueError(
-                    "recent_world_uniform_behavior requires multi-agent CTDE"
-                )
+                raise ValueError("dual-view replay requires multi-agent CTDE")
             if self.ctde_rollout_steps != 1 or self.ctde_mask_calibration:
                 raise ValueError(
-                    "recent_world_uniform_behavior supports only one-step factual "
+                    "dual-view replay supports only one-step factual "
                     "CTDE without mask calibration"
                 )
             joint_burnin = int(marl.ctde.joint.context) * int(
@@ -423,7 +421,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             )
             if int(config.replay_context) < joint_burnin:
                 raise ValueError(
-                    "recent_world_uniform_behavior replay_context must cover the "
+                    "dual-view replay_context must cover the "
                     "joint Transformer's full temporal receptive field "
                     f"({joint_burnin}), got {config.replay_context}"
                 )
@@ -1675,7 +1673,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
 
         if not self.ctde_multistep_jepa_enabled or not self.two_branch_replay:
             raise RuntimeError(
-                "direct multi-step JEPA requires the recent world replay branch"
+                "direct multi-step JEPA requires the world branch of dual-view replay"
             )
         max_horizon = self.ctde_multistep_jepa_max_horizon
         length = grouped_target.shape[1]

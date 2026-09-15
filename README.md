@@ -111,6 +111,28 @@ uv run --no-sync python -m majepa.main --configs smac_vector ma_jepa \
   --logdir ./runs/separate-world-rates-seed0
 ```
 
+The paper-style truncated-geometric world sampler is available as an explicit
+dual-view replay mode. It leaves behavior replay uniform and uses the finite
+buffer capacity when converting the paper's slope parameter to the stable age
+sampler:
+
+```bash
+uv run --no-sync python -m majepa.main \
+  --configs smac_vector ma_jepa \
+  --task smac_2s3z \
+  --agent.num_agents 5 \
+  --seed 0 \
+  --replay.sampling truncated_geometric_world_uniform_behavior \
+  --replay.truncated_geometric_alpha 10 \
+  --replay.world_uniform_mix 0 \
+  --logdir ./runs/truncated-geometric-seed0
+```
+
+`TruncatedGeometric` is implemented in
+[src/majepa/replay.py](src/majepa/replay.py) and is selected by
+[src/majepa/main.py](src/majepa/main.py)'s replay factory. The existing
+`recent_world_uniform_behavior` mode remains the default reference.
+
 Local JSON logs are enabled by default. For W&B, authenticate using `wandb login`
 and pass `--wandb-project` and `--wandb-entity` to `majepa-train`. The low-level
 entry point instead accepts `--logger.outputs jsonl wandb` and the usual W&B

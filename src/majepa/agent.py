@@ -59,7 +59,10 @@ class Agent(
             if not float(config.ppo.replay_value_scale):
                 raise ValueError("factual targets require replay value training")
         self.replay_sampling = str(getattr(config, "replay_sampling", "uniform"))
-        self.two_branch_replay = self.replay_sampling == "recent_world_uniform_behavior"
+        self.two_branch_replay = self.replay_sampling in {
+            "recent_world_uniform_behavior",
+            "truncated_geometric_world_uniform_behavior",
+        }
         self.ppo_start_step = int(getattr(config, "ppo_start_step", 0))
         if self.ppo_start_step < 0:
             raise ValueError("ppo_start_step must be nonnegative")

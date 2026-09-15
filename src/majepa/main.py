@@ -256,7 +256,11 @@ def make_replay(config, folder, mode="train"):
 
     sampling = str(config.replay.sampling)
     world_uniform_mix = float(config.replay.world_uniform_mix)
-    if world_uniform_mix and sampling != "recent_world_uniform_behavior":
+    dual_view_samplers = {
+        "recent_world_uniform_behavior": "exponential",
+        "truncated_geometric_world_uniform_behavior": "truncated_geometric",
+    }
+    if world_uniform_mix and sampling not in dual_view_samplers:
         raise ValueError("world_uniform_mix requires dual-view replay")
     if mode == "train" and sampling == "recent":
         from .replay import RecentReplay
@@ -268,13 +272,15 @@ def make_replay(config, folder, mode="train"):
             recency_decay=float(config.replay.recency_decay),
             seed=int(config.seed),
         )
-    if mode == "train" and sampling == "recent_world_uniform_behavior":
+    if mode == "train" and sampling in dual_view_samplers:
         from .replay import DualViewReplay
 
         return DualViewReplay(
             **kwargs,
             optimized_length=int(consec * batlen),
             recency_decay=float(config.replay.recency_decay),
+            world_sampler=dual_view_samplers[sampling],
+            truncated_geometric_alpha=float(config.replay.truncated_geometric_alpha),
             seed=int(config.seed),
             isolate_report_rng=bool(config.run.isolate_report_rng),
             world_uniform_mix=world_uniform_mix,

@@ -29,6 +29,7 @@ defaults:
     sampling: uniform
     recency_decay: 0.9998
     world_uniform_mix: 0.0
+    truncated_geometric_alpha: 10.0
   run:
     steps: 5e4
     train_ratio: 128.0
@@ -148,6 +149,7 @@ ma_jepa:
     sampling: recent_world_uniform_behavior
     recency_decay: 0.9998
     world_uniform_mix: 0.5
+    truncated_geometric_alpha: 10.0
   run:
     steps: 50000
     envs: 1
