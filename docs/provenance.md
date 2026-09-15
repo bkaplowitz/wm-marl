@@ -1,91 +1,66 @@
-# Cleanup provenance
+# Source provenance
 
-The source of truth was the deployed MA-JEPA learner used for the September 12
-world-model size / learning-rate sweep. The remote Git branch was older than that
-deployed source, so this cleanup imported the working implementation before
-removing inactive paths.
+`clean_jepa` is the source checkout for the MA-JEPA learner used by the
+currently running pod jobs. The pod source was copied into this checkout before
+this branch was pushed; the live pod directory was left unchanged so active
+jobs keep using their original snapshot.
 
-- Base branch: `origin/ma-jepa-ppo`, commit `0b98013c23c5199ce0569e57d5ac055900e7c163`.
-- Deployed-source fingerprint: `85eb6779590e26a76f226536359ac15327006eef7b55cab20d464d728b343eb6`.
-- Fingerprint algorithm: SHA-256 over sorted package paths relative to the deployed source root, each
-  path followed by NUL, file bytes, then NUL; include `.py`, `.yaml`, `.yml` files.
-- Upstream Embodied/DreamerV3 submodule: `e3f02248693a79dc8b0ebd62c93683888ddaccfe`.
-- JAX/JAXlib 0.4.36, Ninjax 3.6.3, Elements 3.22.0, Granular 0.23.1, Portal 3.8.1,
-  Scope 0.7.1, NumPy 1.26.4 and Optax 0.2.5 match the deployed Python runtime.
+## Canonical executable source
 
-The CUDA lock retains the pod's cuDNN 9.25.0.15 for reproducibility. PyPI has
-[yanked that release](https://pypi.org/project/nvidia-cudnn-cu12/9.25.0.15/);
-this cleanup does not claim to validate a replacement GPU runtime.
+- Pod source: `/workspace/ma_jepa_staggered_replay_20260915`
+- Deployed base commit recorded by the pod: `6261429abc4489871cc54c036c7871e65777a13e`
+- Executable source fingerprint: `711bfd0a89a270ee16dc4089248c3f53956bddd17ec8757ad9d71124a586ad9f`
+- Fingerprint algorithm: SHA-256 over sorted paths under `src/majepa`, relative to
+  the source root; each path, file bytes, and a trailing NUL are included. Files
+  with `.py`, `.yaml`, or `.yml` suffixes are hashed.
+- Package files covered by the fingerprint: 47.
 
-First-party Python shrank from 46 files / 12,614 lines in the deployed snapshot
-to 39 files / 8,440 lines, excluding tests and the pinned upstream runtime.
+`SOURCE_SHA256` stores the expected fingerprint and `DEPLOYED_COMMIT` stores the
+pod's recorded base commit. Recomputing the hash over this checkout gives the
+same 47-file fingerprint. The active queue launchers read the same manifest from
+the pod source before starting a job, so fixed-start and entropy queue jobs use a
+single executable snapshot.
 
-## Removed
+The branch retains the pinned Python dependency lockfile from the cleaned
+checkout. The executable package, configuration, and runtime modules are the
+ones from the pod snapshot; generated caches, queue logs, checkpoints, and
+one-off launch outputs are not part of the branch.
 
-Learned teammate belief and residual adapters; spatial encoders and decoder
-paths; the alternate direct joint latent head; factual-value/V-trace and
-representation-value treatments; experimental entropy scheduling; obsolete
-local-only learner fallbacks; alternate mask calibration; fresh-history and
-feedback-gradient treatments; old configuration and launch manifests; unused
-backend indirection; one-off experiment/diagnostic launchers and their tests.
+## What this establishes
 
-The running algorithm's losses, numerical operations, module parameter names,
-RNG order, optimizer groups, ordinary training metrics and checkpoint state were
-preserved. Empty legacy carry positions remain to preserve that state contract.
-The generic value-head size that did not configure the centralized critic was
-removed. Sizes and rates for the active sweep remain explicit profiles.
+A fresh clone of `clean_jepa`, with its submodules initialized and its locked
+environment installed, has the same MA-JEPA package source as the current pod
+snapshot. The commit hash and source fingerprint are independent checks: the
+commit identifies the snapshot's recorded origin, while the fingerprint verifies
+the files actually used by the learner.
 
-The new final-evaluation launcher uses each checkpoint's saved configuration,
-checks checkpoint completion, and refuses to overwrite an existing evaluation.
-Operational defaults use local logging, a fresh timestamped output directory,
-and 100 episodes for standalone final evaluation. Training-curve evaluations
-remain 32 episodes. No running pod job or remote queue was modified.
+This parity check does not claim bit-for-bit training reproducibility. Replay
+sampling and accelerator scheduling can still affect a run unless the launch
+protocol also fixes their ordering. It also does not change or restart any live
+pod job.
 
-## Validation
+## Verification
 
-A deterministic CPU/JIT comparison used identical synthetic team replay, deaths,
-resets, seeds and small model widths on the immutable deployed snapshot and the
-cleaned source. It included dense posterior alignment, the action-margin loss,
-self-fed two-step BPTT, imagined PPO and the replay value objective. All compared
-arrays were exactly equal (`numpy.array_equal`), not merely within tolerance:
+From the repository root, recompute the package fingerprint with:
 
-| Comparison | Array leaves |
-| --- | ---: |
-| Initialization | 525 |
-| Online policy result | 34 |
-| Reports | 239 |
-| Second learner update outputs | 283 |
-| State after two learner updates | 525 |
+```bash
+python - <<'PY'
+from pathlib import Path
+import hashlib
 
-The maintained suite passes **32 tests**, covering training, replay history,
-optimizer ownership and nonfinite rollback, PPO frozen-support consistency,
-representation gradient boundaries, team rewards/deaths, evaluation quotas and
-seeds, saved evaluation architecture, sweep configurations, and the SMAC adapter.
-Lint, formatting and command-line help were also checked. A fresh CPU development
-environment installs successfully from the lockfile.
+root = Path('.')
+files = sorted(
+    path for path in (root / 'src' / 'majepa').rglob('*')
+    if path.is_file()
+    and path.suffix in {'.py', '.yaml', '.yml'}
+    and not path.name.startswith('._')
+)
+digest = hashlib.sha256()
+for path in files:
+    digest.update(str(path.relative_to(root)).encode() + b'\0')
+    digest.update(path.read_bytes() + b'\0')
+print(digest.hexdigest())
+PY
+```
 
-These checks validate the cleanup at small dimensions. They are not a new
-full-size GPU/StarCraft training experiment. Existing reported win rates belong
-to the original deployed source, not newly trained `clean_jepa` checkpoints.
-
-## Reference refresh — September 14, 2026
-
-The selected settings are the unfixed WM4096c64 / Actor512 configuration with
-both world-model LRs at 1e-4, BPTT2, H5, fixed entropy 0.003, 50/50 world-model replay, and
-independent uniform imagination roots. It is the same deployed source fingerprint
-listed above. Its completed 2s3z final 100-episode results for seeds 0/1/2 are
-63/69/79%, respectively.
-
-The resolved settings were compared with the saved launch configuration of
-`st14-wm1e4-2s3z-s2-train`, also used by `re14-reference-2s3z-s2-train`.
-Checkpoint cadence now matches that run: `run.save_every=5000` seconds,
-`run.checkpoint_at_curve_eval=False`, and a final checkpoint. The remaining
-intentional operational differences are a fresh output path, local-only logging
-by default, default seed 0 instead of 2, and standalone evaluation default 100
-instead of the unused training-launch value 1. Active learning settings match;
-removed inactive configuration fields remain removed.
-
-The replay-timing and extra seeding interventions are not included. The current
-entropy 0.001-to-0.0003 experiment is not promoted into this reference. Source,
-configuration and seeds alone do not recover historical asynchronous replay
-ordering. No full-run determinism or new cleaned-source win rate is claimed.
+The output must equal the value in `SOURCE_SHA256`.

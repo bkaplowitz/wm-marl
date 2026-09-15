@@ -137,14 +137,20 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
             "together"
         )
 
+    replay_stream_mode = str(getattr(args, "replay_stream_mode", "prefetch"))
+    staggered_replay = replay_stream_mode == "snapshot_staggered"
     train_source = make_stream(replay, "train_world" if dual_view else "train")
     report_source = make_stream(replay, "report")
+    behavior_source = None
     if dual_view:
-        train_source = _with_prefixed_batch(
-            train_source,
-            make_stream(replay, "train_behavior"),
-            "_behavior_replay/",
-        )
+        if staggered_replay:
+            behavior_source = make_stream(replay, "train_behavior")
+        else:
+            train_source = _with_prefixed_batch(
+                train_source,
+                make_stream(replay, "train_behavior"),
+                "_behavior_replay/",
+            )
         # JAX requires every advertised input space for report compilation as
         # well. TeamAxisAdapter.report strips this transport-only copy, so the
         # primary report batch and metrics retain their prior semantics.
@@ -153,12 +159,36 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
             make_stream(replay, "report"),
             "_behavior_replay/",
         )
-    stream_train = iter(agent.stream(train_source))
-    if bool(getattr(args, "isolate_report_rng", False)):
+    snapshot_replay = replay_stream_mode in {"snapshot_prefetch", "snapshot_staggered"}
+    if replay_stream_mode not in {"prefetch", "snapshot_prefetch", "snapshot_staggered"}:
+        raise ValueError(f"Unknown replay stream mode: {replay_stream_mode}")
+    if snapshot_replay:
+        from .streams import (
+            ReplaySnapshotStream, ReplaySnapshotTrace, synchronous_report_stream,
+        )
+
+        if int(getattr(args, "replicas", 1)) != 1:
+            raise ValueError("Snapshot replay requires the local serial collector")
+        if not dual_view or getattr(replay, "report_sampler", None) is None:
+            raise ValueError("Snapshot replay requires independent report sampling")
+        trace_limit = int(getattr(args, "replay_trace_batches", 0))
+        if trace_limit < 0:
+            raise ValueError("replay_trace_batches must be nonnegative")
+        trace = ReplaySnapshotTrace(logdir / "replay_snapshots.jsonl", trace_limit)
+        stream_train = ReplaySnapshotStream(
+            agent, train_source, trace if trace_limit else None,
+            behavior_source=behavior_source,
+            startup_behavior_min_starts=(
+                int(args.replay_startup_behavior_min_starts) if staggered_replay else 1),
+        )
+        stream_report = iter(synchronous_report_stream(agent, report_source))
+    elif bool(getattr(args, "isolate_report_rng", False)):
         from .streams import isolated_report_stream
 
+        stream_train = iter(agent.stream(train_source))
         stream_report = iter(isolated_report_stream(agent, report_source))
     else:
+        stream_train = iter(agent.stream(train_source))
         stream_report = iter(agent.stream(report_source))
     carry_train = [agent.init_train(args.batch_size)]
     carry_report = agent.init_report(args.batch_size)
@@ -171,13 +201,21 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     def trainfn(tran, worker):
         del tran, worker
         current_step = int(step)
+        # Preserve eager startup sampling, while making the exact first read
+        # independent of background-thread scheduling. This does not train the
+        # model early or change the 5k prefill/update budget.
+        if snapshot_replay and len(replay):
+            stream_train.prime(current_step, eligible_starts=len(replay))
         # Do not call Ratio before replay eligibility. This prevents prefill
         # collection from creating a learner-update backlog.
         if len(replay) < minimum_replay_size or current_step < world_model_start_step:
             return
         for _ in range(should_train(step)):
             with elements.timer.section("stream_next"):
-                batch = next(stream_train)
+                if snapshot_replay:
+                    batch, sampled_at = stream_train.take(current_step)
+                else:
+                    batch = next(stream_train)
             if "_environment_step" in agent.spaces:
                 reference = batch["is_first"]
                 batch["_environment_step"] = jax.device_put(
@@ -198,6 +236,10 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
             if "replay" in outputs:
                 replay.update(outputs["replay"])
             train_agg.add(metrics, prefix="train")
+            if snapshot_replay:
+                train_agg.add({
+                    "snapshot_replay/sample_age_records": current_step - sampled_at,
+                }, prefix="train")
 
     driver.on_step(trainfn)
 
@@ -214,6 +256,11 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     checkpoint.first_learner_environment_step = first_learner_environment_step
     checkpoint.first_ppo_environment_step = first_ppo_environment_step
     if checkpoint.exists():
+        if snapshot_replay:
+            raise ValueError(
+                "Snapshot replay repeatability requires a fresh logdir; replay "
+                "selector RNG and the pending batch are not checkpointed"
+            )
         checkpoint.load()
 
     print("Start training loop")

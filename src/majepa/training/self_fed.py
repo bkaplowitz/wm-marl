@@ -1,9 +1,10 @@
-"""Truncated recurrent supervision of the deployed joint simulator.
+"""Optional truncated recurrent supervision of the deployed CTDE simulator.
 
-Recorded actions determine targets even outside predicted support. Joint-state
-history is differentiated through two-step chunks. Local parameters are frozen;
-trajectory posterior alignment keeps its input Jacobian. Joint transition inputs
-retain the established stop-gradient boundary into local states.
+Recorded actions determine factual targets even outside predicted support.
+Recurrent state is detached at configured BPTT chunk boundaries. For BPTT > 1,
+local transition parameters stay frozen while its input Jacobian remains live.
+The opt-in local-feedback edge lets later joint losses use that Jacobian;
+factual joint training retains its original detached local-state boundary.
 """
 
 import embodied.jax.nets as nn
@@ -123,9 +124,7 @@ def frozen_local_transition(dynamics, local, action, embedding, active, *, logit
         cache, deter = dynamics.advance(local, action, training=False, active=active)
         if logits is not None:
             return dynamics.complete(cache, deter, logit=logits, sample=True)[0]
-        return dynamics.complete_from_observation(cache, deter, embedding, sample=True)[
-            0
-        ]
+        return dynamics.complete_from_observation(cache, deter, embedding, sample=True)[0]
 
     if nj.creating():
         return advance(local, action, embedding, active, logits)
@@ -148,20 +147,38 @@ def frozen_local_transition(dynamics, local, action, embedding, active, *, logit
     return output
 
 
+def recurrent_training_inputs(agent, features, entries, obs):
+    """Optionally rebuild only auxiliary roots from current raw histories."""
+    cfg = agent.config.marl.ctde.self_fed
+    if not cfg.get("fresh_history", False):
+        return features, entries
+    carry, fresh_obs, actions, _ = agent._apply_behavior_replay_context(
+        obs["_self_fed_raw"]
+    )
+    _, (_, entries, _), features = agent._behavior_model_states(
+        carry, fresh_obs, actions
+    )
+    return features, entries
+
+
 def truncate_self_fed_state(state, offset, bptt_steps):
     """Start each truncated chunk from a detached recurrent state."""
+    if bptt_steps == 1:
+        return jax.lax.stop_gradient(state)
     return jax.lax.cond(
         (offset - 1) % bptt_steps == 0,
-        jax.lax.stop_gradient,
-        lambda value: value,
-        state,
+        jax.lax.stop_gradient, lambda value: value, state,
     )
 
 
 def self_fed_losses(agent, online, features, entries, ema, obs, prevact):
     """Produce sparse root-aligned auxiliary grids using existing model heads."""
     cfg = agent.config.marl.ctde.self_fed
+    features, entries = recurrent_training_inputs(agent, features, entries, obs)
     bptt_steps = int(cfg.get("bptt_steps", 1))
+    local_feedback = bool(cfg.get("local_feedback_gradient", False))
+    if local_feedback and bptt_steps < 2:
+        raise ValueError("Local feedback gradients require BPTT >= 2")
     trajectory_kl = float(cfg.get("trajectory_kl_scale", 0.0)) > 0
     horizons = tuple(int(value) for value in cfg.horizons)
     maximum = max(horizons)
@@ -244,17 +261,35 @@ def self_fed_losses(agent, online, features, entries, ema, obs, prevact):
             current_alive,
             reset,
             training=False,
-            **({}),
+            **({"stop_state_gradient": False} if local_feedback else {}),
         )
         local_action = {agent.ctde_action_key: agent.team.fold_batch(action)}
-        local = frozen_local_transition(
-            agent.dyn,
-            local,
-            local_action,
-            agent.team.fold_batch(prediction["embedding"]),
-            agent.team.fold_batch(root_present),
-            **({}),
-        )
+        if bptt_steps == 1:
+            cache, deter = agent.dyn.advance(
+                local,
+                local_action,
+                training=False,
+                active=agent.team.fold_batch(root_present),
+            )
+            if "latent_logits" in prediction:
+                local, _ = agent.dyn.complete(
+                    cache, deter, logit=agent.team.fold_batch(prediction["latent_logits"]),
+                    sample=True,
+                )
+            else:
+                local, _ = agent.dyn.complete_from_observation(
+                    cache, deter, agent.team.fold_batch(prediction["embedding"]), sample=True
+                )
+        else:
+            local = frozen_local_transition(
+                agent.dyn,
+                local,
+                local_action,
+                agent.team.fold_batch(prediction["embedding"]),
+                agent.team.fold_batch(root_present),
+                **({"logits": agent.team.fold_batch(prediction["latent_logits"])}
+                   if "latent_logits" in prediction else {}),
+            )
         hidden = prediction["hidden"]
         reward_output = agent.ctde_rew(hidden, 2)
         continuation_output = agent.ctde_con(hidden, 2)
@@ -291,27 +326,44 @@ def self_fed_losses(agent, online, features, entries, ema, obs, prevact):
             ),
             "alive": alive_output.loss(target["alive"]),
         }
+        if float(cfg.consumer_kl_scale):
+            prediction_logits = (
+                agent.team.fold_batch(prediction["latent_logits"])
+                if "latent_logits" in prediction else frozen_posterior(
+                    agent.dyn, agent.team.fold_batch(embedding), stop(deter)
+                )
+            )
+            target_logits = frozen_posterior(
+                agent.dyn,
+                agent.team.fold_batch(target["online"]),
+                stop(deter),
+            )
+            losses["consumer_kl"] = agent.team.unfold_batch(
+                mixed_posterior_kl(
+                    prediction_logits,
+                    target_logits,
+                    agent.dyn.unimix,
+                )
+            )
         if trajectory_kl:
             # Compare the actually induced recurrent posterior with the factual
             # history posterior, rather than evaluating both on predicted history.
             # Local parameters and factual targets stay frozen; the live history
             # Jacobian credits the joint producer through the existing BPTT window.
-            prediction_logits = frozen_posterior(
-                agent.dyn,
-                agent.team.fold_batch(embedding),
-                local["deter"],
-                history_gradient=True,
+            prediction_logits = (
+                agent.team.fold_batch(prediction["latent_logits"])
+                if "latent_logits" in prediction else frozen_posterior(
+                    agent.dyn, agent.team.fold_batch(embedding), local["deter"],
+                    history_gradient=True,
+                )
             )
             target_logits = frozen_posterior(
-                agent.dyn,
-                agent.team.fold_batch(target["online"]),
+                agent.dyn, agent.team.fold_batch(target["online"]),
                 agent.team.fold_batch(target["factual_deter"]),
             )
             losses["trajectory_kl"] = agent.team.unfold_batch(
                 mixed_posterior_kl(
-                    prediction_logits,
-                    target_logits,
-                    agent.dyn.unimix,
+                    prediction_logits, target_logits, agent.dyn.unimix,
                 )
             )
         reward, continuation = shared_team_outcomes(
@@ -334,7 +386,7 @@ def self_fed_losses(agent, online, features, entries, ema, obs, prevact):
             .mean(-1),
         }
         state = (local, joint, next_alive, next_mask, jnp.zeros_like(reset))
-        return (state), (losses, stop(metrics))
+        return (stop(state) if bptt_steps == 1 else state), (losses, stop(metrics))
 
     initial = nn.cast(stop((local, joint, root_alive, root_mask, root_reset)))
     _, (steps, step_metrics) = nj.scan(

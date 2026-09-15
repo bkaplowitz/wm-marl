@@ -3,7 +3,8 @@
 The executable MA-JEPA policy remains the unchanged local encoder, causal
 Transformer, posterior, and actor.  These modules operate only on synchronized
 team tensors during learning.  The simulator predicts the next observation
-embedding for each local posterior. No fixed agent identifiers or agent-position embeddings are used.
+embedding for each local posterior. An opt-in joint categorical head can
+instead provide the stochastic latent during imagination.  No fixed agent identifiers or agent-position embeddings are used.
 """
 
 import math
@@ -16,6 +17,7 @@ import jax.numpy as jnp
 import ninjax as nj
 
 from ..world_model.transformer import CausalTransformer
+from .multistep_jepa import isolated_creation_call
 
 
 f32 = jnp.float32
@@ -156,6 +158,10 @@ class JointObservationJEPA(nj.Module):
             raise ValueError(
                 f"CTDE width {self.width} must be divisible by {self.heads} heads"
             )
+        if self.action_conditioning not in {"add", "adaln"}:
+            raise ValueError("CTDE action_conditioning must be either 'add' or 'adaln'")
+        if (self.latent_stoch > 0) != (self.latent_classes > 0):
+            raise ValueError("Direct latent head requires both stochastic dimensions")
         del kwargs
 
     def initial(self, teams, agents, previous_position=None):
@@ -192,7 +198,11 @@ class JointObservationJEPA(nj.Module):
         agents = states.shape[2]
         mixed, action_condition = self._mix(states, actions, present, alive, training)
         folded = _fold_agent_sequence(mixed)
-        condition = folded
+        condition = (
+            folded
+            if self.action_conditioning == "add"
+            else _fold_agent_sequence(action_condition)
+        )
         folded_reset = _fold_agent_sequence(
             jnp.broadcast_to(reset[:, :, None], reset.shape + (agents,))
         )
@@ -207,16 +217,8 @@ class JointObservationJEPA(nj.Module):
         return cache, self._outputs(hidden), snapshots
 
     def step(
-        self,
-        cache,
-        states,
-        actions,
-        present,
-        alive,
-        reset,
-        training,
-        *,
-        stop_state_gradient=True,
+        self, cache, states, actions, present, alive, reset, training,
+        *, stop_state_gradient=True,
     ):
         """One synchronized imagined transition for ``[N,A,...]`` states."""
 
@@ -233,15 +235,15 @@ class JointObservationJEPA(nj.Module):
             raise ValueError("CTDE step masks do not match state/action axes")
         teams, agents = actions.shape
         mixed, action_condition = self._mix(
-            states,
-            actions,
-            present,
-            alive,
-            training,
+            states, actions, present, alive, training,
             stop_state_gradient=stop_state_gradient,
         )
         folded = mixed.reshape((teams * agents, self.width))
-        condition = folded
+        condition = (
+            folded
+            if self.action_conditioning == "add"
+            else action_condition.reshape((teams * agents, self.width))
+        )
         folded_reset = jnp.broadcast_to(reset[:, None], (teams, agents)).reshape(-1)
         cache, hidden = self._temporal().step(
             cache,
@@ -253,18 +255,25 @@ class JointObservationJEPA(nj.Module):
         hidden = hidden * present[..., None].astype(hidden.dtype)
         return cache, self._outputs(hidden)
 
-    def _mix(
-        self, states, actions, present, alive, training, *, stop_state_gradient=True
-    ):
+    def _mix(self, states, actions, present, alive, training, *, stop_state_gradient=True):
         present = present.astype(bool)
-        alive = alive.astype(bool) & present
+        probabilistic_alive = not jnp.issubdtype(alive.dtype, jnp.bool_)
+        if probabilistic_alive:
+            alive = jnp.clip(alive.astype(f32), 0.0, 1.0)
+            alive *= present.astype(f32)
+        else:
+            alive = alive.astype(bool) & present
         states = self.sub("state_projection", nn.Linear, self.width, winit=self.winit)(
-            nn.cast(sg(states))
+            nn.cast(sg(states) if stop_state_gradient else states)
         )
         dead_state = self.value(
             "dead_state", nn.init("trunc_normal"), (self.width,), f32
         )
-        states = jnp.where(alive[..., None], states, nn.cast(dead_state))
+        if probabilistic_alive:
+            alive_cast = nn.cast(alive[..., None])
+            states = alive_cast * states + (1.0 - alive_cast) * nn.cast(dead_state)
+        else:
+            states = jnp.where(alive[..., None], states, nn.cast(dead_state))
         alive_token = self.sub(
             "alive_projection", nn.Linear, self.width, winit=self.winit
         )(nn.cast(alive[..., None].astype(f32)))
@@ -299,7 +308,28 @@ class JointObservationJEPA(nj.Module):
             "embedding_prediction", nn.Linear, self.target_dim, winit=self.winit
         )(hidden)
         output = {"hidden": hidden, "embedding": prediction}
+        if self.latent_stoch:
+            output["latent_logits"] = isolated_creation_call(
+                self._latent_logits, 916_403, hidden
+            )
         return output
+
+    def _latent_logits(self, hidden):
+        """Predict the next agent latent from joint history/actions, without an observation."""
+        value = hidden
+        for index in range(2):
+            value = self.sub(
+                f"latent_layer{index}", nn.Linear, self.width, winit=self.winit
+            )(value)
+            value = nn.act(self.act)(
+                self.sub(f"latent_norm{index}", nn.Norm, self.norm)(value)
+            )
+        value = self.sub(
+            "latent_logits", nn.Linear, self.latent_stoch * self.latent_classes,
+            winit=self.winit,
+        )(value)
+        return value.reshape((*value.shape[:-1], self.latent_stoch, self.latent_classes))
+
 
     def _temporal(self):
         return self.sub(
@@ -317,6 +347,114 @@ class JointObservationJEPA(nj.Module):
             winit=self.winit,
             condition_mode=self.action_conditioning,
         )
+
+
+class TeammateActionBelief(nj.Module):
+    """Predict peer actions from one stopped, strictly local causal state."""
+
+    layers: int = 2
+    units: int = 512
+    act: str = "silu"
+    norm: str = "rms"
+    winit: str = "trunc_normal_in"
+    outscale: float = 0.0
+
+    def __init__(self, peers, action_count, **kwargs):
+        self.peers = int(peers)
+        self.action_count = int(action_count)
+        if self.peers < 1:
+            raise ValueError("teammate belief requires at least one peer")
+        if self.action_count < 2:
+            raise ValueError("teammate belief requires categorical actions")
+        if self.layers < 1 or self.units < 1:
+            raise ValueError("teammate belief MLP dimensions must be positive")
+        del kwargs
+
+    def __call__(self, local_state, bdims):
+        if local_state.ndim != bdims + 1:
+            raise ValueError(
+                "teammate belief expects local state batch dimensions followed "
+                f"by features, got {local_state.shape} with bdims={bdims}"
+            )
+        value = nn.cast(sg(local_state))
+        for index in range(self.layers):
+            value = self.sub(f"layer{index}", nn.Linear, self.units, winit=self.winit)(
+                value
+            )
+            value = self.sub(f"norm{index}", nn.Norm, self.norm)(value)
+            value = nn.act(self.act)(value)
+        return self.sub(
+            "logits",
+            nn.Linear,
+            (self.peers, self.action_count),
+            winit=self.winit,
+            outscale=self.outscale,
+        )(value).astype(f32)
+
+
+class TeammateBeliefActorAdapter(nj.Module):
+    """Map detached own-state-conditioned belief to residual action logits.
+
+    Every path from belief to output is bias-free. Therefore an exactly uniform
+    peer belief, represented as an all-zero context, always yields zero residual
+    logits even after training. The final projection is zero initialized so the
+    enabled treatment begins as the exact base policy for every input.
+    """
+
+    units: int = 256
+    layers: int = 1
+    act: str = "silu"
+    norm: str = "rms"
+    winit: str = "trunc_normal_in"
+
+    def __init__(self, action_count, **kwargs):
+        self.action_count = int(action_count)
+        if self.action_count < 2 or self.units < 1 or self.layers < 1:
+            raise ValueError("teammate actor adapter dimensions must be positive")
+        del kwargs
+
+    def __call__(self, local_state, belief_context, bdims):
+        if local_state.ndim != bdims + 1 or belief_context.ndim != bdims + 1:
+            raise ValueError(
+                "teammate actor adapter expects local batch dimensions followed "
+                f"by features, got {local_state.shape} and {belief_context.shape}"
+            )
+        if local_state.shape[:bdims] != belief_context.shape[:bdims]:
+            raise ValueError("teammate actor state and belief batches must align")
+        local_state = nn.cast(sg(local_state))
+        belief_context = nn.cast(sg(belief_context))
+        own = self.sub("own_projection", nn.Linear, self.units, winit=self.winit)(
+            local_state
+        )
+        own = nn.act(self.act)(self.sub("own_norm", nn.Norm, self.norm)(own))
+        belief = self.sub(
+            "belief_projection",
+            nn.Linear,
+            self.units,
+            bias=False,
+            winit=self.winit,
+        )(belief_context)
+        belief = nn.act(self.act)(self.sub("belief_norm", nn.Norm, self.norm)(belief))
+        value = jnp.concatenate([belief, own * belief], axis=-1)
+        for index in range(self.layers):
+            value = self.sub(
+                f"fusion{index}",
+                nn.Linear,
+                self.units,
+                bias=False,
+                winit=self.winit,
+            )(value)
+            value = nn.act(self.act)(
+                self.sub(f"fusion_norm{index}", nn.Norm, self.norm)(value)
+            )
+        return self.sub(
+            "residual",
+            nn.Linear,
+            self.action_count,
+            bias=False,
+            winit=self.winit,
+            outscale=0.0,
+        )(value).astype(f32)
 
 
 class CentralAttentionCritic(nj.Module):
@@ -351,14 +489,23 @@ class CentralAttentionCritic(nj.Module):
                 f"{alive.shape}"
             )
         present = present.astype(bool)
-        alive = alive.astype(bool) & present
+        probabilistic_alive = not jnp.issubdtype(alive.dtype, jnp.bool_)
+        if probabilistic_alive:
+            alive = jnp.clip(alive.astype(f32), 0.0, 1.0)
+            alive *= present.astype(f32)
+        else:
+            alive = alive.astype(bool) & present
         value = self.sub("state_projection", nn.Linear, self.width, winit=self.winit)(
             nn.cast(sg(local_states))
         )
         dead_state = self.value(
             "dead_state", nn.init("trunc_normal"), (self.width,), f32
         )
-        value = jnp.where(alive[..., None], value, nn.cast(dead_state))
+        if probabilistic_alive:
+            alive_cast = nn.cast(alive[..., None])
+            value = alive_cast * value + (1.0 - alive_cast) * nn.cast(dead_state)
+        else:
+            value = jnp.where(alive[..., None], value, nn.cast(dead_state))
         value += self.sub("alive_projection", nn.Linear, self.width, winit=self.winit)(
             nn.cast(alive[..., None].astype(f32))
         )
@@ -392,4 +539,6 @@ class CentralAttentionCritic(nj.Module):
 __all__ = [
     "CentralAttentionCritic",
     "JointObservationJEPA",
+    "TeammateActionBelief",
+    "TeammateBeliefActorAdapter",
 ]

@@ -1,9 +1,10 @@
 # MA-JEPA
 
 Decoder-free multi-agent world modelling with a shared decentralized actor and
-PPO on imagined team trajectories. `clean_jepa` contains a cleaned implementation
-of the selected deployed reference, with settings pinned through September 14,
-2026 and a checkpoint-based evaluation entry point.
+PPO on imagined team trajectories. `clean_jepa` is the reproducibility checkout
+for the exact MA-JEPA package used by the current pod runs. Its executable
+package is pinned by `SOURCE_SHA256`; source provenance is recorded in
+`DEPLOYED_COMMIT` and [provenance](docs/provenance.md).
 
 The maintained model has a local encoder and history for each agent, a shared
 joint JEPA predictor during training, and a centralized critic. It learns future
@@ -88,8 +89,9 @@ The seed controls model, action, environment and replay RNGs. Asynchronous repla
 can still read different buffer contents depending on scheduling, so the same
 seed does not guarantee an identical training trajectory or win rate. Neither
 the reverted synchronous-sampling intervention nor the draft seed changes are
-included. These results belong to the deployed source; see the cleanup parity
-checks and their limits in [provenance](docs/provenance.md).
+included. These results belong to the deployed source snapshot identified by
+`SOURCE_SHA256`; see the parity checks and their limits in
+[provenance](docs/provenance.md).
 
 Configuration flags use dotted names from
 [src/majepa/configs.yaml](src/majepa/configs.yaml). For example:
