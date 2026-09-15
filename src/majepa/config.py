@@ -47,7 +47,7 @@ class MAJEPARunSpec:
     curve_eval_episodes: int | None = None
     curve_eval_envs: int | None = None
     curve_eval_seed_offset: int | None = None
-    imag_action_samples: int = 2
+    imag_action_samples: int = 1
 
     def __post_init__(self) -> None:
         object.__setattr__(

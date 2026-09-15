@@ -14,7 +14,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", required=True)
     parser.add_argument("--num-agents", type=int, required=True)
-    parser.add_argument("--imag-action-samples", type=int, choices=(1, 2), default=2)
+    parser.add_argument("--imag-action-samples", type=int, choices=(1, 2), default=1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--total-env-steps", type=int, default=50_000)
     parser.add_argument("--experiment-dir", type=Path)

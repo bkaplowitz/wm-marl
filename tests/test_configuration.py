@@ -24,11 +24,13 @@ def test_training_setup_accepts_imagined_action_sample_count(tmp_path, samples):
     if samples is not None:
         arguments.extend(["--imag-action-samples", str(samples)])
     assert train_main(arguments) == 0
-    expected = 2 if samples is None else samples
+    expected = 1 if samples is None else samples
     manifest = json.loads((tmp_path / "launch.json").read_text())
     command = manifest["command"]
     index = command.index("--agent.imag_action_samples")
     config = _resolve_config_profiles(_load_configs(), manifest["configs"])
+    assert config.agent.imag_action_samples == 1
+    assert MAJEPARunSpec(tmp_path, "smac_2s3z", 5).imag_action_samples == 1
     resolved = elements.Flags(config).parse(command[index : index + 2])
     assert resolved.agent.imag_action_samples == expected
     assert manifest["ctde"]["imag_action_samples"] == expected

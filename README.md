@@ -52,11 +52,11 @@ uv run --no-sync majepa-train \
   --task smac_2s3z \
   --num-agents 5 \
   --seed 0 \
-  --experiment-dir ./runs/two-actions-2s3z-seed0
+  --experiment-dir ./runs/majepa-2s3z-seed0
 ```
 
 For `3s_vs_4z`, use `--task smac_3s_vs_4z --num-agents 3`.
-Set `--imag-action-samples 1` for single-action imagination, or `2` (the default)
+Set `--imag-action-samples 1` (the default) for single-action imagination, or `2`
 to train on two actions per agent sampled without replacement. Both samples
 receive the same source-state weight. Only the first successor continues the
 imagined trajectory; the second uses its own reward and successor-value bootstrap
@@ -121,7 +121,7 @@ and evaluation process, or leave them unset.
 ## Evaluate the final checkpoint
 
 ```bash
-uv run --no-sync majepa-evaluate ./runs/two-actions-2s3z-seed0
+uv run --no-sync majepa-evaluate ./runs/majepa-2s3z-seed0
 ```
 
 This reads `launch.json`, selects the current configuration profiles for its

@@ -166,7 +166,10 @@ def _assert_finite(tree):
 @pytest.mark.parametrize("mask_sampling", ["threshold", "bernoulli"])
 def test_second_imagined_action_cannot_change_the_realized_trajectory(mask_sampling):
     learner, _, _ = _tiny_learner(
-        {"agent.marl.ctde.imagination_mask_sampling": mask_sampling}
+        {
+            "agent.imag_action_samples": 2,
+            "agent.marl.ctde.imagination_mask_sampling": mask_sampling,
+        }
     )
 
     def rollout():
