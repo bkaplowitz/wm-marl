@@ -169,11 +169,16 @@ class LearnerMixin:
         separate series reuses the immutable batch, including its realized masks,
         before slow-target copying. The nested context disallows state mutation.
         """
+
         def evaluate(batch):
             return self._ppo_actor_loss(batch)[1], self._ppo_critic_loss(batch)[1]
 
         _, (actor, critic) = nj.pure(evaluate, nested=True)(
-            dict(nj.context()), batch, seed=719_243, create=False, modify=False,
+            dict(nj.context()),
+            batch,
+            seed=719_243,
+            create=False,
+            modify=False,
         )
         return {
             f"ppo/{group}/post_update_{key}": sg(value)
@@ -506,11 +511,6 @@ class LearnerMixin:
             )
         )
         advantage_scale = jnp.asarray(1.0, jnp.float32)
-        if self.ppo_return_norm is None:
-            advantage = normalize_advantage(advantage, valid, trajectory_weight)
-        else:
-            _, advantage_scale = self.ppo_return_norm(target_return, True, valid)
-            advantage = jnp.where(valid, advantage / sg(advantage_scale), 0.0)
 
         def decisions(tree):
             return jax.tree.map(lambda value: value[:, :-1], tree)
@@ -528,9 +528,49 @@ class LearnerMixin:
                 "valid": valid,
                 "critic_valid": state_valid[:, :-1],
                 "trajectory_weight": trajectory_weight,
-                "entropy_coefficient": entropy_coefficient,
             }
         )
+        alternative = auxiliary.get("alternative")
+        if alternative is not None:
+            alternative_value = self.critic(
+                alternative["features"],
+                2,
+                slow=True,
+                context={
+                    key: alternative[key] for key in ("present", "controllable_alive")
+                },
+            ).pred()
+            alternative_return = alternative["reward"] + (
+                alternative["continuation"]
+                * self.team.fold_sequence(alternative["present"])
+                * alternative_value
+            )
+            alternative_valid = alternative["valid"]
+            alternative_batch = {
+                **batch,
+                "action": alternative["action"],
+                "target_return": alternative_return,
+                "advantage": jnp.where(
+                    valid & alternative_valid,
+                    alternative_return - target_value[:, :-1],
+                    0.0,
+                ),
+                "valid": valid & alternative_valid,
+                "critic_valid": state_valid[:, :-1] & alternative_valid,
+            }
+            batch = sg(concat([batch, alternative_batch], 0))
+        if self.ppo_return_norm is None:
+            batch["advantage"] = normalize_advantage(
+                batch["advantage"], batch["valid"], batch["trajectory_weight"]
+            )
+        else:
+            _, advantage_scale = self.ppo_return_norm(
+                batch["target_return"], True, batch["valid"]
+            )
+            batch["advantage"] = jnp.where(
+                batch["valid"], batch["advantage"] / sg(advantage_scale), 0.0
+            )
+        batch["entropy_coefficient"] = entropy_coefficient
         if float(self.config.ppo.replay_value_scale):
             batch["replay_value"] = self._prepare_replay_value_batch(
                 repfeat, obs, target_return[:, 0], starts_count
@@ -551,7 +591,7 @@ class LearnerMixin:
                 reward[:, 1:], valid, trajectory_weight
             ),
             "ppo/batch_return": masked_weighted_mean(
-                target_return, valid, trajectory_weight
+                batch["target_return"], batch["valid"], batch["trajectory_weight"]
             ),
             "ppo/batch_target_value": masked_weighted_mean(
                 target_value[:, :-1], valid, trajectory_weight
@@ -561,6 +601,11 @@ class LearnerMixin:
             ),
             "ppo/batch_valid_fraction": valid.astype(jnp.float32).mean(),
             "ppo/batch_effective_weight": trajectory_weight.mean(),
+            "ppo/second_sample_valid_fraction": (
+                alternative["valid"].astype(jnp.float32).mean()
+                if alternative is not None
+                else jnp.float32(0)
+            ),
             "ppo/batch_illegal_action_fraction": (
                 valid.astype(jnp.float32) * (~sampled_legal).astype(jnp.float32)
             ).sum()

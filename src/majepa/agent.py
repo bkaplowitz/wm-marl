@@ -37,6 +37,11 @@ class Agent(
         self.obs_space = obs_space
         self.act_space = act_space
         self.config = config
+        self.imag_action_samples = config.get("imag_action_samples", 1)
+        if type(
+            self.imag_action_samples
+        ) is not int or self.imag_action_samples not in (1, 2):
+            raise ValueError("imag_action_samples must be 1 or 2")
         factual = getattr(config.ppo, "factual_value", {})
         self.factual_value_enabled = bool(factual.get("enabled", False))
         self.factual_representation_scale = float(

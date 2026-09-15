@@ -43,6 +43,7 @@ from ..training.ctde import (
     gather_anchors,
     imagined_action_mask,
     predicted_controllable_alive,
+    sample_imagination_actions,
     sample_two_step_anchors,
     shared_team_outcomes,
     two_step_anchor_mask,
@@ -236,7 +237,9 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         if self.ctde_imagination_mask_sampling == "bernoulli" and (
             not self.ctde_enabled or self.ctde_mask_calibration
         ):
-            raise ValueError("Bernoulli availability requires the standard CTDE prediction head")
+            raise ValueError(
+                "Bernoulli availability requires the standard CTDE prediction head"
+            )
         if self.ctde_self_fed_enabled and self.ctde_mask_calibration:
             raise ValueError(
                 "Self-fed training requires the baseline hard CTDE mask path; "
@@ -348,16 +351,24 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             config.loss_scales.get("ctde_posterior_alignment", 0.0)
         )
         direct_scale = float(config.loss_scales.get("ctde_direct_latent", 0.0))
-        if any(not math.isfinite(x) or x < 0 for x in
-               (self.ctde_posterior_alignment_scale, direct_scale)):
+        if any(
+            not math.isfinite(x) or x < 0
+            for x in (self.ctde_posterior_alignment_scale, direct_scale)
+        ):
             raise ValueError("Latent alignment scales must be finite and nonnegative")
         if self.ctde_direct_latent:
             if self.ctde_mask_calibration or self.ctde_rollout_steps != 1:
-                raise ValueError("Direct latent currently supports standard one-step CTDE only")
+                raise ValueError(
+                    "Direct latent currently supports standard one-step CTDE only"
+                )
             if direct_scale <= 0:
-                raise ValueError("Direct latent imagination requires positive factual KL supervision")
+                raise ValueError(
+                    "Direct latent imagination requires positive factual KL supervision"
+                )
         elif direct_scale:
-            raise ValueError("Direct latent loss requires the direct latent imagination path")
+            raise ValueError(
+                "Direct latent loss requires the direct latent imagination path"
+            )
         local_obs_space = local_observation_spaces(obs_space, self.team.size)
         local_act_space = local_action_spaces(act_space, self.team.size)
         super().__init__(
@@ -1143,18 +1154,21 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             # Freeze the local posterior and factual history/teacher. Credit only
             # the joint producer for the distribution the existing interface induces.
             logits = frozen_posterior(self.dyn, folded_prediction, folded_deter)
-            kl = self.team.unfold_sequence(mixed_posterior_kl(
-                logits, factual_logits, self.dyn.unimix
-            ))
+            kl = self.team.unfold_sequence(
+                mixed_posterior_kl(logits, factual_logits, self.dyn.unimix)
+            )
             losses["ctde_posterior_alignment"] = folded(kl)
             metrics["ctde/dense_posterior_alignment_kl"] = masked_metric(kl)
         if self.ctde_direct_latent:
             # Teacher is the recorded-successor posterior; no teacher/encoder
             # gradient. This same categorical prior is sampled during imagination.
-            kl = self.team.unfold_sequence(mixed_posterior_kl(
-                self.team.fold_sequence(prediction["latent_logits"]),
-                factual_logits, self.dyn.unimix,
-            ))
+            kl = self.team.unfold_sequence(
+                mixed_posterior_kl(
+                    self.team.fold_sequence(prediction["latent_logits"]),
+                    factual_logits,
+                    self.dyn.unimix,
+                )
+            )
             losses["ctde_direct_latent"] = folded(kl)
             metrics["ctde/direct_latent_kl"] = masked_metric(kl)
         if self.ctde_teammate_belief_enabled:
@@ -1430,11 +1444,16 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             negative = local_weight[..., None] * (~mask_actual).astype(jnp.float32)
             prefix = f"ctde/self_fed_h{step}"
             support_metrics = availability_metrics(
-                prediction["mask_logits"][:, index], mask_actual, mask_predicted,
-                prediction["predicted_alive"][:, index], target_alive[:, index],
+                prediction["mask_logits"][:, index],
+                mask_actual,
+                mask_predicted,
+                prediction["predicted_alive"][:, index],
+                target_alive[:, index],
                 local_weight,
             )
-            metrics.update({f"{prefix}/{key}": value for key, value in support_metrics.items()})
+            metrics.update(
+                {f"{prefix}/{key}": value for key, value in support_metrics.items()}
+            )
             metrics.update(
                 {
                     f"{prefix}/valid_count": weight.sum(),
@@ -2824,7 +2843,9 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         """Complete a local temporal step using the configured joint simulator."""
         if self.ctde_direct_latent:
             return self.dyn.complete(
-                cache, deter, logit=self.team.fold_batch(prediction["latent_logits"]),
+                cache,
+                deter,
+                logit=self.team.fold_batch(prediction["latent_logits"]),
                 sample=True,
             )
         return self.dyn.complete_from_observation(
@@ -2847,7 +2868,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         central_carry = context["joint_carry"]
         reset = context["reset"].astype(bool)
 
-        def transition(state, _):
+        def step(state, folded_action, action_seed):
             (
                 local_carry,
                 joint_carry,
@@ -2861,19 +2882,6 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 "stoch": local_carry["stoch"],
             }
             folded_features = self.team.fold_tree_batch(local_features)
-            folded_mask = self.team.fold_batch(current_mask)
-            distribution = self.policy_distribution(
-                self.feat2tensor(folded_features),
-                1,
-                action_mask=folded_mask,
-            )
-            # The standard CTDE path has exactly one categorical action. Use
-            # its existing draw key for a separate availability substream, so
-            # enabling the treatment does not shift other learner RNG draws.
-            action_seed = nj.seed()
-            folded_action = {
-                self.ctde_action_key: distribution[self.ctde_action_key].sample(action_seed)
-            }
             grouped_action = self.team.unfold_batch(folded_action[self.ctde_action_key])
 
             folded_carry = self.team.fold_tree_batch(local_carry)
@@ -2894,7 +2902,9 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 current_reset,
                 training=False,
             )
-            folded_next, next_features = self._ctde_complete(local_cache, deter, prediction)
+            folded_next, next_features = self._ctde_complete(
+                local_cache, deter, prediction
+            )
             next_carry = self.team.unfold_tree_batch(folded_next)
             next_features = self.team.unfold_tree_batch(next_features)
 
@@ -2919,7 +2929,8 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 mask_probability,
                 next_alive,
                 jax.random.fold_in(action_seed, 0x4D41534B)
-                if self.ctde_imagination_mask_sampling == "bernoulli" else None,
+                if self.ctde_imagination_mask_sampling == "bernoulli"
+                else None,
             )
 
             next_state = (
@@ -2941,6 +2952,41 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             )
             return next_state, outputs
 
+        def transition(state, _):
+            local_features = {key: state[0][key] for key in ("deter", "stoch")}
+            distribution = self.policy_distribution(
+                self.feat2tensor(self.team.fold_tree_batch(local_features)),
+                1,
+                action_mask=self.team.fold_batch(state[4]),
+            )
+            action_seed = nj.seed()
+            if self.imag_action_samples == 1:
+                next_state, outputs = step(
+                    state,
+                    {
+                        self.ctde_action_key: distribution[self.ctde_action_key].sample(
+                            action_seed
+                        )
+                    },
+                    action_seed,
+                )
+                return next_state, (outputs, None, None)
+            first, second, second_valid = sample_imagination_actions(
+                self.team.unfold_batch(distribution[self.ctde_action_key].logits),
+                action_seed,
+            )
+            next_state, outputs = step(
+                state,
+                {self.ctde_action_key: self.team.fold_batch(first)},
+                action_seed,
+            )
+            _, alternative = step(
+                state,
+                {self.ctde_action_key: self.team.fold_batch(second)},
+                jax.random.fold_in(action_seed, 2),
+            )
+            return next_state, (outputs, alternative, second_valid)
+
         state = (
             grouped_carry,
             central_carry,
@@ -2956,6 +3002,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             horizon,
             axis=1,
         )
+        outputs, alternative, second_valid = outputs
         (
             next_features,
             actions,
@@ -2984,6 +3031,16 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 [alive[:, None], alive_sequence], axis=1
             ),
         }
+        if alternative is not None:
+            auxiliary["alternative"] = {
+                "features": jax.tree.map(self.team.fold_sequence, alternative[0]),
+                "action": self.team.fold_sequence(alternative[1][self.ctde_action_key]),
+                "reward": self.team.fold_sequence(alternative[2]),
+                "continuation": self.team.fold_sequence(alternative[3]),
+                "present": alternative[5],
+                "controllable_alive": alternative[6],
+                "valid": self.team.fold_sequence(second_valid),
+            }
         return local_carry, features, actions, auxiliary
 
     def _ctde_probabilistic_policy(

@@ -47,6 +47,7 @@ class MAJEPARunSpec:
     curve_eval_episodes: int | None = None
     curve_eval_envs: int | None = None
     curve_eval_seed_offset: int | None = None
+    imag_action_samples: int = 2
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -64,6 +65,10 @@ class MAJEPARunSpec:
             raise ValueError("num_agents must be positive")
         if self.num_agents < 2:
             raise ValueError("MA-JEPA requires at least two agents")
+        if type(
+            self.imag_action_samples
+        ) is not int or self.imag_action_samples not in (1, 2):
+            raise ValueError("imag_action_samples must be 1 or 2")
         if self.train_steps < 1:
             raise ValueError("train_steps must be positive")
         if self.curve_eval_interval < 0:
@@ -149,6 +154,8 @@ class MAJEPARunSpec:
             str(self.seed),
             "--agent.num_agents",
             str(self.num_agents),
+            "--agent.imag_action_samples",
+            str(self.imag_action_samples),
             "--run.steps",
             str(self.train_steps),
             "--run.curve_eval_interval",
@@ -218,6 +225,7 @@ class MAJEPARunSpec:
             "world_optimizer_warmup": 0,
             "ppo_start_step": 5000,
             "imagination_horizon": 5,
+            "imag_action_samples": self.imag_action_samples,
             "ppo": {
                 "epochs": 5,
                 "clip_epsilon": 0.2,

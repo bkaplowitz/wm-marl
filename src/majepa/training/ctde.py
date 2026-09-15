@@ -24,6 +24,21 @@ import jax.numpy as jnp
 f32 = jnp.float32
 
 
+def sample_imagination_actions(logits, seed):
+    """Draw two actions per agent from effective masked [..., agent, action] logits.
+
+    Return both draws and whether a distinct second action exists. Singleton
+    agents retain their forced action in the simulator but receive no second loss.
+    """
+    logits = jnp.asarray(logits, f32)
+    multiple = (logits > -1e20).sum(axis=-1) > 1
+    first = jax.random.categorical(seed, logits)
+    excluded = jnp.arange(logits.shape[-1]) == first[..., None]
+    second_logits = jnp.where(multiple[..., None] & excluded, -1e30, logits)
+    second = jax.random.categorical(jax.random.fold_in(seed, 1), second_logits)
+    return jax.tree.map(jax.lax.stop_gradient, (first, second, multiple))
+
+
 def imagined_action_mask(probability, alive, seed=None):
     """Select imagined support; factual root masks never pass through here.
 
@@ -32,9 +47,7 @@ def imagined_action_mask(probability, alive, seed=None):
     the established empty-mask fallback and absorbing dead-agent no-op support.
     """
     mask = (
-        probability >= 0.5
-        if seed is None
-        else jax.random.bernoulli(seed, probability)
+        probability >= 0.5 if seed is None else jax.random.bernoulli(seed, probability)
     )
     noop = jnp.zeros_like(mask).at[..., 0].set(True)
     mask = jnp.where(mask.any(axis=-1, keepdims=True), mask, noop)

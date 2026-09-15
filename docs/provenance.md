@@ -1,11 +1,10 @@
 # Source provenance
 
-`clean_jepa` is the source checkout for the MA-JEPA learner used by the
-currently running pod jobs. The pod source was copied into this checkout before
-this branch was pushed; the live pod directory was left unchanged so active
-jobs keep using their original snapshot.
+Commit `0fd31b3` imported the MA-JEPA source from the pod snapshot listed below.
+The current `clean_jepa` adds configurable two-action imagination to that source.
+This port changes the package fingerprint and does not deploy or restart pod jobs.
 
-## Canonical executable source
+## Imported executable source
 
 - Pod source: `/workspace/ma_jepa_staggered_replay_20260915`
 - Deployed base commit recorded by the pod: `6261429abc4489871cc54c036c7871e65777a13e`
@@ -15,24 +14,23 @@ jobs keep using their original snapshot.
   with `.py`, `.yaml`, or `.yml` suffixes are hashed.
 - Package files covered by the fingerprint: 47.
 
-`SOURCE_SHA256` stores the expected fingerprint and `DEPLOYED_COMMIT` stores the
-pod's recorded base commit. Recomputing the hash over this checkout gives the
-same 47-file fingerprint. The active queue launchers read the same manifest from
-the pod source before starting a job, so fixed-start and entropy queue jobs use a
-single executable snapshot.
+`SOURCE_SHA256` stores the imported fingerprint and `DEPLOYED_COMMIT` stores the
+pod's recorded base commit. These files remain records of that baseline, not of
+the modified package. The import recorded the same manifest for the pod's
+fixed-start and entropy queue launchers.
 
 The branch retains the pinned Python dependency lockfile from the cleaned
-checkout. The executable package, configuration, and runtime modules are the
-ones from the pod snapshot; generated caches, queue logs, checkpoints, and
-one-off launch outputs are not part of the branch.
+checkout. The two-action port retains the pod configuration and runtime modules,
+adding the sample-count option and its rollout/training behavior. Generated
+caches, queue logs, checkpoints, and one-off launch outputs are not part of the
+branch.
 
 ## What this establishes
 
-A fresh clone of `clean_jepa`, with its submodules initialized and its locked
-environment installed, has the same MA-JEPA package source as the current pod
-snapshot. The commit hash and source fingerprint are independent checks: the
-commit identifies the snapshot's recorded origin, while the fingerprint verifies
-the files actually used by the learner.
+Checking out `0fd31b3` restores the imported MA-JEPA package snapshot. The current
+branch includes subsequent changes and must not be identified as the source of
+the recorded pod results. The deployed commit identifies the snapshot's recorded
+origin, while the fingerprint verifies its imported package files.
 
 This parity check does not claim bit-for-bit training reproducibility. Replay
 sampling and accelerator scheduling can still affect a run unless the launch
@@ -63,4 +61,5 @@ print(digest.hexdigest())
 PY
 ```
 
-The output must equal the value in `SOURCE_SHA256`.
+At imported commit `0fd31b3`, the output must equal `SOURCE_SHA256`. With the
+two-action port applied, a different fingerprint is expected.

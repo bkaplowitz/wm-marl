@@ -31,36 +31,37 @@ flowchart LR
 
 The vector encoder is a 3 × 1024 RMSNorm/SiLU MLP with symlog inputs. The local
 history transformer has width 512, two layers, eight heads, and context 64. Its
-output projects to a deterministic state of 4096 (2048 in the smaller profile).
+output projects to a deterministic state of 8192 in the imported pod profile.
 The stochastic state has 32 categorical variables with 64 classes. The latent
-uniform mixture remains 0.01; it is distinct from policy uniform mixing, which
-is zero.
+uniform mixture remains 0.01. The pod profile also configures policy uniform
+mixing of 0.01 and additional collection mixing of 0.05.
 
 A joint predictor combines agent features and joint actions using two agent
 attention layers and a 12-layer temporal transformer (width 256, four heads,
 context 16, dropout 0.1). It predicts the next local observation embedding. The
 same local posterior used on real observations consumes that predicted embedding
-during imagination. This is the maintained interface; there is no separate
-joint categorical predictor or teammate-belief adapter.
+during imagination. This is the default interface. A teammate-belief module
+also feeds the actor adapter using observation-local inputs.
 
 Training combines cosine prediction of stopped EMA encoder targets, local
 prior/posterior KL, SIGReg on embeddings, outcome prediction, and the following
 joint objectives:
 
-- Dense posterior alignment, weight 0.05, directly compares the posterior induced
+- Optional dense posterior alignment, disabled by default, compares the posterior induced
   by a predicted embedding to the stopped factual posterior. This supervises the
   stochastic distribution the actor consumes, in addition to embedding cosine.
 - Action-conditioned embedding prediction at horizons 1, 2, 4, 8, with an
-  all-legal focal-action margin (margin 0.1, loss weight 0.1).
+  all-legal focal-action margin (margin 0.1, loss weight 0.25).
 - Self-fed trajectory learning at horizons 2, 4, 5, with two-step truncated BPTT,
   eight anchors, weight 0.1 and an inner posterior-KL weight of 0.1. This trains
   the joint model through its own predictions, with local model parameters frozen.
 
 The local history and predictor dimensions are independent: “WM4096” names the
 local deterministic state width, not the attention width or total parameter
-count. On `3s_vs_4z`, the reference has 34,562,824 trainable local-world parameters
+count. On `3s_vs_4z`, the earlier WM4096 reference had 34,562,824 trainable local-world parameters
 and 18,765,068 joint-world parameters: **53,327,892 trainable WM parameters**.
-EMA copies and optimizer state are excluded. These counts vary slightly by map.
+EMA copies and optimizer state are excluded. These historical counts do not
+describe the larger pod configuration.
 
 ## Imagined PPO
 
@@ -77,22 +78,25 @@ trajectory. The first sample keeps its GAE target. The second uses its own rewar
 continuation, and successor critic value for a one-step target. An agent with only
 one legal action contributes only its first training sample.
 
-Both samples use the original actor probabilities in PPO. The second sample's
-loss weight corrects its joint marginal sampling probability back to the original
-joint policy; this weight is the product of the per-agent original/second-marginal
-probability ratios. The correction is uncapped and can have high variance for
-concentrated policies. Both samples inherit the first trajectory's source-state
-occupancy weight. Masks, actions, features, old logits, proposal weights, and
-advantages stay fixed across PPO passes.
+Both samples use the original actor probabilities in PPO's old/new likelihood
+ratio and inherit the same source-state occupancy weight. There is no additional
+probability-based loss weight: a rare but legal second action remains a training
+sample. Its validity depends only on a distinct action being available, together
+with the usual state-validity masks. Because sampling without replacement changes
+the action distribution, the second sample adds a PPO-style training term rather
+than an unbiased extra on-policy sample. Masks, actions, features, old logits,
+validity, and advantages stay fixed across PPO passes.
+Both the batch advantage normalization and optional return-percentile scaling
+apply to the combined samples. The launcher exposes `--imag-action-samples`;
+the low-level configuration field is `agent.imag_action_samples`.
 
-The policy is a 3 × 512 MLP. The centralized critic uses width-256 attention,
+The policy is a 3 × 1024 MLP with the local teammate-belief adapter. The centralized critic uses width-256 attention,
 two attention layers, a 2 × 256 value MLP, and a 255-bin symexp/two-hot output.
-The former generic `value.units` field did not size this critic and was removed.
-Reference parameter counts on `3s_vs_4z` are 3,678,218 actor and 3,350,271 critic.
+The centralized critic is configured through `marl.ctde.critic`.
+Earlier actor512 reference counts on `3s_vs_4z` were 3,678,218 actor and 3,350,271 critic.
 
 PPO uses five actor passes and five critic passes, categorical likelihood-ratio
-clipping at 0.2, lambda 0.95, and fixed entropy coefficient 0.003. There is no
-policy or collection uniform mixture. The actor receives no pathwise world-model
+clipping at 0.2, lambda 0.95, and fixed entropy coefficient 0.01. The actor receives no pathwise world-model
 gradient: BPTT describes representation learning, not a replacement for PPO.
 The critic uses two-hot cross entropy, not a clipped squared-value objective.
 
@@ -100,11 +104,11 @@ The default imagination length is 5. Discount is `1 - 1/333`, with learned
 continuation. Value targets preserve the team's future rewards after an
 individual agent dies. The additional replay value objective (weight 0.3) uses
 recorded rewards and boundaries, but ordinarily bootstraps from imagined root
-returns. It is **not** the rejected factual successor-state/V-trace treatment.
+returns. Factual trace targets are available through optional configuration profiles.
 Time-limit boundaries use target-critic values on the recorded state.
 
-Local and joint world models have separate optimizers, each at `1e-4` in the
-reference. Actor and critic each use `3e-5`. The implementation applies adaptive
+Local and joint world models have separate optimizers, each at `4e-5` in the
+pod profile. Actor and critic each use `3e-5`. The implementation applies adaptive
 gradient clipping (0.3), RMS scaling and momentum, with no optimizer warmup.
 Target encoder EMA uses update fraction 0.01 every learner update. The target
 critic copies fully at each active PPO update. These are separate mechanisms.
