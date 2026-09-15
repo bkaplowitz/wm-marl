@@ -1,3 +1,4 @@
+import errno
 import json
 
 import elements
@@ -132,14 +133,58 @@ def test_monitor_only_stops_exact_expired_campaign_pod(tmp_path, monkeypatch):
     assert manifest["jobs"][0]["status"] == "stop_requested"
 
 
-def test_bootstrap_failure_writes_persistent_outcome(tmp_path):
+@pytest.mark.parametrize("outcome_writable", [True, False])
+@pytest.mark.parametrize("stage", ["bootstrap", "training"])
+def test_bootstrap_failure_stops_even_without_outcome(
+    tmp_path, monkeypatch, outcome_writable, stage
+):
+    import os
     import subprocess
+    import sys
+
+    python = tmp_path / "python"
+    python.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\nfrom pathlib import Path\n"
+        f"sys.path.insert(0, {str(campaign.REPO / 'src')!r})\n"
+        "from majepa import campaign\n"
+        f"campaign.own_stop = lambda pod: Path({str(tmp_path / 'stop.log')!r}).write_text(pod)\n"
+        "campaign.main(sys.argv[2:])\n"
+    )
+    python.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    campaign.write_json(tmp_path / "job.json", {"job": {"pod_id": "recordedpod"}})
+    if not outcome_writable:
+        (tmp_path / "outcome.json").mkdir()
 
     script = campaign.bootstrap_script(str(tmp_path))
-    script = script.replace("mkdir repo; tar -xzf source.tar.gz -C repo", "false")
+    if stage == "bootstrap":
+        script = script.replace("mkdir repo; tar -xzf source.tar.gz -C repo", "false")
+    else:
+        script = script.replace(
+            "mkdir repo; tar -xzf source.tar.gz -C repo", "mkdir repo"
+        )
+        script = script.replace("python -m pip install uv", ":")
+        script = script.replace(
+            "uv sync --locked --python 3.11 --extra dev --extra smac --extra cuda12",
+            ":",
+        )
+        script = script.replace(
+            ".venv/bin/python -m majepa.campaign run --directory", "false"
+        )
+        if outcome_writable:
+            campaign.write_json(
+                tmp_path / "outcome.json",
+                {"completed": False, "error": "training failed"},
+            )
     result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
     assert result.returncode != 0
-    assert json.loads((tmp_path / "outcome.json").read_text())["completed"] is False
+    assert (tmp_path / "stop.log").read_text() == "recordedpod"
+    if outcome_writable:
+        outcome = json.loads((tmp_path / "outcome.json").read_text())
+        assert outcome["completed"] is False
+        if stage == "training":
+            assert outcome["error"] == "training failed"
 
 
 def test_budget_admission_accounts_for_smoke_overrun():
@@ -296,6 +341,8 @@ def test_self_stop_loads_pod_credentials_and_checks_recorded_identity(
 
 
 def test_smoke_records_manifest_pod_id_without_ssh_environment(tmp_path, monkeypatch):
+    stops = []
+    monkeypatch.setattr(campaign, "own_stop", stops.append)
     monkeypatch.setattr(campaign.os, "environ", campaign.os.environ.copy())
     monkeypatch.delenv("RUNPOD_POD_ID", raising=False)
     monkeypatch.setattr(campaign, "discover_sc2", lambda: tmp_path)
@@ -318,3 +365,48 @@ def test_smoke_records_manifest_pod_id_without_ssh_environment(tmp_path, monkeyp
     monkeypatch.setattr(campaign, "smoke", smoke)
     campaign.run_job(tmp_path)
     assert json.loads((tmp_path / "outcome.json").read_text())["completed"] is True
+    assert stops == ["recordedpod"]
+
+
+@pytest.mark.parametrize("error_number", [errno.ENOSPC, errno.EDQUOT])
+@pytest.mark.parametrize("action", ["run", "watchdog"])
+def test_volume_write_failure_does_not_prevent_own_stop(
+    tmp_path, monkeypatch, error_number, action
+):
+    campaign.write_json(
+        tmp_path / "job.json",
+        {
+            "campaign": "test",
+            "job": {
+                "name": "samples2-seed0",
+                "pod_id": "recordedpod",
+                "wandb_id": "trainid",
+                "deadline": 0,
+            },
+        },
+    )
+    stops = []
+    monkeypatch.setattr(campaign, "own_stop", stops.append)
+
+    def unavailable(*args):
+        raise OSError(error_number, "volume full")
+
+    def failed_training(command, **kwargs):
+        assert command[1:3] == ["-m", "majepa.main"]
+        raise campaign.subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(campaign, "write_json", unavailable)
+    monkeypatch.setattr(campaign.os, "environ", campaign.os.environ.copy())
+    monkeypatch.setattr(campaign, "discover_sc2", lambda: tmp_path)
+    monkeypatch.setattr(
+        campaign.shutil,
+        "disk_usage",
+        lambda path: type("Disk", (), {"free": 30 * 1024**3})(),
+    )
+    monkeypatch.setattr(campaign.subprocess, "run", failed_training)
+    if action == "run":
+        with pytest.raises(OSError, match="volume full"):
+            campaign.run_job(tmp_path)
+    else:
+        campaign.watchdog(tmp_path)
+    assert stops == ["recordedpod"]

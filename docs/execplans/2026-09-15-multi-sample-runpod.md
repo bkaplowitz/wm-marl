@@ -54,13 +54,13 @@ after completion, failure, or time limit. Preserve all existing jobs and data.
   per-agent draws, rare-second gradients, and unchanged primary trajectory.
 
 ## Acceptance Criteria
-- [ ] Minimal launcher with side-effect-free dry-run, exact manifest, safe SSH,
+- [x] Minimal launcher with side-effect-free dry-run, exact manifest, safe SSH,
   detached jobs, validated input, restartable monitoring and budget/time backstops.
-- [ ] Canonical custom config resolves correctly; seed/sample count are the only
+- [x] Canonical custom config resolves correctly; seed/sample count are the only
   experimental differences; no default hyperparameter changes.
 - [ ] Source/config metadata uploaded; final checkpoint and eval uploaded with
   remote artifact verification; failed uploads visibly fail completion.
-- [ ] Focused mocked launcher checks, sampling tests, and independent source review.
+- [x] Focused mocked launcher checks, sampling tests, and independent source review.
 - [ ] A100 smoke: JAX GPU compute, SMAC reset/step, W&B metrics, tiny artifact
   upload/download equality, automatic self-stop verified via control-plane API.
 - [ ] Six real runs launched in priority order; immediate and >=120s rechecks;
@@ -104,6 +104,60 @@ No three-sample implementation or runs yet; assess only after paired results.
 No replay redesign, new dependencies/framework, broad refactor, or old job changes.
 
 ## Progress
+- 2026-09-15: The first two-sample training run passed its live learning gate:
+  W&B `96f158e70565` recorded the exact 70 explicit overrides, a committed and
+  verified source artifact, and 342 finite training scalars. World-model and PPO
+  learning both began at environment step 5000; illegal-action fraction was zero
+  and second-sample valid fraction was positive. The shared volume then exhausted
+  its quota: seed1 bootstrap and seed2 source upload failed; seed0 became failed
+  at 6880 logged steps. The outcome-write failure exposed the shutdown bug below.
+  Root stopped only that failed new seed0 pod. All five campaign pods are now
+  confirmed stopped, with conservative observed GPU cost $1.4261879621724287.
+  A complete 5000-step checkpoint remains on the persistent volume. An attempted
+  local checkpoint backup was rejected by automatic approval review; explicit
+  user permission for that export is pending and no weights were copied.
+- 2026-09-15: Storage expansion approval is pending: shared volume `e8ishvsuf7`
+  is 300GB and `du -sk /workspace` reports 312031266 KiB, while filesystem `df`
+  misleadingly reports 189TB free. Proposed increase is 500GB, adding $14/month
+  at the documented standard storage rate; RunPod does not support shrinking.
+  Old ledgers and reservations remain unchanged. The prepared retry allocation
+  deducts the closed campaign's conservative observed cost from the $50 cap,
+  leaving $48.57381203782757 for a revised-source smoke and six fresh runs.
+  Thirty minutes for smoke, 4.9 hours per real run, and the $0.50 shutdown allowance
+  total $49.46718796217243 including prior charges. Details are in
+  `artifacts/majepa-multi-sample-20260915-r2/retry-allocation-proposal.json`.
+- 2026-09-15: Corrected the quota-related failure-stop bug in `campaign.py`.
+  Live two-sample seed0 failed at 6880 steps when the 300GB shared volume hit its
+  quota; the failed atomic `outcome.json` write left the completion watchdog waiting.
+  The coordinator confirmed all five campaign pods stopped and recorded conservative
+  observed GPU cost $1.4261879621724287 in the r2 manifest. The completed 5k
+  checkpoint remains on the shared volume. `run_job` now requests its own exact pod
+  stop in `finally`; bootstrap uses an EXIT trap through the same `own_stop` helper;
+  the deadline watchdog still stops if outcome writes fail. Seven failing regression
+  cases were observed during test-first development, followed by 50 passing focused
+  tests. No pods launched, weights exported, source bundles changed, or commits made
+  by this implementer. Fresh review and live revised-source verification remain.
+- 2026-09-15: Retry smoke `x2tyvk0gol01xk` passed GPU computation (2097152),
+  SMAC reset/step, W&B metrics, and artifact upload/download byte equality.
+  W&B run `d0e4f3672ce1` is finished, artifact `smoke-d0e4f3672ce1:v0` was
+  independently downloaded and checked locally. Outcome reports completed=true;
+  watchdog log and control-plane status confirm automatic stop. Both smoke pods
+  together cost at most $0.387 by conservative observed duration; full $1.59 in
+  reservations remains in the ledger. Evidence is under
+  `artifacts/majepa-multi-sample-20260915-r2/smoke-evidence/`.
+- 2026-09-15: Pushed and froze commit `0d099e7`. Fresh second-round spec,
+  simplicity, and verification reviews passed; 43 focused campaign/config/artifact/
+  evaluation tests passed. The first live A100 smoke pod `oauk0q2coolse1` launched,
+  installed locked dependencies, and automatically stopped on SC2 discovery failure.
+  Control plane confirmed stopped; conservative observed GPU cost was $0.154.
+  Evidence is in `artifacts/majepa-multi-sample-20260915/smoke-evidence/`.
+  Root cause: existing `/workspace/StarCraftII` points to container-local
+  `/opt/StarCraftII`. Copying the verified installation into a new campaign-owned
+  persistent assets directory; no source or hyperparameter changes are needed.
+  Retry ledger `artifacts/majepa-multi-sample-20260915-r2/manifest.json` retains
+  the entire first reservation under `smoke-attempt1`, its original name and pod ID.
+  Two smoke reservations plus six five-hour training allocations total $49.29;
+  the $0.50 shutdown allowance remains within the $50 cap.
 - 2026-09-15: Corrected three launcher review findings with test-first regressions:
   self-stop loads `/etc/rp_environment` on the pod and matches its injected ID to
   the recorded job ID; run metadata receives that recorded ID; short reservation
@@ -124,6 +178,12 @@ No replay redesign, new dependencies/framework, broad refactor, or old job chang
   per-agent distinctness and four total A100s in separate pods. Updated base read.
 
 ## Decisions
+- 2026-09-15: Treat persistent outcome metadata as independent of the stop request.
+  Reuse the existing ID-validated, pod-scoped `own_stop` helper for runner completion
+  and bootstrap EXIT; retain the boot-time deadline backstop and watchdog retries.
+  Disable only bootstrap's ERR metadata trap before entering training, preserving
+  detailed runner outcomes. No storage resize, retry-budget, or experiment-setting
+  changes are part of this bounded correction.
 - 2026-09-15: Reserve 0.5 GPU hours for smoke and 5 GPU hours per real run,
   starting before pod creation: $48.495 at $1.59/hour, with a further $0.50
   shutdown allowance below the $50 cap. Eight hours remains the absolute maximum.
@@ -153,6 +213,24 @@ No replay redesign, new dependencies/framework, broad refactor, or old job chang
 None.
 
 ## Verification Evidence
+- Quota correction: fresh spec and simplicity reviews passed. Independent verifier
+  ran the 50 focused tests successfully in 3.13 seconds and passed Ruff/format/
+  whitespace checks. Its additional integrated Bash -> runner -> real own-stop
+  helper with a fake CLI passed writable, ENOSPC, and EDQUOT cases, preserving
+  failure status and restricting all stop calls to the recorded pod ID. Local
+  correction verification passes; full-plan verification remains incomplete until
+  revised-source live smoke and all six experiments finish. The smoke checkbox is
+  reopened for the revised source; earlier successful smoke evidence is retained.
+- Quota failure-stop correction: `.venv/bin/python -m pytest tests/test_campaign.py
+  tests/test_campaign_artifacts.py tests/test_evaluation.py
+  tests/test_configuration.py -q`: 50 passed in 2.97 seconds. Regressions execute
+  generated Bash through both bootstrap and runner failure, with writable/unavailable
+  outcome paths; simulate ENOSPC and EDQUOT on runner/watchdog metadata writes;
+  verify exact recorded stop IDs and preserved training-error metadata. Existing
+  real Bash/fake-CLI credential and mismatched-ID tests also pass. `.venv/bin/ruff
+  check src/majepa/campaign.py tests/test_campaign.py`, `.venv/bin/ruff format
+  --check src/majepa/campaign.py tests/test_campaign.py`, and `git diff --check`
+  passed. Live revised-source behavior is not claimed by these local tests.
 - Corrective implementation: `.venv/bin/python -m pytest tests/test_campaign.py
   tests/test_campaign_artifacts.py tests/test_evaluation.py
   tests/test_configuration.py -q`: 43 passed in 1.99 seconds. New regressions cover

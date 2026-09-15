@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 import fcntl
 import hashlib
 import io
@@ -311,6 +311,11 @@ def bootstrap_script(out):
     return "\n".join(
         [
             "set -euo pipefail",
+            "trap "
+            + shlex.quote(
+                f"python {shlex.quote(out + '/campaign.py')} stop --directory {shlex.quote(out)}"
+            )
+            + " EXIT",
             f"cd {shlex.quote(out)}",
             "trap "
             + shlex.quote(
@@ -325,7 +330,8 @@ def bootstrap_script(out):
             "cd repo",
             "uv sync --locked --python 3.11 --extra dev --extra smac --extra cuda12",
             'export PYTHONPATH="$PWD/src:$PWD/external/dreamerv3"',
-            f"exec .venv/bin/python -m majepa.campaign run --directory {shlex.quote(out)}",
+            "trap - ERR",
+            f".venv/bin/python -m majepa.campaign run --directory {shlex.quote(out)}",
         ]
     )
 
@@ -496,9 +502,11 @@ def watchdog(directory):
     ):
         time.sleep(min(5, max(0, job["deadline"] - 30 - time.time())))
     if not (directory / "outcome.json").exists():
-        write_json(
-            directory / "outcome.json", {"completed": False, "reason": "runtime limit"}
-        )
+        with suppress(OSError):
+            write_json(
+                directory / "outcome.json",
+                {"completed": False, "reason": "runtime limit"},
+            )
     while True:
         try:
             own_stop(job["pod_id"])
@@ -641,12 +649,14 @@ def run_job(directory):
             {"completed": False, "error": str(exc), "finished_at": time.time()},
         )
         raise
+    finally:
+        own_stop(job["pod_id"])
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "action", choices=["init", "launch", "monitor", "run", "watchdog"]
+        "action", choices=["init", "launch", "monitor", "run", "watchdog", "stop"]
     )
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--job", choices=["smoke", *JOBS])
@@ -691,6 +701,8 @@ def main(argv=None):
         run_job(directory)
     elif args.action == "watchdog":
         watchdog(directory)
+    elif args.action == "stop":
+        own_stop(json.loads((directory / "job.json").read_text())["job"]["pod_id"])
     elif args.action == "launch":
         if not args.job:
             parser.error("launch requires --job")
