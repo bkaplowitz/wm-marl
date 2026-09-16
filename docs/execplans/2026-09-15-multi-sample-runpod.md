@@ -63,7 +63,7 @@ after completion, failure, or time limit. Preserve all existing jobs and data.
 - [x] Focused mocked launcher checks, sampling tests, and independent source review.
 - [x] A100 smoke: JAX GPU compute, SMAC reset/step, W&B metrics, tiny artifact
   upload/download equality, automatic self-stop verified via control-plane API.
-- [ ] Six real runs launched in priority order; immediate and >=120s rechecks;
+- [x] Six real runs launched in priority order; immediate and >=120s rechecks;
   finite WM/PPO updates and increasing W&B history verified for each.
 - [ ] Six final checkpoints at 50000 environment steps, final100 evaluations,
   artifact verification, exact new pods stopped, paired comparison and cost ledger.
@@ -104,6 +104,49 @@ No three-sample implementation or runs yet; assess only after paired results.
 No replay redesign, new dependencies/framework, broad refactor, or old job changes.
 
 ## Progress
+- 2026-09-16 20:14 UTC: All six launches now have verified finite post-prefill
+  updates and matching70-override W&B configs. The recovered one-sample controls
+  reached10167 steps (seed1) and6933 (seed2); independent W&B history reads show
+  multiple increasing training steps, finite WM/actor/critic losses, zero illegal
+  actions, entropy.003, and COMMITTED source artifacts. Both passed immediate and
+  >=120-second GPU/process checks. Fresh control-plane reads confirm exactly the
+  two controls RUNNING and the four completed experiment pods EXITED. Receipts:
+  `all-launches-verified.json`, `recovered-controls-verification.json`,
+  `status-final-pods.json`, and per-job config/first-update/live-pod records. The
+  persistent outcomes for all four completed jobs independently confirm success.
+  Final control checkpoints/evaluations and the full paired comparison remain open.
+- 2026-09-16 evening: All three two-sample runs and one-sample seed0 finished
+  50000 steps and final100 evaluation; their exact pods are EXITED. Independently
+  downloaded evaluation artifacts reproduce wins of 0/100, 0/100, 0/100 and
+  31/100 respectively. All four W&B checkpoints are COMMITTED, contain the done
+  marker and a 747119100-byte model, and downloaded step metadata equals50000.
+  Two-sample seed1 has zero final return/attacks and finite but unusually large
+  final actor loss (1161.47); numerical finiteness does not establish good learning.
+  Receipts are in `verified-results-partial.json` and
+  `final-checkpoint-verification.json` under the r2 campaign artifact directory.
+  Fresh W&B history reads also show zero wins at every periodic evaluation for
+  all three two-sample runs; one-sample seed0 first wins at15000 steps and reaches
+  37.5 percent in the final32-episode curve evaluation (distinct from31 percent
+  in the final100 evaluation). Saved as `completed-training-curves.json`.
+- 2026-09-16 evening: A RunPod CLI TLS handshake timeout had exited the local
+  monitor, leaving completed jobs counted as active and blocking the last two
+  controls. Restarted the existing monitor; the queue then attempted seed1 but
+  US-KS-2 rejected creation for lack of capacity. Full account inventory confirmed
+  no matching pod was created; preserved that failed reservation with zero cost.
+  EU-RO-1 initially offered the same A100 SXM80 at1.59/hour. A dedicated150GB
+  volume now has checksum-verified identical SC2 assets; temporary0.06/hour CPU
+  pod q7gc63tazt8vnv stopped after staging. Capacity vanished there before
+  allocation. The local operational queue now alternates the two prepared regions
+  once per minute on explicit capacity rejections only, checking all account pods
+  before clearing a failed reservation. A mock check confirms it refuses existing
+  stopped pods and unrelated errors. No training-source changes were made.
+- 2026-09-16 19:54 UTC: Capacity reopened in US-KS-2. One-sample seed1 pod
+  om8ypbxkdlbpaj (W&B a605395d1398) reached active compilation and passed its
+  >=120-second liveness check on A100 SXM80. Seed2 pod h2b1en6qulu18m
+  (W&B 3b919cdae5a6) is provisioning. Runtime W&B/config/PPO verification is still
+  pending for both. Frozen source248dd33, hyperparameters, and the four-GPU
+  concurrency limit remain unchanged. GPU admission reservations including both
+  controls and prior attempts total48.9559 dollars, below the50-dollar cap.
 - 2026-09-16: The campaign's operational queue and W&B verifier run separately
   from the local budget monitor. Controls1/2 invoke the existing launch CLI only
   after a slot frees. The reused live check revalidates all70 config values,
