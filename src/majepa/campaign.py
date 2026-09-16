@@ -328,10 +328,11 @@ def bootstrap_script(out):
             "mkdir repo; tar -xzf source.tar.gz -C repo",
             "python -m pip install uv",
             "cd repo",
+            "export UV_PROJECT_ENVIRONMENT=/opt/majepa-venv",
             "uv sync --locked --python 3.11 --extra dev --extra smac --extra cuda12",
             'export PYTHONPATH="$PWD/src:$PWD/external/dreamerv3"',
             "trap - ERR",
-            f".venv/bin/python -m majepa.campaign run --directory {shlex.quote(out)}",
+            f'"$UV_PROJECT_ENVIRONMENT/bin/python" -m majepa.campaign run --directory {shlex.quote(out)}',
         ]
     )
 
@@ -679,7 +680,7 @@ def main(argv=None):
                         f"/workspace/{args.directory.name}/<job>"
                     ),
                     "training_commands": {
-                        name: [".venv/bin/python", "-m", "majepa.main"]
+                        name: ["/opt/majepa-venv/bin/python", "-m", "majepa.main"]
                         + training_args(
                             seed=int(name[-1]),
                             samples=int(name[7]),

@@ -72,6 +72,22 @@ def test_dry_run_has_no_files_or_processes(tmp_path, monkeypatch, capsys):
     plan = json.loads(capsys.readouterr().out)
     assert plan["jobs"] == list(campaign.JOBS)
     assert plan["max_concurrent"] == 4
+    assert all(
+        command[0] == "/opt/majepa-venv/bin/python"
+        for command in plan["training_commands"].values()
+    )
+
+
+def test_bootstrap_installs_and_runs_from_container_environment():
+    script = campaign.bootstrap_script("/workspace/campaign/smoke")
+    lines = script.splitlines()
+    environment = "export UV_PROJECT_ENVIRONMENT=/opt/majepa-venv"
+    sync = "uv sync --locked --python 3.11 --extra dev --extra smac --extra cuda12"
+    run = '"$UV_PROJECT_ENVIRONMENT/bin/python" -m majepa.campaign run --directory /workspace/campaign/smoke'
+    assert environment in lines
+    assert lines.index(environment) < lines.index(sync) < lines.index(run)
+    assert 'export PYTHONPATH="$PWD/src:$PWD/external/dreamerv3"' in lines
+    assert ".venv/bin/python" not in script
 
 
 def test_startup_watchdog_is_independent_and_preserves_image_start():
@@ -170,7 +186,8 @@ def test_bootstrap_failure_stops_even_without_outcome(
             ":",
         )
         script = script.replace(
-            ".venv/bin/python -m majepa.campaign run --directory", "false"
+            '"$UV_PROJECT_ENVIRONMENT/bin/python" -m majepa.campaign run --directory',
+            "false",
         )
         if outcome_writable:
             campaign.write_json(

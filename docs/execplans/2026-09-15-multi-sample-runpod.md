@@ -104,6 +104,41 @@ No three-sample implementation or runs yet; assess only after paired results.
 No replay redesign, new dependencies/framework, broad refactor, or old job changes.
 
 ## Progress
+- 2026-09-16: User authorized UK or other available capacity and continued work
+  until successful launch. Live catalog has no UK datacenter; US-KS-2 regained
+  A100 SXM 80 GB availability. Reverified the 500 GB volume and restored SC2
+  hashes before launching smoke jmsqswxc2lxa6g from frozen a52e635. Hardware is
+  A100-SXM4-80GB, 81920 MiB. Actual volume use is about 60 GiB. Package copy onto
+  the network volume is slow (21 MB in a measured 25-second interval), motivating
+  the bounded container-venv correction. Fresh spec, simplicity, and verifier
+  reviews passed; verifier independently passed all 51 focused tests in 3.19s,
+  Ruff/format/whitespace, generated Bash syntax and interpreter/stop integration.
+  The older smoke remains protected by its original deadline; revised-source
+  live smoke and the six experiment runs remain outstanding.
+- 2026-09-16: Bounded bootstrap correction installs the locked remote environment
+  on container disk at `/opt/majepa-venv` using native `UV_PROJECT_ENVIRONMENT`.
+  The runner uses that environment's Python; training/evaluation inherit it through
+  existing `sys.executable`, and dry-run commands now match. Source, configuration,
+  checkpoints, logs, and assets remain on `/workspace`. Two regression assertions
+  failed before the change, then all 51 focused tests and Ruff checks passed.
+  No remote resources, running bootstrap, commit, or source bundle changed in this
+  correction; fresh review and live verification remain with the coordinator.
+- 2026-09-15 20:16 UTC: User asked to proceed after checkpoint recovery. Expanded
+  volume e8ishvsuf7 from 300 to 500 GB and verified the new size. Revised-source
+  smoke j1kxoufxgukkrt launched, passed the >=120-second liveness check, failed
+  on missing SC2 assets, and automatically stopped; observed GPU cost $0.140497.
+  Restored the missing assets into /workspace/majepa-multi-sample-20260915-r3/assets/StarCraftII:
+  13,401 files, 4,938,935,331 bytes, matching executable and 2s3z-map checksums.
+  Retry r4 was rejected for unavailable A100 SXM 80 GB capacity in US-KS-2.
+  Complete control-plane inventory confirmed no matching pod; recorded a zero-cost
+  creation reconciliation. No real training runs started in this retry.
+  Aggregate prior observed GPU cost is $1.566685; six 4.9-hour runs plus a
+  0.5-hour smoke and shutdown allowance still fit the $50 GPU cap. EUR-IS-1 lists
+  the same GPU at $1.59/hour and supports standard network volumes. User choice
+  is pending on that region plus a separate 150 GB volume ($10.50/month, billed
+  hourly), versus waiting for US-KS-2 capacity. Evidence and the concrete fallback
+  proposal are under artifacts/majepa-multi-sample-20260915-r4/. No GPU-type,
+  experiment-setting, source, or additional-volume change has been made.
 - 2026-09-15: The first two-sample training run passed its live learning gate:
   W&B `96f158e70565` recorded the exact 70 explicit overrides, a committed and
   verified source artifact, and 342 finite training scalars. World-model and PPO
@@ -178,6 +213,12 @@ No replay redesign, new dependencies/framework, broad refactor, or old job chang
   per-agent distinctness and four total A100s in separate pods. Updated base read.
 
 ## Decisions
+- 2026-09-16: Use uv's native absolute `UV_PROJECT_ENVIRONMENT` setting to avoid
+  dependency installation on the slow shared filesystem. `/opt/majepa-venv` is
+  private to each one-job pod; environment rebuilding remains part of bootstrap.
+  Keep locked extras, Python version, pinned image, persistent artifacts, and all
+  experiment settings unchanged. Context7 `/astral-sh/uv` confirms the setting
+  overrides the project environment path; no wrapper, symlink, or dependency added.
 - 2026-09-15: Treat persistent outcome metadata as independent of the stop request.
   Reuse the existing ID-validated, pod-scoped `own_stop` helper for runner completion
   and bootstrap EXIT; retain the boot-time deadline backstop and watchdog retries.
@@ -213,6 +254,18 @@ No replay redesign, new dependencies/framework, broad refactor, or old job chang
 None.
 
 ## Verification Evidence
+- Container-environment correction: `.venv/bin/python -m pytest
+  tests/test_campaign.py -q -k 'container_environment or dry_run'` failed on both
+  intended regressions before implementation (missing environment export and old
+  dry-run Python path). After the three production-line changes, `.venv/bin/python
+  -m pytest tests/test_campaign.py tests/test_campaign_artifacts.py
+  tests/test_evaluation.py tests/test_configuration.py -q` passed 51 tests in 4.01s.
+  Existing executable Bash regressions continue to exercise bootstrap/training
+  failures with unavailable outcome paths and exact-pod stop behavior. `.venv/bin/ruff
+  check src/majepa/campaign.py tests/test_campaign.py`, `.venv/bin/ruff format
+  --check src/majepa/campaign.py tests/test_campaign.py`, and `git diff --check`
+  passed. Remote installation speed and GPU execution remain unverified by this
+  local correction.
 - Quota correction: fresh spec and simplicity reviews passed. Independent verifier
   ran the 50 focused tests successfully in 3.13 seconds and passed Ruff/format/
   whitespace checks. Its additional integrated Bash -> runner -> real own-stop
