@@ -61,7 +61,7 @@ after completion, failure, or time limit. Preserve all existing jobs and data.
 - [ ] Source/config metadata uploaded; final checkpoint and eval uploaded with
   remote artifact verification; failed uploads visibly fail completion.
 - [x] Focused mocked launcher checks, sampling tests, and independent source review.
-- [ ] A100 smoke: JAX GPU compute, SMAC reset/step, W&B metrics, tiny artifact
+- [x] A100 smoke: JAX GPU compute, SMAC reset/step, W&B metrics, tiny artifact
   upload/download equality, automatic self-stop verified via control-plane API.
 - [ ] Six real runs launched in priority order; immediate and >=120s rechecks;
   finite WM/PPO updates and increasing W&B history verified for each.
@@ -104,6 +104,42 @@ No three-sample implementation or runs yet; assess only after paired results.
 No replay redesign, new dependencies/framework, broad refactor, or old job changes.
 
 ## Progress
+- 2026-09-16: The campaign's operational queue and W&B verifier run separately
+  from the local budget monitor. Controls1/2 invoke the existing launch CLI only
+  after a slot frees. The reused live check revalidates all70 config values,
+  finite training scalars, action metrics and source verification; it writes
+  all-launches-verified.json only after six jobs have post-prefill receipts and
+  are at least120 seconds old. Its one-pass live check passed on the current four
+  runs and correctly left the six-run completion receipt absent. All four current
+  runs also have complete persistent checkpoints (nine files including done and
+  approximately747 MB model state). Campaign training and final evaluation remain
+  in progress; queued controls are not represented as already launched.
+- 2026-09-16 15:24 UTC: All four active real runs are online in W&B with
+  source_verified=true and matching 70-override configs. All four passed finite
+  post-prefill PPO verification (342 finite training scalars each, zero illegal
+  action fraction, entropy .003); all three two-sample runs have positive second
+  sample validity. First-update and config receipts are saved per job. Controls
+  seed1/seed2 remain queued pending free slots; full campaign acceptance is open.
+- 2026-09-16 15:05 UTC: Pushed/froze `248dd33` into campaign
+  `artifacts/majepa-multi-sample-20260916-r2`. Revised smoke `osdui3eoz7i570`
+  passed GPU sum 2097152, SC2 4.10 reset/step, W&B metrics and independently
+  downloaded byte-matched artifact `smoke-645c10df4379:v0`; persistent outcome
+  completed=true and control-plane EXITED confirm automatic stop. Installing
+  135 packages on container disk took 632ms after download. Prior slow smoke
+  `jmsqswxc2lxa6g` stopped at its deadline and is carried into the new ledger.
+  Each real run now reserves 4.8 hours; prior costs, both smoke reservations,
+  six real runs and shutdown allowance remain below the $50 aggregate GPU cap.
+  Two-sample seed0 (`8ej29mkciqflp6`, W&B `5ae95eed3148`) passed its first PPO
+  gate at 5605 steps: 342 finite training scalars, zero illegal-action fraction,
+  positive second-sample validity, fixed entropy .003, WM/PPO start5000. All70
+  overrides match both resolved config and W&B; source artifact is COMMITTED.
+  Then launched two-sample seeds1/2 (`cbkbdfo7d40r4w`, `onqmuhqas8o19a`) and
+  control seed0 (`kgxd9ni44yvzp8`). All four actual A100 SXM80 GPUs and immediate/
+  >=120s liveness checks verified; all resolved configs match. New three runs
+  are compiling, so their W&B/PPO checks remain pending. The final two controls
+  are queued through the existing CLI as slots free; the small operational queue
+  passed dry-run and a mocked occupied/free-slot check. Exact IDs, evidence, logs,
+  and queue state live in the campaign directory. No unrelated pods were changed.
 - 2026-09-16: User authorized UK or other available capacity and continued work
   until successful launch. Live catalog has no UK datacenter; US-KS-2 regained
   A100 SXM 80 GB availability. Reverified the 500 GB volume and restored SC2
