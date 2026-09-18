@@ -24,12 +24,9 @@ from ..agent import Agent as LocalAgent
 from ..models.ctde import (
     CentralAttentionCritic,
     JointObservationJEPA,
-    TeammateActionBelief,
-    TeammateBeliefActorAdapter,
 )
 from ..models.multistep_jepa import (
     ActionConditionedMultiStepJEPA,
-    TeammateActionPlanGRU,
     isolated_creation_call,
 )
 from ..models.heads import (
@@ -233,6 +230,12 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         )
         self.ctde_imagination_mask_source = marl.ctde.get("imagination_mask_source", "joint")
         self.ctde_compare_mask_heads = bool(marl.ctde.get("compare_mask_heads", False))
+        self.joint_mask_enabled = bool(config.simplification.joint_mask)
+        if not self.joint_mask_enabled:
+            if self.ctde_imagination_mask_source != "local" or self.ctde_mask_calibration or self.ctde_rollout_steps != 1:
+                raise ValueError("Removing joint availability requires localmask and standard one-step joint training")
+            self.ctde_compare_mask_heads = False
+
         if self.ctde_imagination_mask_source not in {"joint", "local"}:
             raise ValueError("imagination_mask_source must be joint or local")
         if self.ctde_imagination_mask_sampling not in {"threshold", "bernoulli"}:
@@ -251,13 +254,8 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             if self.ctde_mask_calibration
             else False
         )
-        self.ctde_teammate_belief_enabled = bool(
-            marl.ctde.teammate_belief.enabled if self.ctde_enabled else False
-        )
-        self.ctde_teammate_actor_enabled = bool(
-            self.ctde_teammate_belief_enabled
-            and marl.ctde.teammate_belief.actor_residual
-        )
+        self.ctde_teammate_belief_enabled = False
+        self.ctde_teammate_actor_enabled = False
         self.ctde_teammate_belief_logit_clip = (
             float(marl.ctde.teammate_belief.logit_clip)
             if self.ctde_teammate_belief_enabled
@@ -268,11 +266,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         self.ctde_multistep_jepa_enabled = bool(
             marl.ctde.multistep_jepa.enabled if self.ctde_enabled else False
         )
-        self.ctde_multistep_jepa_belief_context = bool(
-            marl.ctde.multistep_jepa.belief_context
-            if self.ctde_multistep_jepa_enabled
-            else False
-        )
+        self.ctde_multistep_jepa_belief_context = False
         self.ctde_multistep_jepa_action_scale = (
             float(config.loss_scales.ctde_multistep_jepa_action)
             if self.ctde_multistep_jepa_enabled
@@ -320,11 +314,6 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             raise ValueError("MA-JEPA requires all-legal action counterfactuals")
         if self.ctde_multistep_jepa_plan_aggregation != "mean":
             raise ValueError("MA-JEPA requires mean teammate-plan aggregation")
-        if (
-            self.ctde_multistep_jepa_belief_context
-            and not self.ctde_teammate_belief_enabled
-        ):
-            raise ValueError("multi-step belief context requires teammate belief v2")
         self.action_mask_reduction = str(
             getattr(config, "action_mask_reduction", "sum")
         )
@@ -345,9 +334,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             raise ValueError(
                 "CTDE mask calibration horizons must be sorted unique positives"
             )
-        self.ctde_direct_latent = bool(
-            self.ctde_enabled and marl.ctde.get("direct_latent", False)
-        )
+        self.ctde_direct_latent = False
         self.ctde_posterior_alignment_scale = float(
             config.loss_scales.get("ctde_posterior_alignment", 0.0)
         )
@@ -355,11 +342,6 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         if any(not math.isfinite(x) or x < 0 for x in
                (self.ctde_posterior_alignment_scale, direct_scale)):
             raise ValueError("Latent alignment scales must be finite and nonnegative")
-        if self.ctde_direct_latent:
-            if self.ctde_mask_calibration or self.ctde_rollout_steps != 1:
-                raise ValueError("Direct latent currently supports standard one-step CTDE only")
-            if direct_scale <= 0:
-                raise ValueError("Direct latent imagination requires positive factual KL supervision")
         elif direct_scale:
             raise ValueError("Direct latent loss requires the direct latent imagination path")
         local_obs_space = local_observation_spaces(obs_space, self.team.size)
@@ -525,8 +507,6 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 ffup=int(cfg.joint.ffup),
                 dropout=float(cfg.joint.dropout),
                 action_conditioning=str(cfg.joint.action_conditioning),
-                latent_stoch=int(self.dyn.stoch) if self.ctde_direct_latent else 0,
-                latent_classes=int(self.dyn.classes) if self.ctde_direct_latent else 0,
                 **common,
                 name="ctde_joint",
             )
@@ -561,7 +541,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 outscale=0.0,
                 **head,
                 name="ctde_mask",
-            )
+            ) if self.joint_mask_enabled else None
             self.ctde_alive = embodied.jax.MLPHead(
                 binary,
                 output="binary",
@@ -576,47 +556,10 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 self.ctde_mask,
                 self.ctde_alive,
             ]
+            ctde_modules = [module for module in ctde_modules if module is not None]
             actor_modules = []
-            if self.ctde_teammate_belief_enabled:
-                belief = cfg.teammate_belief
-                self.ctde_teammate_belief = TeammateActionBelief(
-                    self.team.size - 1,
-                    self.ctde_action_count,
-                    layers=int(belief.layers),
-                    units=int(belief.units),
-                    outscale=float(belief.outscale),
-                    act=str(belief.act),
-                    norm=str(belief.norm),
-                    winit=str(belief.winit),
-                    name="ctde_teammate_belief",
-                )
-                ctde_modules.append(self.ctde_teammate_belief)
-                if self.ctde_teammate_actor_enabled:
-                    self.ctde_teammate_actor = TeammateBeliefActorAdapter(
-                        self.ctde_action_count,
-                        layers=int(belief.adapter_layers),
-                        units=int(belief.adapter_units),
-                        act=str(belief.act),
-                        norm=str(belief.norm),
-                        winit=str(belief.winit),
-                        name="ctde_teammate_actor",
-                    )
-                    actor_modules.append(self.ctde_teammate_actor)
             if self.ctde_multistep_jepa_enabled:
                 multistep = cfg.multistep_jepa
-                if self.ctde_multistep_jepa_belief_context:
-                    self.ctde_teammate_plan = TeammateActionPlanGRU(
-                        self.ctde_action_count,
-                        self.ctde_action_low,
-                        self.team.size - 1,
-                        self.ctde_multistep_jepa_max_horizon,
-                        units=int(multistep.plan_units),
-                        act=str(multistep.act),
-                        norm=str(multistep.norm),
-                        winit=str(multistep.winit),
-                        name="ctde_teammate_plan",
-                    )
-                    ctde_modules.append(self.ctde_teammate_plan)
                 self.ctde_multistep_jepa = ActionConditionedMultiStepJEPA(
                     self.ctde_action_count,
                     self.ctde_action_low,
@@ -640,18 +583,8 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
 
     @property
     def policy_keys(self):
-        if self.ctde_teammate_actor_enabled:
-            return "^(enc|dyn|pol|ctde_teammate_belief|ctde_teammate_actor)/"
         return super().policy_keys
 
-    def _teammate_peer_indices(self):
-        return jnp.asarray(
-            [
-                [peer for peer in range(self.team.size) if peer != focal]
-                for focal in range(self.team.size)
-            ],
-            jnp.int32,
-        )
 
     @staticmethod
     def _isolated_creation_call(module, salt, *args, **kwargs):
@@ -672,58 +605,9 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             context.seed = outer_seed
             context.reserve = outer_reserve
 
-    def _teammate_belief_logits(self, local_state, bdims):
-        if not self.ctde_teammate_belief_enabled:
-            raise RuntimeError("teammate belief is disabled")
-        return self._isolated_creation_call(
-            self.ctde_teammate_belief,
-            0x54424C46,
-            jax.lax.stop_gradient(local_state),
-            bdims,
-        )
 
-    def _teammate_belief_context(self, logits):
-        """Return bounded offset-invariant evidence, with uniform mapped to zero."""
 
-        logits = logits.astype(jnp.float32)
-        centered = logits - logits.mean(axis=-1, keepdims=True)
-        context = (
-            jnp.clip(
-                centered,
-                -self.ctde_teammate_belief_logit_clip,
-                self.ctde_teammate_belief_logit_clip,
-            )
-            / self.ctde_teammate_belief_logit_clip
-        )
-        return jax.lax.stop_gradient(context)
 
-    def _teammate_plan_context(self, logits):
-        """Map plan logits to bounded, offset-invariant zero-uniform evidence."""
-
-        probability = jax.nn.softmax(logits.astype(jnp.float32), axis=-1)
-        context = probability - 1.0 / self.ctde_action_count
-        return jax.lax.stop_gradient(context)
-
-    def _teammate_actor_residual(
-        self,
-        local_state,
-        bdims,
-        *,
-        belief_logits=None,
-        belief_context=None,
-    ):
-        if belief_context is None:
-            if belief_logits is None:
-                belief_logits = self._teammate_belief_logits(local_state, bdims)
-            belief_context = self._teammate_belief_context(belief_logits)
-        flat_context = belief_context.reshape((*belief_context.shape[:-2], -1))
-        return self._isolated_creation_call(
-            self.ctde_teammate_actor,
-            0x54424144,
-            jax.lax.stop_gradient(local_state),
-            jax.lax.stop_gradient(flat_context),
-            bdims,
-        )
 
     @staticmethod
     def _add_categorical_residual(distribution, action_key, residual):
@@ -741,37 +625,8 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 setattr(updated, name, getattr(previous, name))
         return dict(distribution, **{action_key: updated})
 
-    def _teammate_policy_before_mask(
-        self,
-        tensor,
-        bdims,
-        *,
-        belief_context=None,
-    ):
-        base = self.pol(tensor, bdims=bdims)
-        if not self.ctde_teammate_actor_enabled:
-            return base, None
-        residual = self._teammate_actor_residual(
-            tensor, bdims, belief_context=belief_context
-        )
-        return (
-            self._add_categorical_residual(base, self.ctde_action_key, residual),
-            residual,
-        )
-
-    def policy_distribution(self, tensor, bdims, action_mask=None):
-        if not self.ctde_teammate_actor_enabled:
-            return super().policy_distribution(tensor, bdims, action_mask)
-        policy, _ = self._teammate_policy_before_mask(tensor, bdims)
-        if action_mask is None:
-            output = self.actmask(tensor, bdims=bdims)
-            binary = output.output if hasattr(output, "output") else output
-            return apply_predicted_action_mask(
-                policy,
-                jax.lax.stop_gradient(binary.logit),
-                self.action_mask_key,
-            )
-        return apply_action_mask(policy, action_mask, self.action_mask_key)
+    def _policy_before_mask(self, tensor, bdims):
+        return self.pol(tensor, bdims=bdims), None
 
     def imagination_critic_context(self, features, context, auxiliary=None):
         if not self.ctde_enabled:
@@ -779,150 +634,11 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         if auxiliary is None:
             raise ValueError("CTDE critic requires imagined activity")
         metrics = {}
-        if self.ctde_teammate_actor_enabled:
-            local_state = self.feat2tensor(features)
-            action_mask = self.team.fold_sequence(auxiliary["action_mask"])
-            valid = auxiliary["present"].astype(jnp.float32)
-            valid *= auxiliary["controllable_alive"].astype(jnp.float32)
-            metrics.update(
-                self._teammate_belief_policy_metrics(
-                    local_state,
-                    action_mask,
-                    self.team.fold_sequence(valid),
-                )
-            )
         return {
             "present": auxiliary["present"],
             "controllable_alive": auxiliary["controllable_alive"],
         }, metrics
 
-    def _teammate_belief_policy_metrics(self, local_state, action_mask, valid):
-        """Measure causal belief influence without exposing oracle information."""
-
-        bdims = 2
-        base = self.pol(local_state, bdims=bdims)
-        logits = self._teammate_belief_logits(local_state, bdims)
-        context = self._teammate_belief_context(logits)
-        residual = self._teammate_actor_residual(
-            local_state, bdims, belief_context=context
-        )
-        learned = self._add_categorical_residual(base, self.ctde_action_key, residual)
-        shuffled_context = (
-            jnp.roll(context, 1, axis=-2) if context.shape[-2] > 1 else context
-        )
-        shuffled_residual = self._teammate_actor_residual(
-            local_state, bdims, belief_context=shuffled_context
-        )
-        shuffled = self._add_categorical_residual(
-            base, self.ctde_action_key, shuffled_residual
-        )
-        base = apply_action_mask(base, action_mask, self.ctde_action_key)
-        learned = apply_action_mask(learned, action_mask, self.ctde_action_key)
-        shuffled = apply_action_mask(shuffled, action_mask, self.ctde_action_key)
-        base_logits = base[self.ctde_action_key].logits.astype(jnp.float32)
-        learned_logits = learned[self.ctde_action_key].logits.astype(jnp.float32)
-        shuffled_logits = shuffled[self.ctde_action_key].logits.astype(jnp.float32)
-
-        def forward_kl(reference, candidate):
-            reference_logprob = jax.nn.log_softmax(reference, axis=-1)
-            candidate_logprob = jax.nn.log_softmax(candidate, axis=-1)
-            return (
-                jnp.exp(reference_logprob) * (reference_logprob - candidate_logprob)
-            ).sum(axis=-1)
-
-        def weighted_mean(value, weight=valid):
-            weight = weight.astype(jnp.float32)
-            return (value.astype(jnp.float32) * weight).sum() / jnp.maximum(
-                weight.sum(), 1.0
-            )
-
-        zero_flip = jnp.argmax(learned_logits, axis=-1) != jnp.argmax(
-            base_logits, axis=-1
-        )
-        shuffle_flip = jnp.argmax(learned_logits, axis=-1) != jnp.argmax(
-            shuffled_logits, axis=-1
-        )
-        zero_kl = forward_kl(base_logits, learned_logits)
-        shuffle_kl = forward_kl(learned_logits, shuffled_logits)
-        centered_logits = logits.astype(jnp.float32) - logits.astype(jnp.float32).mean(
-            axis=-1, keepdims=True
-        )
-        logit_rms = jnp.sqrt(jnp.square(centered_logits).mean(axis=(-1, -2)))
-        context_norm = jnp.sqrt(jnp.square(context).sum(axis=(-1, -2)))
-        residual_rms = jnp.sqrt(jnp.square(residual).mean(axis=-1))
-        residual_max = jnp.abs(residual).max(axis=-1)
-        shuffle_residual_rms = jnp.sqrt(jnp.square(shuffled_residual).mean(axis=-1))
-        root_weight = valid[:, :1]
-        future_weight = valid[:, 1:]
-        root_logit_rms = weighted_mean(logit_rms[:, :1], root_weight)
-        future_logit_rms = weighted_mean(logit_rms[:, 1:], future_weight)
-        root_context_norm = weighted_mean(context_norm[:, :1], root_weight)
-        future_context_norm = weighted_mean(context_norm[:, 1:], future_weight)
-        root_residual_rms = weighted_mean(residual_rms[:, :1], root_weight)
-        future_residual_rms = weighted_mean(residual_rms[:, 1:], future_weight)
-        metrics = {
-            "ctde/teammate_belief_policy_kl_vs_zero": weighted_mean(zero_kl),
-            "ctde/teammate_belief_policy_flip_vs_zero": weighted_mean(zero_flip),
-            "ctde/teammate_belief_policy_kl_vs_peer_shuffle": weighted_mean(shuffle_kl),
-            "ctde/teammate_belief_policy_flip_vs_peer_shuffle": weighted_mean(
-                shuffle_flip
-            ),
-            "ctde/teammate_belief_residual_rms": weighted_mean(residual_rms),
-            "ctde/teammate_belief_residual_max": weighted_mean(residual_max),
-            "ctde/teammate_belief_shuffle_residual_rms": weighted_mean(
-                shuffle_residual_rms
-            ),
-            "ctde/teammate_belief_imagined_root_logit_rms": root_logit_rms,
-            "ctde/teammate_belief_imagined_future_logit_rms": future_logit_rms,
-            "ctde/teammate_belief_imagined_logit_rms_drift": (
-                future_logit_rms - root_logit_rms
-            ),
-            "ctde/teammate_belief_imagined_root_context_norm": root_context_norm,
-            "ctde/teammate_belief_imagined_future_context_norm": (future_context_norm),
-            "ctde/teammate_belief_imagined_context_norm_drift": (
-                future_context_norm - root_context_norm
-            ),
-            "ctde/teammate_belief_imagined_root_residual_rms": root_residual_rms,
-            "ctde/teammate_belief_imagined_future_residual_rms": (future_residual_rms),
-            "ctde/teammate_belief_imagined_residual_rms_drift": (
-                future_residual_rms - root_residual_rms
-            ),
-        }
-        for horizon in (1, 4, 8, 15):
-            if horizon >= local_state.shape[1]:
-                continue
-            horizon_weight = valid[:, horizon : horizon + 1]
-
-            def at_horizon(value):
-                return weighted_mean(value[:, horizon : horizon + 1], horizon_weight)
-
-            prefix = f"ctde/teammate_belief_h{horizon}"
-            horizon_logit_rms = at_horizon(logit_rms)
-            horizon_context_norm = at_horizon(context_norm)
-            horizon_residual_rms = at_horizon(residual_rms)
-            metrics.update(
-                {
-                    f"{prefix}_valid_fraction": horizon_weight.mean(),
-                    f"{prefix}_valid_count": horizon_weight.sum(),
-                    f"{prefix}_logit_rms": horizon_logit_rms,
-                    f"{prefix}_context_norm": horizon_context_norm,
-                    f"{prefix}_residual_rms": horizon_residual_rms,
-                    f"{prefix}_policy_kl_vs_zero": at_horizon(zero_kl),
-                    f"{prefix}_policy_flip_vs_zero": at_horizon(zero_flip),
-                    f"{prefix}_policy_kl_vs_peer_shuffle": at_horizon(shuffle_kl),
-                    f"{prefix}_policy_flip_vs_peer_shuffle": at_horizon(shuffle_flip),
-                    f"{prefix}_logit_rms_drift_from_factual": (
-                        horizon_logit_rms - root_logit_rms
-                    ),
-                    f"{prefix}_context_norm_drift_from_factual": (
-                        horizon_context_norm - root_context_norm
-                    ),
-                    f"{prefix}_residual_rms_drift_from_factual": (
-                        horizon_residual_rms - root_residual_rms
-                    ),
-                }
-            )
-        return metrics
 
     def additional_world_model_losses(
         self,
@@ -1029,40 +745,41 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             continuation *= 1.0 - 1.0 / float(self.config.horizon)
         continuation_loss = self.ctde_con(hidden, 3).loss(continuation)
         mask_target = grouped_mask[:, 1:]
-        mask_output = self.ctde_mask(hidden, 3)
-        mask_loss = binary_vector_loss(
-            mask_output,
-            mask_target,
-            self.action_mask_reduction,
-        )
-        mask_binary = (
-            mask_output.output if isinstance(mask_output, jaxouts.Agg) else mask_output
-        )
-        mask_prediction = mask_binary.logit >= 0.0
-        mask_event_weight = weight[..., None]
-        positive_weight = mask_event_weight * mask_target.astype(jnp.float32)
-        negative_weight = mask_event_weight * (~mask_target).astype(jnp.float32)
-        attack_selector = (
-            jnp.arange(mask_target.shape[-1], dtype=jnp.int32) >= 6
-        ).astype(jnp.float32)
-        attack_positive_weight = positive_weight * attack_selector
-
-        def event_rate(matches, event_weight):
-            return (matches.astype(jnp.float32) * event_weight).sum() / jnp.maximum(
-                event_weight.sum(), 1.0
+        if self.joint_mask_enabled:
+            mask_output = self.ctde_mask(hidden, 3)
+            mask_loss = binary_vector_loss(
+                mask_output,
+                mask_target,
+                self.action_mask_reduction,
             )
+            mask_binary = (
+                mask_output.output if isinstance(mask_output, jaxouts.Agg) else mask_output
+            )
+            mask_prediction = mask_binary.logit >= 0.0
+            mask_event_weight = weight[..., None]
+            positive_weight = mask_event_weight * mask_target.astype(jnp.float32)
+            negative_weight = mask_event_weight * (~mask_target).astype(jnp.float32)
+            attack_selector = (
+                jnp.arange(mask_target.shape[-1], dtype=jnp.int32) >= 6
+            ).astype(jnp.float32)
+            attack_positive_weight = positive_weight * attack_selector
 
-        mask_positive_recall = event_rate(mask_prediction, positive_weight)
-        mask_negative_specificity = event_rate(~mask_prediction, negative_weight)
-        attack_mask_positive_recall = event_rate(
-            mask_prediction, attack_positive_weight
-        )
-        attack_mask_target_rate = attack_positive_weight.sum() / jnp.maximum(
-            (mask_event_weight * attack_selector).sum(), 1.0
-        )
-        attack_mask_prediction_rate = (
-            mask_prediction.astype(jnp.float32) * mask_event_weight * attack_selector
-        ).sum() / jnp.maximum((mask_event_weight * attack_selector).sum(), 1.0)
+            def event_rate(matches, event_weight):
+                return (matches.astype(jnp.float32) * event_weight).sum() / jnp.maximum(
+                    event_weight.sum(), 1.0
+                )
+
+            mask_positive_recall = event_rate(mask_prediction, positive_weight)
+            mask_negative_specificity = event_rate(~mask_prediction, negative_weight)
+            attack_mask_positive_recall = event_rate(
+                mask_prediction, attack_positive_weight
+            )
+            attack_mask_target_rate = attack_positive_weight.sum() / jnp.maximum(
+                (mask_event_weight * attack_selector).sum(), 1.0
+            )
+            attack_mask_prediction_rate = (
+                mask_prediction.astype(jnp.float32) * mask_event_weight * attack_selector
+            ).sum() / jnp.maximum((mask_event_weight * attack_selector).sum(), 1.0)
         alive_loss = self.ctde_alive(hidden, 3).loss(grouped_alive[:, 1:])
         alive_valid = (
             source_alive if self.ctde_soft_liveness else source_present
@@ -1104,18 +821,22 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             "ctde/reward_loss": team_metric(reward_loss),
             "ctde/continuation_loss": team_metric(continuation_loss),
             "ctde/team_signal_valid_fraction": team_weight.mean(),
-            "ctde/action_mask_loss": masked_metric(mask_loss),
-            "ctde/action_mask_positive_recall": mask_positive_recall,
-            "ctde/action_mask_negative_specificity": mask_negative_specificity,
-            "ctde/attack_mask_positive_recall": attack_mask_positive_recall,
-            "ctde/attack_mask_target_rate": attack_mask_target_rate,
-            "ctde/attack_mask_prediction_rate": attack_mask_prediction_rate,
             "ctde/alive_loss": (alive_loss.astype(jnp.float32) * alive_weight).sum()
             / alive_count,
             "ctde/posterior_kl": masked_metric(posterior_kl),
             "ctde/valid_fraction": weight.mean(),
             "ctde/controllable_alive_fraction": source_alive.mean(),
         }
+
+        if self.joint_mask_enabled:
+            metrics.update({
+                "ctde/action_mask_loss": masked_metric(mask_loss),
+                "ctde/action_mask_positive_recall": mask_positive_recall,
+                "ctde/action_mask_negative_specificity": mask_negative_specificity,
+                "ctde/attack_mask_positive_recall": attack_mask_positive_recall,
+                "ctde/attack_mask_target_rate": attack_mask_target_rate,
+                "ctde/attack_mask_prediction_rate": attack_mask_prediction_rate,
+            })
 
         def folded(value):
             value = value * normalized_weight
@@ -1140,9 +861,10 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             "ctde_interface": folded(interface_loss),
             "ctde_reward": folded_team(reward_loss),
             "ctde_continuation": folded_team(continuation_loss),
-            "ctde_action_mask": folded(mask_loss),
             "ctde_alive": folded_alive(alive_loss),
         }
+        if self.joint_mask_enabled:
+            losses["ctde_action_mask"] = folded(mask_loss)
         if self.ctde_posterior_alignment_scale > 0:
             # Freeze the local posterior and factual history/teacher. Credit only
             # the joint producer for the distribution the existing interface induces.
@@ -1152,28 +874,6 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             ))
             losses["ctde_posterior_alignment"] = folded(kl)
             metrics["ctde/dense_posterior_alignment_kl"] = masked_metric(kl)
-        if self.ctde_direct_latent:
-            # Teacher is the recorded-successor posterior; no teacher/encoder
-            # gradient. This same categorical prior is sampled during imagination.
-            kl = self.team.unfold_sequence(mixed_posterior_kl(
-                self.team.fold_sequence(prediction["latent_logits"]),
-                factual_logits, self.dyn.unimix,
-            ))
-            losses["ctde_direct_latent"] = folded(kl)
-            metrics["ctde/direct_latent_kl"] = masked_metric(kl)
-        if self.ctde_teammate_belief_enabled:
-            belief_loss, belief_metrics = self._ctde_teammate_belief_loss(
-                source_state,
-                source_action,
-                grouped_action[:, :-1],
-                source_present,
-                source_alive,
-                grouped_mask[:, :-1],
-                reset,
-                next_first,
-            )
-            losses["ctde_teammate_belief"] = belief_loss
-            metrics.update(belief_metrics)
         if self.ctde_multistep_jepa_enabled:
             multistep_losses, multistep_metrics = self._ctde_direct_multistep_jepa_loss(
                 prediction["hidden"],
@@ -1339,7 +1039,8 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 mask_probability = self.team.unfold_batch(jax.nn.sigmoid(binary.logit))
                 mask_logits = self.team.unfold_batch(binary.logit)
             else:
-                mask_output = self.ctde_mask(hidden, 2)
+                mask_output = (self.ctde_mask(hidden, 2) if self.joint_mask_enabled else
+                    self.actmask(self.feat2tensor(next_features), 2))
                 binary = (
                     mask_output.output
                     if hasattr(mask_output, "output")
@@ -1501,172 +1202,6 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             )
         return jax.lax.stop_gradient(metrics)
 
-    def _ctde_teammate_belief_loss(
-        self,
-        source_state,
-        current_action,
-        previous_action,
-        present,
-        controllable_alive,
-        action_mask,
-        current_first,
-        next_first,
-    ):
-        """Predict factual peer ``a_t`` from stopped focal causal state ``s_t``."""
-
-        if source_state.ndim != 4:
-            raise ValueError(
-                f"teammate belief source must be [B,T,A,F], got {source_state.shape}"
-            )
-        batch, length, agents = source_state.shape[:3]
-        expected = (batch, length, agents)
-        if any(
-            value.shape != expected
-            for value in (
-                current_action,
-                previous_action,
-                present,
-                controllable_alive,
-            )
-        ):
-            raise ValueError("teammate belief replay labels are not time aligned")
-        if action_mask.shape != (*expected, self.ctde_action_count):
-            raise ValueError("teammate belief action masks do not match labels")
-        if current_first.shape != (batch, length) or next_first.shape != (
-            batch,
-            length,
-        ):
-            raise ValueError("teammate belief reset masks are not time aligned")
-
-        folded_state = self.team.fold_sequence(source_state)
-        folded_logits = self._teammate_belief_logits(folded_state, bdims=2)
-        logits = self.team.unfold_sequence(folded_logits)
-        peer_indices = self._teammate_peer_indices()
-        peer_action = jnp.take(current_action, peer_indices, axis=2)
-        peer_previous_action = jnp.take(previous_action, peer_indices, axis=2)
-        peer_present = jnp.take(present, peer_indices, axis=2)
-        peer_alive = jnp.take(controllable_alive, peer_indices, axis=2)
-        peer_action_mask = jnp.take(action_mask, peer_indices, axis=2)
-        if logits.shape != (*peer_action.shape, self.ctde_action_count):
-            raise ValueError(
-                "teammate belief output/target shape mismatch: "
-                f"{logits.shape} versus {peer_action.shape}"
-            )
-
-        target = peer_action.astype(jnp.int32) - self.ctde_action_low
-        in_range = (target >= 0) & (target < self.ctde_action_count)
-        safe_target = jnp.clip(target, 0, self.ctde_action_count - 1)
-        target_legal = jnp.take_along_axis(
-            peer_action_mask, safe_target[..., None], axis=-1
-        )[..., 0]
-        candidate = (
-            controllable_alive[..., None] & peer_present & ~next_first[..., None, None]
-        )
-        valid = candidate & in_range & target_legal
-        weight = valid.astype(jnp.float32)
-
-        log_probability = jax.nn.log_softmax(logits.astype(jnp.float32), axis=-1)
-        nll = -jnp.take_along_axis(log_probability, safe_target[..., None], axis=-1)[
-            ..., 0
-        ]
-        row_count = jnp.maximum(weight.sum(axis=-1), 1.0)
-        row_loss = (nll * weight).sum(axis=-1) / row_count
-        row_valid = (weight.sum(axis=-1) > 0).astype(jnp.float32)
-        row_loss *= row_valid / jnp.maximum(row_valid.mean(), 1e-8)
-        row_loss = jnp.pad(row_loss, ((0, 0), (0, 1), (0, 0)))
-        row_loss *= row_loss.shape[1] / max(row_loss.shape[1] - 1, 1)
-        folded_loss = self.team.fold_sequence(row_loss)
-
-        probability = jnp.exp(log_probability)
-        entropy = -(probability * log_probability).sum(axis=-1)
-        top1 = jnp.argmax(logits, axis=-1) == safe_target
-        action_onehot = jax.nn.one_hot(
-            safe_target, self.ctde_action_count, dtype=jnp.float32
-        )
-        marginal_count = (action_onehot * weight[..., None]).sum(axis=(0, 1, 2, 3))
-        marginal_probability = (marginal_count + 1.0) / (
-            marginal_count.sum() + self.ctde_action_count
-        )
-        marginal_probability = jax.lax.stop_gradient(marginal_probability)
-        marginal_nll = -jnp.log(jnp.take(marginal_probability, safe_target, axis=0))
-        marginal_top1 = jnp.argmax(marginal_probability) == safe_target
-
-        previous_target = peer_previous_action.astype(jnp.int32) - self.ctde_action_low
-        previous_in_range = (previous_target >= 0) & (
-            previous_target < self.ctde_action_count
-        )
-        safe_previous = jnp.clip(previous_target, 0, self.ctde_action_count - 1)
-        repeat_valid = valid & previous_in_range & ~current_first[..., None, None]
-        repeat_weight = repeat_valid.astype(jnp.float32)
-        repeat_unimix = max(float(self.config.policy.unimix), 1e-6)
-        repeat_probability = jax.nn.one_hot(
-            safe_previous, self.ctde_action_count, dtype=jnp.float32
-        )
-        repeat_probability = (
-            1.0 - repeat_unimix
-        ) * repeat_probability + repeat_unimix / self.ctde_action_count
-        repeat_nll = -jnp.log(
-            jnp.take_along_axis(repeat_probability, safe_target[..., None], axis=-1)[
-                ..., 0
-            ]
-        )
-        repeat_top1 = safe_previous == safe_target
-
-        def average(value, event_weight=weight):
-            event_weight = event_weight.astype(jnp.float32)
-            return (value.astype(jnp.float32) * event_weight).sum() / jnp.maximum(
-                event_weight.sum(), 1.0
-            )
-
-        active_weight = weight * peer_alive.astype(jnp.float32)
-        nonnoop_weight = weight * (safe_target != 0).astype(jnp.float32)
-        attack_start = min(6, self.ctde_action_count)
-        attack_weight = weight * (safe_target >= attack_start).astype(jnp.float32)
-        centered_logits = logits.astype(jnp.float32) - logits.astype(jnp.float32).mean(
-            axis=-1, keepdims=True
-        )
-        context = self._teammate_belief_context(logits)
-        logit_rms = jnp.sqrt(jnp.square(centered_logits).mean(axis=-1))
-        context_norm = jnp.sqrt(jnp.square(context).sum(axis=(-1, -2)))
-        candidate_count = jnp.maximum(candidate.astype(jnp.float32).sum(), 1.0)
-        belief_nll = average(nll)
-        repeat_belief_nll = average(nll, repeat_weight)
-        metrics = {
-            "ctde/teammate_belief_nll": belief_nll,
-            "ctde/teammate_belief_entropy": average(entropy),
-            "ctde/teammate_belief_top1": average(top1),
-            "ctde/teammate_belief_active_peer_nll": average(nll, active_weight),
-            "ctde/teammate_belief_active_peer_top1": average(top1, active_weight),
-            "ctde/teammate_belief_nonnoop_nll": average(nll, nonnoop_weight),
-            "ctde/teammate_belief_nonnoop_top1": average(top1, nonnoop_weight),
-            "ctde/teammate_belief_attack_nll": average(nll, attack_weight),
-            "ctde/teammate_belief_attack_top1": average(top1, attack_weight),
-            "ctde/teammate_belief_marginal_nll": average(marginal_nll),
-            "ctde/teammate_belief_marginal_top1": average(marginal_top1),
-            "ctde/teammate_belief_repeat_nll": average(repeat_nll, repeat_weight),
-            "ctde/teammate_belief_repeat_top1": average(repeat_top1, repeat_weight),
-            "ctde/teammate_belief_nll_gain_vs_marginal": (
-                average(marginal_nll) - belief_nll
-            ),
-            "ctde/teammate_belief_nll_gain_vs_repeat": (
-                average(repeat_nll, repeat_weight) - repeat_belief_nll
-            ),
-            "ctde/teammate_belief_factual_logit_rms": average(logit_rms),
-            "ctde/teammate_belief_factual_context_norm": average(
-                context_norm, row_valid
-            ),
-            "ctde/teammate_belief_target_count": weight.sum(),
-            "ctde/teammate_belief_active_peer_count": active_weight.sum(),
-            "ctde/teammate_belief_nonnoop_count": nonnoop_weight.sum(),
-            "ctde/teammate_belief_attack_count": attack_weight.sum(),
-            "ctde/teammate_belief_target_fraction": weight.mean(),
-            "ctde/teammate_belief_target_legal_fraction": (
-                (candidate & in_range & target_legal).astype(jnp.float32).sum()
-                / candidate_count
-            ),
-            "ctde/teammate_belief_dead_peer_fraction": average(~peer_alive),
-        }
-        return folded_loss, metrics
 
     def _ctde_direct_multistep_jepa_loss(
         self,
@@ -1722,33 +1257,6 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         plan_context = None
         plan_loss = None
         plan_metrics = {}
-        if self.ctde_multistep_jepa_belief_context:
-            folded_root = self.team.fold_sequence(root_state)
-            q0_logits = self.team.unfold_sequence(
-                self._teammate_belief_logits(folded_root, bdims=2)
-            )
-            q0_context = self._teammate_belief_context(q0_logits)
-            plan_logits = isolated_creation_call(
-                self.ctde_teammate_plan,
-                0x5442504C,
-                root_state,
-                action_windows,
-                q0_logits,
-                q0_context,
-            )
-            plan_context = self._teammate_plan_context(plan_logits)
-            plan_loss, plan_metrics = self._ctde_teammate_plan_loss(
-                plan_logits,
-                q0_logits,
-                grouped_action,
-                grouped_mask,
-                grouped_present,
-                grouped_alive,
-                grouped_first,
-                all_valid,
-                roots,
-                length,
-            )
 
         predictions = isolated_creation_call(
             self.ctde_multistep_jepa,
@@ -1907,185 +1415,6 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 ).sum() / count
         return losses, metrics
 
-    def _ctde_teammate_plan_loss(
-        self,
-        plan_logits,
-        q0_logits,
-        grouped_action,
-        grouped_mask,
-        grouped_present,
-        grouped_alive,
-        grouped_first,
-        all_valid,
-        roots,
-        length,
-    ):
-        """Supervise q1..qK-1 with stopped factual future peer actions."""
-
-        steps = self.ctde_multistep_jepa_max_horizon - 1
-        expected = (
-            grouped_action.shape[0],
-            roots,
-            self.team.size,
-            steps,
-            self.team.size - 1,
-            self.ctde_action_count,
-        )
-        if plan_logits.shape != expected:
-            raise ValueError(
-                f"teammate plan logits {plan_logits.shape} do not match {expected}"
-            )
-        q0_expected = expected[:3] + expected[4:]
-        if q0_logits.shape != q0_expected:
-            raise ValueError(
-                f"teammate q0 logits {q0_logits.shape} do not match {q0_expected}"
-            )
-        peer_indices = self._teammate_peer_indices()
-        source_actions = grouped_action[:, 1:]
-        nll_terms = []
-        top1_terms = []
-        weight_terms = []
-        q0_nll_terms = []
-        repeat_nll_terms = []
-        repeat_weight_terms = []
-        metrics = {}
-        for step in range(1, steps + 1):
-            peer_action = jnp.take(
-                source_actions[:, step : step + roots], peer_indices, axis=2
-            )
-            peer_mask = jnp.take(
-                grouped_mask[:, step : step + roots], peer_indices, axis=2
-            )
-            peer_present = jnp.take(
-                grouped_present[:, step : step + roots], peer_indices, axis=2
-            )
-            peer_alive = jnp.take(
-                grouped_alive[:, step : step + roots], peer_indices, axis=2
-            )
-            target = peer_action.astype(jnp.int32) - self.ctde_action_low
-            in_range = (target >= 0) & (target < self.ctde_action_count)
-            safe_target = jnp.clip(target, 0, self.ctde_action_count - 1)
-            legal = jnp.take_along_axis(peer_mask, safe_target[..., None], axis=-1)[
-                ..., 0
-            ]
-            valid = (
-                all_valid[step][..., None]
-                & peer_present
-                & in_range
-                & legal
-                & ~grouped_first[:, step + 1 : step + roots + 1, None, None]
-            )
-            weight = valid.astype(jnp.float32)
-            active_weight = weight * peer_alive.astype(jnp.float32)
-            dead_weight = weight * (~peer_alive).astype(jnp.float32)
-            logits = plan_logits[..., step - 1, :, :].astype(jnp.float32)
-            log_probability = jax.nn.log_softmax(logits, axis=-1)
-            nll = -jnp.take_along_axis(
-                log_probability, safe_target[..., None], axis=-1
-            )[..., 0]
-            top1 = jnp.argmax(logits, axis=-1) == safe_target
-            q0_log_probability = jax.nn.log_softmax(
-                q0_logits.astype(jnp.float32), axis=-1
-            )
-            q0_nll = -jnp.take_along_axis(
-                q0_log_probability, safe_target[..., None], axis=-1
-            )[..., 0]
-            root_peer_action = jnp.take(source_actions[:, :roots], peer_indices, axis=2)
-            repeat_target = root_peer_action.astype(jnp.int32) - self.ctde_action_low
-            repeat_in_range = (repeat_target >= 0) & (
-                repeat_target < self.ctde_action_count
-            )
-            safe_repeat = jnp.clip(repeat_target, 0, self.ctde_action_count - 1)
-            repeat_unimix = max(float(self.config.policy.unimix), 1e-6)
-            repeat_probability = jax.nn.one_hot(
-                safe_repeat, self.ctde_action_count, dtype=jnp.float32
-            )
-            repeat_probability = (
-                1.0 - repeat_unimix
-            ) * repeat_probability + repeat_unimix / self.ctde_action_count
-            repeat_nll = -jnp.log(
-                jnp.take_along_axis(
-                    repeat_probability, safe_target[..., None], axis=-1
-                )[..., 0]
-            )
-            repeat_weight = weight * repeat_in_range.astype(jnp.float32)
-            count = jnp.maximum(weight.sum(), 1.0)
-            active_count = jnp.maximum(active_weight.sum(), 1.0)
-            dead_count = jnp.maximum(dead_weight.sum(), 1.0)
-            metrics.update(
-                {
-                    f"ctde/teammate_plan_q{step}_nll": (nll * weight).sum() / count,
-                    f"ctde/teammate_plan_q{step}_top1": (
-                        top1.astype(jnp.float32) * weight
-                    ).sum()
-                    / count,
-                    f"ctde/teammate_plan_q{step}_count": weight.sum(),
-                    f"ctde/teammate_plan_q{step}_nll_gain_vs_q0": (
-                        ((q0_nll - nll) * weight).sum() / count
-                    ),
-                    f"ctde/teammate_plan_q{step}_nll_gain_vs_root_repeat": (
-                        ((repeat_nll - nll) * repeat_weight).sum()
-                        / jnp.maximum(repeat_weight.sum(), 1.0)
-                    ),
-                    f"ctde/teammate_plan_q{step}_active_nll": (
-                        nll * active_weight
-                    ).sum()
-                    / active_count,
-                    f"ctde/teammate_plan_q{step}_active_top1": (
-                        top1.astype(jnp.float32) * active_weight
-                    ).sum()
-                    / active_count,
-                    f"ctde/teammate_plan_q{step}_active_count": active_weight.sum(),
-                    f"ctde/teammate_plan_q{step}_dead_nll": (nll * dead_weight).sum()
-                    / dead_count,
-                    f"ctde/teammate_plan_q{step}_dead_top1": (
-                        top1.astype(jnp.float32) * dead_weight
-                    ).sum()
-                    / dead_count,
-                    f"ctde/teammate_plan_q{step}_dead_count": dead_weight.sum(),
-                }
-            )
-            nll_terms.append(nll)
-            top1_terms.append(top1)
-            weight_terms.append(weight)
-            q0_nll_terms.append(q0_nll)
-            repeat_nll_terms.append(repeat_nll)
-            repeat_weight_terms.append(repeat_weight)
-
-        nll = jnp.stack(nll_terms, axis=3)
-        top1 = jnp.stack(top1_terms, axis=3)
-        weight = jnp.stack(weight_terms, axis=3)
-        q0_nll = jnp.stack(q0_nll_terms, axis=3)
-        repeat_nll = jnp.stack(repeat_nll_terms, axis=3)
-        repeat_weight = jnp.stack(repeat_weight_terms, axis=3)
-        event_count = jnp.maximum(weight.sum(), 1.0)
-        row_count = jnp.maximum(weight.sum(axis=(-1, -2)), 1.0)
-        row_loss = (nll * weight).sum(axis=(-1, -2)) / row_count
-        row_valid = (weight.sum(axis=(-1, -2)) > 0).astype(jnp.float32)
-        row_loss *= row_valid / jnp.maximum(row_valid.mean(), 1e-8)
-        padded = jnp.pad(
-            row_loss,
-            ((0, 0), (0, self.ctde_multistep_jepa_max_horizon), (0, 0)),
-        )
-        padded *= length / roots
-        metrics.update(
-            {
-                "ctde/teammate_plan_recent_nll": (nll * weight).sum() / event_count,
-                "ctde/teammate_plan_recent_top1": (
-                    top1.astype(jnp.float32) * weight
-                ).sum()
-                / event_count,
-                "ctde/teammate_plan_recent_count": weight.sum(),
-                "ctde/teammate_plan_recent_nll_gain_vs_q0": (
-                    ((q0_nll - nll) * weight).sum() / event_count
-                ),
-                "ctde/teammate_plan_recent_nll_gain_vs_root_repeat": (
-                    ((repeat_nll - nll) * repeat_weight).sum()
-                    / jnp.maximum(repeat_weight.sum(), 1.0)
-                ),
-            }
-        )
-        return self.team.fold_sequence(padded), metrics
 
     def _ctde_mask_calibration_losses(
         self,
@@ -2851,11 +2180,6 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
 
     def _ctde_complete(self, cache, deter, prediction):
         """Complete a local temporal step using the configured joint simulator."""
-        if self.ctde_direct_latent:
-            return self.dyn.complete(
-                cache, deter, logit=self.team.fold_batch(prediction["latent_logits"]),
-                sample=True,
-            )
         return self.dyn.complete_from_observation(
             cache, deter, self.team.fold_batch(prediction["embedding"]), sample=True
         )
@@ -2944,7 +2268,8 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 # Completed posterior, exactly the state consumed by the next actor.
                 mask_output = self.actmask(self.feat2tensor(next_features), 2)
             else:
-                mask_output = self.ctde_mask(hidden, 2)
+                mask_output = (self.ctde_mask(hidden, 2) if self.joint_mask_enabled else
+                    self.actmask(self.feat2tensor(next_features), 2))
             mask_probability = jax.nn.sigmoid(mask_output.output.logit)
             # Store the realized mask in auxiliary below. PPO must condition on
             # that same mask in every epoch, never redraw it for likelihoods.
@@ -3031,7 +2356,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
     ):
         """Apply local probabilistic availability, retaining exact root support."""
 
-        base_distribution, _ = self._teammate_policy_before_mask(tensor, bdims)
+        base_distribution, _ = self._policy_before_mask(tensor, bdims)
         if availability_logits is None:
             availability_output = self.actmask(tensor, bdims=bdims)
             availability_binary = (

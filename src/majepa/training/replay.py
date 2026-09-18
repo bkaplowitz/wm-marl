@@ -9,10 +9,6 @@ import jax.numpy as jnp
 class ReplayMixin:
     def _replay_observations(self, data):
         obs = {key: data[key] for key in self.obs_space}
-        if getattr(self, "factual_value_enabled", False):
-            # Metadata is not in obs_space and never enters the encoder.
-            obs["behavior_logprob"] = data["behavior_logprob"]
-            obs["_replay_action"] = data[self.action_mask_key]
         return obs
 
     def dynamics_replay_entry_space(self):

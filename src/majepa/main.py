@@ -258,16 +258,8 @@ def make_replay(config, folder, mode="train"):
     world_uniform_mix = float(config.replay.world_uniform_mix)
     if world_uniform_mix and sampling != "recent_world_uniform_behavior":
         raise ValueError("world_uniform_mix requires dual-view replay")
-    if mode == "train" and sampling == "recent":
-        from .replay import RecentReplay
-
-        if int(capacity) != 50_000:
-            raise ValueError("recent replay requires replay.size=50000")
-        return RecentReplay(
-            **kwargs,
-            recency_decay=float(config.replay.recency_decay),
-            seed=int(config.seed),
-        )
+    if mode == "train" and sampling != "recent_world_uniform_behavior":
+        raise ValueError("The maintained learner requires dual-view replay")
     if mode == "train" and sampling == "recent_world_uniform_behavior":
         from .replay import DualViewReplay
 

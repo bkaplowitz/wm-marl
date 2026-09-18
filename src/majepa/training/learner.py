@@ -17,7 +17,6 @@ from .ppo import (
     value_objective,
 )
 from .replay_value import replay_lambda_return
-from .factual_value import factual_vtrace_return, joint_action_logratio
 from .representation import (
     embedding_prediction_loss,
     embedding_std,
@@ -246,15 +245,6 @@ class LearnerMixin:
         reduced = {key: masked_mean(value, valid) for key, value in losses.items()}
         metrics.update({f"loss/{key}": value for key, value in reduced.items()})
         loss = sum(value * self.scales[key] for key, value in reduced.items())
-        if getattr(self, "factual_representation_scale", 0.0):
-            # Supervise current encoder/history features with stopped targets.
-            # PPO and the central critic retain their normal gradient boundaries.
-            auxiliary, aux_metrics = self._factual_representation_loss(repfeat, obs)
-            loss += self.factual_representation_scale * auxiliary
-            metrics["loss/factual_representation"] = auxiliary
-            metrics.update(
-                {f"ctde/factual_representation/{k}": v for k, v in aux_metrics.items()}
-            )
         metrics["replay_views/world_reward_mean"] = sg(
             obs["reward"].astype(jnp.float32).mean()
         )
@@ -584,23 +574,6 @@ class LearnerMixin:
         """
 
         features = jax.tree.map(lambda value: value[:, -starts_count:], features)
-        if getattr(self, "factual_value_enabled", False):
-            fields = {
-                "reward",
-                "is_first",
-                "is_last",
-                "is_terminal",
-                "agent_present",
-                "agent_alive",
-                "controllable_alive",
-                "action_mask",
-                "behavior_logprob",
-                "_replay_action",
-            }
-            return self._prepare_factual_value_batch(
-                features,
-                {k: v[:, -starts_count:] for k, v in obs.items() if k in fields},
-            )
         selected = {
             key: obs[key][:, -starts_count:]
             for key in ("reward", "is_first", "is_last", "is_terminal", "agent_present")
@@ -641,58 +614,7 @@ class LearnerMixin:
             }
         )
 
-    def _prepare_factual_value_batch(self, features, obs):
-        context = {
-            "present": self.team.unfold_sequence(obs["agent_present"]),
-            "controllable_alive": self.team.unfold_sequence(self._controllable(obs)),
-        }
-        frozen = sg(features)
-        # The world auxiliary can run before the first imagined PPO batch has
-        # initialized the fast critic. SlowModel needs that source to exist.
-        self.critic(frozen, 2, slow=False, context=context)
-        values = self.critic(frozen, 2, slow=True, context=context).pred()
-        distribution = self.policy_distribution(
-            self.feat2tensor(frozen), 2, action_mask=obs["action_mask"]
-        )[self.action_mask_key]
-        current = -distribution.loss(obs["_replay_action"])
-        ratios = joint_action_logratio(
-            current,
-            obs["behavior_logprob"],
-            self._controllable(obs) & obs["agent_present"],
-            self.team,
-        )
-        cfg = self.config.ppo.factual_value
-        targets, valid, metrics = factual_vtrace_return(
-            obs["reward"],
-            obs["is_first"],
-            obs["is_last"],
-            obs["is_terminal"],
-            obs["agent_present"],
-            values,
-            ratios,
-            discount=1.0 - 1.0 / float(self.config.horizon),
-            lam=float(self.config.ppo.replay_value_lam),
-            rho_clip=float(cfg.rho_clip),
-            c_clip=float(cfg.c_clip),
-        )
-        return sg(
-            {
-                "features": jax.tree.map(lambda value: value[:, :-1], features),
-                "context": jax.tree.map(lambda value: value[:, :-1], context),
-                "target_return": targets,
-                "valid": valid,
-                "trace_metrics": metrics,
-            }
-        )
 
-    def _factual_representation_loss(self, features, obs):
-        factual = self._prepare_factual_value_batch(features, obs)
-        return value_objective(
-            self.real_value(self.feat2tensor(features)[:, :-1], 2),
-            factual["target_return"],
-            factual["valid"],
-            jnp.ones_like(factual["target_return"]),
-        )
 
     def _ppo_actor_loss(self, batch):
         policy = self.policy_distribution(
@@ -1029,12 +951,13 @@ class LearnerMixin:
                     target_tokens.astype(jnp.float32).std(axis=(0, 1)).mean()
                 )
         model_inp = self.feat2tensor(repfeat)
-        inp = sg(model_inp, skip=self.config.reward_grad)
-        losses["rew"] = self.rew(inp, 2).loss(obs["reward"])
-        continuation = f32(~obs["is_terminal"])
-        if self.config.contdisc:
-            continuation *= 1 - 1 / self.config.horizon
-        losses["con"] = self.con(model_inp, 2).loss(continuation)
+        if self.local_outcomes:
+            inp = sg(model_inp, skip=self.config.reward_grad)
+            losses["rew"] = self.rew(inp, 2).loss(obs["reward"])
+            continuation = f32(~obs["is_terminal"])
+            if self.config.contdisc:
+                continuation *= 1 - 1 / self.config.horizon
+            losses["con"] = self.con(model_inp, 2).loss(continuation)
         if self.dec is not None:
             for key, reconstruction in reconstructions.items():
                 space = self.obs_space[key]

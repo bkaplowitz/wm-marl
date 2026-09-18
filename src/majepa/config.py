@@ -15,7 +15,7 @@ def algorithm_config_profiles(algorithm: str) -> list[str]:
     """Return the canonical profiles for the only supported algorithm."""
 
     if algorithm == "ma-jepa":
-        return ["ma_jepa"]
+        return ["ma_jepa", "localmask_reference"]
     raise ValueError(f"unsupported algorithm: {algorithm!r}")
 
 
@@ -199,6 +199,7 @@ class MAJEPARunSpec:
             "trajectory_kl_scale": 0.1,
             "fresh_history": False,
             "imagination_mask_sampling": "bernoulli",
+            "imagination_mask_source": "local",
             "agent_attention": {"width": 256, "layers": 2, "heads": 4},
             "temporal_transformer": {
                 "width": 256,
@@ -207,11 +208,11 @@ class MAJEPARunSpec:
                 "context": 16,
             },
             "optimizer_groups": ["local_world", "joint_world", "actor", "critic"],
-            "learning_rate": 4e-5,
-            "teammate_belief": True,
+            "learning_rate": 1e-4,
+            "teammate_belief": False,
             "multi_step_jepa": True,
-            "role_aware_peer_plan": True,
-            "actor_units": 1024,
+            "role_aware_peer_plan": False,
+            "actor_units": 512,
             "actor_learning_rate": 3e-5,
             "critic_learning_rate": 3e-5,
             "world_model_start_step": 5000,
@@ -221,7 +222,7 @@ class MAJEPARunSpec:
             "ppo": {
                 "epochs": 5,
                 "clip_epsilon": 0.2,
-                "entropy_coefficient": 1e-2,
+                "entropy_coefficient": 0.003,
                 "lambda": 0.95,
                 "target_critic_rate": 1.0,
                 "world_update_before_imagination": True,
@@ -233,7 +234,7 @@ class MAJEPARunSpec:
                 "factual_representation_scale": 0.0,
             },
             "action_counterfactuals": "all_legal_mean",
-            "action_counterfactual_scale": 0.25,
+            "action_counterfactual_scale": 0.1,
         }
 
     def to_dict(self) -> dict[str, object]:
@@ -278,7 +279,7 @@ class MAJEPARunSpec:
             "replay_sampling": self.effective_replay_sampling,
             "world_uniform_mix": 0.5,
             "isolate_report_rng": True,
-            "development_reference": "am1-bernoulli-20260907",
+            "development_reference": "localmask_reference",
             "recency_decay": (
                 0.9998
                 if self.effective_replay_sampling
@@ -304,8 +305,6 @@ class MAJEPARunSpec:
                 "enc",
                 "dyn",
                 "pol",
-                "ctde_teammate_belief",
-                "ctde_teammate_actor",
             ],
             "evaluation_protocol": evaluation,
             "platform": self.platform,

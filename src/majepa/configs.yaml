@@ -89,6 +89,7 @@ defaults:
     coordinator_address: ''
 
   agent:
+    simplification: {joint_mask: true, local_outcomes: true}
     num_agents: 3
     marl:
       stage: ctde
@@ -215,10 +216,10 @@ ma_jepa:
         head: {layers: 2, units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
         critic: {width: 256, heads: 4, layers: 2, ffup: 4, dropout: 0.0, value_layers: 2, value_units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
         opt: {lr: 4e-5, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 0, anneal: 0}
-        teammate_belief: {enabled: True, actor_residual: True, layers: 2, units: 512, outscale: 0.0, logit_clip: 5.0, adapter_layers: 1, adapter_units: 256, act: silu, norm: rms, winit: trunc_normal_in}
+        teammate_belief: {enabled: False, actor_residual: True, layers: 2, units: 512, outscale: 0.0, logit_clip: 5.0, adapter_layers: 1, adapter_units: 256, act: silu, norm: rms, winit: trunc_normal_in}
         multistep_jepa:
           enabled: True
-          belief_context: True
+          belief_context: False
           horizons: [1, 2, 4, 8]
           max_horizon: 8
           decay: 0.75
@@ -232,17 +233,6 @@ ma_jepa:
           act: silu
           norm: rms
           winit: trunc_normal_in
-
-# Optional treatments, applied after ma_jepa. Matrix defaults remain unchanged.
-factual_value:
-  agent:
-    ppo:
-      factual_value: {enabled: True}
-
-factual_value_representation:
-  agent:
-    ppo:
-      factual_value: {enabled: True, representation_scale: 0.1}
 
 smac_vector:
   task: smac_3m
@@ -276,3 +266,69 @@ debug:
         multistep_jepa: {plan_units: 8, width: 8, layers: 1, units: 8}
         head: {layers: 1, units: 8, bins: 5, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
         critic: {width: 8, heads: 2, layers: 1, ffup: 2, dropout: 0.0, value_layers: 1, value_units: 8, bins: 5, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
+
+# Apply after smac_vector and ma_jepa. This is the completed env1 localmask reference.
+localmask_reference:
+  run.envs: 1
+  run.world_model_start_step: 5000
+  run.ppo_start_step: 5000
+  run.train_ratio: 128
+  run.isolate_report_rng: true
+  run.replay_stream_mode: snapshot_staggered
+  run.replay_startup_behavior_min_starts: 4
+  replay.sampling: recent_world_uniform_behavior
+  replay.size: 250000
+  replay.recency_decay: 0.9998
+  replay.world_uniform_mix: 0.5
+  replay.behavior_recency_decay: 0.9998
+  replay.behavior_uniform_mix: 0.5
+  agent.simplification.joint_mask: true
+  agent.simplification.local_outcomes: true
+  agent.marl.ctde.imagination_mask_source: local
+  agent.marl.ctde.imagination_mask_sampling: bernoulli
+  agent.marl.ctde.compare_mask_heads: true
+  agent.marl.ctde.teammate_belief.enabled: false
+  agent.marl.ctde.multistep_jepa.belief_context: false
+  agent.marl.ctde.direct_latent: false
+  agent.ppo.factual_value.enabled: false
+  agent.ppo.factual_value.representation_scale: 0.0
+  agent.dyn.parallel_transformer.deter: 4096
+  agent.dyn.parallel_transformer.hidden: 512
+  agent.dyn.parallel_transformer.classes: 64
+  agent.policy.units: 512
+  agent.rewhead.units: 512
+  agent.conhead.units: 512
+  agent.maskhead.units: 512
+  agent.opt.lr: 0.0001
+  agent.opt.warmup: 0
+  agent.marl.ctde.opt.lr: 0.0001
+  agent.marl.ctde.opt.warmup: 0
+  agent.ppo.actor_lr: 0.00003
+  agent.ppo.critic_lr: 0.00003
+  agent.ppo.actor_epochs: 5
+  agent.ppo.critic_epochs: 5
+  agent.ppo.clip_epsilon: 0.2
+  agent.ppo.entropy_coefficient: 0.003
+  agent.ppo.entropy_schedule.enabled: false
+  agent.ppo.entropy_schedule.initial: 0.01
+  agent.ppo.entropy_schedule.normalize: false
+  agent.value.units: 512
+  agent.policy.unimix: 0.0
+  agent.collection_unimix: 0.0
+  agent.imag_length: 5
+  agent.ppo.replay_value_scale: 0.3
+  agent.slowvalue.rate: 1.0
+  agent.loss_scales.ctde_posterior_alignment: 0.05
+  agent.loss_scales.ctde_direct_latent: 0.0
+  agent.loss_scales.ctde_multistep_jepa_action: 0.1
+  agent.loss_scales.ctde_multistep_jepa_cosine: 2.0
+  agent.action_mask_reduction: balanced
+  agent.marl.ctde.self_fed.enabled: true
+  agent.marl.ctde.self_fed.horizons: [2, 4, 5]
+  agent.marl.ctde.self_fed.anchors: 8
+  agent.marl.ctde.self_fed.scale: 0.1
+  agent.marl.ctde.self_fed.consumer_kl_scale: 0.0
+  agent.marl.ctde.self_fed.trajectory_kl_scale: 0.1
+  agent.marl.ctde.self_fed.bptt_steps: 2
+  agent.marl.ctde.self_fed.fresh_history: false
+  agent.marl.ctde.self_fed.local_feedback_gradient: false

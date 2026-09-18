@@ -37,22 +37,18 @@ class Agent(
         self.obs_space = obs_space
         self.act_space = act_space
         self.config = config
+        # Archived treatments must fail explicitly, never silently become baseline.
+        if (config.ppo.factual_value.enabled
+                or config.ppo.factual_value.representation_scale
+                or config.marl.ctde.teammate_belief.enabled
+                or config.marl.ctde.multistep_jepa.belief_context
+                or config.marl.ctde.get("direct_latent", False)):
+            raise ValueError("This branch supports the localmask reference; archived treatments were removed")
         factual = getattr(config.ppo, "factual_value", {})
-        self.factual_value_enabled = bool(factual.get("enabled", False))
-        self.factual_representation_scale = float(
-            factual.get("representation_scale", 0.0)
-        )
+        self.factual_value_enabled = False
+        self.factual_representation_scale = 0.0
         if self.factual_representation_scale < 0:
             raise ValueError("factual representation scale must be nonnegative")
-        if self.factual_representation_scale and not self.factual_value_enabled:
-            raise ValueError(
-                "factual representation supervision requires factual targets"
-            )
-        if self.factual_value_enabled:
-            if not 0 < float(factual.c_clip) <= float(factual.rho_clip):
-                raise ValueError("factual trace requires 0 < c_clip <= rho_clip")
-            if not float(config.ppo.replay_value_scale):
-                raise ValueError("factual targets require replay value training")
         self.replay_sampling = str(getattr(config, "replay_sampling", "uniform"))
         self.two_branch_replay = self.replay_sampling == "recent_world_uniform_behavior"
         self.ppo_start_step = int(getattr(config, "ppo_start_step", 0))
@@ -161,8 +157,9 @@ class Agent(
         self.feat2tensor = self.world_model.feature_tensor
         scalar = elements.Space(np.float32, ())
         binary = elements.Space(bool, (), 0, 2)
-        self.rew = embodied.jax.MLPHead(scalar, **config.rewhead, name="rew")
-        self.con = embodied.jax.MLPHead(binary, **config.conhead, name="con")
+        self.local_outcomes = bool(config.simplification.local_outcomes)
+        self.rew = embodied.jax.MLPHead(scalar, **config.rewhead, name="rew") if self.local_outcomes else None
+        self.con = embodied.jax.MLPHead(binary, **config.conhead, name="con") if self.local_outcomes else None
         outputs = {
             key: config.policy_dist_disc if space.discrete else config.policy_dist_cont
             for key, space in self.act_space.items()
@@ -191,6 +188,7 @@ class Agent(
             self.pol,
             self.val,
         ]
+        self.modules = [module for module in self.modules if module is not None]
         if self.actmask is not None:
             self.modules.append(self.actmask)
         self.modules.extend(additional_modules)
@@ -205,7 +203,7 @@ class Agent(
             raise ValueError("CTDE actor modules must be additional modules")
         if ctde_module_ids.intersection(ctde_actor_module_ids):
             raise ValueError("CTDE world and actor modules must be disjoint")
-        world_modules = [self.dyn, self.enc, self.rew, self.con]
+        world_modules = [m for m in [self.dyn, self.enc, self.rew, self.con] if m is not None]
         if self.real_value is not None:
             self.modules.append(self.real_value)
             world_modules.append(self.real_value)
@@ -259,8 +257,6 @@ class Agent(
             "consec": elements.Space(np.int32),
             "stepid": elements.Space(np.uint8, 20),
         }
-        if self.factual_value_enabled:
-            spaces["behavior_logprob"] = elements.Space(np.float32)
         if self.ppo_start_step or bool(self.config.ppo.entropy_schedule.enabled):
             # Runtime-only control input. It is injected after replay sampling,
             # so it never becomes replay content or changes sampled sequences.
