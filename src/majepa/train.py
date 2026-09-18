@@ -284,7 +284,11 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
                     )
                 carry_report, metrics = agent.report(carry_report, batch)
                 aggregate.add(metrics)
-            logger.add(aggregate.result(), prefix="report")
+            # Elements limits each add() call to 1000 metrics. Keep all
+            # diagnostics at the same step and flush once through should_log.
+            report_items = list(aggregate.result().items())
+            for offset in range(0, len(report_items), 1000):
+                logger.add(dict(report_items[offset : offset + 1000]), prefix="report")
 
         if should_log(step):
             logger.add(

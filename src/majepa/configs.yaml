@@ -1,4 +1,5 @@
 defaults:
+
   logdir: ~/logdir/{timestamp}
   replica: 0
   replicas: 1
@@ -14,14 +15,17 @@ defaults:
   random_agent: False
   ipv6: False
   errfile: False
+
   logger:
     outputs: [jsonl, scope]
     filter: 'score|return|length|fps|ratio|schedule/|train/opt/|train/loss/|train/ppo/|train/rand/|train/posterior_jepa/|train/dynamics_jepa/|train/ctde/|report/ctde/|central_critic/|report/world_model/|report/openloop/|battle_won|win_rate|legacy_|corrected_|enemy_|ally_|timeout|action_|attack_target_|eval/|final_eval/'
     timer: True
     fps: 15
     user: ''
+
   env:
     smac: {difficulty: '7', continuing_episode: True, use_seed: True}
+
   replay:
     size: 5e6
     online: True
@@ -29,7 +33,9 @@ defaults:
     sampling: uniform
     recency_decay: 0.9998
     world_uniform_mix: 0.0
-    truncated_geometric_alpha: 10.0
+    behavior_recency_decay: 0.0
+    behavior_uniform_mix: 0.0
+
   run:
     steps: 5e4
     train_ratio: 128.0
@@ -66,6 +72,7 @@ defaults:
     remote_envs: False
     usage: {psutil: True, nvsmi: True, gputil: False, malloc: False, gc: False}
     debug: False
+
   jax:
     platform: cuda
     compute_dtype: bfloat16
@@ -80,6 +87,7 @@ defaults:
     precompile: True
     profiler: False
     coordinator_address: ''
+
   agent:
     num_agents: 3
     marl:
@@ -116,7 +124,6 @@ defaults:
     policy_dist_cont: bounded_normal
     imag_last: 0
     imag_length: 5
-    imag_action_samples: 1
     horizon: 333
     contdisc: True
     ppo:
@@ -139,6 +146,7 @@ defaults:
     reward_grad: True
     report: True
     report_gradnorms: False
+
 # Maintained development reference, pinned to the completed am1 Bernoulli runs.
 # See analysis/ppo_audit/reinforce_regression_review_20260908.md.
 ma_jepa:
@@ -149,7 +157,8 @@ ma_jepa:
     sampling: recent_world_uniform_behavior
     recency_decay: 0.9998
     world_uniform_mix: 0.5
-    truncated_geometric_alpha: 10.0
+    behavior_recency_decay: 0.0
+    behavior_uniform_mix: 0.0
   run:
     steps: 50000
     envs: 1
@@ -200,6 +209,8 @@ ma_jepa:
         multistep: {anchors: 0}
         mask_calibration: {enabled: False, horizons: [1, 4, 8, 15], soft_liveness: False}
         imagination_mask_sampling: bernoulli
+        imagination_mask_source: joint
+        compare_mask_heads: False
         joint: {width: 256, heads: 4, agent_layers: 2, temporal_layers: 12, context: 16, ffup: 4, dropout: 0.1, action_conditioning: add, act: silu, norm: rms, winit: trunc_normal_in}
         head: {layers: 2, units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
         critic: {width: 256, heads: 4, layers: 2, ffup: 4, dropout: 0.0, value_layers: 2, value_units: 256, bins: 255, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
@@ -221,19 +232,23 @@ ma_jepa:
           act: silu
           norm: rms
           winit: trunc_normal_in
+
 # Optional treatments, applied after ma_jepa. Matrix defaults remain unchanged.
 factual_value:
   agent:
     ppo:
       factual_value: {enabled: True}
+
 factual_value_representation:
   agent:
     ppo:
       factual_value: {enabled: True, representation_scale: 0.1}
+
 smac_vector:
   task: smac_3m
   agent: {num_agents: 3}
   run: {steps: 1e5, train_ratio: 128, envs: 1, eval_envs: 1, curve_eval_eps: 32, curve_eval_seed_offset: 50000}
+
 debug:
   batch_size: 8
   batch_length: 10

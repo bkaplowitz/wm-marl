@@ -3,19 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import math
 from pathlib import Path
 
 from majepa.runtime import absolute_path, infrastructure_root, runtime_python
 
 
 PUBLIC_ALGORITHMS = ("ma-jepa",)
-DUAL_VIEW_REPLAY_SAMPLINGS = frozenset(
-    {
-        "recent_world_uniform_behavior",
-        "truncated_geometric_world_uniform_behavior",
-    }
-)
 
 
 def algorithm_config_profiles(algorithm: str) -> list[str]:
@@ -54,11 +47,6 @@ class MAJEPARunSpec:
     curve_eval_episodes: int | None = None
     curve_eval_envs: int | None = None
     curve_eval_seed_offset: int | None = None
-    imag_action_samples: int = 1
-    replay_sampling: str = "recent_world_uniform_behavior"
-    recency_decay: float = 0.9998
-    world_uniform_mix: float = 0.5
-    truncated_geometric_alpha: float = 10.0
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -76,29 +64,12 @@ class MAJEPARunSpec:
             raise ValueError("num_agents must be positive")
         if self.num_agents < 2:
             raise ValueError("MA-JEPA requires at least two agents")
-        if type(
-            self.imag_action_samples
-        ) is not int or self.imag_action_samples not in (1, 2):
-            raise ValueError("imag_action_samples must be 1 or 2")
         if self.train_steps < 1:
             raise ValueError("train_steps must be positive")
         if self.curve_eval_interval < 0:
             raise ValueError("curve_eval_interval must be non-negative")
         if self.platform not in {"cpu", "cuda", "tpu"}:
             raise ValueError(f"unsupported platform: {self.platform!r}")
-        if self.replay_sampling not in DUAL_VIEW_REPLAY_SAMPLINGS:
-            raise ValueError(
-                "MA-JEPA requires a supported dual-view replay sampler, got "
-                f"{self.replay_sampling!r}"
-            )
-        if not 0.0 < float(self.recency_decay) <= 1.0:
-            raise ValueError("recency_decay must be in (0, 1]")
-        if not 0.0 <= float(self.world_uniform_mix) <= 1.0:
-            raise ValueError("world_uniform_mix must be in [0, 1]")
-        if not float(self.truncated_geometric_alpha) >= 0.0 or not math.isfinite(
-            float(self.truncated_geometric_alpha)
-        ):
-            raise ValueError("truncated_geometric_alpha must be finite and nonnegative")
 
         smac = self.task.startswith("smac_")
         if self.curve_eval_episodes is None:
@@ -157,7 +128,7 @@ class MAJEPARunSpec:
 
     @property
     def effective_replay_sampling(self) -> str:
-        return self.replay_sampling
+        return "recent_world_uniform_behavior"
 
     @property
     def command(self) -> list[str]:
@@ -178,8 +149,6 @@ class MAJEPARunSpec:
             str(self.seed),
             "--agent.num_agents",
             str(self.num_agents),
-            "--agent.imag_action_samples",
-            str(self.imag_action_samples),
             "--run.steps",
             str(self.train_steps),
             "--run.curve_eval_interval",
@@ -214,18 +183,6 @@ class MAJEPARunSpec:
                     "eval",
                 ]
             )
-        command.extend(
-            [
-                "--replay.sampling",
-                self.replay_sampling,
-                "--replay.recency_decay",
-                str(self.recency_decay),
-                "--replay.world_uniform_mix",
-                str(self.world_uniform_mix),
-                "--replay.truncated_geometric_alpha",
-                str(self.truncated_geometric_alpha),
-            ]
-        )
         return command
 
     @property
@@ -261,16 +218,6 @@ class MAJEPARunSpec:
             "world_optimizer_warmup": 0,
             "ppo_start_step": 5000,
             "imagination_horizon": 5,
-            "imag_action_samples": self.imag_action_samples,
-            "replay_sampling": self.effective_replay_sampling,
-            "recency_decay": self.recency_decay,
-            "world_uniform_mix": self.world_uniform_mix,
-            "truncated_geometric_alpha": (
-                self.truncated_geometric_alpha
-                if self.effective_replay_sampling
-                == "truncated_geometric_world_uniform_behavior"
-                else None
-            ),
             "ppo": {
                 "epochs": 5,
                 "clip_epsilon": 0.2,
@@ -329,14 +276,13 @@ class MAJEPARunSpec:
             "sigreg_aggregation": "per_agent",
             "replay_context": 192,
             "replay_sampling": self.effective_replay_sampling,
-            "world_uniform_mix": self.world_uniform_mix,
+            "world_uniform_mix": 0.5,
             "isolate_report_rng": True,
             "development_reference": "am1-bernoulli-20260907",
-            "recency_decay": self.recency_decay,
-            "truncated_geometric_alpha": (
-                self.truncated_geometric_alpha
+            "recency_decay": (
+                0.9998
                 if self.effective_replay_sampling
-                == "truncated_geometric_world_uniform_behavior"
+                in {"recent", "recent_world_uniform_behavior"}
                 else None
             ),
             "actor_objective": "clipped_imagined_ppo",
