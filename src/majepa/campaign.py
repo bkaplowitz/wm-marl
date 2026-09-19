@@ -1073,7 +1073,6 @@ def collect_status(directory, manifest):
 
 
 def verify_wandb(directory, manifest):
-    import elements
     import wandb
 
     client = wandb.Api(timeout=30)
@@ -1084,11 +1083,19 @@ def verify_wandb(directory, manifest):
         try:
             prefix = f"{manifest['wandb']['entity']}/{manifest['wandb']['project']}/"
             remote_run = client.run(prefix + run["wandb_id"])
-            actual = json.loads(json.dumps(elements.Config(remote_run.config).flat))
+            actual = json.loads(json.dumps(remote_run.config))
+            missing = object()
+
+            def value(key):
+                current = actual
+                for part in key.split("."):
+                    if not isinstance(current, dict) or part not in current:
+                        return missing
+                    current = current[part]
+                return current
+
             mismatch = [
-                k
-                for k, v in run["config"].items()
-                if k != "logdir" and actual.get(k) != v
+                k for k, v in run["config"].items() if k != "logdir" and value(k) != v
             ]
             losses = {
                 k: v

@@ -252,7 +252,10 @@ def test_verified_wandb_config_normalizes_sequence_types(tmp_path, monkeypatch):
     run = plan["runs"][0]
     run.update(wandb_id="train", evaluation_wandb_id="eval")
     remote = types.SimpleNamespace(
-        config=dict(elements.Config(run["config"])),
+        config={
+            **dict(elements.Config(run["config"])),
+            "campaign_provenance": {"changed_files": []},
+        },
         state="running",
         url="https://example.test/run",
         summary={
