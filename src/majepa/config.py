@@ -331,6 +331,14 @@ class MAJEPARunSpec:
             "replay_sampling": self.effective_replay_sampling,
             "world_uniform_mix": self.world_uniform_mix,
             "isolate_report_rng": True,
+            "reproducibility": {
+                "host_seed": self.seed,
+                "environment_seed": "seed + 10 * worker_index",
+                "replay_stream": "snapshot_staggered",
+                "startup_behavior_min_starts": 4,
+                "replay_trace_batches": 32,
+                "replay_rng_checkpointed": True,
+            },
             "development_reference": "am1-bernoulli-20260907",
             "recency_decay": self.recency_decay,
             "truncated_geometric_alpha": (

@@ -9,6 +9,8 @@ import embodied
 import portal
 import ruamel.yaml as yaml
 
+from .reproducibility import seed_everything
+
 folder = pathlib.Path(__file__).parent
 
 
@@ -75,9 +77,9 @@ def _load_configs(extra_config_path=None):
 
 
 def _worker_seed(seed: int, index: int) -> int:
-    """Match the pinned DreamerV3 environment-worker seed mapping."""
+    """Match DMAWM's stable environment-worker seed mapping."""
 
-    return hash((int(seed), int(index))) % (2**32 - 1)
+    return int(seed) + int(index) * 10
 
 
 def _validate_script(script: str, num_agents: int) -> None:
@@ -98,6 +100,7 @@ def main(argv=None, extra_config_path=None):
     ).parse_known(argv)
     config = _resolve_config_profiles(configs, parsed.configs)
     config = elements.Flags(config).parse(other)
+    seed_everything(int(config.seed))
     config = config.update(
         logdir=(config.logdir.format(timestamp=elements.timestamp()))
     )
@@ -287,7 +290,9 @@ def make_replay(config, folder, mode="train"):
         )
     if sampling != "uniform" and mode == "train":
         raise ValueError(f"unsupported replay sampling: {sampling!r}")
-    return embodied.replay.Replay(**kwargs)
+    from .replay import ReproducibleReplay
+
+    return ReproducibleReplay(**kwargs, seed=int(config.seed))
 
 
 def make_env(config, index, **overrides):
@@ -295,11 +300,7 @@ def make_env(config, index, **overrides):
     kwargs = config.env.get(suite, {})
     kwargs.update(overrides)
     if kwargs.pop("use_seed", False):
-        kwargs["seed"] = (
-            int(config.seed) + int(index)
-            if suite == "smac"
-            else _worker_seed(config.seed, index)
-        )
+        kwargs["seed"] = _worker_seed(config.seed, index)
     if suite == "smac":
         from .envs.smac import SMACEnv
 

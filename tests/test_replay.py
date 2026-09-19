@@ -4,7 +4,12 @@ import numpy as np
 import pytest
 
 from majepa.config import MAJEPARunSpec
-from majepa.replay import DualViewReplay, ExponentialRecency, TruncatedGeometric
+from majepa.replay import (
+    DualViewReplay,
+    ExponentialRecency,
+    ReproducibleReplay,
+    TruncatedGeometric,
+)
 
 
 def _populate(selector, count):
@@ -110,3 +115,80 @@ def test_run_spec_records_truncated_geometric_selection(tmp_path):
         "--replay.truncated_geometric_alpha",
         "10.0",
     ]
+
+
+def _add_replay_steps(replay, workers=2, steps=12):
+    for worker in range(workers):
+        for step in range(steps):
+            replay.add(
+                {
+                    "value": np.asarray(worker * 100 + step, np.int32),
+                    "is_first": np.asarray(step == 0),
+                    "is_last": np.asarray(step == steps - 1),
+                    "is_terminal": np.asarray(step == steps - 1),
+                },
+                worker,
+            )
+
+
+def test_seeded_replay_repeats_fresh_batch_sequence():
+    first = ReproducibleReplay(length=3, capacity=100, online=False, seed=41)
+    second = ReproducibleReplay(length=3, capacity=100, online=False, seed=41)
+    _add_replay_steps(first)
+    _add_replay_steps(second)
+    for _ in range(12):
+        np.testing.assert_array_equal(
+            first.sample(4, "train")["value"],
+            second.sample(4, "train")["value"],
+        )
+
+
+def test_dual_view_checkpoint_restores_all_sampling_rngs(tmp_path):
+    replay = DualViewReplay(
+        length=3,
+        capacity=100,
+        chunksize=8,
+        directory=tmp_path,
+        save_wait=True,
+        optimized_length=2,
+        recency_decay=0.9998,
+        world_uniform_mix=0.5,
+        isolate_report_rng=True,
+        seed=43,
+    )
+    _add_replay_steps(replay)
+    for _ in range(5):
+        replay.sample(3, "train_world")
+        replay.sample(3, "train_behavior")
+    state = replay.save()
+    expected = [
+        (
+            replay.sample(3, "train_world")["value"].copy(),
+            replay.sample(3, "train_behavior")["value"].copy(),
+        )
+        for _ in range(8)
+    ]
+
+    restored = DualViewReplay(
+        length=3,
+        capacity=100,
+        chunksize=8,
+        directory=tmp_path,
+        save_wait=True,
+        optimized_length=2,
+        recency_decay=0.9998,
+        world_uniform_mix=0.5,
+        isolate_report_rng=True,
+        seed=999,
+    )
+    restored.load(state)
+    actual = [
+        (
+            restored.sample(3, "train_world")["value"].copy(),
+            restored.sample(3, "train_behavior")["value"].copy(),
+        )
+        for _ in range(8)
+    ]
+    for expected_pair, actual_pair in zip(expected, actual):
+        np.testing.assert_array_equal(expected_pair[0], actual_pair[0])
+        np.testing.assert_array_equal(expected_pair[1], actual_pair[1])

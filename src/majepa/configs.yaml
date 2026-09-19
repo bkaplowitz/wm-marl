@@ -157,6 +157,9 @@ ma_jepa:
     world_model_start_step: 5000
     ppo_start_step: 5000
     isolate_report_rng: True
+    replay_stream_mode: snapshot_staggered
+    replay_startup_behavior_min_starts: 4
+    replay_trace_batches: 32
     curve_eval_interval: 5000
     curve_eval_eps: 32
     eval_envs: 4

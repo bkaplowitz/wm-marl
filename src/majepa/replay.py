@@ -7,6 +7,32 @@ import embodied
 import numpy as np
 
 
+def _selector_rng_state(selector):
+    rng = getattr(selector, "rng", None)
+    return rng.bit_generator.state if rng is not None else None
+
+
+def _restore_selector_rng(selector, state):
+    rng = getattr(selector, "rng", None)
+    if state is not None and rng is not None:
+        rng.bit_generator.state = state
+
+
+class ReproducibleReplay(embodied.replay.Replay):
+    """Replay whose selector resumes from the exact checkpointed RNG draw."""
+
+    def save(self):
+        return {
+            "replay": super().save(),
+            "sampler_rng_state": _selector_rng_state(self.sampler),
+        }
+
+    def load(self, data=None):
+        state = data if isinstance(data, dict) else {}
+        super().load(state.get("replay"))
+        _restore_selector_rng(self.sampler, state.get("sampler_rng_state"))
+
+
 class ExponentialRecency:
     """Sample sequence starts with probability proportional to decay**age."""
 
@@ -93,7 +119,7 @@ class TruncatedGeometric(ExponentialRecency):
         super().__init__(decay, seed=seed, track_ages=track_ages)
 
 
-class RecentReplay(embodied.replay.Replay):
+class RecentReplay(ReproducibleReplay):
     """Single-stream replay with exponentially decayed sampling by item age."""
 
     def __init__(self, *, recency_decay=0.9998, seed=0, **kwargs):
@@ -132,7 +158,7 @@ class RecentReplay(embodied.replay.Replay):
         return result
 
 
-class DualViewReplay(embodied.replay.Replay):
+class DualViewReplay(ReproducibleReplay):
     """One replay store exposed through separate world and behavior views.
 
     The world-model view samples recent sequence starts using either the
@@ -285,6 +311,31 @@ class DualViewReplay(embodied.replay.Replay):
                 # eviction. Both selectors are corrected by the eviction path.
                 continue
 
+    def save(self):
+        return {
+            "replay": super().save(),
+            "behavior_rng_state": _selector_rng_state(self.behavior_sampler),
+            "report_rng_state": _selector_rng_state(self.report_sampler),
+            "world_uniform_rng_state": _selector_rng_state(
+                self.world_uniform_sampler
+            ),
+            "world_mixture_rng_state": self.world_mixture_rng.bit_generator.state,
+        }
+
+    def load(self, data=None):
+        state = data if isinstance(data, dict) else {}
+        super().load(state.get("replay"))
+        _restore_selector_rng(
+            self.behavior_sampler, state.get("behavior_rng_state")
+        )
+        _restore_selector_rng(self.report_sampler, state.get("report_rng_state"))
+        _restore_selector_rng(
+            self.world_uniform_sampler, state.get("world_uniform_rng_state")
+        )
+        mixture_state = state.get("world_mixture_rng_state")
+        if mixture_state is not None:
+            self.world_mixture_rng.bit_generator.state = mixture_state
+
     def stats(self):
         result = super().stats()
         with self._view_stats_lock:
@@ -331,5 +382,6 @@ __all__ = [
     "DualViewReplay",
     "ExponentialRecency",
     "RecentReplay",
+    "ReproducibleReplay",
     "TruncatedGeometric",
 ]
