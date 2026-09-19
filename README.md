@@ -1,5 +1,10 @@
 # MA-JEPA
 
+For reusable RunPod campaigns, see the [campaign launcher guide](docs/campaign-launcher.md)
+and [example specification](experiments/campaign.example.json). The launcher queues
+independent jobs on multi-GPU pods, prefers L40 then L40S, and records resolved
+configurations and verified artifacts in W&B.
+
 Decoder-free multi-agent world modelling with a shared decentralized actor and
 PPO on imagined team trajectories. `clean_jepa` retains the imported pod source
 and adds configurable two-action imagination. `SOURCE_SHA256` and

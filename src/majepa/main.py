@@ -138,30 +138,39 @@ def main(argv=None, extra_config_path=None):
         num_agents=config.agent.num_agents,
     )
 
-    if config.script == "train":
-        from . import train as first_party_train
+    exit_code = 1
+    try:
+        if config.script == "train":
+            from . import train as first_party_train
 
-        first_party_train.train(
-            bind(make_agent, config),
-            bind(make_replay, config, "replay"),
-            bind(make_env, config),
-            bind(make_stream, config),
-            bind(make_logger, config),
-            args,
-        )
+            first_party_train.train(
+                bind(make_agent, config),
+                bind(make_replay, config, "replay"),
+                bind(make_env, config),
+                bind(make_stream, config),
+                bind(make_logger, config),
+                args,
+            )
 
-    elif config.script == "eval_only":
-        from . import evaluation
+        elif config.script == "eval_only":
+            from . import evaluation
 
-        evaluation.eval_only(
-            bind(make_agent, config),
-            bind(make_env, config),
-            bind(make_logger, config),
-            args,
-        )
+            evaluation.eval_only(
+                bind(make_agent, config),
+                bind(make_env, config),
+                bind(make_logger, config),
+                args,
+            )
 
-    else:
-        raise NotImplementedError(config.script)
+        else:
+            raise NotImplementedError(config.script)
+        exit_code = 0
+    finally:
+        if os.environ.get("MAJEPA_CAMPAIGN_MANIFEST"):
+            import wandb
+
+            if wandb.run is not None:
+                wandb.run.finish(exit_code=exit_code)
 
 
 def make_agent(config):
@@ -203,11 +212,15 @@ def make_agent(config):
 
     if config.agent.paired_rng:
         from .paired import install_rng
+
         install_rng(agent)
     return agent
 
 
 def make_logger(config):
+    from . import tracking
+
+    recorded_config = tracking.recorded_config(config)
     step = elements.Counter()
     logdir = config.logdir
     multiplier = config.env.get(config.task.split("_")[0], {}).get("repeat", 1)
@@ -232,12 +245,14 @@ def make_logger(config):
             )
         elif output == "wandb":
             name = os.environ.get("WANDB_NAME") or "/".join(logdir.split("/")[-4:])
-            outputs.append(elements.logger.WandBOutput(name))
+            outputs.append(elements.logger.WandBOutput(name, config=recorded_config))
         elif output == "scope":
             outputs.append(elements.logger.ScopeOutput(elements.Path(logdir)))
         else:
             raise NotImplementedError(output)
     logger = elements.Logger(step, outputs, multiplier)
+    if os.environ.get("MAJEPA_CAMPAIGN_MANIFEST"):
+        tracking.record_campaign_start(config, recorded_config["campaign_provenance"])
     return logger
 
 
@@ -289,7 +304,12 @@ def make_env(config, index, **overrides):
     kwargs.update(overrides)
     if kwargs.pop("use_seed", False):
         kwargs["seed"] = (
-            (17001 if config.agent.paired_rng and int(index) >= 50000 else int(config.seed)) + int(index)
+            (
+                17001
+                if config.agent.paired_rng and int(index) >= 50000
+                else int(config.seed)
+            )
+            + int(index)
             if suite == "smac"
             else _worker_seed(config.seed, index)
         )
