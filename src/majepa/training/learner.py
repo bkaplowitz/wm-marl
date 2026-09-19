@@ -6,6 +6,7 @@ import jax.numpy as jnp
 import ninjax as nj
 import numpy as np
 
+from ..paired import rng_domain
 from ..models.heads import binary_vector_loss
 from .common import concat, f32, sample, sg
 from .ppo import (
@@ -58,6 +59,8 @@ class LearnerMixin:
         if not hasattr(self.opt, "step_group"):
             raise ValueError("MA-JEPA PPO requires the separated CTDE optimizer")
 
+        paired_rng = bool(self.config.paired_rng)
+        rng_root = nj.seed() if paired_rng else None
         ppo_active = self._ppo_schedule(data)
         fresh_history = bool(
             getattr(self, "ctde_self_fed_enabled", False)
@@ -67,25 +70,27 @@ class LearnerMixin:
         carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
         if fresh_history:
             obs = dict(obs, _self_fed_raw=raw_world)
-        metrics, (carry, entries, outs, mets) = self.opt(
-            self.loss,
-            carry,
-            obs,
-            prevact,
-            training=True,
-            has_aux=True,
-            skip_groups=("actor", "critic"),
-        )
+        with rng_domain(rng_root, 1, paired_rng):
+            metrics, (carry, entries, outs, mets) = self.opt(
+                self.loss,
+                carry,
+                obs,
+                prevact,
+                training=True,
+                has_aux=True,
+                skip_groups=("actor", "critic"),
+            )
         metrics.update(mets)
 
         # This is deliberately after the world-model optimizer step. PPO sees
         # the newest JEPA dynamics, and its immutable behavior snapshot cannot
         # be invalidated by a simultaneous teammate/world update.
         entropy_coefficient = self._ppo_entropy_coefficient(data)
-        ppo_batch, batch_metrics = self._prepare_ppo_batch(
-            behavior_data,
-            entropy_coefficient,
-        )
+        with rng_domain(rng_root, 2, paired_rng):
+            ppo_batch, batch_metrics = self._prepare_ppo_batch(
+                behavior_data,
+                entropy_coefficient,
+            )
         metrics.update(batch_metrics)
         actor_epochs = []
         critic_epochs = []

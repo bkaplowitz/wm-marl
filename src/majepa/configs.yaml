@@ -37,6 +37,8 @@ defaults:
     behavior_uniform_mix: 0.0
 
   run:
+    paired_phase: ""
+    paired_dir: ""
     steps: 5e4
     train_ratio: 128.0
     world_model_start_step: 0
@@ -89,6 +91,7 @@ defaults:
     coordinator_address: ''
 
   agent:
+    paired_rng: false
     simplification: {joint_mask: true, local_outcomes: true}
     num_agents: 3
     marl:

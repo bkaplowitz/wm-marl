@@ -55,6 +55,10 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
 
     logdir = elements.Path(args.logdir)
     step = logger.step
+    paired = None
+    if args.paired_phase:
+        from .paired import PairAudit
+        paired = PairAudit(agent, args)
     usage = elements.Usage(**args.usage)
     train_agg = elements.Agg()
     epstats = elements.Agg()
@@ -128,6 +132,8 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     driver.on_step(lambda tran, _: policy_fps.step())
     driver.on_step(replay.add)
     driver.on_step(logfn)
+    if paired is not None:
+        driver.on_step(paired.transition)
 
     behavior_replay = any(key.startswith("_behavior_replay/") for key in agent.spaces)
     dual_view = bool(getattr(replay, "dual_view", False))
@@ -210,6 +216,13 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
         # collection from creating a learner-update backlog.
         if len(replay) < minimum_replay_size or current_step < world_model_start_step:
             return
+        if paired is not None:
+            paired.verify(stream_train)
+            # The verification-only arm stops after the first audited batch;
+            # the canonical arm continues into ordinary training after writing
+            # the shared prefill fingerprint.
+            if paired.phase == "verify":
+                return
         for _ in range(should_train(step)):
             with elements.timer.section("stream_next"):
                 if snapshot_replay:
@@ -272,7 +285,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     while step < args.steps:
         driver(policy, steps=10)
 
-        if should_report(step) and len(replay):
+        if (paired is None or paired.phase == "train") and should_report(step) and len(replay):
             aggregate = elements.Agg()
             for _ in range(args.consec_report * args.report_batches):
                 batch = next(stream_report)
@@ -335,7 +348,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
             logger.add({"timer": elements.timer.stats()["summary"]})
             logger.write()
 
-        if should_save(step):
+        if (paired is None or paired.phase == "train") and should_save(step):
             _save_checkpoint(checkpoint)
 
         if next_curve_eval is not None and int(step) >= next_curve_eval:

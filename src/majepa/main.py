@@ -182,7 +182,7 @@ def make_agent(config):
         return embodied.RandomAgent(obs_space, act_space)
     cpdir = elements.Path(config.logdir)
     cpdir = cpdir.parent if config.replicas > 1 else cpdir
-    return Algorithm(
+    agent = Algorithm(
         obs_space,
         act_space,
         elements.Config(
@@ -200,6 +200,11 @@ def make_agent(config):
             replicas=config.replicas,
         ),
     )
+
+    if config.agent.paired_rng:
+        from .paired import install_rng
+        install_rng(agent)
+    return agent
 
 
 def make_logger(config):
@@ -284,7 +289,7 @@ def make_env(config, index, **overrides):
     kwargs.update(overrides)
     if kwargs.pop("use_seed", False):
         kwargs["seed"] = (
-            int(config.seed) + int(index)
+            (17001 if config.agent.paired_rng and int(index) >= 50000 else int(config.seed)) + int(index)
             if suite == "smac"
             else _worker_seed(config.seed, index)
         )
