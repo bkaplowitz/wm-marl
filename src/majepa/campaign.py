@@ -707,6 +707,13 @@ def bootstrap_script(out, *, stage_assets=False):
             "mkdir repo; tar -xzf source.tar.gz -C repo",
             "python -m pip install uv",
             "cd repo",
+            *(
+                [
+                    "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y unzip"
+                ]
+                if stage_assets
+                else []
+            ),
             "export UV_PROJECT_ENVIRONMENT=/opt/majepa-venv",
             "uv sync --locked --python 3.11 --extra dev --extra smac --extra cuda12",
             'export PYTHONPATH="$PWD/src:$PWD/external/dreamerv3"',

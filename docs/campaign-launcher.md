@@ -21,6 +21,7 @@ maps. An explicit `sc2path` may identify that installation.
 A placement may omit `volume` in regions without network storage. The launcher
 then allocates pod storage sized to `storage.quota_gb` and runs the saved SC2
 download/extraction/hash checks in `majepa.campaign_assets` before starting workers.
+The bootstrap installs the image's missing `unzip` prerequisite before downloading.
 This storage remains attached to the pod; final artifacts are still verified on
 W&B before shutdown. Inspect staging commands without downloads using
 `python -m majepa.campaign_assets /tmp/sc2-assets --dry-run`.

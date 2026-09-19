@@ -346,6 +346,7 @@ def test_complete_mocked_pod_launch_stages_one_queue_for_three_gpus(
         if "cat >" in script and "bootstrap.sh" in script
     )
     assert ("majepa.campaign_assets" in bootstrap) is not network_volume
+    assert ("apt-get install -y unzip" in bootstrap) is not network_volume
     assert "SECRET" not in str(commands)
     saved = json.loads((tmp_path / "manifest.json").read_text())
     allocation = saved["jobs"][0]
