@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from pathlib import Path
 
 from majepa.runtime import absolute_path, infrastructure_root, runtime_python
@@ -47,6 +48,8 @@ class MAJEPARunSpec:
     curve_eval_episodes: int | None = None
     curve_eval_envs: int | None = None
     curve_eval_seed_offset: int | None = None
+    wm_critic_value_scale: float = 0.0
+    wm_joint_prediction_gradient: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -70,6 +73,13 @@ class MAJEPARunSpec:
             raise ValueError("curve_eval_interval must be non-negative")
         if self.platform not in {"cpu", "cuda", "tpu"}:
             raise ValueError(f"unsupported platform: {self.platform!r}")
+        if (
+            not math.isfinite(self.wm_critic_value_scale)
+            or self.wm_critic_value_scale < 0
+        ):
+            raise ValueError("wm_critic_value_scale must be finite and nonnegative")
+        if not isinstance(self.wm_joint_prediction_gradient, bool):
+            raise ValueError("wm_joint_prediction_gradient must be boolean")
 
         smac = self.task.startswith("smac_")
         if self.curve_eval_episodes is None:
@@ -149,6 +159,10 @@ class MAJEPARunSpec:
             str(self.seed),
             "--agent.num_agents",
             str(self.num_agents),
+            "--agent.world_model_gradients.critic_value_scale",
+            str(self.wm_critic_value_scale),
+            "--agent.world_model_gradients.joint_prediction",
+            str(self.wm_joint_prediction_gradient),
             "--run.steps",
             str(self.train_steps),
             "--run.curve_eval_interval",
@@ -266,6 +280,10 @@ class MAJEPARunSpec:
             "ctde_rollout_steps": self.ctde_rollout_steps,
             "ctde": self.ctde_manifest,
             "world_model": "parallel_transformer",
+            "world_model_gradients": {
+                "critic_value_scale": self.wm_critic_value_scale,
+                "joint_prediction": self.wm_joint_prediction_gradient,
+            },
             "world_model_objective": "embedding",
             "embedding_target": "ema",
             "embedding_loss": "cosine",

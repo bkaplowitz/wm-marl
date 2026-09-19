@@ -9,6 +9,9 @@ import jax.numpy as jnp
 class ReplayMixin:
     def _replay_observations(self, data):
         obs = {key: data[key] for key in self.obs_space}
+        if self.world_model_value_scale:
+            obs["behavior_logprob"] = data["behavior_logprob"]
+            obs["_replay_action"] = data[self.action_mask_key]
         return obs
 
     def dynamics_replay_entry_space(self):

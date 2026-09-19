@@ -56,6 +56,15 @@ def test_single_gpu_topology_keeps_dependencies_on_same_pod():
         assert len(p["run_names"]) == 2
 
 
+def test_explicit_pod_size_is_preserved_with_fewer_jobs():
+    result = campaign.plan(specification(gpus_per_pod=4), "test")
+    assert len(result["allocations"]) == 1
+    assert result["allocations"][0]["gpu_count"] == 4
+    assert len(result["allocations"][0]["run_names"]) == 3
+    with pytest.raises(ValueError, match="budget"):
+        campaign.plan(specification(gpus_per_pod=4, budget=25), "test")
+
+
 def test_gpu_fallback_requires_explicit_a100_opt_in():
     plan = campaign.plan(specification(), "test")
     assert campaign.gpu_options(plan) == ["NVIDIA L40", "NVIDIA L40S"]

@@ -10,8 +10,10 @@ from majepa.scripts.evaluate import main as evaluate_main
 from majepa.scripts.train import main as train_main
 
 
-@pytest.mark.parametrize("samples", [None, 1, 2])
-def test_training_setup_accepts_imagined_action_sample_count(tmp_path, samples):
+@pytest.mark.parametrize(
+    "scale,joint", [(0.0, False), (0.1, False), (0.0, True), (0.1, True)]
+)
+def test_training_setup_records_world_gradient_options(tmp_path, scale, joint):
     arguments = [
         "--task",
         "smac_2s3z",
@@ -20,30 +22,37 @@ def test_training_setup_accepts_imagined_action_sample_count(tmp_path, samples):
         "--experiment-dir",
         str(tmp_path),
         "--dry-run",
+        "--wm-critic-value-scale",
+        str(scale),
     ]
-    if samples is not None:
-        arguments.extend(["--imag-action-samples", str(samples)])
+    if joint:
+        arguments.append("--wm-joint-prediction-gradient")
     assert train_main(arguments) == 0
-    expected = 1 if samples is None else samples
     manifest = json.loads((tmp_path / "launch.json").read_text())
     command = manifest["command"]
-    index = command.index("--agent.imag_action_samples")
     config = _resolve_config_profiles(_load_configs(), manifest["configs"])
-    assert config.agent.imag_action_samples == 1
-    assert MAJEPARunSpec(tmp_path, "smac_2s3z", 5).imag_action_samples == 1
-    resolved = elements.Flags(config).parse(command[index : index + 2])
-    assert resolved.agent.imag_action_samples == expected
-    assert manifest["ctde"]["imag_action_samples"] == expected
+    for key, expected in (("critic_value_scale", scale), ("joint_prediction", joint)):
+        index = command.index("--agent.world_model_gradients." + key)
+        resolved = elements.Flags(config).parse(command[index : index + 2])
+        assert resolved.agent.world_model_gradients[key] == expected
+        assert manifest["world_model_gradients"][key] == expected
 
 
-@pytest.mark.parametrize("samples", [0, 3, True, 1.0])
-def test_run_spec_rejects_invalid_imagination_sample_count(tmp_path, samples):
-    with pytest.raises(ValueError, match="imag_action_samples must be 1 or 2"):
-        MAJEPARunSpec(tmp_path, "smac_2s3z", 5, imag_action_samples=samples)
+@pytest.mark.parametrize("scale", [-1.0, float("nan"), float("inf")])
+def test_run_spec_rejects_invalid_world_gradient_scale(tmp_path, scale):
+    with pytest.raises(ValueError, match="wm_critic_value_scale"):
+        MAJEPARunSpec(tmp_path, "smac_2s3z", 5, wm_critic_value_scale=scale)
 
 
 def test_evaluation_uses_manifest_protocol_and_complete_checkpoint(tmp_path):
-    manifest = MAJEPARunSpec(tmp_path, "smac_2s3z", 5, seed=7).to_dict()
+    manifest = MAJEPARunSpec(
+        tmp_path,
+        "smac_2s3z",
+        5,
+        seed=7,
+        wm_critic_value_scale=0.1,
+        wm_joint_prediction_gradient=True,
+    ).to_dict()
     (tmp_path / "launch.json").write_text(json.dumps(manifest))
     checkpoint = tmp_path / "run" / "ckpt" / "complete"
     checkpoint.mkdir(parents=True)
@@ -60,6 +69,14 @@ def test_evaluation_uses_manifest_protocol_and_complete_checkpoint(tmp_path):
     command = result["command"]
     assert command[command.index("--run.from_checkpoint") + 1] == str(checkpoint)
     assert command[command.index("--run.eval_policy_mode") + 1] == "eval"
+    assert (
+        command[command.index("--agent.world_model_gradients.critic_value_scale") + 1]
+        == "0.1"
+    )
+    assert (
+        command[command.index("--agent.world_model_gradients.joint_prediction") + 1]
+        == "True"
+    )
     (checkpoint / "done").unlink()
     with pytest.raises(FileNotFoundError, match="incomplete checkpoint"):
         _latest_checkpoint(tmp_path)

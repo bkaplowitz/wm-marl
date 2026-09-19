@@ -38,13 +38,24 @@ class Agent(
         self.act_space = act_space
         self.config = config
         # Archived treatments must fail explicitly, never silently become baseline.
-        if (config.ppo.factual_value.enabled
-                or config.ppo.factual_value.representation_scale
-                or config.marl.ctde.teammate_belief.enabled
-                or config.marl.ctde.multistep_jepa.belief_context
-                or config.marl.ctde.get("direct_latent", False)):
-            raise ValueError("This branch supports the localmask reference; archived treatments were removed")
-        factual = getattr(config.ppo, "factual_value", {})
+        if (
+            config.ppo.factual_value.enabled
+            or config.ppo.factual_value.representation_scale
+            or config.marl.ctde.teammate_belief.enabled
+            or config.marl.ctde.multistep_jepa.belief_context
+            or config.marl.ctde.get("direct_latent", False)
+        ):
+            raise ValueError(
+                "This branch supports the localmask reference; archived treatments were removed"
+            )
+        gradients = config.get("world_model_gradients", {})
+        self.world_model_value_scale = float(gradients.get("critic_value_scale", 0.0))
+        self.joint_prediction_gradient = bool(gradients.get("joint_prediction", False))
+        if (
+            not np.isfinite(self.world_model_value_scale)
+            or self.world_model_value_scale < 0
+        ):
+            raise ValueError("critic_value_scale must be finite and nonnegative")
         self.factual_value_enabled = False
         self.factual_representation_scale = 0.0
         if self.factual_representation_scale < 0:
@@ -158,8 +169,16 @@ class Agent(
         scalar = elements.Space(np.float32, ())
         binary = elements.Space(bool, (), 0, 2)
         self.local_outcomes = bool(config.simplification.local_outcomes)
-        self.rew = embodied.jax.MLPHead(scalar, **config.rewhead, name="rew") if self.local_outcomes else None
-        self.con = embodied.jax.MLPHead(binary, **config.conhead, name="con") if self.local_outcomes else None
+        self.rew = (
+            embodied.jax.MLPHead(scalar, **config.rewhead, name="rew")
+            if self.local_outcomes
+            else None
+        )
+        self.con = (
+            embodied.jax.MLPHead(binary, **config.conhead, name="con")
+            if self.local_outcomes
+            else None
+        )
         outputs = {
             key: config.policy_dist_disc if space.discrete else config.policy_dist_cont
             for key, space in self.act_space.items()
@@ -203,7 +222,9 @@ class Agent(
             raise ValueError("CTDE actor modules must be additional modules")
         if ctde_module_ids.intersection(ctde_actor_module_ids):
             raise ValueError("CTDE world and actor modules must be disjoint")
-        world_modules = [m for m in [self.dyn, self.enc, self.rew, self.con] if m is not None]
+        world_modules = [
+            m for m in [self.dyn, self.enc, self.rew, self.con] if m is not None
+        ]
         if self.real_value is not None:
             self.modules.append(self.real_value)
             world_modules.append(self.real_value)
@@ -257,6 +278,8 @@ class Agent(
             "consec": elements.Space(np.int32),
             "stepid": elements.Space(np.uint8, 20),
         }
+        if self.world_model_value_scale:
+            spaces["behavior_logprob"] = elements.Space(np.float32)
         if self.ppo_start_step or bool(self.config.ppo.entropy_schedule.enabled):
             # Runtime-only control input. It is injected after replay sampling,
             # so it never becomes replay content or changes sampled sequences.

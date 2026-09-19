@@ -238,7 +238,9 @@ def plan(spec, name):
             for r in runs
             if (r["config"]["task"][5:], r["config"]["seed"]) in assigned
         ]
-        count = min(per_pod, len(run_names), remaining)
+        count = min(per_pod, remaining)
+        if "gpus_per_pod" not in spec:
+            count = min(count, len(run_names))
         remaining -= count
         allocations.append(
             {"name": f"pod{i}", "gpu_count": count, "run_names": run_names}

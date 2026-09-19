@@ -33,7 +33,9 @@ explicitly for a different experiment. No earlier multi-action implementation
 is restored by this launcher; treatments must be supported by the selected source.
 
 Default topology: four GPUs in one pod, limited to the number of available jobs.
-Set `gpus_per_pod` to `1` for separate one-GPU pods; `max_gpus` limits the total.
+An explicit `gpus_per_pod` reserves that size even when fewer jobs are queued;
+idle GPUs still count toward the budget. Set it to `1` for separate one-GPU pods;
+`max_gpus` limits the total.
 Treatment/map/seed order specifies priority. An optional treatment `depends_on`
 list names earlier treatments; matching map/seed jobs stay on the same pod and
 wait for successful predecessors. An optional absolute `predecessor` queue-file

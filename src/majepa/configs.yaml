@@ -1,5 +1,4 @@
 defaults:
-
   logdir: ~/logdir/{timestamp}
   replica: 0
   replicas: 1
@@ -15,17 +14,14 @@ defaults:
   random_agent: False
   ipv6: False
   errfile: False
-
   logger:
     outputs: [jsonl, scope]
     filter: 'score|return|length|fps|ratio|schedule/|train/opt/|train/loss/|train/ppo/|train/rand/|train/posterior_jepa/|train/dynamics_jepa/|train/ctde/|report/ctde/|central_critic/|report/world_model/|report/openloop/|battle_won|win_rate|legacy_|corrected_|enemy_|ally_|timeout|action_|attack_target_|eval/|final_eval/'
     timer: True
     fps: 15
     user: ''
-
   env:
     smac: {difficulty: '7', continuing_episode: True, use_seed: True}
-
   replay:
     size: 5e6
     online: True
@@ -35,7 +31,6 @@ defaults:
     world_uniform_mix: 0.0
     behavior_recency_decay: 0.0
     behavior_uniform_mix: 0.0
-
   run:
     paired_phase: ""
     paired_dir: ""
@@ -74,7 +69,6 @@ defaults:
     remote_envs: False
     usage: {psutil: True, nvsmi: True, gputil: False, malloc: False, gc: False}
     debug: False
-
   jax:
     platform: cuda
     compute_dtype: bfloat16
@@ -89,9 +83,9 @@ defaults:
     precompile: True
     profiler: False
     coordinator_address: ''
-
   agent:
     paired_rng: false
+    world_model_gradients: {critic_value_scale: 0.0, joint_prediction: false}
     simplification: {joint_mask: true, local_outcomes: true}
     num_agents: 3
     marl:
@@ -150,7 +144,6 @@ defaults:
     reward_grad: True
     report: True
     report_gradnorms: False
-
 # Maintained development reference, pinned to the completed am1 Bernoulli runs.
 # See analysis/ppo_audit/reinforce_regression_review_20260908.md.
 ma_jepa:
@@ -236,12 +229,10 @@ ma_jepa:
           act: silu
           norm: rms
           winit: trunc_normal_in
-
 smac_vector:
   task: smac_3m
   agent: {num_agents: 3}
   run: {steps: 1e5, train_ratio: 128, envs: 1, eval_envs: 1, curve_eval_eps: 32, curve_eval_seed_offset: 50000}
-
 debug:
   batch_size: 8
   batch_length: 10
@@ -269,7 +260,6 @@ debug:
         multistep_jepa: {plan_units: 8, width: 8, layers: 1, units: 8}
         head: {layers: 1, units: 8, bins: 5, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
         critic: {width: 8, heads: 2, layers: 1, ffup: 2, dropout: 0.0, value_layers: 1, value_units: 8, bins: 5, outscale: 0.0, act: silu, norm: rms, winit: trunc_normal_in}
-
 # Apply after smac_vector and ma_jepa. This is the completed env1 localmask reference.
 localmask_reference:
   run.envs: 1

@@ -29,6 +29,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--eval-episodes", type=int)
     parser.add_argument("--eval-envs", type=int)
     parser.add_argument("--eval-seed-offset", type=int)
+    parser.add_argument("--wm-critic-value-scale", type=float, default=0.0)
+    parser.add_argument("--wm-joint-prediction-gradient", action="store_true")
 
     runtime = parser.add_argument_group("advanced runtime")
     runtime.add_argument("--platform", choices=("cpu", "cuda", "tpu"), default="cuda")
@@ -63,6 +65,8 @@ def main(argv: list[str] | None = None) -> int:
         curve_eval_episodes=args.eval_episodes,
         curve_eval_envs=args.eval_envs,
         curve_eval_seed_offset=args.eval_seed_offset,
+        wm_critic_value_scale=args.wm_critic_value_scale,
+        wm_joint_prediction_gradient=args.wm_joint_prediction_gradient,
     )
     print(f"Experiment: {spec.experiment_dir}")
     return run_training(spec, resume=args.resume, dry_run=args.dry_run)

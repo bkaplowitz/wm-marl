@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 import elements
 import jax
 import jax.numpy as jnp
@@ -14,7 +12,6 @@ import pytest
 from majepa.main import _load_configs, _resolve_config_profiles
 from majepa.marl.axes import BEHAVIOR_REPLAY_PREFIX, split_prefixed_data
 from majepa.marl.core import MARLCore
-from majepa.training.ctde import sample_imagination_actions
 
 
 def _tiny_learner(overrides=None):
@@ -163,94 +160,10 @@ def _assert_finite(tree):
         assert np.isfinite(array.astype(np.float32)).all()
 
 
-@pytest.mark.parametrize("mask_sampling", ["threshold", "bernoulli"])
-def test_second_imagined_action_cannot_change_the_realized_trajectory(mask_sampling):
-    learner, _, _ = _tiny_learner(
-        {
-            "agent.imag_action_samples": 2,
-            "agent.marl.ctde.imagination_mask_sampling": mask_sampling,
-        }
-    )
-
-    def rollout():
-        context = {
-            "present": jnp.ones((2, 2), bool),
-            "controllable_alive": jnp.ones((2, 2), bool),
-            "action_mask": jnp.ones((2, 2, 8), bool),
-            "joint_carry": learner.ctde_joint.initial(2, 2),
-            "reset": jnp.ones((2,), bool),
-        }
-        return learner.imagine_with_aux(learner.dyn.initial(4), None, 3, False, context)
-
-    state = nj.init(rollout)({}, seed=810)
-    _, (carry, features, actions, auxiliary) = jax.jit(nj.pure(rollout))(
-        state, seed=811
-    )
-
-    def change_only_second_action(logits, seed):
-        first, second, valid = sample_imagination_actions(logits, seed)
-        candidates = (logits > -1e20) & ~jax.nn.one_hot(first, 8, dtype=bool)
-        candidates &= ~jax.nn.one_hot(second, 8, dtype=bool)
-        second = jnp.where(candidates.any(-1), candidates.argmax(-1), second)
-        return first, second, valid
-
-    with patch(
-        "majepa.marl.core.sample_imagination_actions", change_only_second_action
-    ):
-        _, (other_carry, other_features, other_actions, other_auxiliary) = jax.jit(
-            nj.pure(rollout)
-        )(state, seed=811)
-    assert bool(
-        (
-            auxiliary["alternative"]["action"]
-            != other_auxiliary["alternative"]["action"]
-        ).any()
-    )
-    for key in ("deter", "stoch"):
-        np.testing.assert_array_equal(carry[key], features[key][:, -1])
-    primary = {k: v for k, v in auxiliary.items() if k != "alternative"}
-    other_primary = {k: v for k, v in other_auxiliary.items() if k != "alternative"}
-    for actual, changed in zip(
-        jax.tree.leaves((carry, features, actions, primary)),
-        jax.tree.leaves((other_carry, other_features, other_actions, other_primary)),
-    ):
-        np.testing.assert_array_equal(actual, changed)
-
-    with patch.object(learner, "imag_action_samples", 1):
-        _, single = jax.jit(nj.pure(rollout))(state, seed=811)
-    assert "alternative" not in single[-1]
-    for actual, single_value in zip(
-        jax.tree.leaves((carry, features, actions, primary)), jax.tree.leaves(single)
-    ):
-        np.testing.assert_array_equal(actual, single_value)
-
-
-@pytest.mark.parametrize("samples", [0, 3])
-def test_learner_rejects_unsupported_imagined_action_sample_count(samples):
-    with pytest.raises(ValueError, match="imag_action_samples must be 1 or 2"):
-        _tiny_learner({"agent.imag_action_samples": samples})
-
-
-def test_saved_config_without_sample_count_remains_loadable():
-    learner, obs_space, act_space = _tiny_learner()
-    saved = elements.Config(
-        {k: v for k, v in learner.config.flat.items() if k != "imag_action_samples"}
-    )
-    restored = object.__new__(MARLCore)
-    MARLCore.__init__(restored, obs_space, act_space, saved)
-    assert restored.imag_action_samples == 1
-
-
-@pytest.mark.parametrize(
-    ("samples", "advantage_mode"),
-    [(1, "batch"), (2, "batch"), (2, "return_percentile")],
-)
-def test_full_learner_jit_warmup_and_ppo_with_death_and_episode_resets(
-    samples, advantage_mode
-):
+@pytest.mark.parametrize("advantage_mode", ["batch", "return_percentile"])
+def test_full_learner_jit_warmup_and_ppo_with_death_and_episode_resets(advantage_mode):
     learner, obs_space, act_space = _tiny_learner(
         {
-            "agent.imag_action_samples": samples,
             "agent.ppo.advantage_mode": advantage_mode,
             "agent.marl.ctde.imagination_mask_sampling": "bernoulli",
             "agent.marl.ctde.self_fed.horizons": [2],
@@ -261,16 +174,7 @@ def test_full_learner_jit_warmup_and_ppo_with_death_and_episode_resets(
     )
     data = _synthetic_replay(learner, obs_space, act_space)
     carry = learner.init_train(2)
-    if samples == 1:
-        with patch(
-            "majepa.marl.core.sample_imagination_actions",
-            side_effect=AssertionError(
-                "Single-sample mode invoked the two-action sampler"
-            ),
-        ):
-            state = nj.init(learner.train)({}, carry, data, seed=702)
-    else:
-        state = nj.init(learner.train)({}, carry, data, seed=702)
+    state = nj.init(learner.train)({}, carry, data, seed=702)
     train = jax.jit(nj.pure(learner.train))
 
     frozen_state, (carry, _, frozen_metrics) = train(state, carry, data, seed=703)
@@ -310,18 +214,7 @@ def test_full_learner_jit_warmup_and_ppo_with_death_and_episode_resets(
     )(updated_state, seed=705)
     _assert_finite((batch, batch_metrics, actor_metrics, critic_metrics))
     roots = 2 * learner.config.batch_length * learner.team.size
-    assert batch["action"].shape == (samples * roots, learner.config.imag_length)
-    if samples == 2:
-        primary, secondary = np.split(np.asarray(batch["action"]), 2)
-        multiple = np.asarray(batch["action_mask"][:roots]).sum(axis=-1) > 1
-        np.testing.assert_array_equal(primary != secondary, multiple)
-        np.testing.assert_array_equal(
-            batch["valid"][roots:], batch["valid"][:roots] & multiple
-        )
-        for key in ("policy_inputs", "action_mask", "old_logits", "trajectory_weight"):
-            np.testing.assert_array_equal(batch[key][:roots], batch[key][roots:])
-        for value in batch["critic_features"].values():
-            np.testing.assert_array_equal(value[:roots], value[roots:])
+    assert batch["action"].shape == (roots, learner.config.imag_length)
     # Re-evaluation before any optimizer step must reproduce the exact policy
     # distribution that sampled the frozen imagination, including its masks.
     np.testing.assert_allclose(actor_metrics["ratio"], 1.0, atol=1e-6)
@@ -331,25 +224,6 @@ def test_full_learner_jit_warmup_and_ppo_with_death_and_episode_resets(
     )[..., 0]
     assert bool(sampled_legal.all())
     assert bool((batch["critic_valid"] & ~batch["valid"]).any())
-
-    imagine = learner.imagine_with_aux
-
-    def terminal_alternative(*args, **kwargs):
-        result = imagine(*args, **kwargs)
-        alternative = result[-1]["alternative"]
-        alternative["reward"] = jnp.full_like(alternative["reward"], 7.0)
-        alternative["continuation"] = jnp.zeros_like(alternative["continuation"])
-        return result
-
-    if samples == 2:
-        with patch.object(learner, "imagine_with_aux", terminal_alternative):
-            _, (terminal_batch, _, _, _) = jax.jit(nj.pure(inspect_batch))(
-                updated_state, seed=705
-            )
-        np.testing.assert_array_equal(terminal_batch["target_return"][roots:], 7.0)
-        np.testing.assert_array_equal(
-            terminal_batch["target_return"][:roots], batch["target_return"][:roots]
-        )
 
     _, (report_carry, report_metrics) = jax.jit(nj.pure(learner.report))(
         updated_state, carry, data, seed=706

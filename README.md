@@ -5,6 +5,9 @@ and [example specification](experiments/campaign.example.json). The launcher que
 independent jobs on multi-GPU pods, prefers L40 then L40S, and records resolved
 configurations and verified artifacts in W&B.
 
+Optional value and joint gradients into the local world model are documented in
+[world-model gradient experiments](docs/world-model-gradients.md).
+
 Decoder-free multi-agent world modelling with a shared decentralized actor and
 PPO on imagined team trajectories. `clean_jepa` retains the imported pod source
 and adds configurable two-action imagination. `SOURCE_SHA256` and

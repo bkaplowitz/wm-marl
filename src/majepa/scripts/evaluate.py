@@ -108,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
     outputs = ["jsonl", "scope"]
     if args.wandb_project:
         outputs.append("wandb")
+    gradients = manifest.get("world_model_gradients", {})
     command = [
         str(python),
         "-m",
@@ -122,6 +123,10 @@ def main(argv: list[str] | None = None) -> int:
         str(eval_seed),
         "--agent.num_agents",
         str(manifest["num_agents"]),
+        "--agent.world_model_gradients.critic_value_scale",
+        str(gradients.get("critic_value_scale", 0.0)),
+        "--agent.world_model_gradients.joint_prediction",
+        str(gradients.get("joint_prediction", False)),
         "--script",
         "eval_only",
         "--run.from_checkpoint",

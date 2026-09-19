@@ -18,6 +18,7 @@ from .ppo import (
     value_objective,
 )
 from .replay_value import replay_lambda_return
+from .factual_value import factual_vtrace_return, joint_action_logratio
 from .representation import (
     embedding_prediction_loss,
     embedding_std,
@@ -173,11 +174,16 @@ class LearnerMixin:
         separate series reuses the immutable batch, including its realized masks,
         before slow-target copying. The nested context disallows state mutation.
         """
+
         def evaluate(batch):
             return self._ppo_actor_loss(batch)[1], self._ppo_critic_loss(batch)[1]
 
         _, (actor, critic) = nj.pure(evaluate, nested=True)(
-            dict(nj.context()), batch, seed=719_243, create=False, modify=False,
+            dict(nj.context()),
+            batch,
+            seed=719_243,
+            create=False,
+            modify=False,
         )
         return {
             f"ppo/{group}/post_update_{key}": sg(value)
@@ -250,6 +256,13 @@ class LearnerMixin:
         reduced = {key: masked_mean(value, valid) for key, value in losses.items()}
         metrics.update({f"loss/{key}": value for key, value in reduced.items()})
         loss = sum(value * self.scales[key] for key, value in reduced.items())
+        if self.world_model_value_scale:
+            value_loss, value_metrics = self._world_model_value_loss(repfeat, obs)
+            loss += self.world_model_value_scale * value_loss
+            metrics["loss/world_model_value"] = value_loss
+            metrics.update(
+                {f"ctde/world_model_value/{k}": v for k, v in value_metrics.items()}
+            )
         metrics["replay_views/world_reward_mean"] = sg(
             obs["reward"].astype(jnp.float32).mean()
         )
@@ -619,7 +632,47 @@ class LearnerMixin:
             }
         )
 
-
+    def _world_model_value_loss(self, features, obs):
+        """Train factual local features through the fixed central critic."""
+        context = {
+            "present": self.team.unfold_sequence(obs["agent_present"]),
+            "controllable_alive": self.team.unfold_sequence(self._controllable(obs)),
+        }
+        frozen = sg(features)
+        self.critic(frozen, 2, context=context)
+        values = self.critic(frozen, 2, slow=True, context=context).pred()
+        policy = self.policy_distribution(
+            self.feat2tensor(frozen), 2, action_mask=obs["action_mask"]
+        )[self.action_mask_key]
+        ratios = joint_action_logratio(
+            -policy.loss(obs["_replay_action"]),
+            obs["behavior_logprob"],
+            self._controllable(obs) & obs["agent_present"],
+            self.team,
+        )
+        targets, valid, trace_metrics = factual_vtrace_return(
+            obs["reward"],
+            obs["is_first"],
+            obs["is_last"],
+            obs["is_terminal"],
+            obs["agent_present"],
+            values,
+            ratios,
+            discount=1.0 - 1.0 / float(self.config.horizon),
+            lam=float(self.config.ppo.replay_value_lam),
+            rho_clip=1.0,
+            c_clip=1.0,
+        )
+        prediction = self.critic(
+            jax.tree.map(lambda x: x[:, :-1], features),
+            2,
+            context=jax.tree.map(lambda x: x[:, :-1], context),
+            stop_state_gradient=False,
+        )
+        loss, metrics = value_objective(
+            prediction, targets, valid, jnp.ones_like(targets)
+        )
+        return loss, {**metrics, **trace_metrics}
 
     def _ppo_actor_loss(self, batch):
         policy = self.policy_distribution(
