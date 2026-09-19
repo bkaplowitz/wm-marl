@@ -127,6 +127,8 @@ requested four-GPU pod, preferring L40 and falling back to L40S. Three independe
 workers train; the fourth GPU is unused. The GPU budget is $40, with an eight-hour
 pod deadline and a $1.10 per-GPU hourly ceiling. Existing US-KS-2 and US-TX-3
 network volumes supply capacity alternatives.
+The Australia fallback uses pod-attached storage because OC-AU-1 has no network
+volume service; it stages the same verified SC2 assets before workers start.
 
 The reference was recovered from the live `majepa_core_ablations_20260919`
 campaign's `resolved.json`, using `nomargin-2s3z-seed0` with its single action-margin

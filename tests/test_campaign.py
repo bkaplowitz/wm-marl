@@ -170,6 +170,23 @@ def test_bootstrap_reuses_runtime_and_supervisor_owns_stop():
     assert "RUNPOD_API_KEY" not in campaign.startup_command(1234)
 
 
+def test_saved_asset_staging_dry_run_and_existing_directory(tmp_path, monkeypatch):
+    from majepa import campaign_assets
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("staging must not execute in dry-run or overwrite existing assets")
+
+    monkeypatch.setattr(campaign_assets.subprocess, "run", unexpected)
+    root = tmp_path / "assets"
+    commands = campaign_assets.stage(root, dry_run=True)
+    assert len(commands) == 4
+    assert commands[1][-1] == str(root)
+    assert not root.exists()
+    root.mkdir()
+    with pytest.raises(FileExistsError):
+        campaign_assets.stage(root)
+
+
 def test_rejects_ambiguous_run_names_and_inexact_step_budget():
     with pytest.raises(ValueError, match="duplicate run"):
         campaign.plan(
@@ -255,8 +272,9 @@ def test_verified_wandb_config_normalizes_sequence_types(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("observed_rate", [2.5, 4.0])
+@pytest.mark.parametrize("network_volume", [True, False])
 def test_complete_mocked_pod_launch_stages_one_queue_for_three_gpus(
-    tmp_path, monkeypatch, observed_rate
+    tmp_path, monkeypatch, observed_rate, network_volume
 ):
     import io
     import tarfile
@@ -273,7 +291,10 @@ def test_complete_mocked_pod_launch_stages_one_queue_for_three_gpus(
             authenticators=lambda _: ("user", None, "SECRET")
         ),
     )
-    manifest = campaign.plan(specification(), "test")
+    placement = {"region": "TEST-1"}
+    if network_volume:
+        placement["volume"] = "testvolume"
+    manifest = campaign.plan(specification(placements=[placement]), "test")
     campaign.write_json(tmp_path / "manifest.json", manifest)
     with tarfile.open(tmp_path / "source.tar.gz", "w:gz") as archive:
         code = b"# dummy frozen runner\n"
@@ -314,6 +335,17 @@ def test_complete_mocked_pod_launch_stages_one_queue_for_three_gpus(
     create_command = commands[0]
     assert create_command[create_command.index("--gpu-count") + 1] == "3"
     assert create_command[create_command.index("--gpu-id") + 1] == "NVIDIA L40"
+    if network_volume:
+        assert "--network-volume-id" in create_command
+    else:
+        assert "--network-volume-id" not in create_command
+        assert create_command[create_command.index("--volume-in-gb") + 1] == "300"
+    bootstrap = next(
+        data
+        for script, data in staged
+        if "cat >" in script and "bootstrap.sh" in script
+    )
+    assert ("majepa.campaign_assets" in bootstrap) is not network_volume
     assert "SECRET" not in str(commands)
     saved = json.loads((tmp_path / "manifest.json").read_text())
     allocation = saved["jobs"][0]

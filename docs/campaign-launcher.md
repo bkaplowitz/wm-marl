@@ -18,6 +18,13 @@ datacenter; supply additional valid pairs for capacity fallback. The mounted
 volume must already contain StarCraft II 4.10 Base75689 and the requested SMAC
 maps. An explicit `sc2path` may identify that installation.
 
+A placement may omit `volume` in regions without network storage. The launcher
+then allocates pod storage sized to `storage.quota_gb` and runs the saved SC2
+download/extraction/hash checks in `majepa.campaign_assets` before starting workers.
+This storage remains attached to the pod; final artifacts are still verified on
+W&B before shutdown. Inspect staging commands without downloads using
+`python -m majepa.campaign_assets /tmp/sc2-assets --dry-run`.
+
 ```sh
 uv run --no-sync python -m majepa.campaign init \
   --directory artifacts/my-campaign \

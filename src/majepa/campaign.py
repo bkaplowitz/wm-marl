@@ -132,8 +132,8 @@ def plan(spec, name):
     if not placements:
         raise ValueError("at least one region/network-volume placement is required")
     for placement in placements:
-        if set(placement) != {"region", "volume"}:
-            raise ValueError("each placement requires region and volume")
+        if set(placement) not in ({"region"}, {"region", "volume"}):
+            raise ValueError("each placement requires region and an optional volume")
         for value in placement.values():
             identifier(value)
     storage = {"quota_gb": 300, "min_free_gb": 20, **spec.get("storage", {})}
@@ -686,7 +686,7 @@ def startup_command(deadline):
     return shlex.join(["bash", "-lc", script])
 
 
-def bootstrap_script(out):
+def bootstrap_script(out, *, stage_assets=False):
     return "\n".join(
         [
             "set -euo pipefail",
@@ -710,6 +710,14 @@ def bootstrap_script(out):
             "export UV_PROJECT_ENVIRONMENT=/opt/majepa-venv",
             "uv sync --locked --python 3.11 --extra dev --extra smac --extra cuda12",
             'export PYTHONPATH="$PWD/src:$PWD/external/dreamerv3"',
+            *(
+                [
+                    '"$UV_PROJECT_ENVIRONMENT/bin/python" -m majepa.campaign_assets '
+                    + shlex.quote(out + "/assets")
+                ]
+                if stage_assets
+                else []
+            ),
             "trap - ERR",
             f'"$UV_PROJECT_ENVIRONMENT/bin/python" -m majepa.campaign run --directory {shlex.quote(out)}',
         ]
@@ -752,8 +760,11 @@ def launch(directory, manifest, name, hours, *, placement=None, gpu_id=None):
         str(job["gpu_count"]),
         "--cloud-type",
         "SECURE",
-        "--network-volume-id",
-        job["volume"],
+        *(
+            ["--network-volume-id", job["volume"]]
+            if job.get("volume")
+            else ["--volume-in-gb", str(math.ceil(manifest["storage"]["quota_gb"]))]
+        ),
         "--data-center-ids",
         job["region"],
         "--container-disk-in-gb",
@@ -836,7 +847,7 @@ def launch(directory, manifest, name, hours, *, placement=None, gpu_id=None):
                 stdin=source,
                 check=True,
             )
-        bootstrap = bootstrap_script(out)
+        bootstrap = bootstrap_script(out, stage_assets=not job.get("volume"))
         remote(
             connection, f"cat > {shlex.quote(out + '/bootstrap.sh')}", input=bootstrap
         )

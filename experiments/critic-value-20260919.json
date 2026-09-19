@@ -22,12 +22,15 @@
     {
       "region": "US-TX-3",
       "volume": "omjuynlizd"
+    },
+    {
+      "region": "OC-AU-1"
     }
   ],
   "storage": {
     "quota_gb": 150,
     "min_free_gb": 20,
-    "workspace_root": "/workspace/majepa-critic-value-20260919"
+    "workspace_root": "/workspace/majepa-critic-value-20260919-au"
   },
   "maps": [
     {
