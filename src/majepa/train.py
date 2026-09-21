@@ -144,11 +144,12 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
 
     replay_stream_mode = str(getattr(args, "replay_stream_mode", "prefetch"))
     staggered_replay = replay_stream_mode == "snapshot_staggered"
+    postprefill_replay = replay_stream_mode == "snapshot_postprefill"
     train_source = make_stream(replay, "train_world" if dual_view else "train")
     report_source = make_stream(replay, "report")
     behavior_source = None
     if dual_view:
-        if staggered_replay:
+        if staggered_replay or postprefill_replay:
             behavior_source = make_stream(replay, "train_behavior")
         else:
             train_source = _with_prefixed_batch(
@@ -164,8 +165,12 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
             make_stream(replay, "report"),
             "_behavior_replay/",
         )
-    snapshot_replay = replay_stream_mode in {"snapshot_prefetch", "snapshot_staggered"}
-    if replay_stream_mode not in {"prefetch", "snapshot_prefetch", "snapshot_staggered"}:
+    snapshot_replay = replay_stream_mode in {
+        "snapshot_prefetch", "snapshot_staggered", "snapshot_postprefill"
+    }
+    if replay_stream_mode not in {
+        "prefetch", "snapshot_prefetch", "snapshot_staggered", "snapshot_postprefill"
+    }:
         raise ValueError(f"Unknown replay stream mode: {replay_stream_mode}")
     if snapshot_replay:
         from .streams import (
@@ -185,6 +190,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
             behavior_source=behavior_source,
             startup_behavior_min_starts=(
                 int(args.replay_startup_behavior_min_starts) if staggered_replay else 1),
+            startup_unique_roots=postprefill_replay,
         )
         stream_report = iter(synchronous_report_stream(agent, report_source))
     elif bool(getattr(args, "isolate_report_rng", False)):
@@ -209,11 +215,17 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
         # Preserve eager startup sampling, while making the exact first read
         # independent of background-thread scheduling. This does not train the
         # model early or change the 5k prefill/update budget.
-        if snapshot_replay and len(replay):
+        replay_ready = (
+            len(replay) >= minimum_replay_size
+            and current_step >= world_model_start_step
+        )
+        if snapshot_replay and len(replay) and (
+            not postprefill_replay or replay_ready
+        ):
             stream_train.prime(current_step, eligible_starts=len(replay))
         # Do not call Ratio before replay eligibility. This prevents prefill
         # collection from creating a learner-update backlog.
-        if len(replay) < minimum_replay_size or current_step < world_model_start_step:
+        if not replay_ready:
             return
         for _ in range(should_train(step)):
             with elements.timer.section("stream_next"):
