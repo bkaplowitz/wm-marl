@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+import pickle
+import sys
+from pathlib import Path
 
 import elements
 import jax
 import jax.numpy as jnp
 import ninjax as nj
 import numpy as np
-import pytest
 
 from majepa.main import _load_configs, _resolve_config_profiles
-from majepa.marl.axes import BEHAVIOR_REPLAY_PREFIX, split_prefixed_data
+from majepa.marl.axes import BEHAVIOR_REPLAY_PREFIX
 from majepa.marl.core import MARLCore
 
 
@@ -162,45 +163,68 @@ def _assert_finite(tree):
         assert np.isfinite(array.astype(np.float32)).all()
 
 
-
-import sys
 source = "local"
 arm = sys.argv[1]
-extra = {"agent.simplification.joint_mask": False} if arm == "nojointmask" else ({"agent.simplification.local_outcomes": False} if arm == "nolocaloutcomes" else ({"agent.rewhead.units": 4, "agent.conhead.units": 4, "agent.maskhead.units": 4} if arm == "heads256" else {}))
-learner, obs_space, act_space = _tiny_learner({
- "agent.marl.ctde.imagination_mask_source": source,
- "agent.marl.ctde.compare_mask_heads": True,
- "agent.marl.ctde.imagination_mask_sampling": "bernoulli",
- "agent.marl.ctde.teammate_belief.enabled": False,
- "agent.marl.ctde.multistep_jepa.belief_context": False,
- "agent.ppo.factual_value.enabled": False,
- "agent.ppo.factual_value.representation_scale": 0.0,
- "agent.marl.ctde.direct_latent": False,
- "agent.marl.ctde.self_fed.bptt_steps": 2,
- "agent.marl.ctde.self_fed.scale": 0.1,
- "agent.marl.ctde.self_fed.trajectory_kl_scale": 0.1,
- "agent.loss_scales.ctde_posterior_alignment": 0.05,
- **extra,
-})
+extra = (
+    {"agent.simplification.joint_mask": False}
+    if arm == "nojointmask"
+    else (
+        {"agent.simplification.local_outcomes": False}
+        if arm == "nolocaloutcomes"
+        else (
+            {
+                "agent.rewhead.units": 4,
+                "agent.conhead.units": 4,
+                "agent.maskhead.units": 4,
+            }
+            if arm == "heads256"
+            else {}
+        )
+    )
+)
+learner, obs_space, act_space = _tiny_learner(
+    {
+        "agent.marl.ctde.imagination_mask_source": source,
+        "agent.marl.ctde.compare_mask_heads": True,
+        "agent.marl.ctde.imagination_mask_sampling": "bernoulli",
+        "agent.marl.ctde.teammate_belief.enabled": False,
+        "agent.marl.ctde.multistep_jepa.belief_context": False,
+        "agent.ppo.factual_value.enabled": False,
+        "agent.ppo.factual_value.representation_scale": 0.0,
+        "agent.marl.ctde.direct_latent": False,
+        "agent.marl.ctde.self_fed.bptt_steps": 2,
+        "agent.marl.ctde.self_fed.scale": 0.1,
+        "agent.marl.ctde.self_fed.trajectory_kl_scale": 0.1,
+        "agent.loss_scales.ctde_posterior_alignment": 0.05,
+        **extra,
+    }
+)
 data = _synthetic_replay(learner, obs_space, act_space)
 carry = learner.init_train(2)
 state = nj.init(learner.train)({}, carry, data, seed=702)
-data = dict(data, _environment_step=jnp.full((2,8), 10,jnp.int32))
-updated, (carry, _, metrics) = jax.jit(nj.pure(learner.train))(state, carry, data, seed=704)
+data = dict(data, _environment_step=jnp.full((2, 8), 10, jnp.int32))
+updated, (carry, _, metrics) = jax.jit(nj.pure(learner.train))(
+    state, carry, data, seed=704
+)
 _assert_finite((updated, metrics))
-assert float(metrics['ppo/batch_illegal_action_fraction']) == 0
+assert float(metrics["ppo/batch_illegal_action_fraction"]) == 0
 _, (_, report) = jax.jit(nj.pure(learner.report))(updated, carry, data, seed=706)
 _assert_finite(report)
-if arm != 'nojointmask':
-    assert any('/head_local/' in key for key in report), report.keys()
-    assert any('/head_joint/' in key for key in report)
-if arm == 'nojointmask':
-    assert not any(k.startswith('ctde_mask/') for k in updated)
-if arm == 'nolocaloutcomes':
-    assert not any(k.startswith(('rew/', 'con/')) for k in updated)
-print('PASS',source,'PPO update, legal stored masks, finite paired head diagnostics', flush=True)
+if arm != "nojointmask":
+    assert any("/head_local/" in key for key in report), report.keys()
+    assert any("/head_joint/" in key for key in report)
+if arm == "nojointmask":
+    assert not any(k.startswith("ctde_mask/") for k in updated)
+if arm == "nolocaloutcomes":
+    assert not any(k.startswith(("rew/", "con/")) for k in updated)
+print(
+    "PASS",
+    source,
+    "PPO update, legal stored masks, finite paired head diagnostics",
+    flush=True,
+)
 
-import pickle
-from pathlib import Path
-if len(sys.argv)>2:
-    Path(sys.argv[2]).write_bytes(pickle.dumps(jax.device_get((state, updated, metrics))))
+if len(sys.argv) > 2:
+    Path(sys.argv[2]).write_bytes(
+        pickle.dumps(jax.device_get((state, updated, metrics)))
+    )

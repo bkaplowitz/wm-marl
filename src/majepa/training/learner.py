@@ -170,11 +170,16 @@ class LearnerMixin:
         separate series reuses the immutable batch, including its realized masks,
         before slow-target copying. The nested context disallows state mutation.
         """
+
         def evaluate(batch):
             return self._ppo_actor_loss(batch)[1], self._ppo_critic_loss(batch)[1]
 
         _, (actor, critic) = nj.pure(evaluate, nested=True)(
-            dict(nj.context()), batch, seed=719_243, create=False, modify=False,
+            dict(nj.context()),
+            batch,
+            seed=719_243,
+            create=False,
+            modify=False,
         )
         return {
             f"ppo/{group}/post_update_{key}": sg(value)
@@ -232,7 +237,10 @@ class LearnerMixin:
             loss += self.world_model_value_scale * value_loss
             metrics["loss/world_model_value"] = value_loss
             metrics.update(
-                {f"ctde/world_model_value/{key}": value for key, value in value_metrics.items()}
+                {
+                    f"ctde/world_model_value/{key}": value
+                    for key, value in value_metrics.items()
+                }
             )
         metrics["replay_views/world_reward_mean"] = sg(
             obs["reward"].astype(jnp.float32).mean()
@@ -602,8 +610,6 @@ class LearnerMixin:
                 "valid": valid,
             }
         )
-
-
 
     def _world_model_value_loss(self, features, obs):
         """Train factual local features through frozen policy and critic targets."""

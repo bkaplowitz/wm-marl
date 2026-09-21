@@ -165,11 +165,17 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
             "_behavior_replay/",
         )
     snapshot_replay = replay_stream_mode in {"snapshot_prefetch", "snapshot_staggered"}
-    if replay_stream_mode not in {"prefetch", "snapshot_prefetch", "snapshot_staggered"}:
+    if replay_stream_mode not in {
+        "prefetch",
+        "snapshot_prefetch",
+        "snapshot_staggered",
+    }:
         raise ValueError(f"Unknown replay stream mode: {replay_stream_mode}")
     if snapshot_replay:
         from .streams import (
-            ReplaySnapshotStream, ReplaySnapshotTrace, synchronous_report_stream,
+            ReplaySnapshotStream,
+            ReplaySnapshotTrace,
+            synchronous_report_stream,
         )
 
         if int(getattr(args, "replicas", 1)) != 1:
@@ -181,10 +187,13 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
             raise ValueError("replay_trace_batches must be nonnegative")
         trace = ReplaySnapshotTrace(logdir / "replay_snapshots.jsonl", trace_limit)
         stream_train = ReplaySnapshotStream(
-            agent, train_source, trace if trace_limit else None,
+            agent,
+            train_source,
+            trace if trace_limit else None,
             behavior_source=behavior_source,
             startup_behavior_min_starts=(
-                int(args.replay_startup_behavior_min_starts) if staggered_replay else 1),
+                int(args.replay_startup_behavior_min_starts) if staggered_replay else 1
+            ),
         )
         stream_report = iter(synchronous_report_stream(agent, report_source))
     elif bool(getattr(args, "isolate_report_rng", False)):
@@ -242,9 +251,12 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
                 replay.update(outputs["replay"])
             train_agg.add(metrics, prefix="train")
             if snapshot_replay:
-                train_agg.add({
-                    "snapshot_replay/sample_age_records": current_step - sampled_at,
-                }, prefix="train")
+                train_agg.add(
+                    {
+                        "snapshot_replay/sample_age_records": current_step - sampled_at,
+                    },
+                    prefix="train",
+                )
 
     driver.on_step(trainfn)
 
@@ -358,7 +370,13 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
                 {
                     key: value
                     for key, value in summary.items()
-                    if key not in {"returns", "team_returns", "per_agent_returns", "evaluation_protocol"}
+                    if key
+                    not in {
+                        "returns",
+                        "team_returns",
+                        "per_agent_returns",
+                        "evaluation_protocol",
+                    }
                 },
                 prefix="eval",
             )

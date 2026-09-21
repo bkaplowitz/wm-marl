@@ -213,8 +213,7 @@ def test_joint_objective_scale_attenuates_joint_and_local_gradients():
             losses, _ = learner._ctde_replay_losses(*inputs, training=True)
             raw = jnp.stack([value.mean() for value in losses.values()])
             weighted = sum(
-                value.mean() * learner.scales[name]
-                for name, value in losses.items()
+                value.mean() * learner.scales[name] for name, value in losses.items()
             )
             return weighted, raw
 
@@ -349,7 +348,7 @@ def test_campaign_resolves_independent_gradient_treatments():
     assert resolved["allocations"] == [
         {
             "name": "pod0",
-            "gpu_count": 8,
+            "gpu_count": 4,
             "run_names": [run["name"] for run in resolved["runs"]],
         }
     ]

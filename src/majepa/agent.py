@@ -1,5 +1,7 @@
 """Local decoder-free MA-JEPA learner."""
 
+from typing import Any, cast
+
 import elements
 import embodied.jax
 import jax
@@ -33,7 +35,9 @@ class Agent(
         r"--- |___/|_| \___\__,_|_|_|_\___|_|  \_/ |___/ ---",
     ]
 
-    def __init__(self, obs_space, act_space, config):
+    def __init__(  # pyright: ignore[reportMissingSuperCall]
+        self, obs_space, act_space, config
+    ):
         self.obs_space = obs_space
         self.act_space = act_space
         self.config = config
@@ -82,7 +86,7 @@ class Agent(
         if float(config.ppo.get("critic_slowreg", 0.0)) < 0:
             raise ValueError("Critic slow regularization must be nonnegative")
         self.ppo_return_norm = (
-            Normalize(
+            cast(Any, Normalize)(
                 impl="perc",
                 rate=0.01,
                 limit=1.0,
@@ -204,7 +208,7 @@ class Agent(
         else:
             # Preserve the confirmed competitive local construction and optimizer
             # path exactly for singleton and parameter-shared multi-agent runs.
-            self.opt = embodied.jax.Optimizer(
+            self.opt = cast(Any, embodied.jax.Optimizer)(
                 self.modules,
                 self._build_optimizer(config),
                 summary_depth=1,

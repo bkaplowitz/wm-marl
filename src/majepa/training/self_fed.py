@@ -131,7 +131,9 @@ def local_transition(
         cache, deter = dynamics.advance(local, action, training=False, active=active)
         if logits is not None:
             return dynamics.complete(cache, deter, logit=logits, sample=True)[0]
-        return dynamics.complete_from_observation(cache, deter, embedding, sample=True)[0]
+        return dynamics.complete_from_observation(cache, deter, embedding, sample=True)[
+            0
+        ]
 
     if nj.creating():
         return advance(local, action, embedding, active, logits)
@@ -175,7 +177,9 @@ def truncate_self_fed_state(state, offset, bptt_steps):
         return jax.lax.stop_gradient(state)
     return jax.lax.cond(
         (offset - 1) % bptt_steps == 0,
-        jax.lax.stop_gradient, lambda value: value, state,
+        jax.lax.stop_gradient,
+        lambda value: value,
+        state,
     )
 
 
@@ -284,12 +288,17 @@ def self_fed_losses(agent, online, features, entries, ema, obs, prevact):
             )
             if "latent_logits" in prediction:
                 local, _ = agent.dyn.complete(
-                    cache, deter, logit=agent.team.fold_batch(prediction["latent_logits"]),
+                    cache,
+                    deter,
+                    logit=agent.team.fold_batch(prediction["latent_logits"]),
                     sample=True,
                 )
             else:
                 local, _ = agent.dyn.complete_from_observation(
-                    cache, deter, agent.team.fold_batch(prediction["embedding"]), sample=True
+                    cache,
+                    deter,
+                    agent.team.fold_batch(prediction["embedding"]),
+                    sample=True,
                 )
         else:
             local = local_transition(
@@ -299,14 +308,22 @@ def self_fed_losses(agent, online, features, entries, ema, obs, prevact):
                 agent.team.fold_batch(prediction["embedding"]),
                 agent.team.fold_batch(root_present),
                 parameter_gradient=parameter_gradient,
-                **({"logits": agent.team.fold_batch(prediction["latent_logits"])}
-                   if "latent_logits" in prediction else {}),
+                **(
+                    {"logits": agent.team.fold_batch(prediction["latent_logits"])}
+                    if "latent_logits" in prediction
+                    else {}
+                ),
             )
         hidden = prediction["hidden"]
         reward_output = agent.ctde_rew(hidden, 2)
         continuation_output = agent.ctde_con(hidden, 2)
-        mask_output = (agent.ctde_mask(hidden, 2) if agent.joint_mask_enabled else
-            agent.actmask(agent.feat2tensor(agent.team.unfold_tree_batch(local)), 2))
+        mask_output = (
+            agent.ctde_mask(hidden, 2)
+            if agent.joint_mask_enabled
+            else agent.actmask(
+                agent.feat2tensor(agent.team.unfold_tree_batch(local)), 2
+            )
+        )
         alive_output = agent.ctde_alive(hidden, 2)
         next_alive = current_alive & root_present & (alive_output.prob(1) >= 0.5)
         binary = mask_output.output if hasattr(mask_output, "output") else mask_output
@@ -345,7 +362,8 @@ def self_fed_losses(agent, online, features, entries, ema, obs, prevact):
         if float(cfg.consumer_kl_scale):
             prediction_logits = (
                 agent.team.fold_batch(prediction["latent_logits"])
-                if "latent_logits" in prediction else posterior_logits(
+                if "latent_logits" in prediction
+                else posterior_logits(
                     agent.dyn,
                     agent.team.fold_batch(embedding),
                     local["deter"],
@@ -370,7 +388,8 @@ def self_fed_losses(agent, online, features, entries, ema, obs, prevact):
             # history posterior, rather than evaluating both on predicted history.
             prediction_logits = (
                 agent.team.fold_batch(prediction["latent_logits"])
-                if "latent_logits" in prediction else posterior_logits(
+                if "latent_logits" in prediction
+                else posterior_logits(
                     agent.dyn,
                     agent.team.fold_batch(embedding),
                     local["deter"],
@@ -379,12 +398,15 @@ def self_fed_losses(agent, online, features, entries, ema, obs, prevact):
                 )
             )
             target_logits = posterior_logits(
-                agent.dyn, agent.team.fold_batch(target["online"]),
+                agent.dyn,
+                agent.team.fold_batch(target["online"]),
                 agent.team.fold_batch(target["factual_deter"]),
             )
             losses["trajectory_kl"] = agent.team.unfold_batch(
                 mixed_posterior_kl(
-                    prediction_logits, target_logits, agent.dyn.unimix,
+                    prediction_logits,
+                    target_logits,
+                    agent.dyn.unimix,
                 )
             )
         reward, continuation = shared_team_outcomes(

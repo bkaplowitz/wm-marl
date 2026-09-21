@@ -50,7 +50,11 @@ def test_training_setup_records_experiment_controls(tmp_path):
         assert manifest["world_model_gradients"][key] == expected
     for option, config_key, expected in (
         ("--agent.dyn.parallel_transformer.local_prior", "local_prior", False),
-        ("--agent.loss_scales.ctde_multistep_jepa_action", "action_margin_loss_scale", 0.0),
+        (
+            "--agent.loss_scales.ctde_multistep_jepa_action",
+            "action_margin_loss_scale",
+            0.0,
+        ),
         ("--agent.dyn.parallel_transformer.stoch", "categorical_stoch", 8),
         ("--agent.dyn.parallel_transformer.classes", "categorical_classes", 16),
     ):
@@ -70,7 +74,9 @@ def test_run_spec_rejects_invalid_joint_prediction_scale(tmp_path, scale):
         MAJEPARunSpec(tmp_path, "smac_2s3z", 5, wm_joint_prediction_scale=scale)
 
 
-@pytest.mark.parametrize("field", ["wm_joint_objective_scale", "action_margin_loss_scale"])
+@pytest.mark.parametrize(
+    "field", ["wm_joint_objective_scale", "action_margin_loss_scale"]
+)
 @pytest.mark.parametrize("scale", [-1.0, float("nan"), float("inf")])
 def test_run_spec_rejects_invalid_nonnegative_scale(tmp_path, field, scale):
     with pytest.raises(ValueError, match=field):

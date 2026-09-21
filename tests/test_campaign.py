@@ -25,9 +25,7 @@ def test_plan_resolves_actual_configs_and_reuses_gpus():
             {"name": "reference", "overrides": {}},
             {
                 "name": "jointgradient",
-                "overrides": {
-                    "agent.world_model_gradients.joint_prediction": True
-                },
+                "overrides": {"agent.world_model_gradients.joint_prediction": True},
                 "depends_on": ["reference"],
             },
         ]
