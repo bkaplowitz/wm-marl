@@ -48,12 +48,16 @@ where = ["src"]
 [tool.setuptools.package-data]
 "majepa" = ["LICENSE", "configs.yaml"]
 
+[tool.ty.environment]
+extra-paths = ["external/dreamerv3"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "external/dreamerv3"]
 
 [tool.basedpyright]
 exclude = [".venv"]
+extraPaths = ["external/dreamerv3"]
 
 [tool.ruff]
 exclude = ["external"]
