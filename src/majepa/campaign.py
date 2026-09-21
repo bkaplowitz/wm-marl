@@ -7,6 +7,7 @@ from contextlib import contextmanager, suppress
 import fcntl
 import hashlib
 import io
+from itertools import combinations
 import json
 import math
 import netrc
@@ -15,6 +16,7 @@ from pathlib import Path
 import posixpath
 import re
 import shlex
+from statistics import fmean, stdev
 import subprocess
 import sys
 import tarfile
@@ -1077,6 +1079,274 @@ def collect_status(directory, manifest):
             job["status_check_error"] = str(exc)
 
 
+def _config_mismatches(expected, actual):
+    actual = json.loads(json.dumps(actual))
+    missing = object()
+
+    def value(key):
+        current = actual
+        for part in key.split("."):
+            if not isinstance(current, dict) or part not in current:
+                return missing
+            current = current[part]
+        return current
+
+    return sorted(
+        key
+        for key, expected_value in expected.items()
+        if key != "logdir" and value(key) != expected_value
+    )
+
+
+def _run_identity(run):
+    task = str(run["config"]["task"])
+    seed = int(run["config"]["seed"])
+    mapping = task.removeprefix("smac_")
+    suffix = f"-{mapping}-seed{seed}"
+    if not run["name"].endswith(suffix):
+        raise ValueError(f"run name does not match its task and seed: {run['name']}")
+    return task, run["name"].removesuffix(suffix), seed
+
+
+def collect_results(manifest, client):
+    prefix = f"{manifest['wandb']['entity']}/{manifest['wandb']['project']}/"
+    records = []
+    for run in manifest["runs"]:
+        if not run.get("wandb_id") or not run.get("evaluation_wandb_id"):
+            raise ValueError(f"run has no pinned W&B IDs: {run['name']}")
+        training = client.run(prefix + run["wandb_id"])
+        if training.state != "finished":
+            raise ValueError(f"training run is not finished: {run['name']}")
+        required = (
+            "artifacts/source_verified",
+            "artifacts/config_verified",
+            "artifacts/checkpoint_verified",
+        )
+        if any(training.summary.get(key) is not True for key in required):
+            raise ValueError(f"training artifacts are not verified: {run['name']}")
+        mismatches = _config_mismatches(run["config"], training.config)
+        if mismatches:
+            raise ValueError(
+                f"training config does not match {run['name']}: {mismatches}"
+            )
+        evaluation = client.run(prefix + run["evaluation_wandb_id"])
+        if evaluation.state != "finished" or evaluation.summary.get(
+            "artifacts/evaluation_verified"
+        ) is not True:
+            raise ValueError(f"evaluation is not finished and verified: {run['name']}")
+        summary = evaluation.summary
+        episodes_value = float(summary.get("final_eval/episodes", math.nan))
+        if not math.isfinite(episodes_value) or episodes_value != 100:
+            raise ValueError(
+                f"evaluation must contain exactly 100 episodes: {run['name']}"
+            )
+        wins_value = float(summary.get("final_eval/wins", math.nan))
+        win_rate = float(summary.get("final_eval/win_rate", math.nan))
+        mean_return = float(summary.get("final_eval/return_mean", math.nan))
+        if not all(
+            math.isfinite(value) for value in (wins_value, win_rate, mean_return)
+        ):
+            raise ValueError(f"evaluation metrics are not finite: {run['name']}")
+        wins = int(wins_value)
+        if wins_value != wins or not 0 <= wins <= 100 or not math.isclose(
+            win_rate, wins / 100, abs_tol=1e-12
+        ):
+            raise ValueError(f"evaluation win metrics are inconsistent: {run['name']}")
+        task, treatment, seed = _run_identity(run)
+        records.append(
+            {
+                "task": task,
+                "treatment": treatment,
+                "seed": seed,
+                "episodes": 100,
+                "wins": wins,
+                "win_rate": win_rate,
+                "return_mean": mean_return,
+                "wandb_id": run["wandb_id"],
+                "evaluation_wandb_id": run["evaluation_wandb_id"],
+                "training_url": training.url,
+                "evaluation_url": evaluation.url,
+            }
+        )
+    records.sort(key=lambda item: (item["task"], item["treatment"], item["seed"]))
+    groups = {}
+    for record in records:
+        groups.setdefault((record["task"], record["treatment"]), []).append(record)
+    aggregates = []
+    for (task, treatment), runs in sorted(groups.items()):
+        win_rates = [run["win_rate"] for run in runs]
+        returns = [run["return_mean"] for run in runs]
+        aggregates.append(
+            {
+                "task": task,
+                "treatment": treatment,
+                "seeds": [run["seed"] for run in runs],
+                "mean_win_rate": fmean(win_rates),
+                "sample_sd_win_rate": stdev(win_rates) if len(runs) > 1 else None,
+                "mean_return": fmean(returns),
+                "sample_sd_return": stdev(returns) if len(runs) > 1 else None,
+            }
+        )
+    paired = []
+    tasks = sorted({record["task"] for record in records})
+    for task in tasks:
+        treatments = sorted(
+            {record["treatment"] for record in records if record["task"] == task}
+        )
+        by_treatment = {
+            treatment: {
+                record["seed"]: record
+                for record in records
+                if record["task"] == task and record["treatment"] == treatment
+            }
+            for treatment in treatments
+        }
+        for left, right in combinations(treatments, 2):
+            seeds = sorted(set(by_treatment[left]) & set(by_treatment[right]))
+            if not seeds:
+                continue
+            win_differences = [
+                by_treatment[left][seed]["win_rate"]
+                - by_treatment[right][seed]["win_rate"]
+                for seed in seeds
+            ]
+            return_differences = [
+                by_treatment[left][seed]["return_mean"]
+                - by_treatment[right][seed]["return_mean"]
+                for seed in seeds
+            ]
+            paired.append(
+                {
+                    "task": task,
+                    "left": left,
+                    "right": right,
+                    "seeds": seeds,
+                    "mean_win_rate_difference": fmean(win_differences),
+                    "sample_sd_win_rate_difference": (
+                        stdev(win_differences) if len(seeds) > 1 else None
+                    ),
+                    "mean_return_difference": fmean(return_differences),
+                    "sample_sd_return_difference": (
+                        stdev(return_differences) if len(seeds) > 1 else None
+                    ),
+                }
+            )
+    return {
+        "campaign": manifest["campaign"],
+        "records": records,
+        "aggregates": aggregates,
+        "paired_differences": paired,
+    }
+
+
+def compare_campaign_configs(target, reference, allowed=()):
+    allowed = set(allowed)
+    references = {}
+    for run in reference["runs"]:
+        config = run["config"]
+        if config.get("agent.world_model_gradients.joint_prediction", False):
+            continue
+        key = (config["task"], int(config["seed"]))
+        if key in references:
+            raise ValueError(f"multiple baseline references for task and seed: {key}")
+        references[key] = run
+    differences = []
+    missing = object()
+    for run in target["runs"]:
+        config = run["config"]
+        key = (config["task"], int(config["seed"]))
+        if key not in references:
+            raise ValueError(f"no baseline reference for task and seed: {key}")
+        baseline = references[key]
+        baseline_config = baseline["config"]
+        for field in sorted(set(config) | set(baseline_config)):
+            if field == "logdir":
+                continue
+            before = baseline_config.get(field, missing)
+            after = config.get(field, missing)
+            if before == after:
+                continue
+            differences.append(
+                {
+                    "run": run["name"],
+                    "reference_run": baseline["name"],
+                    "key": field,
+                    "reference": "<missing>" if before is missing else before,
+                    "target": "<missing>" if after is missing else after,
+                    "allowed": field in allowed,
+                }
+            )
+    return {
+        "campaign": target["campaign"],
+        "reference_campaign": reference["campaign"],
+        "allowed_differences": sorted(allowed),
+        "differences": differences,
+        "unexpected": [item for item in differences if not item["allowed"]],
+    }
+
+
+def _markdown_results(report):
+    lines = [
+        f"# {report['campaign']} fixed-100 results",
+        "",
+        "| Task | Treatment | Seed | Wins | Win rate | Mean return | Evaluation |",
+        "|---|---|---:|---:|---:|---:|---|",
+    ]
+    for item in report["records"]:
+        lines.append(
+            f"| {item['task']} | {item['treatment']} | {item['seed']} | "
+            f"{item['wins']}/100 | {item['win_rate']:.1%} | "
+            f"{item['return_mean']:.4f} | "
+            f"[W&B]({item['evaluation_url']}) |"
+        )
+    lines += [
+        "",
+        "| Task | Treatment | Seeds | Mean win rate | Sample SD | Mean return |",
+        "|---|---|---:|---:|---:|---:|",
+    ]
+    for item in report["aggregates"]:
+        win_sd = item["sample_sd_win_rate"]
+        lines.append(
+            f"| {item['task']} | {item['treatment']} | {len(item['seeds'])} | "
+            f"{item['mean_win_rate']:.1%} | "
+            f"{'n/a' if win_sd is None else f'{win_sd:.1%}'} | "
+            f"{item['mean_return']:.4f} |"
+        )
+    if report["paired_differences"]:
+        lines += [
+            "",
+            "| Task | Difference | Seeds | Win-rate diff | Return diff |",
+            "|---|---|---:|---:|---:|",
+        ]
+        for item in report["paired_differences"]:
+            lines.append(
+                f"| {item['task']} | {item['left']} - {item['right']} | "
+                f"{len(item['seeds'])} | "
+                f"{item['mean_win_rate_difference']:+.1%} | "
+                f"{item['mean_return_difference']:+.4f} |"
+            )
+    return "\n".join(lines)
+
+
+def _markdown_config_diff(report):
+    lines = [
+        f"# {report['campaign']} vs {report['reference_campaign']}",
+        "",
+        "| Run | Reference | Key | Reference value | Target value | Allowed |",
+        "|---|---|---|---|---|---|",
+    ]
+    for item in report["differences"]:
+        lines.append(
+            f"| {item['run']} | {item['reference_run']} | `{item['key']}` | "
+            f"`{json.dumps(item['reference'], sort_keys=True)}` | "
+            f"`{json.dumps(item['target'], sort_keys=True)}` | "
+            f"{'yes' if item['allowed'] else 'no'} |"
+        )
+    if not report["differences"]:
+        lines.append("| _none_ | | | | | |")
+    return "\n".join(lines)
+
+
 def verify_wandb(directory, manifest):
     import wandb
 
@@ -1088,20 +1358,7 @@ def verify_wandb(directory, manifest):
         try:
             prefix = f"{manifest['wandb']['entity']}/{manifest['wandb']['project']}/"
             remote_run = client.run(prefix + run["wandb_id"])
-            actual = json.loads(json.dumps(remote_run.config))
-            missing = object()
-
-            def value(key):
-                current = actual
-                for part in key.split("."):
-                    if not isinstance(current, dict) or part not in current:
-                        return missing
-                    current = current[part]
-                return current
-
-            mismatch = [
-                k for k, v in run["config"].items() if k != "logdir" and value(k) != v
-            ]
+            mismatch = _config_mismatches(run["config"], remote_run.config)
             losses = {
                 k: v
                 for k, v in remote_run.summary.items()
@@ -1229,7 +1486,9 @@ def main(argv=None):
             "init",
             "launch",
             "monitor",
+            "results",
             "status",
+            "diff",
             "verify",
             "run",
             "watchdog",
@@ -1243,6 +1502,9 @@ def main(argv=None):
     parser.add_argument("--include-source", action="append", default=[])
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--format", choices=("markdown", "json"), default="markdown")
+    parser.add_argument("--reference", type=Path)
+    parser.add_argument("--allow-difference", action="append", default=[])
     args = parser.parse_args(argv)
     directory = args.directory.expanduser().resolve()
     identifier(directory.name)
@@ -1278,6 +1540,31 @@ def main(argv=None):
     elif args.action == "verify":
         manifest = json.loads(manifest_file.read_text())
         print(json.dumps(verify_wandb(directory, manifest), indent=2))
+    elif args.action == "results":
+        import wandb
+
+        manifest = json.loads(manifest_file.read_text())
+        report = collect_results(manifest, wandb.Api(timeout=30))
+        print(
+            json.dumps(report, indent=2)
+            if args.format == "json"
+            else _markdown_results(report)
+        )
+    elif args.action == "diff":
+        if args.reference is None:
+            parser.error("diff requires --reference")
+        manifest = json.loads(manifest_file.read_text())
+        reference = json.loads(
+            (args.reference.expanduser().resolve() / "manifest.json").read_text()
+        )
+        report = compare_campaign_configs(manifest, reference, args.allow_difference)
+        print(
+            json.dumps(report, indent=2)
+            if args.format == "json"
+            else _markdown_config_diff(report)
+        )
+        if report["unexpected"]:
+            raise SystemExit(2)
     else:
         while True:
             with locked_manifest(directory) as manifest:

@@ -289,6 +289,120 @@ def test_verified_wandb_config_normalizes_sequence_types(tmp_path, monkeypatch):
     assert result["completed"] is False
 
 
+def test_collect_results_requires_verified_fixed_100_and_aggregates():
+    import elements
+    import types
+
+    plan = campaign.plan(
+        specification(
+            treatments=[
+                {"name": "alpha", "overrides": {}},
+                {
+                    "name": "beta",
+                    "overrides": {
+                        "agent.world_model_gradients.joint_prediction": True,
+                        "agent.world_model_gradients.joint_prediction_scale": 0.1,
+                    },
+                },
+            ]
+        ),
+        "test",
+    )
+    remote = {}
+    scores = {
+        "alpha": [(50, 1.0), (60, 2.0), (70, 3.0)],
+        "beta": [(60, 2.0), (80, 3.0), (70, 4.0)],
+    }
+    for run in plan["runs"]:
+        treatment = run["name"].split("-2s3z-")[0]
+        seed = run["config"]["seed"]
+        run.update(
+            wandb_id=f"train-{treatment}-{seed}",
+            evaluation_wandb_id=f"eval-{treatment}-{seed}",
+        )
+        remote[run["wandb_id"]] = types.SimpleNamespace(
+            config=dict(elements.Config(run["config"])),
+            state="finished",
+            summary={
+                "artifacts/source_verified": True,
+                "artifacts/config_verified": True,
+                "artifacts/checkpoint_verified": True,
+            },
+            url=f"https://example.test/{run['wandb_id']}",
+        )
+        wins, mean_return = scores[treatment][seed]
+        remote[run["evaluation_wandb_id"]] = types.SimpleNamespace(
+            state="finished",
+            summary={
+                "artifacts/evaluation_verified": True,
+                "final_eval/episodes": 100,
+                "final_eval/wins": wins,
+                "final_eval/win_rate": wins / 100,
+                "final_eval/return_mean": mean_return,
+            },
+            url=f"https://example.test/{run['evaluation_wandb_id']}",
+        )
+    client = types.SimpleNamespace(run=lambda path: remote[path.rsplit("/", 1)[-1]])
+
+    result = campaign.collect_results(plan, client)
+
+    alpha = next(item for item in result["aggregates"] if item["treatment"] == "alpha")
+    assert alpha["mean_win_rate"] == pytest.approx(0.6)
+    assert alpha["sample_sd_win_rate"] == pytest.approx(0.1)
+    assert alpha["mean_return"] == pytest.approx(2.0)
+    paired = result["paired_differences"][0]
+    assert (paired["left"], paired["right"], paired["seeds"]) == (
+        "alpha",
+        "beta",
+        [0, 1, 2],
+    )
+    assert paired["mean_win_rate_difference"] == pytest.approx(-0.1)
+
+    remote[plan["runs"][0]["evaluation_wandb_id"]].summary[
+        "final_eval/episodes"
+    ] = 32
+    with pytest.raises(ValueError, match="100 episodes"):
+        campaign.collect_results(plan, client)
+
+
+def test_compare_campaign_configs_matches_baseline_and_enforces_allowlist():
+    reference = campaign.plan(specification(seeds=[0]), "reference")
+    target = campaign.plan(
+        specification(
+            seeds=[0],
+            treatments=[
+                {
+                    "name": "joint",
+                    "overrides": {
+                        "agent.world_model_gradients.joint_prediction": True,
+                        "agent.world_model_gradients.joint_prediction_scale": 0.1,
+                        "agent.loss_scales.ctde_multistep_jepa_action": 0.0,
+                    },
+                }
+            ],
+        ),
+        "target",
+    )
+    allowed = {
+        "agent.world_model_gradients.joint_prediction",
+        "agent.world_model_gradients.joint_prediction_scale",
+    }
+
+    result = campaign.compare_campaign_configs(target, reference, allowed)
+
+    assert {item["key"] for item in result["differences"]} == {
+        *allowed,
+        "agent.loss_scales.ctde_multistep_jepa_action",
+    }
+    assert [item["key"] for item in result["unexpected"]] == [
+        "agent.loss_scales.ctde_multistep_jepa_action"
+    ]
+    assert all(
+        item["reference_run"] == "reference-2s3z-seed0"
+        for item in result["differences"]
+    )
+
+
 @pytest.mark.parametrize("observed_rate", [2.5, 4.0])
 @pytest.mark.parametrize("network_volume", [True, False])
 def test_complete_mocked_pod_launch_stages_one_queue_for_three_gpus(
