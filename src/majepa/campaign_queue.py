@@ -144,7 +144,11 @@ def storage_check(directory, storage):
     if not directory.resolve().is_relative_to(root):
         raise ValueError("queue directory must be inside storage.workspace_root")
     used = (
-        int(subprocess.check_output(["du", "-sk", str(root)], text=True).split()[0])
+        int(
+            subprocess.check_output(
+                ["du", "-sk", "--exclude=*.tmp", str(root)], text=True
+            ).split()[0]
+        )
         * 1024
     )
     free = shutil.disk_usage(root).free

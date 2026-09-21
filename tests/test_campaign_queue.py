@@ -138,7 +138,7 @@ def test_storage_uses_allocated_bytes_and_quota(tmp_path, monkeypatch):
     )
     with pytest.raises(RuntimeError, match="storage guard"):
         queue.storage_check(tmp_path, spec["storage"])
-    assert check.call_args.args[0][:2] == ["du", "-sk"]
+    assert check.call_args.args[0][:3] == ["du", "-sk", "--exclude=*.tmp"]
     record = json.loads((tmp_path / "storage.json").read_text())
     assert record["used_bytes"] == 9000000 * 1024
     assert record["headroom_bytes"] == 10_000_000_000 - 9000000 * 1024
