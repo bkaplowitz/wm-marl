@@ -20,7 +20,7 @@
   "storage": {
     "quota_gb": 150,
     "min_free_gb": 20,
-    "workspace_root": "/workspace/jema-joint-endpoints-20260921"
+    "workspace_root": "/workspace/jema-joint-endpoints-20260921-r1"
   },
   "maps": [{"name": "2s3z", "agents": 5, "steps": 50000}],
   "seeds": [0, 1, 2],
