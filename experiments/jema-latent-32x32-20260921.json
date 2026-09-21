@@ -1,0 +1,56 @@
+{
+  "profiles": ["baseline"],
+  "wandb": {
+    "entity": "osaze-obahor",
+    "project": "majepa-ppo-treatments"
+  },
+  "budget": 160,
+  "max_gpu_hourly_rate": 1.1,
+  "max_hours": 8,
+  "max_gpus": 4,
+  "gpus_per_pod": 4,
+  "allow_a100": false,
+  "placements": [
+    {"region": "US-KS-2", "volume": "e8ishvsuf7"},
+    {"region": "OC-AU-1"},
+    {"region": "EU-NL-1"},
+    {"region": "US-NC-1"},
+    {"region": "US-TX-3", "volume": "omjuynlizd"}
+  ],
+  "storage": {
+    "quota_gb": 150,
+    "min_free_gb": 20,
+    "workspace_root": "/workspace/jema-latent-32x32-20260921"
+  },
+  "maps": [{"name": "2s3z", "agents": 5, "steps": 50000}],
+  "seeds": [0, 1, 2],
+  "run_order": "seed_first",
+  "overrides": {
+    "agent.dyn.parallel_transformer.local_prior": true,
+    "agent.dyn.parallel_transformer.stoch": 32,
+    "agent.dyn.parallel_transformer.classes": 32,
+    "agent.loss_scales.ctde_multistep_jepa_action": 0.1
+  },
+  "treatments": [
+    {
+      "name": "joint-local-off-32x32",
+      "overrides": {
+        "agent.world_model_gradients.joint_prediction": false
+      }
+    },
+    {
+      "name": "joint-local-0p1-32x32",
+      "overrides": {
+        "agent.world_model_gradients.joint_prediction": true,
+        "agent.world_model_gradients.joint_prediction_scale": 0.1
+      }
+    },
+    {
+      "name": "joint-local-1p0-32x32",
+      "overrides": {
+        "agent.world_model_gradients.joint_prediction": true,
+        "agent.world_model_gradients.joint_prediction_scale": 1.0
+      }
+    }
+  ]
+}
