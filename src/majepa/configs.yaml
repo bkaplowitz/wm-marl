@@ -85,7 +85,7 @@ defaults:
     coordinator_address: ''
   agent:
     paired_rng: false
-    world_model_gradients: {critic_value_scale: 0.0, joint_prediction: false}
+    world_model_gradients: {critic_value_scale: 0.0, joint_prediction: false, joint_prediction_scale: 1.0}
     simplification: {joint_mask: true, local_outcomes: true}
     num_agents: 3
     marl:

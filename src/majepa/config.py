@@ -50,6 +50,7 @@ class MAJEPARunSpec:
     curve_eval_seed_offset: int | None = None
     wm_critic_value_scale: float = 0.0
     wm_joint_prediction_gradient: bool = False
+    wm_joint_prediction_scale: float = 1.0
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -80,6 +81,11 @@ class MAJEPARunSpec:
             raise ValueError("wm_critic_value_scale must be finite and nonnegative")
         if not isinstance(self.wm_joint_prediction_gradient, bool):
             raise ValueError("wm_joint_prediction_gradient must be boolean")
+        if (
+            not math.isfinite(self.wm_joint_prediction_scale)
+            or self.wm_joint_prediction_scale < 0
+        ):
+            raise ValueError("wm_joint_prediction_scale must be finite and nonnegative")
 
         smac = self.task.startswith("smac_")
         if self.curve_eval_episodes is None:
@@ -163,6 +169,8 @@ class MAJEPARunSpec:
             str(self.wm_critic_value_scale),
             "--agent.world_model_gradients.joint_prediction",
             str(self.wm_joint_prediction_gradient),
+            "--agent.world_model_gradients.joint_prediction_scale",
+            str(self.wm_joint_prediction_scale),
             "--run.steps",
             str(self.train_steps),
             "--run.curve_eval_interval",
@@ -283,6 +291,7 @@ class MAJEPARunSpec:
             "world_model_gradients": {
                 "critic_value_scale": self.wm_critic_value_scale,
                 "joint_prediction": self.wm_joint_prediction_gradient,
+                "joint_prediction_scale": self.wm_joint_prediction_scale,
             },
             "world_model_objective": "embedding",
             "embedding_target": "ema",

@@ -41,6 +41,21 @@ def test_plan_resolves_actual_configs_and_reuses_gpus():
     assert plan["runs"][3]["depends_on"] == ["reference-2s3z-seed0"]
 
 
+def test_seed_first_run_order_prioritizes_every_treatment():
+    treatments = [
+        {"name": name, "overrides": {}}
+        for name in ("first", "second", "third", "fourth")
+    ]
+    plan = campaign.plan(
+        specification(treatments=treatments, run_order="seed_first"), "test"
+    )
+    assert [run["name"] for run in plan["runs"]] == [
+        f"{treatment}-2s3z-seed{seed}"
+        for seed in (0, 1, 2)
+        for treatment in ("first", "second", "third", "fourth")
+    ]
+
+
 def test_single_gpu_topology_keeps_dependencies_on_same_pod():
     spec = specification(
         gpus_per_pod=1,

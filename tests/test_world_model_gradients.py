@@ -10,11 +10,12 @@ from majepa.main import _load_configs, _resolve_config_profiles
 from test_training import _tiny_learner, _synthetic_replay, _assert_finite
 
 
-def _setup(value_scale=0.0, joint=False):
+def _setup(value_scale=0.0, joint=False, joint_scale=1.0):
     learner, observations, actions = _tiny_learner(
         {
             "agent.world_model_gradients.critic_value_scale": value_scale,
             "agent.world_model_gradients.joint_prediction": joint,
+            "agent.world_model_gradients.joint_prediction_scale": joint_scale,
             "agent.marl.ctde.critic.outscale": 1.0,
             "agent.loss_scales.ctde_posterior_alignment": 0.05,
             "agent.marl.ctde.self_fed.bptt_steps": 2,
@@ -60,12 +61,19 @@ def test_gradient_options_default_off():
     )
     assert cfg.agent.world_model_gradients.critic_value_scale == 0.0
     assert cfg.agent.world_model_gradients.joint_prediction is False
+    assert cfg.agent.world_model_gradients.joint_prediction_scale == 1.0
 
 
 @pytest.mark.parametrize("scale", [-1.0, float("nan"), float("inf")])
 def test_invalid_value_scale_fails_before_training(scale):
     with pytest.raises(ValueError, match="critic_value_scale"):
         _tiny_learner({"agent.world_model_gradients.critic_value_scale": scale})
+
+
+@pytest.mark.parametrize("scale", [-1.0, float("nan"), float("inf")])
+def test_invalid_joint_prediction_scale_fails_before_training(scale):
+    with pytest.raises(ValueError, match="joint_prediction_scale"):
+        _tiny_learner({"agent.world_model_gradients.joint_prediction_scale": scale})
 
 
 @pytest.mark.parametrize(
@@ -85,48 +93,58 @@ def test_gradient_treatments_train_with_finite_updates(value_scale, joint):
         assert float(metrics["loss/world_model_value"]) > 0
 
 
-@pytest.mark.parametrize("joint", [False, True])
-def test_joint_losses_reach_local_model_only_when_enabled(joint):
-    learner, data, carry, state = _setup(joint=joint)
+def test_joint_prediction_scale_only_attenuates_local_gradients():
+    results = {}
+    for scale in (0.0, 0.1, 1.0):
+        learner, data, carry, state = _setup(joint=True, joint_scale=scale)
 
-    def objective():
-        inputs = _loss_inputs(learner, data, carry)
-        losses, _ = learner._ctde_replay_losses(*inputs, training=True)
-        return jnp.stack(
-            [
-                losses[k].mean()
-                for k in (
-                    "ctde_embedding",
-                    "ctde_posterior_alignment",
-                    "ctde_self_fed_trajectory_kl",
-                )
-            ]
-        )
+        def objective():
+            inputs = _loss_inputs(learner, data, carry)
+            losses, _ = learner._ctde_replay_losses(*inputs, training=True)
+            return jnp.stack(
+                [
+                    losses[k].mean()
+                    for k in (
+                        "ctde_embedding",
+                        "ctde_posterior_alignment",
+                        "ctde_self_fed_trajectory_kl",
+                    )
+                ]
+            )
 
-    pure = nj.pure(objective)
-    grads = jax.jit(
-        jax.jacrev(lambda p: pure(p, seed=1203, create=False)[1], allow_int=True)
-    )(state)
-    for component in range(3):
-        norms = _gradient_norms(jax.tree.map(lambda x: x[component], grads))
-        assert norms["ctde_joint"] > 0
-        assert (norms["enc"] > 0) == (joint and component != 2)
-        assert (norms["dyn"] > 0) == joint
-        assert norms.get("target_enc", 0) == 0
-        assert norms.get("pol", 0) == 0
-        assert norms.get("ctde_val", 0) == 0
-        temporal = sum(
-            float(jnp.abs(g[component]).sum())
-            for k, g in grads.items()
-            if k.startswith("dyn/temporal/")
+        pure = nj.pure(objective)
+        values, grads = jax.jit(
+            jax.value_and_grad(
+                lambda p: pure(p, seed=1203, create=False)[1].sum(),
+                allow_int=True,
+            )
+        )(state)
+        results[scale] = values, grads
+
+    for scale in (0.0, 0.1):
+        np.testing.assert_array_equal(results[scale][0], results[1.0][0])
+    for key, full in results[1.0][1].items():
+        if full.dtype == jax.dtypes.float0:
+            continue
+        if key.startswith(("enc/", "dyn/")):
+            np.testing.assert_allclose(results[0.0][1][key], 0.0, atol=1e-7)
+    local_norms = {
+        scale: _gradient_norms(grads) for scale, (_, grads) in results.items()
+    }
+    for root in ("enc", "dyn"):
+        np.testing.assert_allclose(
+            local_norms[0.1][root], 0.1 * local_norms[1.0][root], rtol=2e-2
         )
-        assert (temporal > 0) == joint
-        categorical = sum(
-            float(jnp.abs(g[component]).sum())
-            for k, g in grads.items()
-            if k.startswith("dyn/obs")
+    joint_norms = {
+        scale: sum(
+            float(jnp.abs(value).sum())
+            for key, value in grads.items()
+            if key.startswith("ctde_joint/") and value.dtype != jax.dtypes.float0
         )
-        assert (categorical > 0) == joint
+        for scale, (_, grads) in results.items()
+    }
+    np.testing.assert_allclose(joint_norms[0.0], joint_norms[1.0], rtol=2e-2)
+    np.testing.assert_allclose(joint_norms[0.1], joint_norms[1.0], rtol=2e-2)
 
 
 def test_value_loss_updates_local_features_but_not_critic_parameters():

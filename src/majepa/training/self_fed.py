@@ -85,19 +85,24 @@ def scatter_sample_mean(value, anchors, valid, destination_valid, *, team_loss=F
 
 
 def posterior_logits(
-    dynamics, embedding, deter, *, history_gradient=False, parameter_gradient=False
+    dynamics, embedding, deter, *, history_gradient=0.0, parameter_gradient=0.0
 ):
     """Categorical encoder with independently controlled parameter/history gradients."""
+
+    def gradient(value, scale):
+        stopped = jax.lax.stop_gradient(value)
+        return stopped + float(scale) * (value - stopped)
+
     prefix = dynamics.path + "/"
     params = {
-        key: value if parameter_gradient else jax.lax.stop_gradient(value)
+        key: gradient(value, parameter_gradient)
         for key, value in nj.context().items()
         if key.startswith(prefix)
     }
     _, logits = nj.pure(dynamics.posterior, nested=True)(
         params,
         nn.cast(embedding),
-        nn.cast(deter if history_gradient else jax.lax.stop_gradient(deter)),
+        nn.cast(gradient(deter, history_gradient)),
         create=False,
         modify=False,
     )
@@ -120,7 +125,7 @@ def mixed_posterior_kl(predicted, target, unimix):
 
 
 def local_transition(
-    dynamics, local, action, embedding, active, *, logits=None, parameter_gradient=False
+    dynamics, local, action, embedding, active, *, logits=None, parameter_gradient=0.0
 ):
     """Keep input derivatives, optionally differentiating the local parameters too."""
 
@@ -135,7 +140,8 @@ def local_transition(
     if nj.creating():
         return advance(local, action, embedding, active, logits)
     params = {
-        key: value if parameter_gradient else jax.lax.stop_gradient(value)
+        key: jax.lax.stop_gradient(value)
+        + float(parameter_gradient) * (value - jax.lax.stop_gradient(value))
         for key, value in nj.context().items()
         if key.startswith(dynamics.path + "/")
     }
@@ -184,7 +190,9 @@ def self_fed_losses(agent, online, features, entries, ema, obs, prevact):
     cfg = agent.config.marl.ctde.self_fed
     features, entries = recurrent_training_inputs(agent, features, entries, obs)
     bptt_steps = int(cfg.get("bptt_steps", 1))
-    parameter_gradient = agent.joint_prediction_gradient
+    parameter_gradient = (
+        agent.joint_prediction_scale if agent.joint_prediction_gradient else 0.0
+    )
     local_feedback = bool(cfg.get("local_feedback_gradient", False))
     if local_feedback and bptt_steps < 2:
         raise ValueError("Local feedback gradients require BPTT >= 2")
@@ -361,7 +369,7 @@ def self_fed_losses(agent, online, features, entries, ema, obs, prevact):
                     agent.dyn,
                     agent.team.fold_batch(embedding),
                     local["deter"],
-                    history_gradient=parameter_gradient,
+                    history_gradient=bool(parameter_gradient),
                     parameter_gradient=parameter_gradient,
                 )
             )

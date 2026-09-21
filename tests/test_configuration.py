@@ -44,6 +44,37 @@ def test_run_spec_rejects_invalid_world_gradient_scale(tmp_path, scale):
         MAJEPARunSpec(tmp_path, "smac_2s3z", 5, wm_critic_value_scale=scale)
 
 
+@pytest.mark.parametrize("scale", [-1.0, float("nan"), float("inf")])
+def test_run_spec_rejects_invalid_joint_prediction_scale(tmp_path, scale):
+    with pytest.raises(ValueError, match="wm_joint_prediction_scale"):
+        MAJEPARunSpec(tmp_path, "smac_2s3z", 5, wm_joint_prediction_scale=scale)
+
+
+def test_training_setup_records_joint_prediction_scale(tmp_path):
+    assert (
+        train_main(
+            [
+                "--task",
+                "smac_2s3z",
+                "--num-agents",
+                "5",
+                "--experiment-dir",
+                str(tmp_path),
+                "--dry-run",
+                "--wm-joint-prediction-gradient",
+                "--wm-joint-prediction-scale",
+                "0.1",
+            ]
+        )
+        == 0
+    )
+    manifest = json.loads((tmp_path / "launch.json").read_text())
+    command = manifest["command"]
+    key = "--agent.world_model_gradients.joint_prediction_scale"
+    assert command[command.index(key) + 1] == "0.1"
+    assert manifest["world_model_gradients"]["joint_prediction_scale"] == 0.1
+
+
 def test_evaluation_uses_manifest_protocol_and_complete_checkpoint(tmp_path):
     manifest = MAJEPARunSpec(
         tmp_path,

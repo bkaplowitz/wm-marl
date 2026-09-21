@@ -127,6 +127,8 @@ def main(argv: list[str] | None = None) -> int:
         str(gradients.get("critic_value_scale", 0.0)),
         "--agent.world_model_gradients.joint_prediction",
         str(gradients.get("joint_prediction", False)),
+        "--agent.world_model_gradients.joint_prediction_scale",
+        str(gradients.get("joint_prediction_scale", 1.0)),
         "--script",
         "eval_only",
         "--run.from_checkpoint",

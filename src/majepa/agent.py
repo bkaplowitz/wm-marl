@@ -51,11 +51,19 @@ class Agent(
         gradients = config.get("world_model_gradients", {})
         self.world_model_value_scale = float(gradients.get("critic_value_scale", 0.0))
         self.joint_prediction_gradient = bool(gradients.get("joint_prediction", False))
+        self.joint_prediction_scale = float(
+            gradients.get("joint_prediction_scale", 1.0)
+        )
         if (
             not np.isfinite(self.world_model_value_scale)
             or self.world_model_value_scale < 0
         ):
             raise ValueError("critic_value_scale must be finite and nonnegative")
+        if (
+            not np.isfinite(self.joint_prediction_scale)
+            or self.joint_prediction_scale < 0
+        ):
+            raise ValueError("joint_prediction_scale must be finite and nonnegative")
         self.factual_value_enabled = False
         self.factual_representation_scale = 0.0
         if self.factual_representation_scale < 0:

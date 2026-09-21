@@ -704,6 +704,11 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         ).astype(jnp.int32)
 
         source_state = grouped_state[:, :-1]
+        if self.joint_prediction_gradient:
+            stopped_source_state = jax.lax.stop_gradient(source_state)
+            source_state = stopped_source_state + self.joint_prediction_scale * (
+                source_state - stopped_source_state
+            )
         source_action = grouped_action[:, 1:]
         source_present = grouped_present[:, :-1]
         source_alive = grouped_alive[:, :-1]
@@ -892,8 +897,16 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 self.dyn,
                 folded_prediction,
                 folded_deter,
-                history_gradient=self.joint_prediction_gradient,
-                parameter_gradient=self.joint_prediction_gradient,
+                history_gradient=(
+                    self.joint_prediction_scale
+                    if self.joint_prediction_gradient
+                    else 0.0
+                ),
+                parameter_gradient=(
+                    self.joint_prediction_scale
+                    if self.joint_prediction_gradient
+                    else 0.0
+                ),
             )
             kl = self.team.unfold_sequence(
                 mixed_posterior_kl(logits, factual_logits, self.dyn.unimix)

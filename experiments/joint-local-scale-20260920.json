@@ -1,0 +1,85 @@
+{
+  "profiles": [
+    "smac_vector",
+    "ma_jepa",
+    "localmask_reference"
+  ],
+  "wandb": {
+    "entity": "osaze-obahor",
+    "project": "majepa-world-model-gradients"
+  },
+  "budget": 160,
+  "max_gpu_hourly_rate": 1.1,
+  "max_hours": 8,
+  "max_gpus": 4,
+  "gpus_per_pod": 4,
+  "allow_a100": false,
+  "placements": [
+    {
+      "region": "OC-AU-1"
+    },
+    {
+      "region": "US-KS-2",
+      "volume": "e8ishvsuf7"
+    },
+    {
+      "region": "US-TX-3",
+      "volume": "omjuynlizd"
+    }
+  ],
+  "storage": {
+    "quota_gb": 150,
+    "min_free_gb": 20,
+    "workspace_root": "/workspace/majepa-joint-local-scale-20260920"
+  },
+  "maps": [
+    {
+      "name": "2s3z",
+      "agents": 5,
+      "steps": 50000
+    }
+  ],
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "overrides": {
+    "agent.dyn.parallel_transformer.deter": 4096,
+    "agent.dyn.parallel_transformer.hidden": 512,
+    "agent.dyn.parallel_transformer.stoch": 32,
+    "agent.dyn.parallel_transformer.classes": 64,
+    "agent.policy.layers": 3,
+    "agent.policy.units": 512,
+    "agent.opt.lr": 0.0001,
+    "agent.marl.ctde.opt.lr": 0.0001,
+    "agent.ppo.actor_lr": 3e-05,
+    "agent.ppo.critic_lr": 3e-05,
+    "agent.ppo.entropy_coefficient": 0.003,
+    "agent.ppo.entropy_schedule.enabled": false,
+    "agent.world_model_gradients.critic_value_scale": 0.0,
+    "agent.world_model_gradients.joint_prediction": true,
+    "agent.world_model_gradients.joint_prediction_scale": 0.1
+  },
+  "treatments": [
+    {
+      "name": "joint-local-0p1",
+      "overrides": {}
+    },
+    {
+      "name": "joint-local-0p1-no-local-kl",
+      "overrides": {
+        "agent.loss_scales.dyn": 0.0,
+        "agent.loss_scales.rep": 0.0
+      }
+    },
+    {
+      "name": "joint-local-0p1-no-local-kl-cat32",
+      "overrides": {
+        "agent.loss_scales.dyn": 0.0,
+        "agent.loss_scales.rep": 0.0,
+        "agent.dyn.parallel_transformer.classes": 32
+      }
+    }
+  ]
+}

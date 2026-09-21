@@ -93,6 +93,7 @@ def plan(spec, name):
         "maps",
         "seeds",
         "treatments",
+        "run_order",
         "wandb",
         "budget",
         "max_gpu_hourly_rate",
@@ -163,68 +164,75 @@ def plan(spec, name):
         if any(dep not in seen for dep in dependencies):
             raise ValueError("treatment dependencies must precede their dependents")
         seen.add(treatment["name"])
-        for seed in seeds:
-            for mapping in maps:
-                if set(mapping) != {"name", "agents", "steps"}:
-                    raise ValueError("each map requires name, agents and steps")
-                if (
-                    type(mapping["agents"]) is not int
-                    or mapping["agents"] < 2
-                    or type(mapping["steps"]) is not int
-                    or mapping["steps"] <= 0
-                ):
-                    raise ValueError("invalid map agents or steps")
-                run_name = f"{treatment['name']}-{mapping['name']}-seed{seed}"
-                overrides = {
-                    **spec.get("overrides", {}),
-                    **treatment.get("overrides", {}),
-                }
-                unknown = overrides.keys() - base.flat.keys()
-                if unknown:
-                    raise ValueError(f"unknown config overrides: {sorted(unknown)}")
-                reserved = {
-                    "task",
-                    "seed",
-                    "logdir",
-                    "script",
-                    "agent.num_agents",
-                    "run.steps",
-                    "run.from_checkpoint",
-                }
-                if overrides.keys() & reserved:
-                    raise ValueError(
-                        "map/seed/path settings belong in the campaign specification"
-                    )
-                config = base.update(overrides).update(
-                    {
-                        "task": "smac_" + mapping["name"],
-                        "seed": seed,
-                        "agent.num_agents": mapping["agents"],
-                        "run.steps": mapping["steps"],
-                        "logdir": f"/RUN/{run_name}/train",
-                        "script": "train",
-                        "run.from_checkpoint": "",
-                        "run.final_save": True,
-                        "run.checkpoint_at_curve_eval": True,
-                        "run.eval_eps": 100,
-                        "run.eval_policy_mode": "eval",
-                        "jax.policy_devices": [0],
-                        "jax.train_devices": [0],
-                        "logger.outputs": ["jsonl", "wandb"],
-                    }
+    run_order = spec.get("run_order", "treatment_first")
+    if run_order not in ("treatment_first", "seed_first"):
+        raise ValueError("run_order must be treatment_first or seed_first")
+    combinations = (
+        ((treatment, seed) for seed in seeds for treatment in treatments)
+        if run_order == "seed_first"
+        else ((treatment, seed) for treatment in treatments for seed in seeds)
+    )
+    for treatment, seed in combinations:
+        for mapping in maps:
+            if set(mapping) != {"name", "agents", "steps"}:
+                raise ValueError("each map requires name, agents and steps")
+            if (
+                type(mapping["agents"]) is not int
+                or mapping["agents"] < 2
+                or type(mapping["steps"]) is not int
+                or mapping["steps"] <= 0
+            ):
+                raise ValueError("invalid map agents or steps")
+            run_name = f"{treatment['name']}-{mapping['name']}-seed{seed}"
+            overrides = {
+                **spec.get("overrides", {}),
+                **treatment.get("overrides", {}),
+            }
+            unknown = overrides.keys() - base.flat.keys()
+            if unknown:
+                raise ValueError(f"unknown config overrides: {sorted(unknown)}")
+            reserved = {
+                "task",
+                "seed",
+                "logdir",
+                "script",
+                "agent.num_agents",
+                "run.steps",
+                "run.from_checkpoint",
+            }
+            if overrides.keys() & reserved:
+                raise ValueError(
+                    "map/seed/path settings belong in the campaign specification"
                 )
-                flat = json.loads(json.dumps(dict(config.flat)))
-                runs.append(
-                    {
-                        "name": run_name,
-                        "config": flat,
-                        "expected_updates": expected_updates(flat),
-                        "depends_on": [
-                            f"{dep}-{mapping['name']}-seed{seed}"
-                            for dep in dependencies
-                        ],
-                    }
-                )
+            config = base.update(overrides).update(
+                {
+                    "task": "smac_" + mapping["name"],
+                    "seed": seed,
+                    "agent.num_agents": mapping["agents"],
+                    "run.steps": mapping["steps"],
+                    "logdir": f"/RUN/{run_name}/train",
+                    "script": "train",
+                    "run.from_checkpoint": "",
+                    "run.final_save": True,
+                    "run.checkpoint_at_curve_eval": True,
+                    "run.eval_eps": 100,
+                    "run.eval_policy_mode": "eval",
+                    "jax.policy_devices": [0],
+                    "jax.train_devices": [0],
+                    "logger.outputs": ["jsonl", "wandb"],
+                }
+            )
+            flat = json.loads(json.dumps(dict(config.flat)))
+            runs.append(
+                {
+                    "name": run_name,
+                    "config": flat,
+                    "expected_updates": expected_updates(flat),
+                    "depends_on": [
+                        f"{dep}-{mapping['name']}-seed{seed}" for dep in dependencies
+                    ],
+                }
+            )
     if len({r["name"] for r in runs}) != len(runs):
         raise ValueError("map and treatment identifiers produce duplicate run names")
     groups = [(m["name"], seed) for seed in seeds for m in maps]

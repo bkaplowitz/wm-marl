@@ -44,7 +44,9 @@ Default topology: four GPUs in one pod, limited to the number of available jobs.
 An explicit `gpus_per_pod` reserves that size even when fewer jobs are queued;
 idle GPUs still count toward the budget. Set it to `1` for separate one-GPU pods;
 `max_gpus` limits the total.
-Treatment/map/seed order specifies priority. An optional treatment `depends_on`
+Treatment/map/seed order specifies priority. Set `run_order` to `seed_first` to
+queue one run from each treatment before advancing to the next seed; the default
+is `treatment_first`. An optional treatment `depends_on`
 list names earlier treatments; matching map/seed jobs stay on the same pod and
 wait for successful predecessors. An optional absolute `predecessor` queue-file
 path gates the whole pod's queue. It must be available on the mounted volume;
