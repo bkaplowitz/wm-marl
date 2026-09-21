@@ -7,8 +7,8 @@
   "budget": 160,
   "max_gpu_hourly_rate": 1.1,
   "max_hours": 8,
-  "max_gpus": 6,
-  "gpus_per_pod": 6,
+  "max_gpus": 4,
+  "gpus_per_pod": 4,
   "allow_a100": false,
   "placements": [
     {"region": "OC-AU-1"},
