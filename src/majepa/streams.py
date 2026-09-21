@@ -34,12 +34,11 @@ class ReplaySnapshotStream:
     """
 
     def __init__(self, agent, source, on_snapshot=None, *, behavior_source=None,
-                 startup_behavior_min_starts=1, startup_unique_roots=False):
+                 startup_behavior_min_starts=1):
         self.agent = agent
         self.source = iter(source)
         self.behavior_source = iter(behavior_source) if behavior_source is not None else None
         self.startup_behavior_min_starts = int(startup_behavior_min_starts)
-        self.startup_unique_roots = bool(startup_unique_roots)
         if self.startup_behavior_min_starts < 1:
             raise ValueError("Startup behavior eligibility must be positive")
         if self.startup_behavior_min_starts != 1 and self.behavior_source is None:
@@ -49,29 +48,6 @@ class ReplaySnapshotStream:
         self.pending = None
         self.sampled_at = None
         self.on_snapshot = on_snapshot
-
-    @staticmethod
-    def _next_unique(source):
-        """Build one batch with distinct replay roots, preserving sampler order."""
-
-        rows = []
-        seen = set()
-        size = None
-        while size is None or len(rows) < size:
-            data = next(source)
-            size = size or int(data["stepid"].shape[0])
-            for index in range(int(data["stepid"].shape[0])):
-                root = np.ascontiguousarray(data["stepid"][index, 0]).tobytes()
-                if root in seen:
-                    continue
-                seen.add(root)
-                rows.append({key: value[index : index + 1] for key, value in data.items()})
-                if len(rows) == size:
-                    break
-        return {
-            key: np.concatenate([row[key] for row in rows], axis=0)
-            for key in rows[0]
-        }
 
     def prime(self, environment_step, eligible_starts=None):
         if self.pending is not None:
@@ -85,17 +61,9 @@ class ReplaySnapshotStream:
                 return False
             data, self.startup_world = self.startup_world, None
         else:
-            data = (
-                self._next_unique(self.source)
-                if self.startup_unique_roots and not self.startup_complete
-                else next(self.source)
-            )
+            data = next(self.source)
         if self.behavior_source is not None:
-            other = (
-                self._next_unique(self.behavior_source)
-                if self.startup_unique_roots and not self.startup_complete
-                else next(self.behavior_source)
-            )
+            other = next(self.behavior_source)
             if data['is_first'].shape != other['is_first'].shape:
                 raise ValueError("Replay view shapes differ")
             data = {**data, **{f'_behavior_replay/{key}': value
