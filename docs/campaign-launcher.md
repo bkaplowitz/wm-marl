@@ -35,7 +35,7 @@ uv run --no-sync python -m majepa.campaign init \
 Dry-run resolves all profile defaults and explicit overrides, displays the full
 per-job configurations and GPU allocations, and performs no file writes, cloud
 requests, or launches. Unknown configuration keys fail before provisioning.
-The example uses `localmask_reference`, including independently sampled
+The example uses the sole `baseline` profile, including independently sampled
 50/50 uniform/recent world and behavior replay. Change the replay settings
 explicitly for a different experiment. No earlier multi-action implementation
 is restored by this launcher; treatments must be supported by the selected source.

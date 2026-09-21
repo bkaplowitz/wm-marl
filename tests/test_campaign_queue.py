@@ -172,7 +172,7 @@ def test_checkpoint_budget_and_pruning_boundaries(tmp_path):
 def test_frozen_configuration_roundtrip(tmp_path):
     from majepa.main import _load_configs, _resolve_config_profiles
 
-    config = _resolve_config_profiles(_load_configs(), ["smac_vector", "ma_jepa"]).flat
+    config = _resolve_config_profiles(_load_configs(), ["baseline"]).flat
     config = json.loads(json.dumps(config))
     config["logdir"] = "/RUN/example/train"
     entry = {"name": "example", "config": config}

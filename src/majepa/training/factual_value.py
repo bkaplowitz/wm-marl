@@ -5,11 +5,7 @@ import jax.numpy as jnp
 
 
 def joint_action_logratio(current, behavior, controllable, team):
-    """Recorded action a_t probabilities, folded as [B*A,T].
-
-    All acting agents contribute to the probability of a joint action. Dead or
-    absent slots contribute an identity ratio, not an extra policy factor.
-    """
+    """Fold per-agent recorded-action log ratios into team action ratios."""
     if current.shape != behavior.shape or current.shape != controllable.shape:
         raise ValueError("action log probabilities and acting mask must match")
     difference = jnp.where(controllable, current - behavior, 0.0)
@@ -31,14 +27,7 @@ def factual_vtrace_return(
     rho_clip,
     c_clip,
 ):
-    """V-trace with a lambda trace, real rewards, and factual state values.
-
-    Action/logratio[t] leaves state t and receives reward[t+1]. Truncations
-    bootstrap from their final observation exactly once. A terminal arrival
-    retains its reward. Neither resets nor missing roster slots bridge traces.
-    This is a bounded replay correction, not a claim of unbiased returns with
-    a changing latent state representation.
-    """
+    """Compute bounded V-trace targets from factual replay transitions."""
     arrays = (reward, first, last, terminal, present, value, logratio)
     if len({x.shape for x in arrays}) != 1 or reward.ndim != 2 or reward.shape[1] < 2:
         raise ValueError("factual value inputs must share [B,T>=2] shape")
@@ -53,7 +42,6 @@ def factual_vtrace_return(
         jnp.asarray(x, bool) for x in (first, last, terminal, present)
     ]
     valid = present[:, :-1] & present[:, 1:] & ~last[:, :-1] & ~first[:, 1:]
-    # Clip in log space so a large joint ratio cannot overflow before clipping.
     rho = jnp.exp(jnp.minimum(logratio[:, :-1], jnp.log(rho_clip)))
     c = jnp.exp(jnp.minimum(logratio[:, :-1], jnp.log(c_clip)))
     gamma = discount * (~terminal[:, 1:]).astype(jnp.float32)

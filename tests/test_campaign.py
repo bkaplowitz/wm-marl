@@ -24,8 +24,10 @@ def test_plan_resolves_actual_configs_and_reuses_gpus():
         treatments=[
             {"name": "reference", "overrides": {}},
             {
-                "name": "nolocaloutcomes",
-                "overrides": {"agent.simplification.local_outcomes": False},
+                "name": "jointgradient",
+                "overrides": {
+                    "agent.world_model_gradients.joint_prediction": True
+                },
                 "depends_on": ["reference"],
             },
         ]
@@ -228,9 +230,9 @@ def test_rejects_ambiguous_run_names_and_inexact_step_budget():
         )
 
 
-def test_campaign_preserves_checkpoints_until_verified_upload():
+def test_campaign_uses_baseline_checkpoint_policy():
     result = campaign.plan(specification(), "test")
-    assert result["runs"][0]["config"]["run.checkpoint_at_curve_eval"] is True
+    assert result["runs"][0]["config"]["run.checkpoint_at_curve_eval"] is False
 
 
 def test_fingerprint_excludes_live_state_but_catches_config_changes():

@@ -10,10 +10,7 @@ from majepa.scripts.evaluate import main as evaluate_main
 from majepa.scripts.train import main as train_main
 
 
-@pytest.mark.parametrize(
-    "scale,joint", [(0.0, False), (0.1, False), (0.0, True), (0.1, True)]
-)
-def test_training_setup_records_world_gradient_options(tmp_path, scale, joint):
+def test_training_setup_records_experiment_controls(tmp_path):
     arguments = [
         "--task",
         "smac_2s3z",
@@ -23,19 +20,42 @@ def test_training_setup_records_world_gradient_options(tmp_path, scale, joint):
         str(tmp_path),
         "--dry-run",
         "--wm-critic-value-scale",
-        str(scale),
+        "0.2",
+        "--wm-joint-objective-scale",
+        "0.3",
+        "--wm-joint-prediction-gradient",
+        "--wm-joint-prediction-scale",
+        "0.4",
+        "--no-local-prior",
+        "--action-margin-loss-scale",
+        "0.0",
+        "--categorical-stoch",
+        "8",
+        "--categorical-classes",
+        "16",
     ]
-    if joint:
-        arguments.append("--wm-joint-prediction-gradient")
     assert train_main(arguments) == 0
     manifest = json.loads((tmp_path / "launch.json").read_text())
     command = manifest["command"]
     config = _resolve_config_profiles(_load_configs(), manifest["configs"])
-    for key, expected in (("critic_value_scale", scale), ("joint_prediction", joint)):
+    for key, expected in (
+        ("critic_value_scale", 0.2),
+        ("joint_objective_scale", 0.3),
+        ("joint_prediction", True),
+        ("joint_prediction_scale", 0.4),
+    ):
         index = command.index("--agent.world_model_gradients." + key)
         resolved = elements.Flags(config).parse(command[index : index + 2])
         assert resolved.agent.world_model_gradients[key] == expected
         assert manifest["world_model_gradients"][key] == expected
+    for option, config_key, expected in (
+        ("--agent.dyn.parallel_transformer.local_prior", "local_prior", False),
+        ("--agent.loss_scales.ctde_multistep_jepa_action", "action_margin_loss_scale", 0.0),
+        ("--agent.dyn.parallel_transformer.stoch", "categorical_stoch", 8),
+        ("--agent.dyn.parallel_transformer.classes", "categorical_classes", 16),
+    ):
+        assert command[command.index(option) + 1] == str(expected)
+        assert manifest["model_controls"][config_key] == expected
 
 
 @pytest.mark.parametrize("scale", [-1.0, float("nan"), float("inf")])
@@ -48,6 +68,20 @@ def test_run_spec_rejects_invalid_world_gradient_scale(tmp_path, scale):
 def test_run_spec_rejects_invalid_joint_prediction_scale(tmp_path, scale):
     with pytest.raises(ValueError, match="wm_joint_prediction_scale"):
         MAJEPARunSpec(tmp_path, "smac_2s3z", 5, wm_joint_prediction_scale=scale)
+
+
+@pytest.mark.parametrize("field", ["wm_joint_objective_scale", "action_margin_loss_scale"])
+@pytest.mark.parametrize("scale", [-1.0, float("nan"), float("inf")])
+def test_run_spec_rejects_invalid_nonnegative_scale(tmp_path, field, scale):
+    with pytest.raises(ValueError, match=field):
+        MAJEPARunSpec(tmp_path, "smac_2s3z", 5, **{field: scale})
+
+
+@pytest.mark.parametrize("field", ["categorical_stoch", "categorical_classes"])
+@pytest.mark.parametrize("size", [0, -1])
+def test_run_spec_rejects_invalid_categorical_size(tmp_path, field, size):
+    with pytest.raises(ValueError, match=field):
+        MAJEPARunSpec(tmp_path, "smac_2s3z", 5, **{field: size})
 
 
 def test_training_setup_records_joint_prediction_scale(tmp_path):

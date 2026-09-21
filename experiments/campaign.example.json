@@ -1,5 +1,5 @@
 {
-  "profiles": ["smac_vector", "ma_jepa", "localmask_reference"],
+  "profiles": ["baseline"],
   "wandb": {
     "entity": "osaze-obahor",
     "project": "majepa-ppo-treatments"
@@ -16,22 +16,8 @@
   "storage": {"quota_gb": 300, "min_free_gb": 20},
   "maps": [{"name": "2s3z", "agents": 5, "steps": 50000}],
   "seeds": [0, 1, 2],
-  "overrides": {
-    "agent.dyn.parallel_transformer.deter": 4096,
-    "agent.dyn.parallel_transformer.hidden": 512,
-    "agent.dyn.parallel_transformer.stoch": 32,
-    "agent.dyn.parallel_transformer.classes": 64,
-    "agent.policy.layers": 3,
-    "agent.policy.units": 512,
-    "agent.opt.lr": 0.0001,
-    "agent.marl.ctde.opt.lr": 0.0001,
-    "agent.ppo.actor_lr": 0.00003,
-    "agent.ppo.critic_lr": 0.00003,
-    "agent.ppo.entropy_coefficient": 0.003,
-    "agent.ppo.entropy_schedule.enabled": false
-  },
   "treatments": [
     {"name": "reference", "overrides": {}},
-    {"name": "nolocaloutcomes", "overrides": {"agent.simplification.local_outcomes": false}}
+    {"name": "joint-local", "overrides": {"agent.world_model_gradients.joint_prediction": true}}
   ]
 }

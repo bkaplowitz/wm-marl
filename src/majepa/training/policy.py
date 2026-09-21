@@ -5,7 +5,6 @@ import jax
 import jax.numpy as jnp
 from ..models.heads import (
     apply_action_mask,
-    apply_legal_unimix,
     apply_predicted_action_mask,
 )
 from .common import predict, sample
@@ -30,12 +29,6 @@ class PolicyMixin:
             bdims=1,
             action_mask=obs.get("action_mask"),
         )
-        if mode == "train" and self.config.collection_unimix:
-            policy = apply_legal_unimix(
-                policy,
-                self.action_mask_key,
-                self.config.collection_unimix,
-            )
         if mode in {"train", "eval_sample"}:
             act = sample(policy)
         elif mode == "eval":

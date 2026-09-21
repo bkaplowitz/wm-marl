@@ -15,9 +15,7 @@ from majepa.marl.core import MARLCore
 
 
 def _tiny_learner(overrides=None):
-    config = _resolve_config_profiles(
-        _load_configs(), ("smac_vector", "ma_jepa")
-    ).update(
+    config = _resolve_config_profiles(_load_configs(), ("baseline",)).update(
         {
             "batch_size": 2,
             "batch_length": 4,
@@ -31,10 +29,7 @@ def _tiny_learner(overrides=None):
             "agent.enc.simple.units": 8,
             "agent.policy.layers": 1,
             "agent.policy.units": 8,
-            "agent.rewhead.units": 8,
-            "agent.conhead.units": 8,
             "agent.maskhead.units": 8,
-            "agent.rewhead.bins": 5,
             "agent.dyn.parallel_transformer.stoch": 2,
             "agent.dyn.parallel_transformer.classes": 4,
             "agent.dyn.parallel_transformer.heads": 2,
@@ -57,9 +52,6 @@ def _tiny_learner(overrides=None):
             "agent.marl.ctde.multistep_jepa.layers": 1,
             "agent.marl.ctde.multistep_jepa.units": 8,
             "agent.marl.ctde.multistep_jepa.plan_units": 8,
-            "agent.marl.ctde.teammate_belief.layers": 1,
-            "agent.marl.ctde.teammate_belief.units": 8,
-            "agent.marl.ctde.teammate_belief.adapter_units": 8,
             "agent.marl.ctde.self_fed.horizons": [2],
             "agent.marl.ctde.self_fed.anchors": 2,
             "agent.opt.warmup": 0,

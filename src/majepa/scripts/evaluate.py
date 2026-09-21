@@ -96,19 +96,17 @@ def main(argv: list[str] | None = None) -> int:
         envs=args.envs,
         eval_seed=args.eval_seed,
     )
-    environment_profile = str(
-        manifest.get("environment_profile")
-        or environment_config_profile(
-            str(manifest["task"]), int(manifest["num_agents"])
-        )
+    environment_config_profile(
+        str(manifest["task"]), int(manifest["num_agents"])
     )
-    profiles = [environment_profile, *algorithm_config_profiles(algorithm)]
+    profiles = algorithm_config_profiles(algorithm)
     evaluation = experiment / "evaluation" / f"seed_{eval_seed}_{_timestamp()}"
     python = absolute_path(args.python or Path(str(manifest["python"])))
     outputs = ["jsonl", "scope"]
     if args.wandb_project:
         outputs.append("wandb")
     gradients = manifest.get("world_model_gradients", {})
+    model_controls = manifest.get("model_controls", {})
     command = [
         str(python),
         "-m",
@@ -125,10 +123,20 @@ def main(argv: list[str] | None = None) -> int:
         str(manifest["num_agents"]),
         "--agent.world_model_gradients.critic_value_scale",
         str(gradients.get("critic_value_scale", 0.0)),
+        "--agent.world_model_gradients.joint_objective_scale",
+        str(gradients.get("joint_objective_scale", 1.0)),
         "--agent.world_model_gradients.joint_prediction",
         str(gradients.get("joint_prediction", False)),
         "--agent.world_model_gradients.joint_prediction_scale",
         str(gradients.get("joint_prediction_scale", 1.0)),
+        "--agent.dyn.parallel_transformer.local_prior",
+        str(model_controls.get("local_prior", True)),
+        "--agent.loss_scales.ctde_multistep_jepa_action",
+        str(model_controls.get("action_margin_loss_scale", 0.1)),
+        "--agent.dyn.parallel_transformer.stoch",
+        str(model_controls.get("categorical_stoch", 32)),
+        "--agent.dyn.parallel_transformer.classes",
+        str(model_controls.get("categorical_classes", 64)),
         "--script",
         "eval_only",
         "--run.from_checkpoint",

@@ -10,12 +10,20 @@ from majepa.main import _load_configs, _resolve_config_profiles
 from test_training import _tiny_learner, _synthetic_replay, _assert_finite
 
 
-def _setup(value_scale=0.0, joint=False, joint_scale=1.0):
+def _setup(
+    value_scale=0.0,
+    joint=False,
+    joint_scale=1.0,
+    joint_objective_scale=1.0,
+    local_prior=True,
+):
     learner, observations, actions = _tiny_learner(
         {
             "agent.world_model_gradients.critic_value_scale": value_scale,
             "agent.world_model_gradients.joint_prediction": joint,
             "agent.world_model_gradients.joint_prediction_scale": joint_scale,
+            "agent.world_model_gradients.joint_objective_scale": joint_objective_scale,
+            "agent.dyn.parallel_transformer.local_prior": local_prior,
             "agent.marl.ctde.critic.outscale": 1.0,
             "agent.loss_scales.ctde_posterior_alignment": 0.05,
             "agent.marl.ctde.self_fed.bptt_steps": 2,
@@ -56,12 +64,12 @@ def _gradient_norms(grads):
 
 
 def test_gradient_options_default_off():
-    cfg = _resolve_config_profiles(
-        _load_configs(), ("smac_vector", "ma_jepa", "localmask_reference")
-    )
+    cfg = _resolve_config_profiles(_load_configs(), ("baseline",))
     assert cfg.agent.world_model_gradients.critic_value_scale == 0.0
+    assert cfg.agent.world_model_gradients.joint_objective_scale == 1.0
     assert cfg.agent.world_model_gradients.joint_prediction is False
     assert cfg.agent.world_model_gradients.joint_prediction_scale == 1.0
+    assert cfg.agent.dyn.parallel_transformer.local_prior is True
 
 
 @pytest.mark.parametrize("scale", [-1.0, float("nan"), float("inf")])
@@ -74,6 +82,47 @@ def test_invalid_value_scale_fails_before_training(scale):
 def test_invalid_joint_prediction_scale_fails_before_training(scale):
     with pytest.raises(ValueError, match="joint_prediction_scale"):
         _tiny_learner({"agent.world_model_gradients.joint_prediction_scale": scale})
+
+
+@pytest.mark.parametrize("scale", [-1.0, float("nan"), float("inf")])
+def test_invalid_joint_objective_scale_fails_before_training(scale):
+    with pytest.raises(ValueError, match="joint_objective_scale"):
+        _tiny_learner({"agent.world_model_gradients.joint_objective_scale": scale})
+
+
+def test_joint_objective_scale_changes_only_ctde_loss_weights():
+    baseline, _, _ = _tiny_learner()
+    scaled, _, _ = _tiny_learner(
+        {"agent.world_model_gradients.joint_objective_scale": 0.5}
+    )
+    assert baseline.scales.keys() == scaled.scales.keys()
+    for name, value in baseline.scales.items():
+        expected = 0.5 * float(value) if name.startswith("ctde_") else float(value)
+        assert float(scaled.scales[name]) == pytest.approx(expected)
+
+
+def test_disabling_local_prior_omits_prior_parameters_and_losses():
+    learner, _, _, state = _setup(local_prior=False)
+    assert "dyn" not in learner.scales
+    assert "rep" not in learner.scales
+    assert not any(key.startswith("dyn/prior") for key in state)
+
+    def complete_from_observation():
+        local = learner.dyn.initial(2)
+        return learner.dyn.complete_from_observation(
+            learner.dyn._cache(local),
+            local["deter"],
+            jnp.zeros((2, learner.enc_output_dim), jnp.float32),
+            sample=False,
+        )
+
+    _, (completed, _) = nj.pure(complete_from_observation)(state, seed=1208)
+    assert completed["stoch"].shape == (2, learner.dyn.stoch, learner.dyn.classes)
+
+    with pytest.raises(ValueError, match="local prior is disabled"):
+        nj.pure(lambda: learner.dyn.prior(jnp.zeros((2, learner.dyn.deter))))(
+            state, seed=1209
+        )
 
 
 @pytest.mark.parametrize(
@@ -95,7 +144,7 @@ def test_gradient_treatments_train_with_finite_updates(value_scale, joint):
 
 def test_joint_prediction_scale_only_attenuates_local_gradients():
     results = {}
-    for scale in (0.0, 0.1, 1.0):
+    for scale in (0.0, 0.1, 0.5, 1.0):
         learner, data, carry, state = _setup(joint=True, joint_scale=scale)
 
         def objective():
@@ -121,7 +170,7 @@ def test_joint_prediction_scale_only_attenuates_local_gradients():
         )(state)
         results[scale] = values, grads
 
-    for scale in (0.0, 0.1):
+    for scale in (0.0, 0.1, 0.5):
         np.testing.assert_array_equal(results[scale][0], results[1.0][0])
     for key, full in results[1.0][1].items():
         if full.dtype == jax.dtypes.float0:
@@ -132,9 +181,12 @@ def test_joint_prediction_scale_only_attenuates_local_gradients():
         scale: _gradient_norms(grads) for scale, (_, grads) in results.items()
     }
     for root in ("enc", "dyn"):
-        np.testing.assert_allclose(
-            local_norms[0.1][root], 0.1 * local_norms[1.0][root], rtol=2e-2
-        )
+        for scale in (0.1, 0.5):
+            np.testing.assert_allclose(
+                local_norms[scale][root],
+                scale * local_norms[1.0][root],
+                rtol=2e-2,
+            )
     joint_norms = {
         scale: sum(
             float(jnp.abs(value).sum())
@@ -145,6 +197,45 @@ def test_joint_prediction_scale_only_attenuates_local_gradients():
     }
     np.testing.assert_allclose(joint_norms[0.0], joint_norms[1.0], rtol=2e-2)
     np.testing.assert_allclose(joint_norms[0.1], joint_norms[1.0], rtol=2e-2)
+    np.testing.assert_allclose(joint_norms[0.5], joint_norms[1.0], rtol=2e-2)
+
+
+def test_joint_objective_scale_attenuates_joint_and_local_gradients():
+    results = {}
+    for scale in (0.0, 0.5, 1.0):
+        learner, data, carry, state = _setup(
+            joint=True,
+            joint_objective_scale=scale,
+        )
+
+        def objective():
+            inputs = _loss_inputs(learner, data, carry)
+            losses, _ = learner._ctde_replay_losses(*inputs, training=True)
+            raw = jnp.stack([value.mean() for value in losses.values()])
+            weighted = sum(
+                value.mean() * learner.scales[name]
+                for name, value in losses.items()
+            )
+            return weighted, raw
+
+        pure = nj.pure(objective)
+        (_, raw), grads = jax.jit(
+            jax.value_and_grad(
+                lambda params: pure(params, seed=1210, create=False)[1],
+                has_aux=True,
+                allow_int=True,
+            )
+        )(state)
+        results[scale] = raw, _gradient_norms(grads)
+
+    for scale in (0.0, 0.5):
+        np.testing.assert_array_equal(results[scale][0], results[1.0][0])
+    for root in ("enc", "dyn", "ctde_joint"):
+        assert results[1.0][1][root] > 0
+        assert results[0.0][1].get(root, 0.0) == pytest.approx(0.0, abs=1e-7)
+        assert results[0.5][1][root] == pytest.approx(
+            0.5 * results[1.0][1][root], rel=2e-2
+        )
 
 
 def test_value_loss_updates_local_features_but_not_critic_parameters():
@@ -210,20 +301,30 @@ def test_joint_gradient_changes_derivatives_without_changing_rollout_samples():
 
     learner, _, _, state = _setup()
 
-    def transition(enabled):
-        return local_transition(
-            learner.dyn,
-            learner.dyn.initial(4),
-            {"action": jnp.ones(4, jnp.int32)},
-            jnp.ones((4, 8)),
-            jnp.ones(4, bool),
-            parameter_gradient=enabled,
-        )
+    def rollout(scale):
+        local = learner.dyn.initial(4)
+        sampled = []
+        for _ in range(2):
+            local = local_transition(
+                learner.dyn,
+                local,
+                {"action": jnp.ones(4, jnp.int32)},
+                jnp.ones((4, 8)),
+                jnp.ones(4, bool),
+                parameter_gradient=scale,
+            )
+            sampled.append(local)
+        return sampled
 
-    frozen = nj.pure(lambda: transition(False))(state, seed=1205)[1]
-    live = nj.pure(lambda: transition(True))(state, seed=1205)[1]
-    for a, b in zip(jax.tree.leaves(frozen), jax.tree.leaves(live)):
-        np.testing.assert_array_equal(a, b)
+    sampled = {
+        scale: nj.pure(lambda: rollout(scale))(state, seed=1205)[1]
+        for scale in (0.0, 0.1, 0.5, 1.0)
+    }
+    for scale in (0.0, 0.1, 0.5):
+        for actual, full in zip(
+            jax.tree.leaves(sampled[scale]), jax.tree.leaves(sampled[1.0])
+        ):
+            np.testing.assert_array_equal(actual, full)
     for offset, expected in [(1, 0.0), (2, 1.0), (3, 0.0), (4, 1.0)]:
         gradient = jax.grad(lambda x: truncate_self_fed_state(x, offset, 2))(1.0)
         assert float(gradient) == expected
@@ -236,40 +337,70 @@ def test_campaign_resolves_independent_gradient_treatments():
 
     spec = json.loads(
         (
-            Path(__file__).parents[1] / "experiments/world-model-gradients.json"
+            Path(__file__).parents[1] / "experiments/jema-joint-scale-20260921.json"
         ).read_text()
     )
-    resolved = plan(spec, "gradient-test")
-    assert len(resolved["runs"]) == 12
-    modes = {}
+    resolved = plan(spec, "jema-joint-scale-20260921")
+    neutral_spec = json.loads(json.dumps(spec))
+    neutral_spec["treatments"] = [{"name": "baseline", "overrides": {}}]
+    neutral = plan(neutral_spec, "jema-joint-scale-20260921-baseline")
+    neutral_by_seed = {run["config"]["seed"]: run["config"] for run in neutral["runs"]}
+    assert len(resolved["runs"]) == 6
+    assert resolved["allocations"] == [
+        {
+            "name": "pod0",
+            "gpu_count": 8,
+            "run_names": [run["name"] for run in resolved["runs"]],
+        }
+    ]
+    modes = []
     baseline = resolved["runs"][0]["config"]
     for run in resolved["runs"]:
         config = run["config"]
-        mode = (
-            config["agent.world_model_gradients.critic_value_scale"],
-            config["agent.world_model_gradients.joint_prediction"],
+        modes.append(
+            (
+                config["seed"],
+                config["agent.world_model_gradients.joint_prediction_scale"],
+            )
         )
-        modes.setdefault(mode, []).append(config["seed"])
         ignored = {
             "seed",
             "logdir",
-            "agent.world_model_gradients.critic_value_scale",
-            "agent.world_model_gradients.joint_prediction",
+            "agent.world_model_gradients.joint_prediction_scale",
         }
         assert {k: v for k, v in config.items() if k not in ignored} == {
             k: v for k, v in baseline.items() if k not in ignored
         }
-    assert modes == {
-        (0.0, False): [0, 1, 2],
-        (0.1, False): [0, 1, 2],
-        (0.0, True): [0, 1, 2],
-        (0.1, True): [0, 1, 2],
-    }
+        neutral_config = neutral_by_seed[config["seed"]]
+        treatment_keys = {
+            "logdir",
+            "agent.world_model_gradients.joint_prediction",
+            "agent.world_model_gradients.joint_prediction_scale",
+        }
+        assert {k: v for k, v in config.items() if k not in treatment_keys} == {
+            k: v for k, v in neutral_config.items() if k not in treatment_keys
+        }
+    assert modes == [
+        (0, 0.5),
+        (0, 0.1),
+        (1, 0.5),
+        (1, 0.1),
+        (2, 0.5),
+        (2, 0.1),
+    ]
+    assert all(
+        run["config"]["agent.world_model_gradients.joint_prediction"] is True
+        and run["config"]["agent.world_model_gradients.critic_value_scale"] == 0.0
+        and run["config"]["agent.world_model_gradients.joint_objective_scale"] == 1.0
+        and run["config"]["agent.dyn.parallel_transformer.local_prior"] is True
+        and run["config"]["agent.loss_scales.ctde_multistep_jepa_action"] == 0.1
+        and run["config"]["agent.dyn.parallel_transformer.stoch"] == 32
+        and run["config"]["agent.dyn.parallel_transformer.classes"] == 64
+        for run in resolved["runs"]
+    )
 
 
 def test_collection_records_actual_mixed_probability_and_outgoing_action():
-    from majepa.training.policy import apply_legal_unimix
-
     learner, data, carry, state = _setup(value_scale=0.1)
     key = "pol/head/action/logits/bias"
     state[key] = jnp.arange(8, dtype=state[key].dtype) * 0.3
@@ -286,9 +417,6 @@ def test_collection_records_actual_mixed_probability_and_outgoing_action():
         )
         policy = learner.policy_distribution(
             learner.feat2tensor(features), 1, action_mask=local["action_mask"]
-        )
-        policy = apply_legal_unimix(
-            policy, learner.action_mask_key, learner.config.collection_unimix
         )
         return learner.team.unfold_batch(
             -policy["action"].loss(learner.team.fold_batch(action["action"]))

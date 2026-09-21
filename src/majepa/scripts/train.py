@@ -22,16 +22,23 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=repository_root() / "runs" / "majepa",
     )
-    parser.add_argument("--save-every-seconds", type=int, default=900)
+    parser.add_argument("--save-every-seconds", type=int, default=5_000)
     parser.add_argument("--wandb-project")
     parser.add_argument("--wandb-entity")
     parser.add_argument("--eval-interval", type=int, default=5_000)
-    parser.add_argument("--eval-episodes", type=int)
-    parser.add_argument("--eval-envs", type=int)
-    parser.add_argument("--eval-seed-offset", type=int)
+    parser.add_argument("--eval-episodes", type=int, default=32)
+    parser.add_argument("--eval-envs", type=int, default=4)
+    parser.add_argument("--eval-seed-offset", type=int, default=50_000)
     parser.add_argument("--wm-critic-value-scale", type=float, default=0.0)
+    parser.add_argument("--wm-joint-objective-scale", type=float, default=1.0)
     parser.add_argument("--wm-joint-prediction-gradient", action="store_true")
     parser.add_argument("--wm-joint-prediction-scale", type=float, default=1.0)
+    parser.add_argument(
+        "--local-prior", action=argparse.BooleanOptionalAction, default=True
+    )
+    parser.add_argument("--action-margin-loss-scale", type=float, default=0.1)
+    parser.add_argument("--categorical-stoch", type=int, default=32)
+    parser.add_argument("--categorical-classes", type=int, default=64)
 
     runtime = parser.add_argument_group("advanced runtime")
     runtime.add_argument("--platform", choices=("cpu", "cuda", "tpu"), default="cuda")
@@ -67,8 +74,13 @@ def main(argv: list[str] | None = None) -> int:
         curve_eval_envs=args.eval_envs,
         curve_eval_seed_offset=args.eval_seed_offset,
         wm_critic_value_scale=args.wm_critic_value_scale,
+        wm_joint_objective_scale=args.wm_joint_objective_scale,
         wm_joint_prediction_gradient=args.wm_joint_prediction_gradient,
         wm_joint_prediction_scale=args.wm_joint_prediction_scale,
+        local_prior=args.local_prior,
+        action_margin_loss_scale=args.action_margin_loss_scale,
+        categorical_stoch=args.categorical_stoch,
+        categorical_classes=args.categorical_classes,
     )
     print(f"Experiment: {spec.experiment_dir}")
     return run_training(spec, resume=args.resume, dry_run=args.dry_run)

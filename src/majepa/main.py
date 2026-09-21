@@ -93,9 +93,7 @@ def main(argv=None, extra_config_path=None):
     [elements.print(line) for line in MARLCore.banner]
 
     configs = _load_configs(extra_config_path)
-    parsed, other = elements.Flags(
-        configs=["defaults", "smac_vector", "ma_jepa"]
-    ).parse_known(argv)
+    parsed, other = elements.Flags(configs=["baseline"]).parse_known(argv)
     config = _resolve_config_profiles(configs, parsed.configs)
     config = elements.Flags(config).parse(other)
     config = config.update(
@@ -210,10 +208,6 @@ def make_agent(config):
         ),
     )
 
-    if config.agent.paired_rng:
-        from .paired import install_rng
-
-        install_rng(agent)
     return agent
 
 
@@ -245,6 +239,10 @@ def make_logger(config):
             )
         elif output == "wandb":
             name = os.environ.get("WANDB_NAME") or "/".join(logdir.split("/")[-4:])
+            # W&B permanently reserves deleted run IDs; use a fresh ID for
+            # the previously failed corridor seed-2 retry.
+            if name.startswith("best20-corridor-s2-fixed4-"):
+                name += "-retry2"
             outputs.append(elements.logger.WandBOutput(name, config=recorded_config))
         elif output == "scope":
             outputs.append(elements.logger.ScopeOutput(elements.Path(logdir)))
@@ -304,12 +302,7 @@ def make_env(config, index, **overrides):
     kwargs.update(overrides)
     if kwargs.pop("use_seed", False):
         kwargs["seed"] = (
-            (
-                17001
-                if config.agent.paired_rng and int(index) >= 50000
-                else int(config.seed)
-            )
-            + int(index)
+            int(config.seed) + int(index)
             if suite == "smac"
             else _worker_seed(config.seed, index)
         )

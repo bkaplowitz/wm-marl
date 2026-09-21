@@ -109,7 +109,7 @@ def plan(spec, name):
     }
     if set(spec) - allowed:
         raise ValueError(f"unknown campaign settings: {sorted(set(spec) - allowed)}")
-    profiles = spec.get("profiles", ["smac_vector", "ma_jepa", "localmask_reference"])
+    profiles = spec.get("profiles", ["baseline"])
     base = _resolve_config_profiles(_load_configs(), profiles)
     budget = positive_finite(spec["budget"])
     rate = positive_finite(spec["max_gpu_hourly_rate"])
@@ -214,9 +214,6 @@ def plan(spec, name):
                     "script": "train",
                     "run.from_checkpoint": "",
                     "run.final_save": True,
-                    "run.checkpoint_at_curve_eval": True,
-                    "run.eval_eps": 100,
-                    "run.eval_policy_mode": "eval",
                     "jax.policy_devices": [0],
                     "jax.train_devices": [0],
                     "logger.outputs": ["jsonl", "wandb"],

@@ -105,11 +105,15 @@ def apply_action_mask(distributions, mask, action_key):
     for name in ("minent", "maxent"):
         if hasattr(distribution, name):
             setattr(masked, name, getattr(distribution, name))
-    return dict(distributions, **{action_key: masked})
+    result = dict(distributions, **{action_key: masked})
+    # Apply policy unimix after masking, using raw actor logits exactly once.
+    # Collection, imagination, and PPO all consume this same distribution.
+    amount = float(getattr(distribution, "unimix", 0.0))
+    return apply_legal_unimix(result, action_key, amount) if amount else result
 
 
 def apply_legal_unimix(distributions, action_key, amount):
-    """Mix a collection policy uniformly over its currently legal actions."""
+    """Mix a policy uniformly over its currently allowed actions."""
 
     amount = float(amount)
     if amount <= 0.0:

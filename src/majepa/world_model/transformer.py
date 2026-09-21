@@ -336,6 +336,7 @@ class ParallelTransformerDynamics(CategoricalLatent):
     context: int = 64
     ffup: int = 4
     posterior_context: str = "history"
+    local_prior: bool = True
 
     def __init__(self, act_space, enc_output, **kw):
         super().__init__(act_space, enc_output, **kw)
@@ -594,6 +595,11 @@ class ParallelTransformerDynamics(CategoricalLatent):
         feat = nn.cast({"deter": deter, "stoch": stoch, "logit": logit})
         return carry, feat
 
+    def _prior(self, feature):
+        if not self.local_prior:
+            raise ValueError("local prior is disabled; provide observation logits")
+        return super()._prior(feature)
+
     def posterior(self, tokens, deter):
         """Return the executable observation-conditioned posterior logits."""
 
@@ -643,9 +649,12 @@ class ParallelTransformerDynamics(CategoricalLatent):
             training,
             active=active,
         )
-        prior = self._prior(feat["deter"])
-        losses, latent_metrics = self.latent_losses(feat["logit"], prior)
-        metrics.update(latent_metrics)
+        if self.local_prior:
+            prior = self._prior(feat["deter"])
+            losses, latent_metrics = self.latent_losses(feat["logit"], prior)
+            metrics.update(latent_metrics)
+        else:
+            losses = {}
         return carry, entries, losses, feat, metrics, None
 
     def _posterior(self, tokens, deter=None):

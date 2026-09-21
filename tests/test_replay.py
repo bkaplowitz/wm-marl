@@ -117,12 +117,12 @@ def test_run_spec_matches_resolved_reference_replay_settings(tmp_path):
     spec = MAJEPARunSpec(tmp_path, "smac_3s_vs_4z", 3, platform="cpu")
     config = _resolve_config_profiles(_load_configs(), spec.configs)
     manifest = spec.to_dict()
-    assert (
-        config.replay.sampling
-        == spec.effective_replay_sampling
-        == manifest["replay_sampling"]
+    assert config.replay.sampling == "recent_world_uniform_behavior"
+    assert spec.effective_replay_sampling == (
+        "50% recent + 50% uniform for independent WM and PPO views"
     )
-    assert config.replay.world_uniform_mix == manifest["world_uniform_mix"] == 0.5
-    assert config.replay.recency_decay == manifest["recency_decay"] == 0.9998
+    assert config.replay.world_uniform_mix == 0.5
+    assert config.replay.recency_decay == 0.9998
     assert config.replay.behavior_uniform_mix == 0.5
     assert config.replay.behavior_recency_decay == 0.9998
+    assert manifest["command"][manifest["command"].index("--configs") + 1] == "baseline"

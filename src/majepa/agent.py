@@ -37,37 +37,24 @@ class Agent(
         self.obs_space = obs_space
         self.act_space = act_space
         self.config = config
-        # Archived treatments must fail explicitly, never silently become baseline.
-        if (
-            config.ppo.factual_value.enabled
-            or config.ppo.factual_value.representation_scale
-            or config.marl.ctde.teammate_belief.enabled
-            or config.marl.ctde.multistep_jepa.belief_context
-            or config.marl.ctde.get("direct_latent", False)
+        gradients = config.world_model_gradients
+        self.world_model_value_scale = float(gradients.critic_value_scale)
+        self.joint_objective_scale = float(gradients.joint_objective_scale)
+        self.joint_prediction_gradient = bool(gradients.joint_prediction)
+        self.joint_prediction_scale = float(gradients.joint_prediction_scale)
+        for name in (
+            "world_model_value_scale",
+            "joint_objective_scale",
+            "joint_prediction_scale",
         ):
-            raise ValueError(
-                "This branch supports the localmask reference; archived treatments were removed"
-            )
-        gradients = config.get("world_model_gradients", {})
-        self.world_model_value_scale = float(gradients.get("critic_value_scale", 0.0))
-        self.joint_prediction_gradient = bool(gradients.get("joint_prediction", False))
-        self.joint_prediction_scale = float(
-            gradients.get("joint_prediction_scale", 1.0)
-        )
-        if (
-            not np.isfinite(self.world_model_value_scale)
-            or self.world_model_value_scale < 0
-        ):
-            raise ValueError("critic_value_scale must be finite and nonnegative")
-        if (
-            not np.isfinite(self.joint_prediction_scale)
-            or self.joint_prediction_scale < 0
-        ):
-            raise ValueError("joint_prediction_scale must be finite and nonnegative")
-        self.factual_value_enabled = False
-        self.factual_representation_scale = 0.0
-        if self.factual_representation_scale < 0:
-            raise ValueError("factual representation scale must be nonnegative")
+            value = getattr(self, name)
+            if not np.isfinite(value) or value < 0.0:
+                config_name = {
+                    "world_model_value_scale": "critic_value_scale",
+                    "joint_objective_scale": "joint_objective_scale",
+                    "joint_prediction_scale": "joint_prediction_scale",
+                }[name]
+                raise ValueError(f"{config_name} must be finite and nonnegative")
         self.replay_sampling = str(getattr(config, "replay_sampling", "uniform"))
         self.two_branch_replay = self.replay_sampling == "recent_world_uniform_behavior"
         self.ppo_start_step = int(getattr(config, "ppo_start_step", 0))
@@ -75,11 +62,6 @@ class Agent(
             raise ValueError("ppo_start_step must be nonnegative")
         if not getattr(self, "ctde_enabled", False):
             raise ValueError("MA-JEPA PPO requires multi-agent CTDE")
-        if getattr(self, "ctde_mask_calibration", False):
-            raise ValueError(
-                "MA-JEPA PPO requires fixed categorical support during each "
-                "proximal batch; probabilistic mask calibration is unsupported"
-            )
         if not self.two_branch_replay:
             raise ValueError(
                 "MA-JEPA PPO requires separated world and behavior replay views"
@@ -124,15 +106,6 @@ class Agent(
             raise ValueError(
                 "replay value learning requires at least two imagination roots"
             )
-        entropy_schedule = config.ppo.entropy_schedule
-        if float(entropy_schedule.initial) < 0.0:
-            raise ValueError("PPO initial entropy coefficient must be nonnegative")
-        if float(entropy_schedule.final) < 0.0:
-            raise ValueError("PPO final entropy coefficient must be nonnegative")
-        if int(entropy_schedule.decay_steps) < 1:
-            raise ValueError("PPO entropy decay_steps must be positive")
-        if str(entropy_schedule.schedule) not in {"linear", "cosine"}:
-            raise ValueError("PPO entropy schedule must be 'linear' or 'cosine'")
         self.world_model = world_model_backend()
         self.objective = "embedding"
         self.embedding_target = "ema"
@@ -175,18 +148,6 @@ class Agent(
             )
         self.feat2tensor = self.world_model.feature_tensor
         scalar = elements.Space(np.float32, ())
-        binary = elements.Space(bool, (), 0, 2)
-        self.local_outcomes = bool(config.simplification.local_outcomes)
-        self.rew = (
-            embodied.jax.MLPHead(scalar, **config.rewhead, name="rew")
-            if self.local_outcomes
-            else None
-        )
-        self.con = (
-            embodied.jax.MLPHead(binary, **config.conhead, name="con")
-            if self.local_outcomes
-            else None
-        )
         outputs = {
             key: config.policy_dist_disc if space.discrete else config.policy_dist_cont
             for key, space in self.act_space.items()
@@ -195,23 +156,16 @@ class Agent(
         self.action_mask_key = self._action_mask_key()
         if self.action_mask_key is not None:
             mask_space = self.obs_space["action_mask"]
-            maskhead = getattr(config, "maskhead", config.conhead)
+            maskhead = config.maskhead
             self.actmask = embodied.jax.MLPHead(mask_space, **maskhead, name="actmask")
         else:
             self.actmask = None
         self.val, self.slowval = self._make_value_models(scalar, config)
-        self.real_value = (
-            embodied.jax.MLPHead(scalar, **config.value, name="real_value")
-            if self.factual_representation_scale
-            else None
-        )
 
         additional_modules = self.additional_modules()
         self.modules = [
             self.dyn,
             self.enc,
-            self.rew,
-            self.con,
             self.pol,
             self.val,
         ]
@@ -230,12 +184,7 @@ class Agent(
             raise ValueError("CTDE actor modules must be additional modules")
         if ctde_module_ids.intersection(ctde_actor_module_ids):
             raise ValueError("CTDE world and actor modules must be disjoint")
-        world_modules = [
-            m for m in [self.dyn, self.enc, self.rew, self.con] if m is not None
-        ]
-        if self.real_value is not None:
-            self.modules.append(self.real_value)
-            world_modules.append(self.real_value)
+        world_modules = [self.dyn, self.enc]
         if self.actmask is not None:
             world_modules.append(self.actmask)
         world_modules.extend(
@@ -262,6 +211,9 @@ class Agent(
                 name="opt",
             )
         self.scales = config.loss_scales.copy()
+        if not self.dyn.local_prior:
+            self.scales.pop("dyn")
+            self.scales.pop("rep")
         if self.actmask is not None:
             self.scales["action_mask"] = float(
                 getattr(
@@ -288,7 +240,7 @@ class Agent(
         }
         if self.world_model_value_scale:
             spaces["behavior_logprob"] = elements.Space(np.float32)
-        if self.ppo_start_step or bool(self.config.ppo.entropy_schedule.enabled):
+        if self.ppo_start_step:
             # Runtime-only control input. It is injected after replay sampling,
             # so it never becomes replay content or changes sampled sequences.
             spaces["_environment_step"] = elements.Space(np.int32)

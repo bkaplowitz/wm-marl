@@ -6,7 +6,6 @@ import jax.numpy as jnp
 import ninjax as nj
 import numpy as np
 
-from ..paired import rng_domain
 from ..models.heads import binary_vector_loss
 from .common import concat, f32, sample, sg
 from .ppo import (
@@ -14,7 +13,6 @@ from .ppo import (
     generalized_advantage_estimate,
     masked_weighted_mean,
     normalize_advantage,
-    scheduled_entropy_coefficient,
     value_objective,
 )
 from .replay_value import replay_lambda_return
@@ -60,8 +58,6 @@ class LearnerMixin:
         if not hasattr(self.opt, "step_group"):
             raise ValueError("MA-JEPA PPO requires the separated CTDE optimizer")
 
-        paired_rng = bool(self.config.paired_rng)
-        rng_root = nj.seed() if paired_rng else None
         ppo_active = self._ppo_schedule(data)
         fresh_history = bool(
             getattr(self, "ctde_self_fed_enabled", False)
@@ -71,27 +67,27 @@ class LearnerMixin:
         carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
         if fresh_history:
             obs = dict(obs, _self_fed_raw=raw_world)
-        with rng_domain(rng_root, 1, paired_rng):
-            metrics, (carry, entries, outs, mets) = self.opt(
-                self.loss,
-                carry,
-                obs,
-                prevact,
-                training=True,
-                has_aux=True,
-                skip_groups=("actor", "critic"),
-            )
+        metrics, (carry, entries, outs, mets) = self.opt(
+            self.loss,
+            carry,
+            obs,
+            prevact,
+            training=True,
+            has_aux=True,
+            skip_groups=("actor", "critic"),
+        )
         metrics.update(mets)
 
         # This is deliberately after the world-model optimizer step. PPO sees
         # the newest JEPA dynamics, and its immutable behavior snapshot cannot
         # be invalidated by a simultaneous teammate/world update.
-        entropy_coefficient = self._ppo_entropy_coefficient(data)
-        with rng_domain(rng_root, 2, paired_rng):
-            ppo_batch, batch_metrics = self._prepare_ppo_batch(
-                behavior_data,
-                entropy_coefficient,
-            )
+        entropy_coefficient = jnp.asarray(
+            self.config.ppo.entropy_coefficient, jnp.float32
+        )
+        ppo_batch, batch_metrics = self._prepare_ppo_batch(
+            behavior_data,
+            entropy_coefficient,
+        )
         metrics.update(batch_metrics)
         actor_epochs = []
         critic_epochs = []
@@ -174,16 +170,11 @@ class LearnerMixin:
         separate series reuses the immutable batch, including its realized masks,
         before slow-target copying. The nested context disallows state mutation.
         """
-
         def evaluate(batch):
             return self._ppo_actor_loss(batch)[1], self._ppo_critic_loss(batch)[1]
 
         _, (actor, critic) = nj.pure(evaluate, nested=True)(
-            dict(nj.context()),
-            batch,
-            seed=719_243,
-            create=False,
-            modify=False,
+            dict(nj.context()), batch, seed=719_243, create=False, modify=False,
         )
         return {
             f"ppo/{group}/post_update_{key}": sg(value)
@@ -206,26 +197,6 @@ class LearnerMixin:
                 f"{environment_step.shape}"
             )
         return environment_step.reshape(-1)[0].astype(jnp.int32) >= start
-
-    def _ppo_entropy_coefficient(self, data):
-        schedule = self.config.ppo.entropy_schedule
-        if not bool(schedule.enabled):
-            return jnp.asarray(self.config.ppo.entropy_coefficient, jnp.float32)
-        if "_environment_step" not in data:
-            raise ValueError("PPO entropy annealing requires _environment_step")
-        environment_step = data["_environment_step"]
-        if environment_step.ndim != 2:
-            raise ValueError(
-                "folded _environment_step must be [B*A,T], got "
-                f"{environment_step.shape}"
-            )
-        return scheduled_entropy_coefficient(
-            environment_step.reshape(-1)[0],
-            initial=float(schedule.initial),
-            final=float(schedule.final),
-            decay_steps=int(schedule.decay_steps),
-            schedule=str(schedule.schedule),
-        )
 
     def loss(
         self,
@@ -261,7 +232,7 @@ class LearnerMixin:
             loss += self.world_model_value_scale * value_loss
             metrics["loss/world_model_value"] = value_loss
             metrics.update(
-                {f"ctde/world_model_value/{k}": v for k, v in value_metrics.items()}
+                {f"ctde/world_model_value/{key}": value for key, value in value_metrics.items()}
             )
         metrics["replay_views/world_reward_mean"] = sg(
             obs["reward"].astype(jnp.float32).mean()
@@ -632,8 +603,10 @@ class LearnerMixin:
             }
         )
 
+
+
     def _world_model_value_loss(self, features, obs):
-        """Train factual local features through the fixed central critic."""
+        """Train factual local features through frozen policy and critic targets."""
         context = {
             "present": self.team.unfold_sequence(obs["agent_present"]),
             "controllable_alive": self.team.unfold_sequence(self._controllable(obs)),
@@ -664,9 +637,9 @@ class LearnerMixin:
             c_clip=1.0,
         )
         prediction = self.critic(
-            jax.tree.map(lambda x: x[:, :-1], features),
+            jax.tree.map(lambda value: value[:, :-1], features),
             2,
-            context=jax.tree.map(lambda x: x[:, :-1], context),
+            context=jax.tree.map(lambda value: value[:, :-1], context),
             stop_state_gradient=False,
         )
         loss, metrics = value_objective(
@@ -690,10 +663,7 @@ class LearnerMixin:
             batch["trajectory_weight"],
             clip_epsilon=float(self.config.ppo.clip_epsilon),
             entropy_coefficient=batch["entropy_coefficient"],
-            normalize_entropy=bool(
-                self.config.ppo.entropy_schedule.enabled
-                and self.config.ppo.entropy_schedule.normalize
-            ),
+            normalize_entropy=False,
         )
 
     def _ppo_critic_loss(self, batch):
@@ -1008,14 +978,6 @@ class LearnerMixin:
                 metrics["spatial_jepa/target_std"] = (
                     target_tokens.astype(jnp.float32).std(axis=(0, 1)).mean()
                 )
-        model_inp = self.feat2tensor(repfeat)
-        if self.local_outcomes:
-            inp = sg(model_inp, skip=self.config.reward_grad)
-            losses["rew"] = self.rew(inp, 2).loss(obs["reward"])
-            continuation = f32(~obs["is_terminal"])
-            if self.config.contdisc:
-                continuation *= 1 - 1 / self.config.horizon
-            losses["con"] = self.con(model_inp, 2).loss(continuation)
         if self.dec is not None:
             for key, reconstruction in reconstructions.items():
                 space = self.obs_space[key]

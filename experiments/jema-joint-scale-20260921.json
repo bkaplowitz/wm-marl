@@ -1,0 +1,42 @@
+{
+  "profiles": ["baseline"],
+  "wandb": {
+    "entity": "osaze-obahor",
+    "project": "majepa-ppo-treatments"
+  },
+  "budget": 160,
+  "max_gpu_hourly_rate": 1.1,
+  "max_hours": 8,
+  "max_gpus": 8,
+  "gpus_per_pod": 8,
+  "allow_a100": false,
+  "placements": [
+    {"region": "OC-AU-1"},
+    {"region": "US-KS-2", "volume": "e8ishvsuf7"},
+    {"region": "US-TX-3", "volume": "omjuynlizd"}
+  ],
+  "storage": {
+    "quota_gb": 150,
+    "min_free_gb": 20,
+    "workspace_root": "/workspace/jema-joint-scale-20260921"
+  },
+  "maps": [{"name": "2s3z", "agents": 5, "steps": 50000}],
+  "seeds": [0, 1, 2],
+  "run_order": "seed_first",
+  "treatments": [
+    {
+      "name": "joint-local-0p5",
+      "overrides": {
+        "agent.world_model_gradients.joint_prediction": true,
+        "agent.world_model_gradients.joint_prediction_scale": 0.5
+      }
+    },
+    {
+      "name": "joint-local-0p1",
+      "overrides": {
+        "agent.world_model_gradients.joint_prediction": true,
+        "agent.world_model_gradients.joint_prediction_scale": 0.1
+      }
+    }
+  ]
+}

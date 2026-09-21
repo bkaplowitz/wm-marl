@@ -222,26 +222,16 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         )
         if self.ctde_rollout_steps not in {1, 2}:
             raise ValueError("CTDE rollout_steps must be 1 or 2")
-        self.ctde_mask_calibration = bool(
-            marl.ctde.mask_calibration.enabled if self.ctde_enabled else False
-        )
+        self.ctde_mask_calibration = False
         self.ctde_imagination_mask_sampling = marl.ctde.get(
             "imagination_mask_sampling", "threshold"
         )
-        self.ctde_imagination_mask_source = marl.ctde.get(
-            "imagination_mask_source", "joint"
-        )
+        self.ctde_imagination_mask_source = marl.ctde.get("imagination_mask_source", "joint")
         self.ctde_compare_mask_heads = bool(marl.ctde.get("compare_mask_heads", False))
         self.joint_mask_enabled = bool(config.simplification.joint_mask)
         if not self.joint_mask_enabled:
-            if (
-                self.ctde_imagination_mask_source != "local"
-                or self.ctde_mask_calibration
-                or self.ctde_rollout_steps != 1
-            ):
-                raise ValueError(
-                    "Removing joint availability requires localmask and standard one-step joint training"
-                )
+            if self.ctde_imagination_mask_source != "local" or self.ctde_mask_calibration or self.ctde_rollout_steps != 1:
+                raise ValueError("Removing joint availability requires localmask and standard one-step joint training")
             self.ctde_compare_mask_heads = False
 
         if self.ctde_imagination_mask_source not in {"joint", "local"}:
@@ -251,32 +241,16 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         if self.ctde_imagination_mask_sampling == "bernoulli" and (
             not self.ctde_enabled or self.ctde_mask_calibration
         ):
-            raise ValueError(
-                "Bernoulli availability requires the standard CTDE prediction head"
-            )
+            raise ValueError("Bernoulli availability requires the standard CTDE prediction head")
         if self.ctde_self_fed_enabled and self.ctde_mask_calibration:
             raise ValueError(
                 "Self-fed training requires the baseline hard CTDE mask path; "
                 "mask_calibration is not supported"
             )
-        self.ctde_soft_liveness = bool(
-            marl.ctde.mask_calibration.soft_liveness
-            if self.ctde_mask_calibration
-            else False
-        )
-        self.ctde_teammate_belief_enabled = False
-        self.ctde_teammate_actor_enabled = False
-        self.ctde_teammate_belief_logit_clip = (
-            float(marl.ctde.teammate_belief.logit_clip)
-            if self.ctde_teammate_belief_enabled
-            else 1.0
-        )
-        if self.ctde_teammate_belief_logit_clip <= 0.0:
-            raise ValueError("teammate belief logit clip must be positive")
+        self.ctde_soft_liveness = False
         self.ctde_multistep_jepa_enabled = bool(
             marl.ctde.multistep_jepa.enabled if self.ctde_enabled else False
         )
-        self.ctde_multistep_jepa_belief_context = False
         self.ctde_multistep_jepa_action_scale = (
             float(config.loss_scales.ctde_multistep_jepa_action)
             if self.ctde_multistep_jepa_enabled
@@ -331,33 +305,12 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             raise ValueError(
                 "action_mask_reduction must be 'sum', 'mean', or 'balanced'"
             )
-        self.ctde_mask_horizons = (
-            tuple(int(x) for x in marl.ctde.mask_calibration.horizons)
-            if self.ctde_mask_calibration
-            else ()
-        )
-        if self.ctde_mask_calibration and (
-            not self.ctde_mask_horizons
-            or min(self.ctde_mask_horizons) < 1
-            or tuple(sorted(set(self.ctde_mask_horizons))) != self.ctde_mask_horizons
-        ):
-            raise ValueError(
-                "CTDE mask calibration horizons must be sorted unique positives"
-            )
-        self.ctde_direct_latent = False
+        self.ctde_mask_horizons = ()
         self.ctde_posterior_alignment_scale = float(
             config.loss_scales.get("ctde_posterior_alignment", 0.0)
         )
-        direct_scale = float(config.loss_scales.get("ctde_direct_latent", 0.0))
-        if any(
-            not math.isfinite(x) or x < 0
-            for x in (self.ctde_posterior_alignment_scale, direct_scale)
-        ):
-            raise ValueError("Latent alignment scales must be finite and nonnegative")
-        elif direct_scale:
-            raise ValueError(
-                "Direct latent loss requires the direct latent imagination path"
-            )
+        if not math.isfinite(self.ctde_posterior_alignment_scale) or self.ctde_posterior_alignment_scale < 0:
+            raise ValueError("Latent alignment scale must be finite and nonnegative")
         local_obs_space = local_observation_spaces(obs_space, self.team.size)
         local_act_space = local_action_spaces(act_space, self.team.size)
         super().__init__(
@@ -397,6 +350,9 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                     f"{config.batch_length} and "
                     f"{self.ctde_multistep_jepa_max_horizon}"
                 )
+        for name in tuple(self.scales):
+            if name.startswith("ctde_"):
+                self.scales[name] = float(self.scales[name]) * self.joint_objective_scale
         if self.two_branch_replay:
             if not self.ctde_enabled:
                 raise ValueError(
@@ -552,17 +508,13 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 name="ctde_con",
             )
             mask_space = self.obs_space["action_mask"]
-            self.ctde_mask = (
-                embodied.jax.MLPHead(
-                    mask_space,
-                    output="binary",
-                    outscale=0.0,
-                    **head,
-                    name="ctde_mask",
-                )
-                if self.joint_mask_enabled
-                else None
-            )
+            self.ctde_mask = embodied.jax.MLPHead(
+                mask_space,
+                output="binary",
+                outscale=0.0,
+                **head,
+                name="ctde_mask",
+            ) if self.joint_mask_enabled else None
             self.ctde_alive = embodied.jax.MLPHead(
                 binary,
                 output="binary",
@@ -606,6 +558,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
     def policy_keys(self):
         return super().policy_keys
 
+
     @staticmethod
     def _isolated_creation_call(module, salt, *args, **kwargs):
         """Create treatment parameters without advancing the base RNG stream."""
@@ -624,6 +577,10 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         finally:
             context.seed = outer_seed
             context.reserve = outer_reserve
+
+
+
+
 
     @staticmethod
     def _add_categorical_residual(distribution, action_key, residual):
@@ -654,6 +611,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             "present": auxiliary["present"],
             "controllable_alive": auxiliary["controllable_alive"],
         }, metrics
+
 
     def additional_world_model_losses(
         self,
@@ -774,9 +732,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 self.action_mask_reduction,
             )
             mask_binary = (
-                mask_output.output
-                if isinstance(mask_output, jaxouts.Agg)
-                else mask_output
+                mask_output.output if isinstance(mask_output, jaxouts.Agg) else mask_output
             )
             mask_prediction = mask_binary.logit >= 0.0
             mask_event_weight = weight[..., None]
@@ -801,9 +757,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 (mask_event_weight * attack_selector).sum(), 1.0
             )
             attack_mask_prediction_rate = (
-                mask_prediction.astype(jnp.float32)
-                * mask_event_weight
-                * attack_selector
+                mask_prediction.astype(jnp.float32) * mask_event_weight * attack_selector
             ).sum() / jnp.maximum((mask_event_weight * attack_selector).sum(), 1.0)
         alive_loss = self.ctde_alive(hidden, 3).loss(grouped_alive[:, 1:])
         alive_valid = (
@@ -854,16 +808,14 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         }
 
         if self.joint_mask_enabled:
-            metrics.update(
-                {
-                    "ctde/action_mask_loss": masked_metric(mask_loss),
-                    "ctde/action_mask_positive_recall": mask_positive_recall,
-                    "ctde/action_mask_negative_specificity": mask_negative_specificity,
-                    "ctde/attack_mask_positive_recall": attack_mask_positive_recall,
-                    "ctde/attack_mask_target_rate": attack_mask_target_rate,
-                    "ctde/attack_mask_prediction_rate": attack_mask_prediction_rate,
-                }
-            )
+            metrics.update({
+                "ctde/action_mask_loss": masked_metric(mask_loss),
+                "ctde/action_mask_positive_recall": mask_positive_recall,
+                "ctde/action_mask_negative_specificity": mask_negative_specificity,
+                "ctde/attack_mask_positive_recall": attack_mask_positive_recall,
+                "ctde/attack_mask_target_rate": attack_mask_target_rate,
+                "ctde/attack_mask_prediction_rate": attack_mask_prediction_rate,
+            })
 
         def folded(value):
             value = value * normalized_weight
@@ -893,24 +845,21 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         if self.joint_mask_enabled:
             losses["ctde_action_mask"] = folded(mask_loss)
         if self.ctde_posterior_alignment_scale > 0:
+            gradient_scale = (
+                self.joint_prediction_scale
+                if self.joint_prediction_gradient
+                else 0.0
+            )
             logits = posterior_logits(
                 self.dyn,
                 folded_prediction,
                 folded_deter,
-                history_gradient=(
-                    self.joint_prediction_scale
-                    if self.joint_prediction_gradient
-                    else 0.0
-                ),
-                parameter_gradient=(
-                    self.joint_prediction_scale
-                    if self.joint_prediction_gradient
-                    else 0.0
-                ),
+                history_gradient=gradient_scale,
+                parameter_gradient=gradient_scale,
             )
-            kl = self.team.unfold_sequence(
-                mixed_posterior_kl(logits, factual_logits, self.dyn.unimix)
-            )
+            kl = self.team.unfold_sequence(mixed_posterior_kl(
+                logits, factual_logits, self.dyn.unimix
+            ))
             losses["ctde_posterior_alignment"] = folded(kl)
             metrics["ctde/dense_posterior_alignment_kl"] = masked_metric(kl)
         if self.ctde_multistep_jepa_enabled:
@@ -1068,10 +1017,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 alive,
                 next_alive,
             )
-            if (
-                self.ctde_mask_calibration
-                or self.ctde_imagination_mask_source == "local"
-            ):
+            if self.ctde_mask_calibration or self.ctde_imagination_mask_source == "local":
                 mask_output = self.actmask(self.feat2tensor(next_features), 1)
                 binary = (
                     mask_output.output
@@ -1081,11 +1027,8 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 mask_probability = self.team.unfold_batch(jax.nn.sigmoid(binary.logit))
                 mask_logits = self.team.unfold_batch(binary.logit)
             else:
-                mask_output = (
-                    self.ctde_mask(hidden, 2)
-                    if self.joint_mask_enabled
-                    else self.actmask(self.feat2tensor(next_features), 2)
-                )
+                mask_output = (self.ctde_mask(hidden, 2) if self.joint_mask_enabled else
+                    self.actmask(self.feat2tensor(next_features), 2))
                 binary = (
                     mask_output.output
                     if hasattr(mask_output, "output")
@@ -1116,9 +1059,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 local_binary = getattr(local_output, "output", local_output)
                 joint_output = self.ctde_mask(hidden, 2)
                 joint_binary = getattr(joint_output, "output", joint_output)
-                outputs["local_mask_logits"] = self.team.unfold_batch(
-                    local_binary.logit
-                )
+                outputs["local_mask_logits"] = self.team.unfold_batch(local_binary.logit)
                 outputs["joint_mask_logits"] = joint_binary.logit
             return (local, joint, present, next_alive, jnp.zeros_like(reset)), outputs
 
@@ -1189,16 +1130,11 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             negative = local_weight[..., None] * (~mask_actual).astype(jnp.float32)
             prefix = f"ctde/self_fed_h{step}"
             support_metrics = availability_metrics(
-                prediction["mask_logits"][:, index],
-                mask_actual,
-                mask_predicted,
-                prediction["predicted_alive"][:, index],
-                target_alive[:, index],
+                prediction["mask_logits"][:, index], mask_actual, mask_predicted,
+                prediction["predicted_alive"][:, index], target_alive[:, index],
                 local_weight,
             )
-            metrics.update(
-                {f"{prefix}/{key}": value for key, value in support_metrics.items()}
-            )
+            metrics.update({f"{prefix}/{key}": value for key, value in support_metrics.items()})
             if self.ctde_compare_mask_heads:
                 for head in ("joint", "local"):
                     logits = prediction[f"{head}_mask_logits"][:, index]
@@ -1207,23 +1143,15 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                     gated = jnp.where(raw.any(-1, keepdims=True), raw, noop)
                     gated = jnp.where(
                         (prediction["predicted_alive"][:, index] >= 0.5)[..., None],
-                        gated,
-                        noop,
+                        gated, noop,
                     )
                     comparison = availability_metrics(
-                        logits,
-                        mask_actual,
-                        gated,
-                        prediction["predicted_alive"][:, index],
-                        target_alive[:, index],
+                        logits, mask_actual, gated,
+                        prediction["predicted_alive"][:, index], target_alive[:, index],
                         local_weight,
                     )
-                    metrics.update(
-                        {
-                            f"{prefix}/head_{head}/{key}": value
-                            for key, value in comparison.items()
-                        }
-                    )
+                    metrics.update({f"{prefix}/head_{head}/{key}": value
+                                    for key, value in comparison.items()})
 
             metrics.update(
                 {
@@ -1261,6 +1189,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 }
             )
         return jax.lax.stop_gradient(metrics)
+
 
     def _ctde_direct_multistep_jepa_loss(
         self,
@@ -1308,7 +1237,11 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         horizons = self.ctde_multistep_jepa_horizons
         valid = {horizon: all_valid[horizon] for horizon in horizons}
         root_hidden = grouped_hidden[:, :roots]
+        root_state = grouped_source_state[:, :roots]
 
+        q0_logits = None
+        q0_context = None
+        plan_logits = None
         plan_context = None
         plan_loss = None
         plan_metrics = {}
@@ -1424,9 +1357,6 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 "ctde/multistep_jepa_max_horizon": jnp.asarray(
                     max_horizon, jnp.float32
                 ),
-                "ctde/multistep_jepa_belief_context_enabled": jnp.asarray(
-                    float(self.ctde_multistep_jepa_belief_context), jnp.float32
-                ),
                 "ctde/multistep_jepa_action_counterfactual_enabled": (
                     counterfactual_enabled
                 ),
@@ -1469,6 +1399,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                     delta * weight
                 ).sum() / count
         return losses, metrics
+
 
     def _ctde_mask_calibration_losses(
         self,
@@ -2279,9 +2210,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
             # enabling the treatment does not shift other learner RNG draws.
             action_seed = nj.seed()
             folded_action = {
-                self.ctde_action_key: distribution[self.ctde_action_key].sample(
-                    action_seed
-                )
+                self.ctde_action_key: distribution[self.ctde_action_key].sample(action_seed)
             }
             grouped_action = self.team.unfold_batch(folded_action[self.ctde_action_key])
 
@@ -2303,9 +2232,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 current_reset,
                 training=False,
             )
-            folded_next, next_features = self._ctde_complete(
-                local_cache, deter, prediction
-            )
+            folded_next, next_features = self._ctde_complete(local_cache, deter, prediction)
             next_carry = self.team.unfold_tree_batch(folded_next)
             next_features = self.team.unfold_tree_batch(next_features)
 
@@ -2326,11 +2253,8 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 # Completed posterior, exactly the state consumed by the next actor.
                 mask_output = self.actmask(self.feat2tensor(next_features), 2)
             else:
-                mask_output = (
-                    self.ctde_mask(hidden, 2)
-                    if self.joint_mask_enabled
-                    else self.actmask(self.feat2tensor(next_features), 2)
-                )
+                mask_output = (self.ctde_mask(hidden, 2) if self.joint_mask_enabled else
+                    self.actmask(self.feat2tensor(next_features), 2))
             mask_probability = jax.nn.sigmoid(mask_output.output.logit)
             # Store the realized mask in auxiliary below. PPO must condition on
             # that same mask in every epoch, never redraw it for likelihoods.
@@ -2338,8 +2262,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
                 mask_probability,
                 next_alive,
                 jax.random.fold_in(action_seed, 0x4D41534B)
-                if self.ctde_imagination_mask_sampling == "bernoulli"
-                else None,
+                if self.ctde_imagination_mask_sampling == "bernoulli" else None,
             )
 
             next_state = (
