@@ -11,8 +11,10 @@
   "gpus_per_pod": 4,
   "allow_a100": false,
   "placements": [
-    {"region": "OC-AU-1"},
     {"region": "US-KS-2", "volume": "e8ishvsuf7"},
+    {"region": "OC-AU-1"},
+    {"region": "EU-NL-1"},
+    {"region": "US-NC-1"},
     {"region": "US-TX-3", "volume": "omjuynlizd"}
   ],
   "storage": {
