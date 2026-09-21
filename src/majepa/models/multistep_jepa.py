@@ -30,105 +30,6 @@ def isolated_creation_call(function, salt, *args, **kwargs):
         context.reserve = outer_reserve
 
 
-class TeammateActionPlanGRU(nj.Module):
-    """Shared causal future-peer planner anchored to stopped TBv2 beliefs.
-
-    One decoder is reused for every peer and every future step. Its state is
-    initialized from the stopped focal root and centered current-action belief.
-    To emit ``q^k`` it consumes the last causal focal-prefix action
-    ``a_{t+k-1}`` and the previous predicted peer-action expectation. Delta logits are zero
-    initialized over the stopped TBv2 ``q0`` baseline.
-    """
-
-    units: int = 256
-    act: str = "silu"
-    norm: str = "rms"
-    winit: str = "trunc_normal_in"
-
-    def __init__(
-        self,
-        action_count: int,
-        action_low: int,
-        peers: int,
-        max_horizon: int,
-        **kwargs,
-    ):
-        self.action_count = int(action_count)
-        self.action_low = int(action_low)
-        self.peers = int(peers)
-        self.max_horizon = int(max_horizon)
-        if self.action_count < 2 or self.peers < 1 or self.max_horizon < 2:
-            raise ValueError(
-                "teammate action plan needs peers, categorical actions, and K >= 2"
-            )
-        if self.units < 1:
-            raise ValueError("teammate action plan units must be positive")
-        del kwargs
-
-    def __call__(self, local_root, action_windows, q0_logits, q0_context):
-        if local_root.ndim != 4:
-            raise ValueError(
-                f"teammate plan roots must be [B,R,A,F], got {local_root.shape}"
-            )
-        batch_shape = local_root.shape[:-1]
-        if action_windows.shape != (*batch_shape, self.max_horizon):
-            raise ValueError("teammate plan actions do not align with local roots")
-        belief_shape = (*batch_shape, self.peers, self.action_count)
-        if q0_logits.shape != belief_shape or q0_context.shape != belief_shape:
-            raise ValueError(
-                "teammate q0 logits/context do not align with plan roots: "
-                f"{q0_logits.shape}, {q0_context.shape}, expected {belief_shape}"
-            )
-
-        local_root = nn.cast(sg(local_root))
-        q0_logits = sg(q0_logits.astype(f32))
-        q0_context = nn.cast(sg(q0_context))
-        repeated_root = jnp.broadcast_to(
-            local_root[..., None, :], (*batch_shape, self.peers, local_root.shape[-1])
-        )
-        initial = jnp.concatenate([repeated_root, q0_context], axis=-1)
-        carry = self.sub("initial_projection", nn.Linear, self.units, winit=self.winit)(
-            initial
-        )
-        carry = nn.act(self.act)(self.sub("initial_norm", nn.Norm, self.norm)(carry))
-
-        action_index = action_windows.astype(jnp.int32) - self.action_low
-        in_range = (action_index >= 0) & (action_index < self.action_count)
-        action_onehot = jax.nn.one_hot(
-            jnp.clip(action_index, 0, self.action_count - 1),
-            self.action_count,
-            dtype=f32,
-        )
-        action_onehot *= in_range[..., None].astype(f32)
-        previous_expectation = jax.nn.softmax(q0_logits, axis=-1)
-        outputs = []
-        decoder = self.sub(
-            "decoder", nn.GRU, units=self.units, norm=self.norm, winit=self.winit
-        )
-        delta_head = self.sub(
-            "delta_logits",
-            nn.Linear,
-            self.action_count,
-            winit=self.winit,
-            outscale=0.0,
-        )
-        for step in range(1, self.max_horizon):
-            own_action = jnp.broadcast_to(
-                action_onehot[..., step - 1, None, :],
-                (*batch_shape, self.peers, self.action_count),
-            )
-            decoder_input = nn.cast(
-                jnp.concatenate([own_action, previous_expectation], axis=-1)
-            )
-            carry, output = decoder.step(
-                carry,
-                decoder_input,
-                jnp.zeros(batch_shape + (self.peers,), bool),
-            )
-            logits = q0_logits + delta_head(output).astype(f32)
-            outputs.append(logits)
-            previous_expectation = jax.nn.softmax(logits, axis=-1)
-        return jnp.stack(outputs, axis=-3)
 
 
 class ActionConditionedMultiStepJEPA(nj.Module):
@@ -347,6 +248,5 @@ class ActionConditionedMultiStepJEPA(nj.Module):
 
 __all__ = [
     "ActionConditionedMultiStepJEPA",
-    "TeammateActionPlanGRU",
     "isolated_creation_call",
 ]

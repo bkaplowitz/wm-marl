@@ -17,7 +17,6 @@ import jax.numpy as jnp
 import ninjax as nj
 
 from ..world_model.transformer import CausalTransformer
-from .multistep_jepa import isolated_creation_call
 
 
 f32 = jnp.float32
@@ -145,8 +144,6 @@ class JointObservationJEPA(nj.Module):
     norm: str = "rms"
     winit: str = "trunc_normal_in"
     action_conditioning: str = "add"
-    latent_stoch: int = 0
-    latent_classes: int = 0
 
     def __init__(self, action_count, action_low, target_dim, **kwargs):
         self.action_count = int(action_count)
@@ -160,8 +157,6 @@ class JointObservationJEPA(nj.Module):
             )
         if self.action_conditioning not in {"add", "adaln"}:
             raise ValueError("CTDE action_conditioning must be either 'add' or 'adaln'")
-        if (self.latent_stoch > 0) != (self.latent_classes > 0):
-            raise ValueError("Direct latent head requires both stochastic dimensions")
         del kwargs
 
     def initial(self, teams, agents, previous_position=None):
@@ -308,28 +303,7 @@ class JointObservationJEPA(nj.Module):
             "embedding_prediction", nn.Linear, self.target_dim, winit=self.winit
         )(hidden)
         output = {"hidden": hidden, "embedding": prediction}
-        if self.latent_stoch:
-            output["latent_logits"] = isolated_creation_call(
-                self._latent_logits, 916_403, hidden
-            )
         return output
-
-    def _latent_logits(self, hidden):
-        """Predict the next agent latent from joint history/actions, without an observation."""
-        value = hidden
-        for index in range(2):
-            value = self.sub(
-                f"latent_layer{index}", nn.Linear, self.width, winit=self.winit
-            )(value)
-            value = nn.act(self.act)(
-                self.sub(f"latent_norm{index}", nn.Norm, self.norm)(value)
-            )
-        value = self.sub(
-            "latent_logits", nn.Linear, self.latent_stoch * self.latent_classes,
-            winit=self.winit,
-        )(value)
-        return value.reshape((*value.shape[:-1], self.latent_stoch, self.latent_classes))
-
 
     def _temporal(self):
         return self.sub(
@@ -349,112 +323,8 @@ class JointObservationJEPA(nj.Module):
         )
 
 
-class TeammateActionBelief(nj.Module):
-    """Predict peer actions from one stopped, strictly local causal state."""
-
-    layers: int = 2
-    units: int = 512
-    act: str = "silu"
-    norm: str = "rms"
-    winit: str = "trunc_normal_in"
-    outscale: float = 0.0
-
-    def __init__(self, peers, action_count, **kwargs):
-        self.peers = int(peers)
-        self.action_count = int(action_count)
-        if self.peers < 1:
-            raise ValueError("teammate belief requires at least one peer")
-        if self.action_count < 2:
-            raise ValueError("teammate belief requires categorical actions")
-        if self.layers < 1 or self.units < 1:
-            raise ValueError("teammate belief MLP dimensions must be positive")
-        del kwargs
-
-    def __call__(self, local_state, bdims):
-        if local_state.ndim != bdims + 1:
-            raise ValueError(
-                "teammate belief expects local state batch dimensions followed "
-                f"by features, got {local_state.shape} with bdims={bdims}"
-            )
-        value = nn.cast(sg(local_state))
-        for index in range(self.layers):
-            value = self.sub(f"layer{index}", nn.Linear, self.units, winit=self.winit)(
-                value
-            )
-            value = self.sub(f"norm{index}", nn.Norm, self.norm)(value)
-            value = nn.act(self.act)(value)
-        return self.sub(
-            "logits",
-            nn.Linear,
-            (self.peers, self.action_count),
-            winit=self.winit,
-            outscale=self.outscale,
-        )(value).astype(f32)
 
 
-class TeammateBeliefActorAdapter(nj.Module):
-    """Map detached own-state-conditioned belief to residual action logits.
-
-    Every path from belief to output is bias-free. Therefore an exactly uniform
-    peer belief, represented as an all-zero context, always yields zero residual
-    logits even after training. The final projection is zero initialized so the
-    enabled treatment begins as the exact base policy for every input.
-    """
-
-    units: int = 256
-    layers: int = 1
-    act: str = "silu"
-    norm: str = "rms"
-    winit: str = "trunc_normal_in"
-
-    def __init__(self, action_count, **kwargs):
-        self.action_count = int(action_count)
-        if self.action_count < 2 or self.units < 1 or self.layers < 1:
-            raise ValueError("teammate actor adapter dimensions must be positive")
-        del kwargs
-
-    def __call__(self, local_state, belief_context, bdims):
-        if local_state.ndim != bdims + 1 or belief_context.ndim != bdims + 1:
-            raise ValueError(
-                "teammate actor adapter expects local batch dimensions followed "
-                f"by features, got {local_state.shape} and {belief_context.shape}"
-            )
-        if local_state.shape[:bdims] != belief_context.shape[:bdims]:
-            raise ValueError("teammate actor state and belief batches must align")
-        local_state = nn.cast(sg(local_state))
-        belief_context = nn.cast(sg(belief_context))
-        own = self.sub("own_projection", nn.Linear, self.units, winit=self.winit)(
-            local_state
-        )
-        own = nn.act(self.act)(self.sub("own_norm", nn.Norm, self.norm)(own))
-        belief = self.sub(
-            "belief_projection",
-            nn.Linear,
-            self.units,
-            bias=False,
-            winit=self.winit,
-        )(belief_context)
-        belief = nn.act(self.act)(self.sub("belief_norm", nn.Norm, self.norm)(belief))
-        value = jnp.concatenate([belief, own * belief], axis=-1)
-        for index in range(self.layers):
-            value = self.sub(
-                f"fusion{index}",
-                nn.Linear,
-                self.units,
-                bias=False,
-                winit=self.winit,
-            )(value)
-            value = nn.act(self.act)(
-                self.sub(f"fusion_norm{index}", nn.Norm, self.norm)(value)
-            )
-        return self.sub(
-            "residual",
-            nn.Linear,
-            self.action_count,
-            bias=False,
-            winit=self.winit,
-            outscale=0.0,
-        )(value).astype(f32)
 
 
 class CentralAttentionCritic(nj.Module):
@@ -539,6 +409,4 @@ class CentralAttentionCritic(nj.Module):
 __all__ = [
     "CentralAttentionCritic",
     "JointObservationJEPA",
-    "TeammateActionBelief",
-    "TeammateBeliefActorAdapter",
 ]

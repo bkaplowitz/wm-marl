@@ -37,42 +37,13 @@ class Agent(
         self.obs_space = obs_space
         self.act_space = act_space
         self.config = config
-        self.imag_action_samples = config.get("imag_action_samples", 1)
-        if type(
-            self.imag_action_samples
-        ) is not int or self.imag_action_samples not in (1, 2):
-            raise ValueError("imag_action_samples must be 1 or 2")
-        factual = getattr(config.ppo, "factual_value", {})
-        self.factual_value_enabled = bool(factual.get("enabled", False))
-        self.factual_representation_scale = float(
-            factual.get("representation_scale", 0.0)
-        )
-        if self.factual_representation_scale < 0:
-            raise ValueError("factual representation scale must be nonnegative")
-        if self.factual_representation_scale and not self.factual_value_enabled:
-            raise ValueError(
-                "factual representation supervision requires factual targets"
-            )
-        if self.factual_value_enabled:
-            if not 0 < float(factual.c_clip) <= float(factual.rho_clip):
-                raise ValueError("factual trace requires 0 < c_clip <= rho_clip")
-            if not float(config.ppo.replay_value_scale):
-                raise ValueError("factual targets require replay value training")
         self.replay_sampling = str(getattr(config, "replay_sampling", "uniform"))
-        self.two_branch_replay = self.replay_sampling in {
-            "recent_world_uniform_behavior",
-            "truncated_geometric_world_uniform_behavior",
-        }
+        self.two_branch_replay = self.replay_sampling == "recent_world_uniform_behavior"
         self.ppo_start_step = int(getattr(config, "ppo_start_step", 0))
         if self.ppo_start_step < 0:
             raise ValueError("ppo_start_step must be nonnegative")
         if not getattr(self, "ctde_enabled", False):
             raise ValueError("MA-JEPA PPO requires multi-agent CTDE")
-        if getattr(self, "ctde_mask_calibration", False):
-            raise ValueError(
-                "MA-JEPA PPO requires fixed categorical support during each "
-                "proximal batch; probabilistic mask calibration is unsupported"
-            )
         if not self.two_branch_replay:
             raise ValueError(
                 "MA-JEPA PPO requires separated world and behavior replay views"
@@ -117,15 +88,6 @@ class Agent(
             raise ValueError(
                 "replay value learning requires at least two imagination roots"
             )
-        entropy_schedule = config.ppo.entropy_schedule
-        if float(entropy_schedule.initial) < 0.0:
-            raise ValueError("PPO initial entropy coefficient must be nonnegative")
-        if float(entropy_schedule.final) < 0.0:
-            raise ValueError("PPO final entropy coefficient must be nonnegative")
-        if int(entropy_schedule.decay_steps) < 1:
-            raise ValueError("PPO entropy decay_steps must be positive")
-        if str(entropy_schedule.schedule) not in {"linear", "cosine"}:
-            raise ValueError("PPO entropy schedule must be 'linear' or 'cosine'")
         self.world_model = world_model_backend()
         self.objective = "embedding"
         self.embedding_target = "ema"
@@ -168,9 +130,6 @@ class Agent(
             )
         self.feat2tensor = self.world_model.feature_tensor
         scalar = elements.Space(np.float32, ())
-        binary = elements.Space(bool, (), 0, 2)
-        self.rew = embodied.jax.MLPHead(scalar, **config.rewhead, name="rew")
-        self.con = embodied.jax.MLPHead(binary, **config.conhead, name="con")
         outputs = {
             key: config.policy_dist_disc if space.discrete else config.policy_dist_cont
             for key, space in self.act_space.items()
@@ -179,26 +138,20 @@ class Agent(
         self.action_mask_key = self._action_mask_key()
         if self.action_mask_key is not None:
             mask_space = self.obs_space["action_mask"]
-            maskhead = getattr(config, "maskhead", config.conhead)
+            maskhead = config.maskhead
             self.actmask = embodied.jax.MLPHead(mask_space, **maskhead, name="actmask")
         else:
             self.actmask = None
         self.val, self.slowval = self._make_value_models(scalar, config)
-        self.real_value = (
-            embodied.jax.MLPHead(scalar, **config.value, name="real_value")
-            if self.factual_representation_scale
-            else None
-        )
 
         additional_modules = self.additional_modules()
         self.modules = [
             self.dyn,
             self.enc,
-            self.rew,
-            self.con,
             self.pol,
             self.val,
         ]
+        self.modules = [module for module in self.modules if module is not None]
         if self.actmask is not None:
             self.modules.append(self.actmask)
         self.modules.extend(additional_modules)
@@ -213,10 +166,7 @@ class Agent(
             raise ValueError("CTDE actor modules must be additional modules")
         if ctde_module_ids.intersection(ctde_actor_module_ids):
             raise ValueError("CTDE world and actor modules must be disjoint")
-        world_modules = [self.dyn, self.enc, self.rew, self.con]
-        if self.real_value is not None:
-            self.modules.append(self.real_value)
-            world_modules.append(self.real_value)
+        world_modules = [self.dyn, self.enc]
         if self.actmask is not None:
             world_modules.append(self.actmask)
         world_modules.extend(
@@ -267,9 +217,7 @@ class Agent(
             "consec": elements.Space(np.int32),
             "stepid": elements.Space(np.uint8, 20),
         }
-        if self.factual_value_enabled:
-            spaces["behavior_logprob"] = elements.Space(np.float32)
-        if self.ppo_start_step or bool(self.config.ppo.entropy_schedule.enabled):
+        if self.ppo_start_step:
             # Runtime-only control input. It is injected after replay sampling,
             # so it never becomes replay content or changes sampled sequences.
             spaces["_environment_step"] = elements.Space(np.int32)

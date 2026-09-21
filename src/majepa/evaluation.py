@@ -1,8 +1,9 @@
-"""Fixed-policy evaluation for canonical MA-JEPA runs."""
+"""Fixed-policy evaluation for canonical DreaMARL runs."""
 
 from __future__ import annotations
 
 import json
+import time
 from collections import defaultdict
 from contextlib import contextmanager
 from functools import partial as bind
@@ -35,12 +36,6 @@ _SMAC_FINAL_DIAGNOSTICS = {
     "log/dead_enemies": "dead_enemies",
     "log/ally_survivors": "ally_survivors",
     "log/enemy_survivors": "enemy_survivors",
-}
-
-_RAW_EVALUATION_KEYS = {
-    "returns",
-    "team_returns",
-    "per_agent_returns",
 }
 
 
@@ -156,6 +151,11 @@ def _evaluation_summary(
         "team_returns": team_returns_array.tolist(),
         "per_agent_returns": agent_array.tolist(),
     }
+    # Queue runners use this explicit protocol marker to distinguish a
+    # completed fixed-size evaluation from an interrupted one.  Keep the
+    # aggregate episode count both at the top level (for analysis) and here
+    # (for the runner's completion check).
+    summary["evaluation_protocol"] = {"episodes": int(episodes)}
     if policy_mode is not None:
         summary["policy_mode"] = str(policy_mode)
     if len(battle_wins) == episodes:
@@ -163,34 +163,6 @@ def _evaluation_summary(
         summary["wins"] = int(np.sum(battle_wins))
     summary.update(_summarize_outcomes(outcomes[:episodes]))
     return summary
-
-
-def _validate_standalone_evaluation(summary, records, expected_episodes):
-    """Reject incomplete or internally inconsistent held-out evaluations."""
-
-    expected_episodes = int(expected_episodes)
-    if int(summary.get("episodes", -1)) != expected_episodes:
-        raise ValueError("evaluation summary does not match the episode quota")
-    for key in sorted(_RAW_EVALUATION_KEYS):
-        values = summary.get(key, ())
-        if len(values) != expected_episodes:
-            raise ValueError(f"evaluation summary field {key!r} is incomplete")
-    if len(records) != expected_episodes:
-        raise ValueError("raw evaluation records do not match the episode quota")
-    if [record["episode"] for record in records] != list(range(expected_episodes)):
-        raise ValueError("raw evaluation episode indices are not contiguous")
-
-
-def _write_evaluation_records(logdir, records):
-    """Write one lossless JSON record per completed evaluation episode."""
-
-    path = logdir / "evaluation_episodes.jsonl"
-    if path.exists():
-        raise FileExistsError(f"refusing to overwrite evaluation records: {path}")
-    with path.open("w") as stream:
-        for record in records:
-            stream.write(json.dumps(record, sort_keys=True) + "\n")
-    return path
 
 
 @contextmanager
@@ -302,12 +274,15 @@ def eval_only(make_agent, make_env, make_logger, args):
         raise ValueError(
             f"unsupported evaluation policy mode: {args.eval_policy_mode!r}"
         )
-    worker_offset = int(args.eval_worker_offset)
-    if worker_offset < 0:
-        raise ValueError("evaluation worker offset must be nonnegative")
 
+    wall_clock_start = time.perf_counter()
     agent = make_agent()
     logger = make_logger()
+
+    def wall_clock_seconds():
+        """Elapsed evaluation time exposed as a plot-friendly metric."""
+
+        return float(time.perf_counter() - wall_clock_start)
     logdir = elements.Path(args.logdir)
     logdir.mkdir()
     episodes = defaultdict(elements.Agg)
@@ -316,7 +291,6 @@ def eval_only(make_agent, make_env, make_logger, args):
     agent_returns = []
     battle_wins = []
     outcomes = []
-    records = []
     environments = min(args.envs, args.eval_eps)
     quotas = np.full(environments, args.eval_eps // environments, np.int32)
     quotas[: args.eval_eps % environments] += 1
@@ -334,7 +308,6 @@ def eval_only(make_agent, make_env, make_logger, args):
         episode.add("length", 1, agg="sum")
         _add_outcome_diagnostics(episode, transition)
         if transition["is_last"]:
-            worker_episode = int(completed[worker])
             completed[worker] += 1
             result = episode.result()
             score = float(result["score"])
@@ -348,26 +321,6 @@ def eval_only(make_agent, make_env, make_logger, args):
             outcome = _episode_outcome(result, transition)
             if outcome:
                 outcomes.append(outcome)
-            records.append(
-                {
-                    "schema_version": 1,
-                    "episode": len(records),
-                    "return": score,
-                    "team_return": team_return,
-                    "per_agent_returns": per_agent.tolist(),
-                    "battle_won": (
-                        float(transition["log/battle_won"])
-                        if "log/battle_won" in transition
-                        else None
-                    ),
-                    "outcome": outcome,
-                    "metadata": {
-                        "worker": int(worker),
-                        "worker_index": worker_offset + int(worker),
-                        "worker_episode": worker_episode,
-                    },
-                }
-            )
             logger.add(
                 {
                     "score": score,
@@ -381,14 +334,14 @@ def eval_only(make_agent, make_env, make_logger, args):
                 },
                 prefix="episode",
             )
+            logger.add({"wall_clock_seconds": wall_clock_seconds()})
             logger.write()
 
     checkpoint = elements.Checkpoint()
     checkpoint.agent = agent
     checkpoint.load(args.from_checkpoint, keys=["agent"])
-    functions = [bind(make_env, worker_offset + index) for index in range(environments)]
+    functions = [bind(make_env, index) for index in range(environments)]
     driver = None
-    summary = None
 
     def policy(*values):
         return agent.policy(*values, mode=args.eval_policy_mode)
@@ -399,43 +352,34 @@ def eval_only(make_agent, make_env, make_logger, args):
         driver.reset(agent.init_policy)
         while int(completed.sum()) < args.eval_eps:
             driver(policy, steps=10)
-        driver.close()
-        driver = None
-
-        summary = _evaluation_summary(
-            returns,
-            team_returns,
-            agent_returns,
-            battle_wins,
-            outcomes,
-            args.eval_eps,
-            policy_mode=args.eval_policy_mode,
-        )
-        summary["evaluation_protocol"] = {
-            "episodes": int(args.eval_eps),
-            "envs": int(environments),
-            "worker_offset": worker_offset,
-            "worker_indices": [worker_offset + index for index in range(environments)],
-            "policy_mode": str(args.eval_policy_mode),
-        }
-        _validate_standalone_evaluation(summary, records, args.eval_eps)
-        _write_evaluation_records(logdir, records)
-        (logdir / "evaluation_summary.json").write(
-            json.dumps(summary, indent=2, sort_keys=True)
-        )
-        logger.add(
-            {
-                key: value
-                for key, value in summary.items()
-                if key not in _RAW_EVALUATION_KEYS
-                and isinstance(value, (int, float, np.number))
-            },
-            prefix="final_eval",
-        )
-        logger.write()
     finally:
         if driver is not None:
             driver.close()
-        logger.close()
-    assert summary is not None
+
+    summary = _evaluation_summary(
+        returns,
+        team_returns,
+        agent_returns,
+        battle_wins,
+        outcomes,
+        args.eval_eps,
+        policy_mode=args.eval_policy_mode,
+    )
+    # Keep the aggregate evaluation visible in W&B as scalar metrics.  The
+    # per-episode values above are useful for diagnostics, but without this
+    # explicit write the final100 aggregate (including win_rate) only exists
+    # in evaluation_summary.json and the W&B run appears to contain the last
+    # episode rather than the complete evaluation.
+    final_scalars = {
+        key: value
+        for key, value in summary.items()
+        if isinstance(value, (int, float))
+    }
+    logger.add(final_scalars, prefix="final_eval")
+    logger.add({"wall_clock_seconds": wall_clock_seconds()})
+    logger.write()
+    logger.close()
+    (logdir / "evaluation_summary.json").write(
+        json.dumps(summary, indent=2, sort_keys=True)
+    )
     print(json.dumps(summary, indent=2, sort_keys=True))

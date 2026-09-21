@@ -14,7 +14,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", required=True)
     parser.add_argument("--num-agents", type=int, required=True)
-    parser.add_argument("--imag-action-samples", type=int, choices=(1, 2), default=1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--total-env-steps", type=int, default=50_000)
     parser.add_argument("--experiment-dir", type=Path)
@@ -23,13 +22,13 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=repository_root() / "runs" / "majepa",
     )
-    parser.add_argument("--save-every-seconds", type=int, default=900)
+    parser.add_argument("--save-every-seconds", type=int, default=5_000)
     parser.add_argument("--wandb-project")
     parser.add_argument("--wandb-entity")
     parser.add_argument("--eval-interval", type=int, default=5_000)
-    parser.add_argument("--eval-episodes", type=int)
-    parser.add_argument("--eval-envs", type=int)
-    parser.add_argument("--eval-seed-offset", type=int)
+    parser.add_argument("--eval-episodes", type=int, default=32)
+    parser.add_argument("--eval-envs", type=int, default=4)
+    parser.add_argument("--eval-seed-offset", type=int, default=50_000)
 
     runtime = parser.add_argument_group("advanced runtime")
     runtime.add_argument("--platform", choices=("cpu", "cuda", "tpu"), default="cuda")
@@ -50,7 +49,6 @@ def main(argv: list[str] | None = None) -> int:
         experiment_dir=experiment_dir,
         task=args.task,
         num_agents=args.num_agents,
-        imag_action_samples=args.imag_action_samples,
         seed=args.seed,
         train_steps=args.total_env_steps,
         platform=args.platform,

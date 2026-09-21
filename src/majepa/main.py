@@ -9,8 +9,6 @@ import embodied
 import portal
 import ruamel.yaml as yaml
 
-from .reproducibility import seed_everything
-
 folder = pathlib.Path(__file__).parent
 
 
@@ -77,9 +75,9 @@ def _load_configs(extra_config_path=None):
 
 
 def _worker_seed(seed: int, index: int) -> int:
-    """Match DMAWM's stable environment-worker seed mapping."""
+    """Match the pinned DreamerV3 environment-worker seed mapping."""
 
-    return int(seed) + int(index) * 10
+    return hash((int(seed), int(index))) % (2**32 - 1)
 
 
 def _validate_script(script: str, num_agents: int) -> None:
@@ -95,12 +93,9 @@ def main(argv=None, extra_config_path=None):
     [elements.print(line) for line in MARLCore.banner]
 
     configs = _load_configs(extra_config_path)
-    parsed, other = elements.Flags(
-        configs=["defaults", "smac_vector", "ma_jepa"]
-    ).parse_known(argv)
+    parsed, other = elements.Flags(configs=["baseline"]).parse_known(argv)
     config = _resolve_config_profiles(configs, parsed.configs)
     config = elements.Flags(config).parse(other)
-    seed_everything(int(config.seed))
     config = config.update(
         logdir=(config.logdir.format(timestamp=elements.timestamp()))
     )
@@ -185,7 +180,7 @@ def make_agent(config):
         return embodied.RandomAgent(obs_space, act_space)
     cpdir = elements.Path(config.logdir)
     cpdir = cpdir.parent if config.replicas > 1 else cpdir
-    return Algorithm(
+    agent = Algorithm(
         obs_space,
         act_space,
         elements.Config(
@@ -203,6 +198,8 @@ def make_agent(config):
             replicas=config.replicas,
         ),
     )
+
+    return agent
 
 
 def make_logger(config):
@@ -230,7 +227,11 @@ def make_logger(config):
             )
         elif output == "wandb":
             name = os.environ.get("WANDB_NAME") or "/".join(logdir.split("/")[-4:])
-            outputs.append(elements.logger.WandBOutput(name))
+            # W&B permanently reserves deleted run IDs; use a fresh ID for
+            # the previously failed corridor seed-2 retry.
+            if name.startswith("best20-corridor-s2-fixed4-"):
+                name += "-retry2"
+            outputs.append(elements.logger.WandBOutput(name, config=config.flat))
         elif output == "scope":
             outputs.append(elements.logger.ScopeOutput(elements.Path(logdir)))
         else:
@@ -259,40 +260,26 @@ def make_replay(config, folder, mode="train"):
 
     sampling = str(config.replay.sampling)
     world_uniform_mix = float(config.replay.world_uniform_mix)
-    dual_view_samplers = {
-        "recent_world_uniform_behavior": "exponential",
-        "truncated_geometric_world_uniform_behavior": "truncated_geometric",
-    }
-    if world_uniform_mix and sampling not in dual_view_samplers:
+    if world_uniform_mix and sampling != "recent_world_uniform_behavior":
         raise ValueError("world_uniform_mix requires dual-view replay")
-    if mode == "train" and sampling == "recent":
-        from .replay import RecentReplay
-
-        if int(capacity) != 50_000:
-            raise ValueError("recent replay requires replay.size=50000")
-        return RecentReplay(
-            **kwargs,
-            recency_decay=float(config.replay.recency_decay),
-            seed=int(config.seed),
-        )
-    if mode == "train" and sampling in dual_view_samplers:
+    if mode == "train" and sampling != "recent_world_uniform_behavior":
+        raise ValueError("The maintained learner requires dual-view replay")
+    if mode == "train" and sampling == "recent_world_uniform_behavior":
         from .replay import DualViewReplay
 
         return DualViewReplay(
             **kwargs,
             optimized_length=int(consec * batlen),
             recency_decay=float(config.replay.recency_decay),
-            world_sampler=dual_view_samplers[sampling],
-            truncated_geometric_alpha=float(config.replay.truncated_geometric_alpha),
             seed=int(config.seed),
             isolate_report_rng=bool(config.run.isolate_report_rng),
             world_uniform_mix=world_uniform_mix,
+            behavior_recency_decay=float(config.replay.behavior_recency_decay),
+            behavior_uniform_mix=float(config.replay.behavior_uniform_mix),
         )
     if sampling != "uniform" and mode == "train":
         raise ValueError(f"unsupported replay sampling: {sampling!r}")
-    from .replay import ReproducibleReplay
-
-    return ReproducibleReplay(**kwargs, seed=int(config.seed))
+    return embodied.replay.Replay(**kwargs)
 
 
 def make_env(config, index, **overrides):
@@ -300,7 +287,11 @@ def make_env(config, index, **overrides):
     kwargs = config.env.get(suite, {})
     kwargs.update(overrides)
     if kwargs.pop("use_seed", False):
-        kwargs["seed"] = _worker_seed(config.seed, index)
+        kwargs["seed"] = (
+            int(config.seed) + int(index)
+            if suite == "smac"
+            else _worker_seed(config.seed, index)
+        )
     if suite == "smac":
         from .envs.smac import SMACEnv
 

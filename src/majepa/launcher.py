@@ -32,7 +32,6 @@ def runtime_environment(
     wandb_project: str | None = None,
     wandb_entity: str | None = None,
     wandb_name: str | None = None,
-    seed: int | None = None,
 ) -> dict[str, str]:
     """Build the shared training/evaluation subprocess environment."""
 
@@ -44,8 +43,6 @@ def runtime_environment(
     env.setdefault("MUJOCO_GL", "glfw" if platform.system() == "Darwin" else "egl")
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
-    if seed is not None:
-        env["PYTHONHASHSEED"] = str(int(seed))
     env.setdefault("WANDB_DIR", str(artifact_dir))
     if wandb_project:
         env["WANDB_PROJECT"] = wandb_project
@@ -96,7 +93,6 @@ def run_training(
         wandb_project=spec.wandb_project,
         wandb_entity=spec.wandb_entity,
         wandb_name=spec.experiment_dir.name,
-        seed=spec.seed,
     )
     with (spec.experiment_dir / "process.log").open("a", encoding="utf-8") as log:
         process = subprocess.Popen(

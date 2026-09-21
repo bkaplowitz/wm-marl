@@ -49,6 +49,11 @@ def _with_prefixed_batch(primary, secondary, prefix):
 
 
 def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
+    wall_clock_start = time.perf_counter()
+
+    def wall_clock_seconds():
+        return float(time.perf_counter() - wall_clock_start)
+
     agent = make_agent()
     replay = make_replay()
     logger = make_logger()
@@ -284,7 +289,11 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
                     )
                 carry_report, metrics = agent.report(carry_report, batch)
                 aggregate.add(metrics)
-            logger.add(aggregate.result(), prefix="report")
+            # Elements limits each add() call to 1000 metrics. Keep all
+            # diagnostics at the same step and flush once through should_log.
+            report_items = list(aggregate.result().items())
+            for offset in range(0, len(report_items), 1000):
+                logger.add(dict(report_items[offset : offset + 1000]), prefix="report")
 
         if should_log(step):
             logger.add(
@@ -329,6 +338,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
             logger.add({"fps/policy": policy_fps.result()})
             logger.add({"fps/train": train_fps.result()})
             logger.add({"timer": elements.timer.stats()["summary"]})
+            logger.add({"wall_clock_seconds": wall_clock_seconds()})
             logger.write()
 
         if should_save(step):
@@ -348,10 +358,11 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
                 {
                     key: value
                     for key, value in summary.items()
-                    if key not in {"returns", "team_returns", "per_agent_returns"}
+                    if key not in {"returns", "team_returns", "per_agent_returns", "evaluation_protocol"}
                 },
                 prefix="eval",
             )
+            logger.add({"wall_clock_seconds": wall_clock_seconds()})
             logger.write()
             if bool(args.checkpoint_at_curve_eval):
                 _save_checkpoint(checkpoint)
@@ -360,4 +371,6 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
 
     if bool(args.final_save):
         _save_checkpoint(checkpoint)
+    logger.add({"wall_clock_seconds": wall_clock_seconds()})
+    logger.write()
     logger.close()

@@ -293,7 +293,8 @@ def self_fed_losses(agent, online, features, entries, ema, obs, prevact):
         hidden = prediction["hidden"]
         reward_output = agent.ctde_rew(hidden, 2)
         continuation_output = agent.ctde_con(hidden, 2)
-        mask_output = agent.ctde_mask(hidden, 2)
+        mask_output = (agent.ctde_mask(hidden, 2) if agent.joint_mask_enabled else
+            agent.actmask(agent.feat2tensor(agent.team.unfold_tree_batch(local)), 2))
         alive_output = agent.ctde_alive(hidden, 2)
         next_alive = current_alive & root_present & (alive_output.prob(1) >= 0.5)
         binary = mask_output.output if hasattr(mask_output, "output") else mask_output
@@ -326,6 +327,9 @@ def self_fed_losses(agent, online, features, entries, ema, obs, prevact):
             ),
             "alive": alive_output.loss(target["alive"]),
         }
+        if not agent.joint_mask_enabled:
+            # Remove this auxiliary loss too; do not silently introduce shared-mask training.
+            losses.pop("action_mask")
         if float(cfg.consumer_kl_scale):
             prediction_logits = (
                 agent.team.fold_batch(prediction["latent_logits"])

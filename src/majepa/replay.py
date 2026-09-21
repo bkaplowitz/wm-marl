@@ -7,32 +7,6 @@ import embodied
 import numpy as np
 
 
-def _selector_rng_state(selector):
-    rng = getattr(selector, "rng", None)
-    return rng.bit_generator.state if rng is not None else None
-
-
-def _restore_selector_rng(selector, state):
-    rng = getattr(selector, "rng", None)
-    if state is not None and rng is not None:
-        rng.bit_generator.state = state
-
-
-class ReproducibleReplay(embodied.replay.Replay):
-    """Replay whose selector resumes from the exact checkpointed RNG draw."""
-
-    def save(self):
-        return {
-            "replay": super().save(),
-            "sampler_rng_state": _selector_rng_state(self.sampler),
-        }
-
-    def load(self, data=None):
-        state = data if isinstance(data, dict) else {}
-        super().load(state.get("replay"))
-        _restore_selector_rng(self.sampler, state.get("sampler_rng_state"))
-
-
 class ExponentialRecency:
     """Sample sequence starts with probability proportional to decay**age."""
 
@@ -91,82 +65,14 @@ class ExponentialRecency:
             del self.items[step]
 
 
-class TruncatedGeometric(ExponentialRecency):
-    """Sample finite-buffer indices with truncated-geometric weights.
-
-    The paper parameterizes the distribution by an ``alpha`` slope over
-    oldest-to-newest indices, ``p(i) proportional to
-    2 ** (alpha * i / (capacity - 1))``.  ``ExponentialRecency`` samples age
-    from ``decay ** age`` instead, so converting with
-    ``decay = 2 ** (-alpha / (capacity - 1))`` gives exactly the same
-    distribution while retaining the selector's stable inverse-CDF sampler.
-    ``capacity`` is the replay capacity, whereas the currently populated
-    prefix is truncated naturally by ``ExponentialRecency.__call__``.
-    """
-
-    def __init__(self, alpha=10.0, capacity=250_000, seed=0, track_ages=True):
-        alpha = float(alpha)
-        capacity = int(capacity)
-        if not np.isfinite(alpha) or alpha < 0.0:
-            raise ValueError("truncated-geometric alpha must be finite and nonnegative")
-        if capacity < 2:
-            raise ValueError("truncated-geometric capacity must be at least 2")
-        decay = float(np.exp2(-alpha / (capacity - 1)))
-        if not 0.0 < decay <= 1.0:
-            raise ValueError("truncated-geometric decay underflowed")
-        self.alpha = alpha
-        self.capacity = capacity
-        super().__init__(decay, seed=seed, track_ages=track_ages)
-
-
-class RecentReplay(ReproducibleReplay):
-    """Single-stream replay with exponentially decayed sampling by item age."""
-
-    def __init__(self, *, recency_decay=0.9998, seed=0, **kwargs):
-        decay = float(recency_decay)
-        if not 0.0 < decay <= 1.0:
-            raise ValueError("recency_decay must be in (0, 1]")
-        kwargs.pop("online", None)
-        super().__init__(
-            selector=ExponentialRecency(decay, seed=seed),
-            online=False,
-            seed=seed,
-            **kwargs,
-        )
-        self.sampled_ages = []
-        self.sampled_ages_lock = threading.Lock()
-
-    def _sample(self, mode):
-        sequence, is_online = super()._sample(mode)
-        if mode == "train":
-            # ExponentialRecency records the sampled age without changing the
-            # replay API or the learner batch shape.
-            with self.sampled_ages_lock:
-                self.sampled_ages.extend(self.sampler.pop_sampled_ages())
-        return sequence, is_online
-
-    def stats(self):
-        result = super().stats()
-        with self.sampled_ages_lock:
-            values = self.sampled_ages
-            self.sampled_ages = []
-        if values:
-            array = np.asarray(values, np.float32)
-            result["sample_age_mean"] = float(array.mean())
-            result["sample_age_p50"] = float(np.percentile(array, 50))
-            result["sample_age_p95"] = float(np.percentile(array, 95))
-        return result
-
-
-class DualViewReplay(ReproducibleReplay):
+class DualViewReplay(embodied.replay.Replay):
     """One replay store exposed through separate world and behavior views.
 
-    The world-model view samples recent sequence starts using either the
-    existing exponential age weighting or a truncated-geometric weighting.
-    The behavior view samples the same physical items uniformly with an
-    independent selector. Keeping the selectors here, next to the single item
-    table, makes it impossible for the two views to drift onto different replay
-    contents.
+    The world-model view samples recent sequence starts using exponential
+    recency weighting. The behavior view samples the same physical items
+    uniformly with an independent selector. Keeping the selectors here, next
+    to the single item table, makes it impossible for the two views to drift
+    onto different replay contents.
     """
 
     dual_view = True
@@ -178,44 +84,38 @@ class DualViewReplay(ReproducibleReplay):
         *,
         optimized_length=None,
         recency_decay=0.9998,
-        world_sampler="exponential",
-        truncated_geometric_alpha=10.0,
         seed=0,
         isolate_report_rng=False,
         world_uniform_mix=0.0,
+        behavior_recency_decay=0.0,
+        behavior_uniform_mix=0.0,
         **kwargs,
     ):
         decay = float(recency_decay)
         if not 0.0 < decay <= 1.0:
             raise ValueError("recency_decay must be in (0, 1]")
         self.world_uniform_mix = float(world_uniform_mix)
-        if not 0.0 <= self.world_uniform_mix <= 1.0:
+        if not np.isfinite(self.world_uniform_mix) or not 0.0 <= self.world_uniform_mix <= 1.0:
             raise ValueError("world_uniform_mix must be finite and in [0, 1]")
+        behavior_decay = float(behavior_recency_decay)
+        if not np.isfinite(behavior_decay) or not 0.0 <= behavior_decay <= 1.0:
+            raise ValueError("behavior_recency_decay must be finite and in [0, 1]")
+        self.behavior_recency_decay = behavior_decay
+        self.behavior_uniform_mix = float(behavior_uniform_mix)
+        if not np.isfinite(self.behavior_uniform_mix) or not 0.0 <= self.behavior_uniform_mix <= 1.0:
+            raise ValueError("behavior_uniform_mix must be finite and in [0, 1]")
+        if self.behavior_uniform_mix and not behavior_decay:
+            raise ValueError("behavior_uniform_mix requires a positive behavior_recency_decay")
         if kwargs.pop("online", False):
             raise ValueError("dual-view replay requires replay.online=False")
         replay_length = int(kwargs["length"])
-        replay_capacity = int(kwargs["capacity"])
         self.optimized_length = int(optimized_length or replay_length)
         if not 0 < self.optimized_length <= replay_length:
             raise ValueError(
                 "optimized_length must be positive and no larger than replay length"
             )
-        world_sampler = str(world_sampler)
-        if world_sampler not in {"exponential", "truncated_geometric"}:
-            raise ValueError(f"unsupported world sampler: {world_sampler!r}")
-        self.world_sampler = world_sampler
-        self.truncated_geometric_alpha = float(truncated_geometric_alpha)
-        if world_sampler == "truncated_geometric":
-            selector = TruncatedGeometric(
-                alpha=self.truncated_geometric_alpha,
-                capacity=replay_capacity,
-                seed=seed,
-                track_ages=False,
-            )
-        else:
-            selector = ExponentialRecency(decay, seed=seed, track_ages=False)
         super().__init__(
-            selector=selector,
+            selector=ExponentialRecency(decay, seed=seed, track_ages=False),
             online=False,
             seed=seed,
             **kwargs,
@@ -223,7 +123,22 @@ class DualViewReplay(ReproducibleReplay):
         # A separate RNG is important: a world sample must never determine the
         # corresponding behavior root, even when both streams advance in lock
         # step in the learner.
-        self.behavior_sampler = embodied.selectors.Uniform(seed=int(seed) + 1)
+        # Keep the historical uniform behavior roots at decay=0.  A positive
+        # decay creates an independent recent-root view without consuming the
+        # world sampler RNG stream.
+        self.behavior_sampler = (
+            ExponentialRecency(
+                behavior_decay, seed=int(seed) + 1, track_ages=False
+            )
+            if behavior_decay
+            else embodied.selectors.Uniform(seed=int(seed) + 1)
+        )
+        self.behavior_uniform_sampler = (
+            embodied.selectors.Uniform(seed=int(seed) + 5)
+            if self.behavior_uniform_mix else None
+        )
+        self.behavior_mixture_rng = np.random.default_rng(int(seed) + 6)
+        self.behavior_mixture_lock = threading.Lock()
         self.report_sampler = (
             embodied.selectors.Uniform(seed=int(seed) + 2)
             if isolate_report_rng
@@ -233,8 +148,7 @@ class DualViewReplay(ReproducibleReplay):
         # behavior/report randomness. At mix=0 the existing draws are untouched.
         self.world_uniform_sampler = (
             embodied.selectors.Uniform(seed=int(seed) + 3)
-            if self.world_uniform_mix
-            else None
+            if self.world_uniform_mix else None
         )
         self.world_mixture_rng = np.random.default_rng(int(seed) + 4)
         self.world_mixture_lock = threading.Lock()
@@ -242,6 +156,7 @@ class DualViewReplay(ReproducibleReplay):
             "world_samples": 0,
             "world_uniform_samples": 0,
             "behavior_samples": 0,
+                "behavior_uniform_samples": 0,
             "world_ages": [],
             "behavior_ages": [],
         }
@@ -255,6 +170,8 @@ class DualViewReplay(ReproducibleReplay):
         # The base replay owns the item table and recency selector. This second
         # selector stores only integer item identifiers.
         self.behavior_sampler[itemid] = ()
+        if self.behavior_uniform_sampler is not None:
+            self.behavior_uniform_sampler[itemid] = ()
         if self.report_sampler is not None:
             self.report_sampler[itemid] = ()
         if self.world_uniform_sampler is not None:
@@ -265,6 +182,8 @@ class DualViewReplay(ReproducibleReplay):
 
         itemid = self.fifo[0]
         del self.behavior_sampler[itemid]
+        if self.behavior_uniform_sampler is not None:
+            del self.behavior_uniform_sampler[itemid]
         if self.report_sampler is not None:
             del self.report_sampler[itemid]
         if self.world_uniform_sampler is not None:
@@ -278,6 +197,12 @@ class DualViewReplay(ReproducibleReplay):
         is_world = mode in self._WORLD_MODES
         selector = self.sampler if is_world else self.behavior_sampler
         is_training = mode in {"train", "train_world", "train_behavior"}
+        uniform_behavior = False
+        if not is_world and is_training and self.behavior_uniform_sampler is not None:
+            with self.behavior_mixture_lock:
+                uniform_behavior = self.behavior_mixture_rng.random() < self.behavior_uniform_mix
+            if uniform_behavior:
+                selector = self.behavior_uniform_sampler
         uniform_world = False
         if is_world and self.world_uniform_sampler is not None:
             with self.world_mixture_lock:
@@ -302,6 +227,8 @@ class DualViewReplay(ReproducibleReplay):
                     view = "world" if is_world else "behavior"
                     with self._view_stats_lock:
                         self._view_stats[f"{view}_samples"] += 1
+                        if uniform_behavior:
+                            self._view_stats["behavior_uniform_samples"] += 1
                         if uniform_world:
                             self._view_stats["world_uniform_samples"] += 1
                         self._view_stats[f"{view}_ages"].append(age)
@@ -311,31 +238,6 @@ class DualViewReplay(ReproducibleReplay):
                 # eviction. Both selectors are corrected by the eviction path.
                 continue
 
-    def save(self):
-        return {
-            "replay": super().save(),
-            "behavior_rng_state": _selector_rng_state(self.behavior_sampler),
-            "report_rng_state": _selector_rng_state(self.report_sampler),
-            "world_uniform_rng_state": _selector_rng_state(
-                self.world_uniform_sampler
-            ),
-            "world_mixture_rng_state": self.world_mixture_rng.bit_generator.state,
-        }
-
-    def load(self, data=None):
-        state = data if isinstance(data, dict) else {}
-        super().load(state.get("replay"))
-        _restore_selector_rng(
-            self.behavior_sampler, state.get("behavior_rng_state")
-        )
-        _restore_selector_rng(self.report_sampler, state.get("report_rng_state"))
-        _restore_selector_rng(
-            self.world_uniform_sampler, state.get("world_uniform_rng_state")
-        )
-        mixture_state = state.get("world_mixture_rng_state")
-        if mixture_state is not None:
-            self.world_mixture_rng.bit_generator.state = mixture_state
-
     def stats(self):
         result = super().stats()
         with self._view_stats_lock:
@@ -344,6 +246,7 @@ class DualViewReplay(ReproducibleReplay):
                 "world_samples": 0,
                 "world_uniform_samples": 0,
                 "behavior_samples": 0,
+                "behavior_uniform_samples": 0,
                 "world_ages": [],
                 "behavior_ages": [],
             }
@@ -352,10 +255,14 @@ class DualViewReplay(ReproducibleReplay):
         result["world_uniform_samples"] = values["world_uniform_samples"]
         result["world_uniform_fraction"] = (
             values["world_uniform_samples"] / values["world_samples"]
-            if values["world_samples"]
-            else 0.0
+            if values["world_samples"] else 0.0
         )
         result["behavior_samples"] = values["behavior_samples"]
+        result["behavior_uniform_samples"] = values["behavior_uniform_samples"]
+        result["behavior_uniform_fraction"] = (
+            values["behavior_uniform_samples"] / values["behavior_samples"]
+            if values["behavior_samples"] else 0.0
+        )
         inserts = result["inserts"]
         for view in ("world", "behavior"):
             samples = values[f"{view}_samples"]
@@ -378,10 +285,4 @@ class DualViewReplay(ReproducibleReplay):
         return result
 
 
-__all__ = [
-    "DualViewReplay",
-    "ExponentialRecency",
-    "RecentReplay",
-    "ReproducibleReplay",
-    "TruncatedGeometric",
-]
+__all__ = ["DualViewReplay", "ExponentialRecency"]
