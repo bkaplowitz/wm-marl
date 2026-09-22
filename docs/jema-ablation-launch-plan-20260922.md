@@ -7,7 +7,8 @@ This is the reference for future launches and the running comparison table.
 On 22 September, the user requested two new ablation pods after the earlier
 baseline-reproduction hold. Stage 1 is being launched under that new request. After four-GPU capacity
 failed, the user approved mixed L40/L40S allocations and a fallback to four
-two-GPU pods (eight GPUs total), with A100 still excluded.
+two-GPU pods (eight GPUs total). The latest instruction authorizes four A100s;
+2x H100 was considered and then superseded by that explicit A100 request.
 The baseline discrepancy is still unresolved: the direct-shell diagnostic on
 `y4leuwgzbs5j1b` failed before training because CUDA initialization failed.
 Its records remain in `docs/jema-baseline-shell-reproduction-20260922.md`.
@@ -86,13 +87,13 @@ margin-loss weight is zero, and the latent remains `32×64`. This is three runs
 per map, six in total. The 0.1/1.0 joint treatments are not additionally crossed
 with this combined condition in the present plan.
 
-| Comparison | Local prior | Margin-loss weight | Latent | Joint settings | Runs per map |
-|---|---|---:|---|---|---:|
-| Standard controls | On | 0.1 | 32×64 | Off, 0.1, 1.0 | 9 |
-| Local-prior removal | Off | 0.1 | 32×64 | 0.1, 1.0 | 6 |
-| Margin-loss removal | On | 0.0 | 32×64 | 0.1, 1.0 | 6 |
-| Smaller latent | On | 0.1 | 32×32 | Off, 0.1, 1.0 | 9 |
-| Combined prior/margin removal | Off | 0.0 | 32×64 | Off | 3 |
+| Comparison                    | Local prior | Margin-loss weight | Latent | Joint settings | Runs per map |
+| ----------------------------- | ----------- | -----------------: | ------ | -------------- | -----------: |
+| Standard controls             | On          |                0.1 | 32×64  | Off, 0.1, 1.0  |            9 |
+| Local-prior removal           | Off         |                0.1 | 32×64  | 0.1, 1.0       |            6 |
+| Margin-loss removal           | On          |                0.0 | 32×64  | 0.1, 1.0       |            6 |
+| Smaller latent                | On          |                0.1 | 32×32  | Off, 0.1, 1.0  |            9 |
+| Combined prior/margin removal | Off         |                0.0 | 32×64  | Off            |            3 |
 
 The prior-only and margin-only conditions remain separate experiments. The
 combined condition is an additional experiment. Disabling the local prior also
@@ -105,14 +106,14 @@ The columns are two concurrent scheduling lanes, with no more than two active
 four-GPU pods at any time. Physical pod IDs may change between stages because
 the existing launcher stops a completed campaign's pod and enforces its deadline.
 
-| Stage | Pod A — four GPUs | Pod B — four GPUs | New runs |
-|---|---|---|---:|
-| 1 | `2s3z`: local prior off; joint 0.1/1.0; 6 runs | `2s3z`: margin weight 0.0, prior on; joint 0.1/1.0; 6 runs | 12 |
-| 2 | `2s3z`: 32×32; joint off/0.1/1.0; 9 runs | `3s_vs_4z`: standard 32×64 controls; joint off/0.1/1.0; 9 runs | 18 |
-| 3 | `3s_vs_4z`: local prior off; joint 0.1/1.0; 6 runs | `3s_vs_4z`: margin weight 0.0, prior on; joint 0.1/1.0; 6 runs | 12 |
-| 4 — added | `2s3z`: prior off + margin weight 0.0, otherwise baseline; 3 runs | `3s_vs_4z`: prior off + margin weight 0.0, otherwise baseline; 3 runs | 6 |
-| 5 | `3s_vs_4z`: 32×32; joint off/0.1/1.0; seeds 0 and 2; 6 runs | `3s_vs_4z`: the same 32×32 comparison; seed 1; 3 runs | 9 |
-| Total | 30 runs | 27 runs | **57** |
+| Stage     | Pod A — four GPUs                                                 | Pod B — four GPUs                                                     | New runs |
+| --------- | ----------------------------------------------------------------- | --------------------------------------------------------------------- | -------: |
+| 1         | `2s3z`: local prior off; joint 0.1/1.0; 6 runs                    | `2s3z`: margin weight 0.0, prior on; joint 0.1/1.0; 6 runs            |       12 |
+| 2         | `2s3z`: 32×32; joint off/0.1/1.0; 9 runs                          | `3s_vs_4z`: standard 32×64 controls; joint off/0.1/1.0; 9 runs        |       18 |
+| 3         | `3s_vs_4z`: local prior off; joint 0.1/1.0; 6 runs                | `3s_vs_4z`: margin weight 0.0, prior on; joint 0.1/1.0; 6 runs        |       12 |
+| 4 — added | `2s3z`: prior off + margin weight 0.0, otherwise baseline; 3 runs | `3s_vs_4z`: prior off + margin weight 0.0, otherwise baseline; 3 runs |        6 |
+| 5         | `3s_vs_4z`: 32×32; joint off/0.1/1.0; seeds 0 and 2; 6 runs       | `3s_vs_4z`: the same 32×32 comparison; seed 1; 3 runs                 |        9 |
+| Total     | 30 runs                                                           | 27 runs                                                               |   **57** |
 
 Scheduling instructions:
 
@@ -141,49 +142,49 @@ commit `79de5d2`, integrated on `feat/world-model-gradient-experiments`. Freeze 
 chosen source once and retain its provenance; do not silently follow a newer
 branch tip or restore overrides from older campaigns.
 
-| Component | Setting |
-|---|---|
-| Map | `2s3z`, five agents; `3s_vs_4z`, three agents, for the specified map comparisons |
-| SMAC difficulty | 7 |
-| Training budget | 50,000 environment steps per run |
-| Local outcome heads | Disabled throughout |
-| Imagination mask | Local, Bernoulli sampled |
-| Joint mask | Retained |
-| Local/joint world-model learning rates | `1e-4` / `1e-4` |
-| Local KL, when local prior is enabled | Dynamics `1.0`, representation `0.1` |
-| Posterior alignment | `0.05` |
-| SIGReg | `0.05`, per-agent, 256 projections |
-| Action-margin loss | `0.1`, except the explicit zero-margin conditions |
-| Multi-step cosine loss | `2.0` |
-| Self-fed scale / trajectory KL | `0.1` / `0.1` |
-| BPTT | 2 |
-| JEPA horizons / anchors | `2, 4, 5` / 8 |
-| Imagination horizon | 5 |
-| Deterministic world model | Width 4096, hidden width 512, two layers, eight heads |
-| Categorical latent | `32×64`, except the explicit `32×32` comparisons |
-| Encoder | 3×1024, symlog |
-| Actor | 3×512 |
-| Critic | 3×512 configuration; centralized critic width/value width 256 |
-| Actor/critic learning rates | `3e-5` / `3e-5` |
-| PPO epochs | Five actor, five critic |
-| PPO clipping / GAE lambda | `0.2` / `0.95` |
-| Entropy | Fixed `0.003` |
-| Latent unimix | `0.01` |
-| Policy/collection unimix | `0` / `0` |
-| Replay-value loss / lambda | `0.3` / `0.95` |
-| Batch / replay context | 16×64 / 192 |
-| Replay capacity | 250,000 |
-| World-model replay | 50% uniform, 50% recency, decay `0.9998` |
-| PPO-root replay | Independently sampled 50/50, decay `0.9998` |
-| Replay startup | Fixed4, `snapshot_staggered` |
-| Collection environments | 1 |
-| World-model/PPO warm-up | 5,000 environment steps |
-| Train ratio | 128 |
-| Paired/new RNG protocol | Disabled |
-| Critic-to-world-model feedback | Off: `critic_value_scale=0.0` |
-| Teammate-belief module | Disabled |
-| Curve evaluation | Every 5,000 steps, 32 episodes |
-| Final evaluation | Separate 100-episode greedy evaluation |
+| Component                              | Setting                                                                          |
+| -------------------------------------- | -------------------------------------------------------------------------------- |
+| Map                                    | `2s3z`, five agents; `3s_vs_4z`, three agents, for the specified map comparisons |
+| SMAC difficulty                        | 7                                                                                |
+| Training budget                        | 50,000 environment steps per run                                                 |
+| Local outcome heads                    | Disabled throughout                                                              |
+| Imagination mask                       | Local, Bernoulli sampled                                                         |
+| Joint mask                             | Retained                                                                         |
+| Local/joint world-model learning rates | `1e-4` / `1e-4`                                                                  |
+| Local KL, when local prior is enabled  | Dynamics `1.0`, representation `0.1`                                             |
+| Posterior alignment                    | `0.05`                                                                           |
+| SIGReg                                 | `0.05`, per-agent, 256 projections                                               |
+| Action-margin loss                     | `0.1`, except the explicit zero-margin conditions                                |
+| Multi-step cosine loss                 | `2.0`                                                                            |
+| Self-fed scale / trajectory KL         | `0.1` / `0.1`                                                                    |
+| BPTT                                   | 2                                                                                |
+| JEPA horizons / anchors                | `2, 4, 5` / 8                                                                    |
+| Imagination horizon                    | 5                                                                                |
+| Deterministic world model              | Width 4096, hidden width 512, two layers, eight heads                            |
+| Categorical latent                     | `32×64`, except the explicit `32×32` comparisons                                 |
+| Encoder                                | 3×1024, symlog                                                                   |
+| Actor                                  | 3×512                                                                            |
+| Critic                                 | 3×512 configuration; centralized critic width/value width 256                    |
+| Actor/critic learning rates            | `3e-5` / `3e-5`                                                                  |
+| PPO epochs                             | Five actor, five critic                                                          |
+| PPO clipping / GAE lambda              | `0.2` / `0.95`                                                                   |
+| Entropy                                | Fixed `0.003`                                                                    |
+| Latent unimix                          | `0.01`                                                                           |
+| Policy/collection unimix               | `0` / `0`                                                                        |
+| Replay-value loss / lambda             | `0.3` / `0.95`                                                                   |
+| Batch / replay context                 | 16×64 / 192                                                                      |
+| Replay capacity                        | 250,000                                                                          |
+| World-model replay                     | 50% uniform, 50% recency, decay `0.9998`                                         |
+| PPO-root replay                        | Independently sampled 50/50, decay `0.9998`                                      |
+| Replay startup                         | Fixed4, `snapshot_staggered`                                                     |
+| Collection environments                | 1                                                                                |
+| World-model/PPO warm-up                | 5,000 environment steps                                                          |
+| Train ratio                            | 128                                                                              |
+| Paired/new RNG protocol                | Disabled                                                                         |
+| Critic-to-world-model feedback         | Off: `critic_value_scale=0.0`                                                    |
+| Teammate-belief module                 | Disabled                                                                         |
+| Curve evaluation                       | Every 5,000 steps, 32 episodes                                                   |
+| Final evaluation                       | Separate 100-episode greedy evaluation                                           |
 
 The precise existing ablation keys are:
 
@@ -203,16 +204,16 @@ Reuse `python -m majepa.campaign` and the frozen controller described in
 [campaign-launcher.md](campaign-launcher.md). Do not write another launcher,
 queue framework, or results framework.
 
-| Stage/lane | Existing specification or required addition |
-|---|---|
-| 1A | `experiments/jema-local-prior-off-20260921.json` |
-| 1B | `experiments/jema-margin-zero-20260921.json` |
-| 2A | `experiments/jema-latent-32x32-20260921.json` |
-| 2B | `experiments/jema-joint-controls-3sv4z-20260921.json` |
-| 3A | `experiments/jema-local-prior-off-3sv4z-20260921.json` |
-| 3B | `experiments/jema-margin-zero-3sv4z-20260921.json` |
-| 4A | Add a `2s3z` specification with prior false, margin 0.0, joint false, latent 32×64, seeds 0/1/2 |
-| 4B | Add the corresponding `3s_vs_4z` specification |
+| Stage/lane    | Existing specification or required addition                                                                                    |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| 1A            | `experiments/jema-local-prior-off-20260921.json`                                                                               |
+| 1B            | `experiments/jema-margin-zero-20260921.json`                                                                                   |
+| 2A            | `experiments/jema-latent-32x32-20260921.json`                                                                                  |
+| 2B            | `experiments/jema-joint-controls-3sv4z-20260921.json`                                                                          |
+| 3A            | `experiments/jema-local-prior-off-3sv4z-20260921.json`                                                                         |
+| 3B            | `experiments/jema-margin-zero-3sv4z-20260921.json`                                                                             |
+| 4A            | Add a `2s3z` specification with prior false, margin 0.0, joint false, latent 32×64, seeds 0/1/2                                |
+| 4B            | Add the corresponding `3s_vs_4z` specification                                                                                 |
 | 5, both lanes | `experiments/jema-latent-32x32-3sv4z-20260921.json`, with `max_gpus=8` and `gpus_per_pod=4` for the planned two-pod allocation |
 
 The stage-4 specifications and revised placements have not been written at this
@@ -295,56 +296,56 @@ Retrieved from the existing results command on 22 September 2026. All rows use
 local prior on, margin weight 0.1, and latent 32×64. These are observed results,
 not a claim that the baseline and both source archives are identical.
 
-| Map | Condition | Joint | Seed 0 wins | Seed 1 wins | Seed 2 wins | Mean win rate | Sample SD | Mean return | Delta vs pure baseline | Delta vs matching joint control | Campaign |
-|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| 2s3z | Pure baseline | Off | 57 | 59 | 39 | 51.7% | 11.0 pp | 16.4979 | 0.0 pp | 0.0 pp | Endpoints r1 |
-| 2s3z | Standard joint control | 0.1 | 57 | 73 | 67 | 65.7% | 8.1 pp | 17.5770 | +14.0 pp, cross-campaign | 0.0 pp | Joint-scale |
-| 2s3z | Standard joint control | 1.0 | 47 | 73 | 80 | 66.7% | 17.4 pp | 17.6293 | +15.0 pp | 0.0 pp | Endpoints r1 |
-| 2s3z | Earlier joint result, retained for reference | 0.5 | 56 | 62 | 62 | 60.0% | 3.5 pp | 17.1362 | +8.3 pp, cross-campaign | 0.0 pp | Joint-scale |
+| Map  | Condition                                    | Joint | Seed 0 wins | Seed 1 wins | Seed 2 wins | Mean win rate | Sample SD | Mean return |   Delta vs pure baseline | Delta vs matching joint control | Campaign     |
+| ---- | -------------------------------------------- | ----- | ----------: | ----------: | ----------: | ------------: | --------: | ----------: | -----------------------: | ------------------------------: | ------------ |
+| 2s3z | Pure baseline                                | Off   |          57 |          59 |          39 |         51.7% |   11.0 pp |     16.4979 |                   0.0 pp |                          0.0 pp | Endpoints r1 |
+| 2s3z | Standard joint control                       | 0.1   |          57 |          73 |          67 |         65.7% |    8.1 pp |     17.5770 | +14.0 pp, cross-campaign |                          0.0 pp | Joint-scale  |
+| 2s3z | Standard joint control                       | 1.0   |          47 |          73 |          80 |         66.7% |   17.4 pp |     17.6293 |                 +15.0 pp |                          0.0 pp | Endpoints r1 |
+| 2s3z | Earlier joint result, retained for reference | 0.5   |          56 |          62 |          62 |         60.0% |    3.5 pp |     17.1362 |  +8.3 pp, cross-campaign |                          0.0 pp | Joint-scale  |
 
 Append completed ablation rows to this table. Keep local-prior setting, margin
 weight, and latent size explicit in each new condition label.
 
-| Reference campaign | Source commit | Source archive SHA256 | Local manifest |
-|---|---|---|---|
-| Endpoints r1 | `8acc593fd38b550d86ef0400c4c7e4d47410d7e7` | `3d88618615482524d80b2d2f838f6c391d0059d3984091ec3617e03ed5a64d2c` | `artifacts/jema-joint-endpoints-20260921-r1/manifest.json` |
-| Joint-scale | `e63ade5f1c4bbde9d3c740306c53a148a0215be6` | `e6dd90ea9d853a065d65b6bcb1916e2cdb8aa85efe558fcbbf13fa2eea75b5f6` | `artifacts/jema-joint-scale-20260921/manifest.json` |
+| Reference campaign | Source commit                              | Source archive SHA256                                              | Local manifest                                             |
+| ------------------ | ------------------------------------------ | ------------------------------------------------------------------ | ---------------------------------------------------------- |
+| Endpoints r1       | `8acc593fd38b550d86ef0400c4c7e4d47410d7e7` | `3d88618615482524d80b2d2f838f6c391d0059d3984091ec3617e03ed5a64d2c` | `artifacts/jema-joint-endpoints-20260921-r1/manifest.json` |
+| Joint-scale        | `e63ade5f1c4bbde9d3c740306c53a148a0215be6` | `e6dd90ea9d853a065d65b6bcb1916e2cdb8aa85efe558fcbbf13fa2eea75b5f6` | `artifacts/jema-joint-scale-20260921/manifest.json`        |
 
 ### Reference W&B runs
 
-| Joint setting | Seed | Training | Fixed-100 evaluation |
-|---|---:|---|---|
-| Off | 0 | [c55c13d71347](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/c55c13d71347) | [cc9216b2879a](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/cc9216b2879a) |
-| Off | 1 | [bd2cbdef735a](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bd2cbdef735a) | [277f218437eb](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/277f218437eb) |
-| Off | 2 | [ab1235397a02](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/ab1235397a02) | [29bb1ef14687](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/29bb1ef14687) |
-| 0.1 | 0 | [5ba9b0c346f8](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/5ba9b0c346f8) | [12f0fd6ad824](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/12f0fd6ad824) |
-| 0.1 | 1 | [53a1a9ad5c6c](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/53a1a9ad5c6c) | [9320a8dbb3ee](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/9320a8dbb3ee) |
-| 0.1 | 2 | [da3842293291](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/da3842293291) | [b72e05a44ab8](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/b72e05a44ab8) |
-| 1.0 | 0 | [e2bcd2ab7443](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/e2bcd2ab7443) | [d9f90944735f](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/d9f90944735f) |
-| 1.0 | 1 | [28f9113a866d](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/28f9113a866d) | [4d9724298e30](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/4d9724298e30) |
-| 1.0 | 2 | [a1137af97ed1](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/a1137af97ed1) | [7b39caaf1309](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/7b39caaf1309) |
-| 0.5 | 0 | [0f4cb6492042](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/0f4cb6492042) | [b88f729ddf95](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/b88f729ddf95) |
-| 0.5 | 1 | [95455bf81d12](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/95455bf81d12) | [9e0957b42251](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/9e0957b42251) |
-| 0.5 | 2 | [4fc4e9404889](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/4fc4e9404889) | [9589891d8107](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/9589891d8107) |
+| Joint setting | Seed | Training                                                                              | Fixed-100 evaluation                                                                  |
+| ------------- | ---: | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Off           |    0 | [c55c13d71347](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/c55c13d71347) | [cc9216b2879a](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/cc9216b2879a) |
+| Off           |    1 | [bd2cbdef735a](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/bd2cbdef735a) | [277f218437eb](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/277f218437eb) |
+| Off           |    2 | [ab1235397a02](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/ab1235397a02) | [29bb1ef14687](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/29bb1ef14687) |
+| 0.1           |    0 | [5ba9b0c346f8](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/5ba9b0c346f8) | [12f0fd6ad824](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/12f0fd6ad824) |
+| 0.1           |    1 | [53a1a9ad5c6c](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/53a1a9ad5c6c) | [9320a8dbb3ee](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/9320a8dbb3ee) |
+| 0.1           |    2 | [da3842293291](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/da3842293291) | [b72e05a44ab8](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/b72e05a44ab8) |
+| 1.0           |    0 | [e2bcd2ab7443](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/e2bcd2ab7443) | [d9f90944735f](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/d9f90944735f) |
+| 1.0           |    1 | [28f9113a866d](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/28f9113a866d) | [4d9724298e30](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/4d9724298e30) |
+| 1.0           |    2 | [a1137af97ed1](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/a1137af97ed1) | [7b39caaf1309](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/7b39caaf1309) |
+| 0.5           |    0 | [0f4cb6492042](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/0f4cb6492042) | [b88f729ddf95](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/b88f729ddf95) |
+| 0.5           |    1 | [95455bf81d12](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/95455bf81d12) | [9e0957b42251](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/9e0957b42251) |
+| 0.5           |    2 | [4fc4e9404889](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/4fc4e9404889) | [9589891d8107](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/9589891d8107) |
 
 ## Launch ledger
 
 Fill this as stages are actually submitted. A planned specification does not
 count as a queued or launched remote job.
 
-| Stage/lane | Campaign directory | Exact pod ID | Rate / start / deadline | Progress and outcome |
-|---|---|---|---|---|
-| Earlier 1A attempt | `artifacts/jema-local-prior-off-20260921` | None created | No pod allocation | Controller stopped; 60 rejected allocation attempts; zero launched runs |
-| 1A, four-GPU attempt | `artifacts/jema-local-prior-off-20260922-r1` | None created | Controller stopped at a reconciled safe point | 116 rejected attempts; superseded by the authorized two-GPU layout |
-| 1B, four-GPU attempt | `artifacts/jema-margin-zero-20260922-r1` | None created | Controller stopped at a reconciled safe point | 126 rejected attempts; superseded by the authorized two-GPU layout |
-| 2A | Pending | — | — | Planned, 9 runs |
-| 2B | Pending | — | — | Planned, 9 runs |
-| 3A | Pending | — | — | Planned, 6 runs |
-| 3B | Pending | — | — | Planned, 6 runs |
-| 4A | Pending specification | — | — | Planned, 3 runs |
-| 4B | Pending specification | — | — | Planned, 3 runs |
-| 5A | Pending two-pod initialization | — | — | Planned, 6 runs |
-| 5B | Same campaign as 5A | — | — | Planned, 3 runs |
+| Stage/lane           | Campaign directory                           | Exact pod ID | Rate / start / deadline                       | Progress and outcome                                                    |
+| -------------------- | -------------------------------------------- | ------------ | --------------------------------------------- | ----------------------------------------------------------------------- |
+| Earlier 1A attempt   | `artifacts/jema-local-prior-off-20260921`    | None created | No pod allocation                             | Controller stopped; 60 rejected allocation attempts; zero launched runs |
+| 1A, four-GPU attempt | `artifacts/jema-local-prior-off-20260922-r1` | None created | Controller stopped at a reconciled safe point | 116 rejected attempts; superseded by the authorized two-GPU layout      |
+| 1B, four-GPU attempt | `artifacts/jema-margin-zero-20260922-r1`     | None created | Controller stopped at a reconciled safe point | 126 rejected attempts; superseded by the authorized two-GPU layout      |
+| 2A                   | Pending                                      | —            | —                                             | Planned, 9 runs                                                         |
+| 2B                   | Pending                                      | —            | —                                             | Planned, 9 runs                                                         |
+| 3A                   | Pending                                      | —            | —                                             | Planned, 6 runs                                                         |
+| 3B                   | Pending                                      | —            | —                                             | Planned, 6 runs                                                         |
+| 4A                   | Pending specification                        | —            | —                                             | Planned, 3 runs                                                         |
+| 4B                   | Pending specification                        | —            | —                                             | Planned, 3 runs                                                         |
+| 5A                   | Pending two-pod initialization               | —            | —                                             | Planned, 6 runs                                                         |
+| 5B                   | Same campaign as 5A                          | —            | —                                             | Planned, 3 runs                                                         |
 
 ### 22 September stage-1 launch receipts
 
@@ -367,7 +368,7 @@ when switching topology; no existing pod or training job was stopped.
 
 ### Authorized two-GPU fallback
 
-The user rejected A100 and approved mixed L40/L40S hardware and, when four-GPU
+The user initially rejected A100 and approved mixed L40/L40S hardware and, when four-GPU
 pods were unavailable, four two-GPU pods. Each ablation still has six runs and
 uses `max_gpus=4`, `gpus_per_pod=2`: pod0 gets seeds 0 and 2 (four jobs), pod1
 gets seed 1 (two jobs). No treatment or training setting changed.
@@ -375,15 +376,15 @@ gets seed 1 (two jobs). No treatment or training setting changed.
 The existing launcher now supports Community Cloud country placements. Canada
 was the only country reporting two-L40 capacity in the live country checks.
 The specs try `{"country":"CA","cloud":"COMMUNITY"}` first, followed by the
-nine earlier Secure Cloud regions. Taiwan and A100 remain excluded. Each
+nine earlier Secure Cloud regions. At this point Taiwan and A100 were excluded. Each
 campaign has a $35.70 cap and each physical pod an eight-hour limit.
 
-| Stage/lane | Campaign | Allocation | Exact pod | Rate / created / deadline (UTC) | State at 10:43 UTC |
-|---|---|---|---|---|---|
-| 1A | `artifacts/jema-local-prior-off-20260922-2gpu` | pod0: seeds 0,2; 2 L40 | `13donozgkzjoqk` | $1.38/hour; 10:40:41 / 18:40:41 | Bootstrap running; CUDA initializes successfully on both GPUs; StarCraft downloading |
-| 1A | Same campaign | pod1: seed 1; 2 GPUs | Pending | Eight-hour limit once allocated | Controller searching |
-| 1B | `artifacts/jema-margin-zero-20260922-2gpu` | pod0: seeds 0,2; 2 GPUs | Pending | Eight-hour limit once allocated | Controller searching |
-| 1B | Same campaign | pod1: seed 1; 2 GPUs | Pending | Eight-hour limit once allocated | Queued allocation |
+| Stage/lane | Campaign                                       | Allocation              | Exact pod        | Rate / created / deadline (UTC) | State at 10:43 UTC                                                                   |
+| ---------- | ---------------------------------------------- | ----------------------- | ---------------- | ------------------------------- | ------------------------------------------------------------------------------------ |
+| 1A         | `artifacts/jema-local-prior-off-20260922-2gpu` | pod0: seeds 0,2; 2 L40  | `13donozgkzjoqk` | $1.38/hour; 10:40:41 / 18:40:41 | Bootstrap running; CUDA initializes successfully on both GPUs; StarCraft downloading |
+| 1A         | Same campaign                                  | pod1: seed 1; 2 GPUs    | Pending          | Eight-hour limit once allocated | Controller searching                                                                 |
+| 1B         | `artifacts/jema-margin-zero-20260922-2gpu`     | pod0: seeds 0,2; 2 GPUs | Pending          | Eight-hour limit once allocated | Controller searching                                                                 |
+| 1B         | Same campaign                                  | pod1: seed 1; 2 GPUs    | Pending          | Eight-hour limit once allocated | Queued allocation                                                                    |
 
 The first margin request failed with an unclassified provider response and its
 controller stopped safely. Repeated exact-name API checks confirmed no pod was
@@ -410,5 +411,83 @@ Only one of the four requested two-GPU pods has been allocated. The local-prior
 controller (PID 63607) continues searching for pod1; the margin controller
 (PID 64601) continues searching for its two pods. New capacity checks found no
 eligible two-L40/L40S availability in Secure Cloud or the non-Taiwan Community
-Cloud countries checked. The user declined A100; do not ask again or enable it
-without new instructions. No later ablation stage has been submitted.
+Cloud countries checked. The initial A100 exclusion was superseded by the later four-A100 instruction
+below. No later ablation stage has been submitted.
+
+### Four-A100 replacement and reporting fix
+
+The user subsequently authorized A100, briefly requested four H100s, and then
+explicitly selected **four A100s**. No H100 was created. The existing launcher's
+`allow_a100` support was reused without further launcher changes.
+
+Both seed-0 prior-off jobs on `13donozgkzjoqk` failed during report precompilation:
+`ReportingMixin.report()` called a local open-loop rollout even though the local
+prior was disabled. The later seed-2 workers used the same faulty frozen source.
+RunPod now reports this pod `EXITED`; no successful training result was obtained.
+The local capacity controller PID 63607 was interrupted at a reconciled safe point.
+
+The reporting fix returns the already-computed loss and CTDE diagnostic metrics
+when the local prior is absent, skipping the unavailable local open-loop report.
+It does not restore prior parameters or prior losses, change model updates, or
+change any experiment setting. The existing prior-removal test now compiles and
+executes `learner.report`, checks finite outputs and retained joint diagnostics,
+and confirms that local open-loop metrics are absent. It failed with the exact
+remote exception before the fix and passed afterward (1 test, 10.87 seconds).
+Targeted Ruff lint and format checks passed. The corrected source is frozen in
+`artifacts/jema-local-prior-off-20260922-a100`.
+
+- Corrected prior-off pod: `zql03lhuh40a3i`, four A100-SXM4-80GB GPUs, US-KS-2.
+- Rate: $6.36/hour; allocation 11:09:05 UTC; deadline 19:09:05 UTC.
+- Queue: all six prior-off runs, joint scales 0.1/1.0 and seeds 0/1/2.
+- Source SHA256: `a5845e3fef5ab7db085434db18521503194f6bf6906ba336247e878a6b1708e0`.
+
+During the switch, the existing margin controller allocated `loi5au551sw98b`,
+two L40 GPUs in Canada at $1.38/hour, for margin-off seeds 0 and 2. This useful
+allocation is retained. The controller PID 64601 continues searching for its
+second two-GPU allocation (seed 1). The prepared margin-A100 campaign was never
+launched and is superseded; do not launch it because it would duplicate these jobs.
+
+Budget accounting now includes $34.88465 of earlier control GPU charges,
+$1.68463 for the first failed shell pod, $1.68182 for its failed Taiwan replacement,
+and $27.87366 reserved for the active baseline A100 pod until its original deadline.
+The corrected prior-off campaign reserves $51.20; the margin campaign reserves
+$35.20. Conservatively allowing a full hour ($1.38) for the stopped prior-off L40
+pod and $1.00 shutdown allowances totals **$154.91**, below the shared $160 GPU cap.
+Stopped-pod billing had not yet appeared in the billing endpoint; this is a
+conservative reservation calculation, not a final invoice. Storage is additional.
+
+### Latest instruction: both ablations on four A100s
+
+The user explicitly requested switching the margin-off pod to four A100s too.
+Local controller 64601 was stopped at a reconciled safe point, and only the
+old margin pod `loi5au551sw98b` was stopped; its storage was retained. No margin
+training result was produced before this switch.
+
+The active replacement is `artifacts/jema-margin-zero-20260922-a100-r1`, containing
+all six margin-off runs. Its six-hour limit reserves $38.40 of GPU time plus a
+$0.60 allowance. The earlier prepared `jema-margin-zero-20260922-a100` directory
+was never launched; do not start it.
+
+The shared worst-case reservation is now $159.59: earlier controls and failed
+baseline attempts $38.25110, current baseline reservation $27.87365, corrected
+prior-off reservation $51.20, margin-off reservation $38.40, at most one hour on
+each stopped L40 pod ($2.76), and $1.10 shutdown allowances. Storage is additional.
+
+The first prior-off A100 bootstrap stopped before training. The same pod was
+restarted for diagnosis with its original deadline retained; no replacement
+prior-off pod or duplicate job was created. Its saved bootstrap log is in the
+campaign artifact directory. Startup is not yet verified.
+
+### Shared-volume bootstrap diagnosis
+
+Both four-A100 pods allocated successfully in US-KS-2 at $6.36/hour each:
+prior-off `zql03lhuh40a3i` and margin-off `4490t12q17mvs5`. The shared network
+volume did not contain StarCraft II 4.10 and SMAC maps, so workers failed during
+asset discovery before claiming any queued training job. Their bootstrap EXIT
+traps stopped each pod. These were setup failures, separate from the reporting
+bug, and no experiment result or training progress was produced.
+
+Both same pods are being resumed with their original deadlines. The existing
+`campaign_assets.py` installs and verifies one shared asset copy under
+`/workspace/jema-sc2-assets-20260922`. Pending job identities and frozen sources
+are retained; failure logs and outcomes are backed up before queue restart.
