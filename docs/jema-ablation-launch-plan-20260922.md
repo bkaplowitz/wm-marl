@@ -4,6 +4,13 @@ Updated: 22 September 2026. Repository: `wm-marl`. Branch:
 `feat/world-model-gradient-experiments`.
 
 This is the reference for future launches and the running comparison table.
+The ablation launch sequence is on hold pending the direct-shell baseline
+reproduction requested on 22 September. That diagnostic runs the unchanged
+`scripts/run_baseline.sh` for seeds 0, 1, and 2 from the archived source of our
+baseline campaign. Its operational receipt is
+`artifacts/jema-baseline-shell-20260922T083902Z/launch.json`. Resolve the baseline
+discrepancy before launching the ablations below.
+
 The requested order is baseline first, then local-prior removal and the separate
 margin-loss ablation, then the smaller latent. The later `3s_vs_4z` request adds
 the corresponding controls and ablations on that map. The combined prior/margin
