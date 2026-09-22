@@ -169,7 +169,7 @@ defaults:
       outscale: 0.0
       units: 512
       winit: trunc_normal_in
-    num_agents: 3
+    num_agents: 5
     opt:
       agc: 0.3
       anneal: 0
@@ -266,7 +266,7 @@ defaults:
     fps: 15
     outputs:
       - jsonl
-      - scope
+      - wandb
     timer: true
     user: ''
   random_agent: false
@@ -297,9 +297,9 @@ defaults:
     envs: 1
     episode_timeout: 180
     eval_envs: 4
-    eval_eps: 1
+    eval_eps: 100
     eval_policy_mode: eval
-    eval_worker_offset: 0
+    eval_worker_offset: 100000
     final_save: true
     from_checkpoint: ''
     isolate_report_rng: true
@@ -326,5 +326,17 @@ defaults:
     world_model_start_step: 5000
   script: train
   seed: 0
-  task: smac_3m
+  task: smac_2s3z
 baseline: {}
+eval_only:
+  script: eval_only
+  jax:
+    precompile: false
+  run:
+    eval_eps: 100
+    eval_policy_mode: eval
+    envs: 4
+    eval_worker_offset: 100000
+    curve_eval_interval: 0
+    eval_envs: 1
+    world_model_start_step: 0

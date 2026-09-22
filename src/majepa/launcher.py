@@ -7,6 +7,7 @@ import os
 import platform
 import subprocess
 import sys
+import uuid
 from datetime import datetime, timezone
 from collections.abc import Callable
 from typing import Any
@@ -29,6 +30,7 @@ def runtime_environment(
     task: str,
     infrastructure_root,
     artifact_dir,
+    wandb_job_type: str,
     wandb_project: str | None = None,
     wandb_entity: str | None = None,
     wandb_name: str | None = None,
@@ -44,12 +46,15 @@ def runtime_environment(
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env.setdefault("WANDB_DIR", str(artifact_dir))
-    if wandb_project:
-        env["WANDB_PROJECT"] = wandb_project
-    if wandb_entity:
-        env["WANDB_ENTITY"] = wandb_entity
-    if wandb_name:
-        env["WANDB_NAME"] = wandb_name
+    env["WANDB_PROJECT"] = (
+        wandb_project or env.get("WANDB_PROJECT") or "majepa-ppo-treatments"
+    )
+    env["WANDB_ENTITY"] = wandb_entity or env.get("WANDB_ENTITY") or "osaze-obahor"
+    env["WANDB_RUN_GROUP"] = env.get("WANDB_RUN_GROUP") or "jema-baseline"
+    env["WANDB_RUN_ID"] = f"{uuid.uuid4().hex}-{wandb_job_type}"
+    env["WANDB_NAME"] = wandb_name or env["WANDB_RUN_ID"]
+    env["WANDB_JOB_TYPE"] = wandb_job_type
+    env["WANDB_RESUME"] = "never"
     pythonpath = [str(infrastructure_root), str(repository_root() / "src")]
     if env.get("PYTHONPATH"):
         pythonpath.append(env["PYTHONPATH"])
@@ -90,6 +95,7 @@ def run_training(
         task=spec.task,
         infrastructure_root=spec.infrastructure_root,
         artifact_dir=spec.experiment_dir,
+        wandb_job_type="train",
         wandb_project=spec.wandb_project,
         wandb_entity=spec.wandb_entity,
         wandb_name=spec.experiment_dir.name,

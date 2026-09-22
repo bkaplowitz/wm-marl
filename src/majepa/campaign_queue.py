@@ -298,14 +298,11 @@ def phase_config(directory, entry, checkpoint=None):
     root = directory / "jobs" / entry["name"]
     config["logdir"] = str(root / ("final100" if checkpoint else "train"))
     if checkpoint:
-        config.update(
-            script="eval_only",
-            **{
-                "run.from_checkpoint": str(checkpoint),
-                "run.eval_eps": 100,
-                "run.eval_policy_mode": "eval",
-            },
-        )
+        import elements
+        from .main import _load_configs
+
+        config.update(elements.Config(_load_configs()["eval_only"]).flat)
+        config["run.from_checkpoint"] = str(checkpoint)
     return config
 
 

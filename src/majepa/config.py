@@ -6,9 +6,26 @@ from dataclasses import dataclass, field
 import math
 from pathlib import Path
 
+import ruamel.yaml as yaml
+
 from majepa.runtime import absolute_path, infrastructure_root, runtime_python
 
 PUBLIC_ALGORITHMS = ("ma-jepa",)
+
+
+def evaluation_defaults() -> dict[str, object]:
+    profile = yaml.YAML(typ="safe").load(
+        Path(__file__).with_name("configs.yaml").read_text()
+    )["eval_only"]["run"]
+    return {
+        "policy_mode": {"eval": "deterministic", "eval_sample": "stochastic"}[
+            profile["eval_policy_mode"]
+        ],
+        "episodes": profile["eval_eps"],
+        "envs": profile["envs"],
+        "seed_offset": 0,
+        "worker_offset": profile["eval_worker_offset"],
+    }
 
 
 def algorithm_config_profiles(algorithm: str) -> list[str]:
@@ -122,9 +139,6 @@ class MAJEPARunSpec:
 
     @property
     def command(self) -> list[str]:
-        outputs = ["jsonl", "scope"]
-        if self.wandb_project:
-            outputs.append("wandb")
         command = [
             str(self.python),
             "-m",
@@ -168,7 +182,8 @@ class MAJEPARunSpec:
             "--jax.platform",
             self.platform,
             "--logger.outputs",
-            *outputs,
+            "jsonl",
+            "wandb",
         ]
         if self.save_every_seconds is not None:
             command.extend(["--run.save_every", str(self.save_every_seconds)])
@@ -201,13 +216,6 @@ class MAJEPARunSpec:
         }
 
     def to_dict(self) -> dict[str, object]:
-        evaluation = {
-            "policy_mode": "deterministic",
-            "interval": self.curve_eval_interval,
-            "episodes": self.curve_eval_episodes,
-            "envs": self.curve_eval_envs,
-            "seed_offset": self.curve_eval_seed_offset,
-        }
         return {
             "implementation": "MA-JEPA",
             "algorithm": self.algorithm,
@@ -226,7 +234,7 @@ class MAJEPARunSpec:
             "curve_eval_episodes": self.curve_eval_episodes,
             "curve_eval_envs": self.curve_eval_envs,
             "curve_eval_seed_offset": self.curve_eval_seed_offset,
-            "evaluation_protocol": evaluation,
+            "evaluation_protocol": evaluation_defaults(),
             "policy_modules": ["encoder", "local history", "actor"],
             "ctde": self.ctde_manifest,
             "world_model_gradients": {

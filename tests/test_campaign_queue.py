@@ -179,15 +179,24 @@ def test_frozen_configuration_roundtrip(tmp_path):
     train = queue.phase_config(tmp_path, entry)
     evaluation = queue.phase_config(tmp_path, entry, tmp_path / "checkpoint")
     assert {key for key in train if train[key] != config[key]} == {"logdir"}
-    assert {key for key in evaluation if evaluation[key] != config[key]} <= {
-        "logdir",
-        "script",
-        "run.from_checkpoint",
-        "run.eval_eps",
-        "run.eval_policy_mode",
+    assert evaluation == {
+        **config,
+        "logdir": str(tmp_path / "jobs/example/final100"),
+        "script": "eval_only",
+        "run.from_checkpoint": str(tmp_path / "checkpoint"),
+        "run.eval_eps": 100,
+        "run.eval_policy_mode": "eval",
+        "run.envs": 4,
+        "run.eval_worker_offset": 100000,
+        "jax.precompile": False,
+        "run.curve_eval_interval": 0,
+        "run.eval_envs": 1,
+        "run.world_model_start_step": 0,
     }
     command = queue.phase_command(train, tmp_path / "train.yaml")
     assert command[-1] == str(tmp_path / "train.yaml")
+    command = queue.phase_command(evaluation, tmp_path / "evaluation.yaml")
+    assert command[-1] == str(tmp_path / "evaluation.yaml")
     assert config["logdir"] == "/RUN/example/train"
 
 

@@ -12,8 +12,8 @@ from majepa.runtime import infrastructure_root, repository_root, runtime_python
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--task", required=True)
-    parser.add_argument("--num-agents", type=int, required=True)
+    parser.add_argument("--task", default="smac_2s3z")
+    parser.add_argument("--num-agents", type=int, default=5)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--total-env-steps", type=int, default=50_000)
     parser.add_argument("--experiment-dir", type=Path)
