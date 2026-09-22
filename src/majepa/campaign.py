@@ -732,7 +732,8 @@ def bootstrap_script(out, *, stage_assets=False):
                 if stage_assets
                 else []
             ),
-            "export UV_PROJECT_ENVIRONMENT=/opt/majepa-venv",
+            "export UV_PROJECT_ENVIRONMENT=" + shlex.quote(out + "/.venv"),
+            "export UV_CACHE_DIR=" + shlex.quote(out + "/.uv-cache"),
             "uv sync --locked --python 3.11 --extra dev --extra smac --extra cuda12",
             'export PYTHONPATH="$PWD/src:$PWD/external/dreamerv3"',
             *(
@@ -767,6 +768,8 @@ def launch(directory, manifest, name, hours, *, placement=None, gpu_id=None):
             raise ValueError("unsupported campaign GPU")
         job = reserve(current, name, hours).copy()
         job.update(gpu_id=gpu_id, **placement)
+        if job.pop("volume", None):
+            print("Ignoring legacy network volume; using pod-attached storage", flush=True)
         current["jobs"][-1].update(job)
         manifest = current
     command = [
@@ -785,11 +788,8 @@ def launch(directory, manifest, name, hours, *, placement=None, gpu_id=None):
         str(job["gpu_count"]),
         "--cloud-type",
         job.get("cloud", "SECURE"),
-        *(
-            ["--network-volume-id", job["volume"]]
-            if job.get("volume")
-            else ["--volume-in-gb", str(math.ceil(manifest["storage"]["quota_gb"]))]
-        ),
+        "--volume-in-gb",
+        str(math.ceil(manifest["storage"]["quota_gb"])),
         *(
             ["--country-code", job["country"], "--public-ip"]
             if "country" in job
@@ -875,7 +875,7 @@ def launch(directory, manifest, name, hours, *, placement=None, gpu_id=None):
                 stdin=source,
                 check=True,
             )
-        bootstrap = bootstrap_script(out, stage_assets=not job.get("volume"))
+        bootstrap = bootstrap_script(out, stage_assets=True)
         remote(
             connection, f"cat > {shlex.quote(out + '/bootstrap.sh')}", input=bootstrap
         )

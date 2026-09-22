@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
 
 
@@ -17,10 +18,10 @@ def stage(root, *, dry_run=False):
             "--retry",
             "3",
             "--output",
-            "/tmp/SC2.4.10.zip",
+            str(root / "SC2.4.10.zip"),
             "https://blzdistsc2-a.akamaihd.net/Linux/SC2.4.10.zip",
         ],
-        ["unzip", "-q", "-P", "iagreetotheeula", "/tmp/SC2.4.10.zip", "-d", str(root)],
+        ["unzip", "-q", "-P", "iagreetotheeula", str(root / "SC2.4.10.zip"), "-d", str(root)],
         [
             "curl",
             "--fail",
@@ -28,13 +29,19 @@ def stage(root, *, dry_run=False):
             "--retry",
             "3",
             "--output",
-            "/tmp/SMAC_Maps.zip",
+            str(root / "SMAC_Maps.zip"),
             "https://github.com/oxwhirl/smac/releases/download/v0.1-beta1/SMAC_Maps.zip",
         ],
-        ["unzip", "-q", "/tmp/SMAC_Maps.zip", "-d", str(root / "StarCraftII/Maps")],
+        ["unzip", "-q", str(root / "SMAC_Maps.zip"), "-d", str(root / "StarCraftII/Maps")],
     ]
     if dry_run:
         return commands
+    if root.exists():
+        raise FileExistsError(root)
+    root.parent.mkdir(parents=True, exist_ok=True)
+    free_gb = shutil.disk_usage(root.parent).free / 1e9
+    if free_gb < 40:
+        raise OSError(f"SC2 staging needs 40 GB free for archives, extraction and headroom; {free_gb:.1f} GB available at {root.parent}")
     root.mkdir(parents=True, exist_ok=False)
     for command in commands:
         print(json.dumps(command), flush=True)

@@ -4,6 +4,13 @@ Updated: 22 September 2026. Repository: `wm-marl`. Branch:
 `feat/world-model-gradient-experiments`.
 
 This is the reference for future launches and the running comparison table.
+**Storage instruction (latest):** resume the two existing ablation pods with
+Python, source code, SMAC, and StarCraft assets on each pod's local disk;
+checkpoints and run outputs may remain on the existing shared network volume.
+For every future pod launch, use pod-attached local
+storage, sized for assets, dependencies, retained checkpoints, temporary
+checkpoint writes, and a free-space reserve. Do not attach a network volume.
+
 On 22 September, the user requested two new ablation pods after the earlier
 baseline-reproduction hold. Stage 1 is being launched under that new request. After four-GPU capacity
 failed, the user approved mixed L40/L40S allocations and a fallback to four
@@ -491,3 +498,66 @@ Both same pods are being resumed with their original deadlines. The existing
 `campaign_assets.py` installs and verifies one shared asset copy under
 `/workspace/jema-sc2-assets-20260922`. Pending job identities and frozen sources
 are retained; failure logs and outcomes are backed up before queue restart.
+
+### Setup recovery and hardware verification
+
+Episodic Memory recovered the historical setup sequence from the 17 September
+asset staging and the 22 September direct-shell replacement: install `uv` and
+`unzip`, run `uv sync --locked --python 3.11 --extra dev --extra smac --extra cuda12`,
+then run `python -m majepa.campaign_assets` and wait for asset verification.
+The gap here was assuming that attaching a network volume implied preinstalled
+StarCraft assets. The existing asset installer is now being reused once on the
+shared volume. No additional launcher framework was added.
+
+Pinned-JAX compute checks succeeded on CUDA devices 0/1/2/3 of both A100 pods.
+RunPod confirms four A100-SXM4-80GB GPUs on each, eight total, $12.72/hour combined.
+The original deadlines remain 19:09:05 UTC for prior-off and 17:13:28 UTC for
+margin-off. The interrupted recovery was reconciled: prior-off's resume script
+was already waiting for assets, and only the missing margin resume was started.
+Both queues retained their six pending jobs and original W&B identities.
+Controllers 87215 (prior-off) and 87217 (margin-off) monitor the resumed pods.
+Failure evidence is retained beside each remote queue and in local artifacts.
+
+The local prior-off stop receipt initially remained after restart because the
+job update helper merges fields; that stale `stopped_at` field was explicitly
+cleared under the manifest lock. Live RunPod checks confirmed both pods running.
+This stale local receipt did not represent an additional pod shutdown.
+
+### Asset verification and first worker launch
+
+The shared installation passed the historical SHA256 checks for StarCraft II
+Base75689 and the `2s3z` map. Both pods use
+`/workspace/jema-sc2-assets-20260922/StarCraftII`. The SC2 archive expands to
+4,938,576,444 bytes across 24,278 entries. Assets remain on network storage;
+there is no measured comparison against pod-local SC2 runtime throughput.
+
+At approximately 11:25:49 UTC, both queues started their four seed-0/seed-1
+training processes, one per A100. Each pod retains two seed-2 runs queued.
+Process startup alone does not establish advancing environment steps or
+successful W&B registration; those checks are still pending at this entry.
+
+### Latest storage decision
+
+The user requested stopping and relaunching on pod-local storage, then explicitly
+reversed that instruction: **keep using the shared network storage for now**.
+Both ablation pods and their local controllers had already been stopped, but no
+network volume was deleted and no replacement pod was created. No launcher
+storage change was made in this session. Resume these same two four-A100 pods
+with their original deadlines and retained, verified shared StarCraft assets.
+Do not carry out the superseded network-volume deletion or local-storage migration.
+Other users' pods and all shared volumes remain untouched.
+
+### Local runtime with retained network checkpoints
+
+The user then requested using the cleared container disks for Python, SMAC,
+StarCraft II, and source code while retaining network-attached checkpoints.
+The two existing pods each have a 30 GiB local container disk. The frozen source
+is extracted to `/opt/majepa-src`, the locked environment is installed at
+`/opt/majepa-venv`, and the installation previously staged by
+`campaign_assets.py` is copied to `/opt/StarCraftII` and checked against its
+verification receipt. This avoids downloading and retaining another SC2 archive.
+The remote campaign directory, logs, checkpoints, and temporary checkpoint
+writes remain on the existing network volume. Original source archives,
+experiment configurations, W&B identities, and shutdown deadlines are retained.
+Future new pods must use pod-attached local storage for the full workload,
+including sufficient checkpoint and temporary-file headroom.
