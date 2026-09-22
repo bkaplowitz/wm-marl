@@ -4,12 +4,21 @@ Updated: 22 September 2026. Repository: `wm-marl`. Branch:
 `feat/world-model-gradient-experiments`.
 
 This is the reference for future launches and the running comparison table.
-The ablation launch sequence is on hold pending the direct-shell baseline
-reproduction requested on 22 September. That diagnostic runs the unchanged
-`scripts/run_baseline.sh` for seeds 0, 1, and 2 from the archived source of our
-baseline campaign. Its operational receipt is
-`artifacts/jema-baseline-shell-20260922T083902Z/launch.json`. Resolve the baseline
-discrepancy before launching the ablations below.
+On 22 September, the user requested two new ablation pods after the earlier
+baseline-reproduction hold. Stage 1 is being launched under that new request. After four-GPU capacity
+failed, the user approved mixed L40/L40S allocations and a fallback to four
+two-GPU pods (eight GPUs total), with A100 still excluded.
+The baseline discrepancy is still unresolved: the direct-shell diagnostic on
+`y4leuwgzbs5j1b` failed before training because CUDA initialization failed.
+Its records remain in `docs/jema-baseline-shell-reproduction-20260922.md`.
+
+These new campaigns freeze commit `7172773d5a2c1acdbe0486715103b974dd0f7acd`,
+which includes the subsequently approved evaluation-profile correction. Final
+100-episode evaluation now uses four environments and worker offset 100000,
+matching the shell launcher. The older reference results below used one
+environment and offset 0. Report comparisons as differing in evaluation
+protocol until the old checkpoints have also been evaluated with the corrected
+protocol; this change alone has not been proved to explain the baseline gap.
 
 The requested order is baseline first, then local-prior removal and the separate
 margin-loss ablation, then the smaller latent. The later `3s_vs_4z` request adds
@@ -27,7 +36,7 @@ Run the 57 remaining training jobs and their 57 separate fixed-100 greedy
 evaluations using at most two concurrent four-GPU RunPods and the existing
 campaign launcher. Preserve the pinned JEMA baseline except for each listed
 ablation and the required map/seed/output identifiers. Use L40, then L40S, with
-the approved wider valid-region search, eight-hour pod limits, and the $160
+the approved wider valid-region search excluding Taiwan (TW), eight-hour pod limits, and the $160
 protective spend cap. Do not duplicate completed controls or active jobs.
 After every completed three-seed ablation, update this document's results table
 with per-seed results, means, sample SDs, differences from the same-map pure
@@ -326,8 +335,8 @@ count as a queued or launched remote job.
 | Stage/lane | Campaign directory | Exact pod ID | Rate / start / deadline | Progress and outcome |
 |---|---|---|---|---|
 | Earlier 1A attempt | `artifacts/jema-local-prior-off-20260921` | None created | No pod allocation | Controller stopped; 60 rejected allocation attempts; zero launched runs |
-| 1A | Pending fresh initialization with expanded placements | — | — | Planned, 6 runs |
-| 1B | Pending | — | — | Planned, 6 runs |
+| 1A, four-GPU attempt | `artifacts/jema-local-prior-off-20260922-r1` | None created | Controller stopped at a reconciled safe point | 116 rejected attempts; superseded by the authorized two-GPU layout |
+| 1B, four-GPU attempt | `artifacts/jema-margin-zero-20260922-r1` | None created | Controller stopped at a reconciled safe point | 126 rejected attempts; superseded by the authorized two-GPU layout |
 | 2A | Pending | — | — | Planned, 9 runs |
 | 2B | Pending | — | — | Planned, 9 runs |
 | 3A | Pending | — | — | Planned, 6 runs |
@@ -336,3 +345,70 @@ count as a queued or launched remote job.
 | 4B | Pending specification | — | — | Planned, 3 runs |
 | 5A | Pending two-pod initialization | — | — | Planned, 6 runs |
 | 5B | Same campaign as 5A | — | — | Planned, 3 runs |
+
+### 22 September stage-1 launch receipts
+
+The existing campaign controller, bootstrap, and per-GPU queue are used without
+model or launcher changes. Both specifications use the nine previously approved
+regions, exclude Taiwan, and retain four GPUs per pod. W&B remains
+`osaze-obahor/majepa-ppo-treatments`. The local PIDs, logs, immutable manifests,
+resolved configurations, and frozen source are stored in each campaign directory.
+A running local controller waiting for capacity is not a running experiment.
+
+The combined new reservation is $70.40 of GPU runtime plus $1.00 of shutdown
+allowances, rather than a new $160 budget for each pod. RunPod billing retrieved
+at launch preparation records $34.88465 of GPU charges for the three earlier
+JEMA control allocations and $1.68463 for the deleted direct-shell pod. Even
+reserving the replacement baseline pod's full eight hours at $2.37/hour keeps
+these charges plus the new reservations below the shared $160 protective cap.
+Storage charges are additional; stopped pods may still incur storage charges.
+Only the two unallocated controllers started for this launch were interrupted
+when switching topology; no existing pod or training job was stopped.
+
+### Authorized two-GPU fallback
+
+The user rejected A100 and approved mixed L40/L40S hardware and, when four-GPU
+pods were unavailable, four two-GPU pods. Each ablation still has six runs and
+uses `max_gpus=4`, `gpus_per_pod=2`: pod0 gets seeds 0 and 2 (four jobs), pod1
+gets seed 1 (two jobs). No treatment or training setting changed.
+
+The existing launcher now supports Community Cloud country placements. Canada
+was the only country reporting two-L40 capacity in the live country checks.
+The specs try `{"country":"CA","cloud":"COMMUNITY"}` first, followed by the
+nine earlier Secure Cloud regions. Taiwan and A100 remain excluded. Each
+campaign has a $35.70 cap and each physical pod an eight-hour limit.
+
+| Stage/lane | Campaign | Allocation | Exact pod | Rate / created / deadline (UTC) | State at 10:43 UTC |
+|---|---|---|---|---|---|
+| 1A | `artifacts/jema-local-prior-off-20260922-2gpu` | pod0: seeds 0,2; 2 L40 | `13donozgkzjoqk` | $1.38/hour; 10:40:41 / 18:40:41 | Bootstrap running; CUDA initializes successfully on both GPUs; StarCraft downloading |
+| 1A | Same campaign | pod1: seed 1; 2 GPUs | Pending | Eight-hour limit once allocated | Controller searching |
+| 1B | `artifacts/jema-margin-zero-20260922-2gpu` | pod0: seeds 0,2; 2 GPUs | Pending | Eight-hour limit once allocated | Controller searching |
+| 1B | Same campaign | pod1: seed 1; 2 GPUs | Pending | Eight-hour limit once allocated | Queued allocation |
+
+The first margin request failed with an unclassified provider response and its
+controller stopped safely. Repeated exact-name API checks confirmed no pod was
+created. One instrumented retry returned the known capacity rejection, which
+was reconciled using the existing helper, and its controller was resumed.
+All receipts and failure records are preserved in the campaign directory.
+
+### Startup verification at 10:55 UTC
+
+On `13donozgkzjoqk`, the automatic bootstrap finished and started both seed-0
+local-prior-off treatments at 10:48:48 UTC. GPU 0 runs joint scale 0.1
+(child PID 1105, worker 967); GPU 1 runs scale 1.0 (child PID 1103, worker 968).
+Both child processes and fresh worker heartbeats were verified more than
+120 seconds after launch. Both seed-2 treatments remain pending on the pod.
+
+Both jobs are still compiling JAX training/report functions and have emitted
+XLA slow-compilation warnings. They have not yet produced verified advancing
+training steps or W&B registration. Do not treat process liveness as a completed
+training-startup verification. The saved evidence is
+`artifacts/jema-local-prior-off-20260922-2gpu/health-after-120s.json` and
+`health-latest.json`; `verify-startup.json` records the still-missing W&B runs.
+
+Only one of the four requested two-GPU pods has been allocated. The local-prior
+controller (PID 63607) continues searching for pod1; the margin controller
+(PID 64601) continues searching for its two pods. New capacity checks found no
+eligible two-L40/L40S availability in Secure Cloud or the non-Taiwan Community
+Cloud countries checked. The user declined A100; do not ask again or enable it
+without new instructions. No later ablation stage has been submitted.

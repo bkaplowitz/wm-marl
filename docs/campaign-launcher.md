@@ -26,6 +26,10 @@ This storage remains attached to the pod; final artifacts are still verified on
 W&B before shutdown. Inspect staging commands without downloads using
 `python -m majepa.campaign_assets /tmp/sc2-assets --dry-run`.
 
+For Community Cloud, use a country placement such as
+`{"country": "CA", "cloud": "COMMUNITY"}`. It uses attached pod storage and
+requests a public IP for SSH. Region placements continue to use Secure Cloud.
+
 ```sh
 uv run --no-sync python -m majepa.campaign init \
   --directory artifacts/my-campaign \

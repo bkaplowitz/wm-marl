@@ -100,10 +100,29 @@ reference. Do not compare Osaze's two-seed mean directly with our three-seed mea
 
 ## Operational state
 
-Seeds 0/1/2 are running the unchanged shell launcher on GPUs 0/1/2; shell PIDs
-838/1062/1286 and initial training PIDs 844/1068/1292. They started in W&B offline
-mode before the user's logging correction. Pod-side W&B authentication is now
-ready following the instruction to use the previous logging setup. Sync these
-completed runs from the pod, not from the local machine. Preserve the active
-jobs and monitor to completion; stop only this pod after saving the results and
-required checkpoints. See the operational receipt for the current IDs.
+The original pod became unreachable after training began. It was stopped and
+then deleted, including its pod volume, at the user's request. RunPod confirmed
+deletion and a subsequent lookup returned 404; no completed results were recovered.
+
+Replacement pod `y4leuwgzbs5j1b` (`jema-baseline-shell-20260922-r2`) has three L40S
+GPUs in Taiwan at $2.37/hour. It uses the same frozen source and original deadline,
+with W&B online logging. Current state and connection details are recorded in
+`artifacts/jema-baseline-shell-20260922-r2/launch.json`.
+Setup was verified complete at 10:01 UTC on 22 September; training had not started.
+The user has excluded Taiwan (`TW`) from all future pod placements.
+
+The three unchanged shell scripts were invoked at 10:14:17 UTC for seeds 0/1/2.
+All exited before training: CUDA initialization returned error 999, and opening
+`/dev/nvidia-uvm` directly returned an input/output error. The same CUDA failure
+occurred without a GPU-visibility filter. No result was produced; the pod needs
+driver recovery or replacement, not a model/configuration change.
+The user authorized replacement; RunPod confirmed deletion of this pod and its
+pod-attached storage. All three failed-launch logs are preserved in its local
+artifact directory. The replacement must be outside Taiwan.
+
+The user approved an A100 fallback after non-Taiwan L40/L40S capacity rejections.
+Replacement `ebmp9z3n12e2vk` has three A100 80GB GPUs in US-MD-1 at $4.77/hour.
+Both image CUDA 12.4 and pinned JAX computation passed on all three GPUs before
+launch. The unchanged shell scripts for seeds 0/1/2 were invoked at 11:00:30 UTC
+on 22 September, with online W&B group `jema-baseline-shell-20260922-r3`.
+Current operational state is in `artifacts/jema-baseline-shell-20260922-r3/launch.json`.
