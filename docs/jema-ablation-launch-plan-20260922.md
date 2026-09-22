@@ -561,3 +561,33 @@ writes remain on the existing network volume. Original source archives,
 experiment configurations, W&B identities, and shutdown deadlines are retained.
 Future new pods must use pod-attached local storage for the full workload,
 including sufficient checkpoint and temporary-file headroom.
+
+### Verified local-runtime restart, 22 September 11:56 UTC
+
+- `zql03lhuh40a3i` (jema-local-prior-off-20260922-a100): four live training workers, 5,360–5,950 environment steps, 46–119 learner updates, all recorded training losses finite. Two seed-2 runs remain queued. Local free space: 14.51 GiB.
+- `4490t12q17mvs5` (jema-margin-zero-20260922-a100-r1): four live training workers, 5,010–5,010 environment steps, 2–2 learner updates, all recorded training losses finite. Two seed-2 runs remain queued. Local free space: 14.51 GiB.
+
+Both pods retain four A100-SXM4-80GB GPUs each. Immediate checks and checks
+132 seconds later passed. All eight active W&B runs have matching configs and
+verified source/config artifacts. The actual SC2 processes execute
+`/opt/StarCraftII/Versions/Base75689/SC2_x64` with local `/tmp/sc-*` directories;
+Python/SMAC/JAX are in `/opt/majepa-venv`, and runtime code is `/opt/majepa-src`.
+The campaign's `repo` path points to that verified local extraction, with the
+original shared extraction retained as `repo.network-backup`. Interrupted
+pre-training queues and logs were preserved under
+`interrupted-before-training-20260922T1135`; no learned checkpoint was resumed.
+
+Local controllers 4049 and 4052 remain active. Original hard deadlines are
+19:09:05 UTC (prior-off) and 17:13:28 UTC (margin-off); their combined GPU
+rate remains $12.72/hour. Full training and final evaluations are still pending.
+Detailed restart, runtime-path, and training receipts are in the two campaign
+artifact directories.
+
+At 12:05 UTC the follow-up W&B check confirmed continued learning:
+
+- `jema-local-prior-off-20260922-a100`: W&B environment counters 6,130–9,700; learner updates 142–588; all four runs running with finite optimizer, actor, and critic losses.
+- `jema-margin-zero-20260922-a100-r1`: W&B environment counters 7,490–9,920; learner updates 312–616; all four runs running with finite optimizer, actor, and critic losses.
+
+The local monitors subsequently needed restarting after a RunPod API DNS lookup failed; the remote queues and shutdown guards continued independently.
+
+Replacement local monitors 33192 (prior-off) and 33302 (margin-off) passed the follow-up check: recent remote health refreshes, four live workers each, and all eight W&B runs verified with finite optimizer/PPO losses.
