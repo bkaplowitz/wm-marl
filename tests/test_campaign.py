@@ -101,6 +101,8 @@ def test_gpu_fallback_requires_explicit_a100_opt_in():
         {"overrides": {"agent.does_not_exist": 1}},
         {"overrides": {"run.envs": 2}},
         {"treatments": [{"name": "../bad", "overrides": {}}]},
+        {"placements": [{"country": "Canada", "cloud": "COMMUNITY"}]},
+        {"placements": [{"country": "CA", "cloud": "invalid"}]},
     ],
 )
 def test_invalid_spec_fails_before_any_cloud_operation(change):
@@ -421,9 +423,16 @@ def test_compare_campaign_configs_matches_baseline_and_enforces_allowlist():
 
 
 @pytest.mark.parametrize("observed_rate", [2.5, 4.0])
-@pytest.mark.parametrize("network_volume", [True, False])
+@pytest.mark.parametrize(
+    "placement",
+    [
+        {"region": "TEST-1", "volume": "testvolume"},
+        {"region": "TEST-1"},
+        {"country": "CA", "cloud": "COMMUNITY"},
+    ],
+)
 def test_complete_mocked_pod_launch_stages_one_queue_for_three_gpus(
-    tmp_path, monkeypatch, observed_rate, network_volume
+    tmp_path, monkeypatch, observed_rate, placement
 ):
     import io
     import tarfile
@@ -440,9 +449,7 @@ def test_complete_mocked_pod_launch_stages_one_queue_for_three_gpus(
             authenticators=lambda _: ("user", None, "SECRET")
         ),
     )
-    placement = {"region": "TEST-1"}
-    if network_volume:
-        placement["volume"] = "testvolume"
+    network_volume = "volume" in placement
     manifest = campaign.plan(specification(placements=[placement]), "test")
     campaign.write_json(tmp_path / "manifest.json", manifest)
     with tarfile.open(tmp_path / "source.tar.gz", "w:gz") as archive:
@@ -484,6 +491,16 @@ def test_complete_mocked_pod_launch_stages_one_queue_for_three_gpus(
     create_command = commands[0]
     assert create_command[create_command.index("--gpu-count") + 1] == "3"
     assert create_command[create_command.index("--gpu-id") + 1] == "NVIDIA L40"
+    assert create_command[create_command.index("--cloud-type") + 1] == placement.get(
+        "cloud", "SECURE"
+    )
+    if "country" in placement:
+        assert create_command[create_command.index("--country-code") + 1] == "CA"
+        assert "--public-ip" in create_command
+        assert "--data-center-ids" not in create_command
+    else:
+        assert create_command[create_command.index("--data-center-ids") + 1] == "TEST-1"
+        assert "--country-code" not in create_command
     if network_volume:
         assert "--network-volume-id" in create_command
     else:

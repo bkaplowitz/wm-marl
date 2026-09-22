@@ -102,10 +102,17 @@ def test_joint_objective_scale_changes_only_ctde_loss_weights():
 
 
 def test_disabling_local_prior_omits_prior_parameters_and_losses():
-    learner, _, _, state = _setup(local_prior=False)
+    learner, data, carry, state = _setup(local_prior=False)
     assert "dyn" not in learner.scales
     assert "rep" not in learner.scales
     assert not any(key.startswith("dyn/prior") for key in state)
+
+    _, (report_carry, report_metrics) = jax.jit(nj.pure(learner.report))(
+        state, carry, data, seed=1207
+    )
+    _assert_finite((report_carry, report_metrics))
+    assert "ctde/self_fed_h2/reward_rmse" in report_metrics
+    assert not any(key.startswith("openloop/") for key in report_metrics)
 
     def complete_from_observation():
         local = learner.dyn.initial(2)

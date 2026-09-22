@@ -135,8 +135,19 @@ def plan(spec, name):
     if not placements:
         raise ValueError("at least one region/network-volume placement is required")
     for placement in placements:
-        if set(placement) not in ({"region"}, {"region", "volume"}):
-            raise ValueError("each placement requires region and an optional volume")
+        if set(placement) not in (
+            {"region"},
+            {"region", "volume"},
+            {"country", "cloud"},
+        ):
+            raise ValueError("placement requires a region or a Community Cloud country")
+        if "country" in placement and (
+            placement["cloud"] != "COMMUNITY"
+            or not re.fullmatch(r"[A-Z]{2}", placement["country"])
+        ):
+            raise ValueError(
+                "country placement requires COMMUNITY and a two-letter code"
+            )
         for value in placement.values():
             identifier(value)
     storage = {"quota_gb": 300, "min_free_gb": 20, **spec.get("storage", {})}
@@ -773,14 +784,17 @@ def launch(directory, manifest, name, hours, *, placement=None, gpu_id=None):
         "--gpu-count",
         str(job["gpu_count"]),
         "--cloud-type",
-        "SECURE",
+        job.get("cloud", "SECURE"),
         *(
             ["--network-volume-id", job["volume"]]
             if job.get("volume")
             else ["--volume-in-gb", str(math.ceil(manifest["storage"]["quota_gb"]))]
         ),
-        "--data-center-ids",
-        job["region"],
+        *(
+            ["--country-code", job["country"], "--public-ip"]
+            if "country" in job
+            else ["--data-center-ids", job["region"]]
+        ),
         "--container-disk-in-gb",
         "30",
         "--volume-mount-path",
@@ -1436,7 +1450,8 @@ def controller(directory, *, once=False):
                 for gpu in gpu_options(manifest):
                     for placement in manifest["placements"]:
                         print(
-                            f"Allocating {pending['gpu_count']} x {gpu} in {placement['region']}",
+                            f"Allocating {pending['gpu_count']} x {gpu} in "
+                            f"{placement.get('region', placement.get('country'))}",
                             flush=True,
                         )
                         try:

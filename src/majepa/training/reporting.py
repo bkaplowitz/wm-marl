@@ -43,6 +43,10 @@ class ReportingMixin:
                 except KeyError:
                     print(f"Skipping gradnorm summary for missing loss: {key}")
 
+        if not self.dyn.local_prior:
+            carry = (*new_carry, {key: data[key][:, -1] for key in self.act_space})
+            return carry, metrics
+
         def firsthalf(tree):
             return jax.tree.map(lambda value: value[:rows, : length // 2], tree)
 
