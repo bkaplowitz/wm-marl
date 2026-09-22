@@ -1507,6 +1507,11 @@ def main(argv=None):
     parser.add_argument("--allow-difference", action="append", default=[])
     args = parser.parse_args(argv)
     directory = args.directory.expanduser().resolve()
+    if args.action == "init" and re.search(r"-\d{8}$", directory.name):
+        directory = directory.with_name(
+            directory.name + time.strftime("T%H%M%SZ", time.gmtime())
+        )
+        print(f"Campaign directory: {directory}", file=sys.stderr)
     identifier(directory.name)
     if args.action == "init":
         if args.spec is None:

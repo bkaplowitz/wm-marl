@@ -1,4 +1,5 @@
 import json
+import re
 
 import pytest
 
@@ -138,6 +139,22 @@ def test_dry_run_is_read_only_and_shows_resolved_jobs(tmp_path, monkeypatch, cap
     )
     result = json.loads(capsys.readouterr().out)
     assert len(result["runs"]) == 3
+    assert not target.exists()
+
+
+def test_dry_run_adds_utc_time_to_date_suffixed_campaign(tmp_path, capsys):
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps(specification()))
+    target = tmp_path / "campaign-20260101"
+
+    campaign.main(
+        ["init", "--directory", str(target), "--spec", str(spec), "--dry-run"]
+    )
+
+    output = capsys.readouterr()
+    name = json.loads(output.out)["campaign"]
+    assert re.fullmatch(r"campaign-20260101T\d{6}Z", name)
+    assert str(tmp_path / name) in output.err
     assert not target.exists()
 
 
