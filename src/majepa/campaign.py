@@ -46,6 +46,8 @@ def positive_finite(value):
 
 
 def gpu_options(manifest):
+    if manifest.get("gpu_types"):
+        return manifest["gpu_types"]
     options = ["NVIDIA L40", "NVIDIA L40S"]
     if manifest.get("allow_a100", False):
         options += ["NVIDIA A100-SXM4-80GB", "NVIDIA A100 80GB PCIe"]
@@ -103,6 +105,7 @@ def plan(spec, name):
         "max_gpus",
         "gpus_per_pod",
         "allow_a100",
+        "gpu_types",
         "placements",
         "storage",
         "predecessor",
@@ -126,6 +129,12 @@ def plan(spec, name):
         raise ValueError("require positive integer gpus_per_pod <= max_gpus")
     if type(spec.get("allow_a100", False)) is not bool:
         raise ValueError("allow_a100 must be a boolean")
+    if "gpu_types" in spec:
+        allowed_gpus = gpu_options({"allow_a100": spec.get("allow_a100", False)})
+        if not spec["gpu_types"] or any(
+            gpu not in allowed_gpus for gpu in spec["gpu_types"]
+        ):
+            raise ValueError("gpu_types must contain explicitly allowed GPU models")
     destination = spec["wandb"]
     if set(destination) != {"entity", "project"}:
         raise ValueError("wandb requires explicit entity and project")
@@ -267,7 +276,7 @@ def plan(spec, name):
         raise ValueError(
             "GPU budget cannot cover full allocation including shutdown allowance"
         )
-    return {
+    result = {
         "version": 2,
         "campaign": name,
         "image": spec.get("image", IMAGE),
@@ -286,6 +295,9 @@ def plan(spec, name):
         "allocations": allocations,
         "jobs": [],
     }
+    if "gpu_types" in spec:
+        result["gpu_types"] = spec["gpu_types"]
+    return result
 
 
 def write_json(path, value):
@@ -769,7 +781,9 @@ def launch(directory, manifest, name, hours, *, placement=None, gpu_id=None):
         job = reserve(current, name, hours).copy()
         job.update(gpu_id=gpu_id, **placement)
         if job.pop("volume", None):
-            print("Ignoring legacy network volume; using pod-attached storage", flush=True)
+            print(
+                "Ignoring legacy network volume; using pod-attached storage", flush=True
+            )
         current["jobs"][-1].update(job)
         manifest = current
     command = [
@@ -1144,9 +1158,10 @@ def collect_results(manifest, client):
                 f"training config does not match {run['name']}: {mismatches}"
             )
         evaluation = client.run(prefix + run["evaluation_wandb_id"])
-        if evaluation.state != "finished" or evaluation.summary.get(
-            "artifacts/evaluation_verified"
-        ) is not True:
+        if (
+            evaluation.state != "finished"
+            or evaluation.summary.get("artifacts/evaluation_verified") is not True
+        ):
             raise ValueError(f"evaluation is not finished and verified: {run['name']}")
         summary = evaluation.summary
         episodes_value = float(summary.get("final_eval/episodes", math.nan))
@@ -1162,8 +1177,10 @@ def collect_results(manifest, client):
         ):
             raise ValueError(f"evaluation metrics are not finite: {run['name']}")
         wins = int(wins_value)
-        if wins_value != wins or not 0 <= wins <= 100 or not math.isclose(
-            win_rate, wins / 100, abs_tol=1e-12
+        if (
+            wins_value != wins
+            or not 0 <= wins <= 100
+            or not math.isclose(win_rate, wins / 100, abs_tol=1e-12)
         ):
             raise ValueError(f"evaluation win metrics are inconsistent: {run['name']}")
         task, treatment, seed = _run_identity(run)

@@ -91,6 +91,14 @@ def test_gpu_fallback_requires_explicit_a100_opt_in():
     ]
 
 
+def test_explicit_gpu_models_do_not_fall_back_to_other_hardware():
+    models = ["NVIDIA A100-SXM4-80GB", "NVIDIA A100 80GB PCIe"]
+    manifest = campaign.plan(specification(allow_a100=True, gpu_types=models), "test")
+    assert campaign.gpu_options(manifest) == models
+    with pytest.raises(ValueError, match="explicitly allowed"):
+        campaign.plan(specification(gpu_types=models), "test")
+
+
 @pytest.mark.parametrize(
     "change",
     [
@@ -377,9 +385,7 @@ def test_collect_results_requires_verified_fixed_100_and_aggregates():
     )
     assert paired["mean_win_rate_difference"] == pytest.approx(-0.1)
 
-    remote[plan["runs"][0]["evaluation_wandb_id"]].summary[
-        "final_eval/episodes"
-    ] = 32
+    remote[plan["runs"][0]["evaluation_wandb_id"]].summary["final_eval/episodes"] = 32
     with pytest.raises(ValueError, match="100 episodes"):
         campaign.collect_results(plan, client)
 
@@ -449,7 +455,6 @@ def test_complete_mocked_pod_launch_stages_one_queue_for_three_gpus(
             authenticators=lambda _: ("user", None, "SECRET")
         ),
     )
-    network_volume = "volume" in placement
     manifest = campaign.plan(specification(placements=[placement]), "test")
     campaign.write_json(tmp_path / "manifest.json", manifest)
     with tarfile.open(tmp_path / "source.tar.gz", "w:gz") as archive:
@@ -501,18 +506,15 @@ def test_complete_mocked_pod_launch_stages_one_queue_for_three_gpus(
     else:
         assert create_command[create_command.index("--data-center-ids") + 1] == "TEST-1"
         assert "--country-code" not in create_command
-    if network_volume:
-        assert "--network-volume-id" in create_command
-    else:
-        assert "--network-volume-id" not in create_command
-        assert create_command[create_command.index("--volume-in-gb") + 1] == "300"
+    assert "--network-volume-id" not in create_command
+    assert create_command[create_command.index("--volume-in-gb") + 1] == "300"
     bootstrap = next(
         data
         for script, data in staged
         if "cat >" in script and "bootstrap.sh" in script
     )
-    assert ("majepa.campaign_assets" in bootstrap) is not network_volume
-    assert ("apt-get install -y unzip" in bootstrap) is not network_volume
+    assert "majepa.campaign_assets" in bootstrap
+    assert "apt-get install -y unzip" in bootstrap
     assert "SECRET" not in str(commands)
     saved = json.loads((tmp_path / "manifest.json").read_text())
     allocation = saved["jobs"][0]

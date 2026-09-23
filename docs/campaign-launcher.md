@@ -59,6 +59,30 @@ missing files cause a visible wait, and failed predecessor jobs cause failure.
 The GPU preference is **L40, then L40S**, trying configured placements for each.
 A100 is considered only with `allow_a100: true`. There is no silent change of
 pod topology or rate ceiling when capacity is unavailable.
+An explicit `gpu_types` list restricts provisioning to those allowed models,
+for example the two A100 variants with `allow_a100: true`.
+
+## Queue successive campaigns
+
+`python -m majepa.campaign_sequence --directory artifacts/SEQUENCE` runs an
+explicit `sequence.json` containing `budget`, `spent_before`, `predecessors`
+(absolute campaign directories), and `stages` (lists of one or two frozen
+campaign directories). Each campaign in a stage must reserve one four-GPU pod.
+Use `--dry-run` to validate the frozen manifests without contacting services.
+
+The sequence verifies training, checkpoint artifacts, and fixed-100 evaluation
+results through the existing result collector. It then stops only those
+campaigns' exact pod IDs, records their stopped state, deletes them, and waits
+until they are absent from the live pod inventory before launching the next
+stage. Unverified or failed completed pods are retained for investigation.
+Training is launched with each campaign's existing frozen controller.
+
+`sequence-state.json` records progress, teardown receipts, and cumulative GPU
+cost. The next stage's full GPU reservation must fit the cumulative budget;
+otherwise its state is `budget_blocked` and no new pods are allocated. Storage
+charges are additional. `sequence-error.json` records failures; resolve the
+cause before restarting the same command. A process lock prevents concurrent
+sequence runners, and completed campaigns are not rerun after a restart.
 
 ## Freeze, launch, and monitor
 

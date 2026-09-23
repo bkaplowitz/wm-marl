@@ -4,6 +4,32 @@ Updated: 22 September 2026. Repository: `wm-marl`. Branch:
 `feat/world-model-gradient-experiments`.
 
 This is the reference for future launches and the running comparison table.
+**Follow-up preparation, 22 September:** the 63 remaining stage-2-through-5
+runs have been frozen under
+`artifacts/jema-followup-queue-20260922T150444Z/sequence.json`. This includes
+36 smaller-latent runs with margin on/off. There are 21 four-A100 pod batches,
+each with at most four runs, arranged in 12 successive groups of at most two
+pods. Each new pod uses 300 GB of attached local storage, a 30 GB free-space
+reserve, online W&B, and an eight-hour limit. The source contents are identical
+across all frozen batches.
+
+**Activation status: not started.** Automatic approval review rejected both
+the joint-only artifact-preservation handoff and detached queue activation.
+The pending choices are explicit joint-only source/config/checkpoint/evaluation
+uploads to `osaze-obahor/majepa-ppo-treatments`, and the follow-up scope/budget.
+The prepared queue still enforces the original $160 cumulative GPU cap,
+including a conservative $35.20 reservation for superseded allocations.
+The full follow-up GPU reservations total $1,075.20 before existing allocations;
+this is a maximum reservation, not a forecast or spending authorization.
+No existing pod or training process was changed during this preparation.
+
+Before any replacement allocation, the queue requires successful final
+results and verified artifacts, then confirmed deletion of exactly
+`zql03lhuh40a3i`, `4490t12q17mvs5`, and `paz0yz1kjnde17`. The joint-only
+completion manifest is in the sequence directory's `joint-predecessor/`;
+its missing checkpoint-artifact verification intentionally prevents teardown.
+The existing separate evaluation pods are outside this queue's teardown scope.
+
 **Storage instruction (latest):** resume the two existing ablation pods with
 Python, source code, SMAC, and StarCraft assets on each pod's local disk;
 checkpoints and run outputs may remain on the existing shared network volume.
@@ -40,7 +66,7 @@ create or resume an active goal.
 
 ```text
 Execute docs/jema-ablation-launch-plan-20260922.md in its specified stage order.
-Run the 57 remaining training jobs and their 57 separate fixed-100 greedy
+Complete the 75 planned training jobs and their separate fixed-100 greedy
 evaluations using at most two concurrent four-GPU RunPods and the existing
 campaign launcher. Preserve the pinned JEMA baseline except for each listed
 ablation and the required map/seed/output identifiers. Use L40, then L40S, with
@@ -100,7 +126,15 @@ with this combined condition in the present plan.
 | Local-prior removal           | Off         |                0.1 | 32×64  | 0.1, 1.0       |            6 |
 | Margin-loss removal           | On          |                0.0 | 32×64  | 0.1, 1.0       |            6 |
 | Smaller latent                | On          |                0.1 | 32×32  | Off, 0.1, 1.0  |            9 |
+| Smaller latent + margin removal | On        |                0.0 | 32×32  | Off, 0.1, 1.0  |            9 |
 | Combined prior/margin removal | Off         |                0.0 | 32×64  | Off            |            3 |
+
+Clarification on 22 September: include **32×32 with action-margin loss off**
+alongside the existing margin-on smaller-latent comparisons. Each map now has
+18 smaller-latent runs: two margin settings, three joint settings, and three
+seeds. Local prior remains on in both smaller-latent conditions. These additions
+are prepared specifications, not submitted jobs or automatic follow-up queues.
+The 75-run schedule below includes stage 1; reuse completed and active runs.
 
 The prior-only and margin-only conditions remain separate experiments. The
 combined condition is an additional experiment. Disabling the local prior also
@@ -116,11 +150,11 @@ the existing launcher stops a completed campaign's pod and enforces its deadline
 | Stage     | Pod A — four GPUs                                                 | Pod B — four GPUs                                                     | New runs |
 | --------- | ----------------------------------------------------------------- | --------------------------------------------------------------------- | -------: |
 | 1         | `2s3z`: local prior off; joint 0.1/1.0; 6 runs                    | `2s3z`: margin weight 0.0, prior on; joint 0.1/1.0; 6 runs            |       12 |
-| 2         | `2s3z`: 32×32; joint off/0.1/1.0; 9 runs                          | `3s_vs_4z`: standard 32×64 controls; joint off/0.1/1.0; 9 runs        |       18 |
+| 2         | `2s3z`: 32×32; margin 0.1/0.0; joint off/0.1/1.0; 18 runs       | `3s_vs_4z`: standard 32×64 controls; joint off/0.1/1.0; 9 runs        |       27 |
 | 3         | `3s_vs_4z`: local prior off; joint 0.1/1.0; 6 runs                | `3s_vs_4z`: margin weight 0.0, prior on; joint 0.1/1.0; 6 runs        |       12 |
 | 4 — added | `2s3z`: prior off + margin weight 0.0, otherwise baseline; 3 runs | `3s_vs_4z`: prior off + margin weight 0.0, otherwise baseline; 3 runs |        6 |
-| 5         | `3s_vs_4z`: 32×32; joint off/0.1/1.0; seeds 0 and 2; 6 runs       | `3s_vs_4z`: the same 32×32 comparison; seed 1; 3 runs                 |        9 |
-| Total     | 30 runs                                                           | 27 runs                                                               |   **57** |
+| 5         | `3s_vs_4z`: 32×32; margin 0.1/0.0; joint off/0.1/1.0; seeds 0 and 2; 12 runs | `3s_vs_4z`: the same 32×32 comparisons; seed 1; 6 runs       |       18 |
+| Total     | 45 runs                                                           | 30 runs                                                               |   **75** |
 
 Scheduling instructions:
 
@@ -135,7 +169,7 @@ Scheduling instructions:
 4. Stage 4 follows completion of both stage-3 comparisons. Stage 5 follows
    stage 4. Do not move the combined ablation ahead of the separate ablations.
 5. For stage 5, the existing two-pod planner assigns seeds 0 and 2 to one pod
-   and seed 1 to the other. That produces the stated 6/3 split. Each combined
+   and seed 1 to the other. That produces the stated 12/6 split. Each combined
    stage-4 comparison has only three jobs, so one GPU on each pod will be idle;
    do not add unrequested treatments to fill those slots.
 6. Record each actual campaign directory, pod ID, hourly rate, start time,
@@ -245,7 +279,7 @@ Operational limits and instructions:
   spending and new reservations before advancing; do not interpret it as a new
   allowance for every row or pod. The existing launcher's cap counts GPU spend;
   storage/network charges must also be reported. This plan does not guarantee
-  all 57 runs fit into one eight-hour allocation or the remaining budget.
+  all 75 runs fit into one eight-hour allocation or the remaining budget.
 - Save checkpoints locally, upload and verify final checkpoints and evaluation
   artifacts through W&B, and prune superseded local checkpoints only afterward.
 - Inspect exact existing campaign pods and sessions before launch. Never kill

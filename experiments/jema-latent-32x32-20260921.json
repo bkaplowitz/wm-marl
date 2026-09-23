@@ -51,6 +51,29 @@
         "agent.world_model_gradients.joint_prediction": true,
         "agent.world_model_gradients.joint_prediction_scale": 1.0
       }
+    },
+    {
+      "name": "joint-local-off-32x32-margin-off",
+      "overrides": {
+        "agent.world_model_gradients.joint_prediction": false,
+        "agent.loss_scales.ctde_multistep_jepa_action": 0.0
+      }
+    },
+    {
+      "name": "joint-local-0p1-32x32-margin-off",
+      "overrides": {
+        "agent.world_model_gradients.joint_prediction": true,
+        "agent.world_model_gradients.joint_prediction_scale": 0.1,
+        "agent.loss_scales.ctde_multistep_jepa_action": 0.0
+      }
+    },
+    {
+      "name": "joint-local-1p0-32x32-margin-off",
+      "overrides": {
+        "agent.world_model_gradients.joint_prediction": true,
+        "agent.world_model_gradients.joint_prediction_scale": 1.0,
+        "agent.loss_scales.ctde_multistep_jepa_action": 0.0
+      }
     }
   ]
 }

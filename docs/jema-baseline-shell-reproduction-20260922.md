@@ -73,13 +73,101 @@ The Osaze references are the `ke21-control-repro1-*` runs identified by
 
 | Seed | Our original campaign | Osaze reference | Direct shell rerun | Shell minus our original |
 |---|---:|---:|---:|---:|
-| 0 | [57](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/cc9216b2879a) | [70](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/ke21-control-repro1-2s3z-s0-621d97-final100) | Pending | Pending |
-| 1 | [59](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/277f218437eb) | [75](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/ke21-control-repro1-2s3z-s1-621d97-final100) | Pending | Pending |
-| 2 | [39](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/29bb1ef14687) | Not found in this reference group | Pending | Pending |
-| Three-seed mean | 51.7% | Not available | Pending | Pending |
+| 0 | [57](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/cc9216b2879a) | [70](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/ke21-control-repro1-2s3z-s0-621d97-final100) | 36 | -21 |
+| 1 | [59](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/277f218437eb) | [75](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/ke21-control-repro1-2s3z-s1-621d97-final100) | 31 | -28 |
+| 2 | [39](https://wandb.ai/osaze-obahor/majepa-ppo-treatments/runs/29bb1ef14687) | Not found in this reference group | 50 | +11 |
+| Three-seed mean | 51.7% | Not available | 39.0% | -12.7 |
 
 The matched seeds 0 and 1 average 58.0% in our campaign and 72.5% in Osaze's
 reference. Do not compare Osaze's two-seed mean directly with our three-seed mean.
+
+Running Osaze's shell launcher unchanged did **not** reproduce his numbers. It
+scored below our own campaign, so the launcher is not the missing ingredient.
+
+## The training curves diverge; evaluation protocol is second order
+
+This is the decisive evidence, and it corrects the earlier working hypothesis
+that `run.eval_worker_offset` explained the gap.
+
+The held-out curve evaluation during training (`curve_eval_interval 5000`,
+`curve_eval_eps 32`, `curve_eval_seed_offset 50000`) is honored identically on
+both branches, so it is protocol-independent. `eval/battle_won_mean`:
+
+| Env step | osaze s0 | osaze s1 | campaign s0 | campaign s1 | shell s0 | shell s1 |
+|---|---:|---:|---:|---:|---:|---:|
+| 15000 | 0.125 | 0.000 | 0.3125 | 0.4375 | 0.0625 | 0.2188 |
+| 30000 | 0.031 | 0.469 | 0.375 | 0.4375 | 0.406 | 0.1875 |
+| 45000 | 0.8125 | 0.750 | 0.4375 | 0.4375 | 0.656 | 0.2188 |
+| 50000 | 0.656 | 0.750 | 0.531 | 0.500 | 0.438 | 0.3125 |
+
+Each run's final100 tracks its own held-out curve: osaze 0.656/0.750 to 70/75,
+campaign 0.531/0.500 to 57/59, shell 0.438/0.312 to 36/31. The gap is already
+present in training and is merely carried through by evaluation.
+
+The runs start identical and separate only once learning begins:
+
+- At step 5000, `eval/agent_return_mean` is identical across all six runs per
+  seed (s0 5.6039, s1 5.9579). Initialization and pre-learning collection match.
+- By step 10000 they have separated: s0 osaze 5.5859, campaign 2.1453, shell 0.9174.
+- Learning starts at step 5000 (`world_model_start_step` / `ppo_start_step`).
+
+Update ratios are matched, so this is not a replay-ratio difference: osaze
+5519/49150, campaign 5534/49270, shell 5583/49660, all about 0.1123.
+
+Osaze's stack is deterministic: his `control` and `control-repro1` runs are
+bit-identical (s0 curve 0.65625 and final100 70; s1 curve 0.75 and final100 75).
+GPUs differ across runs (osaze s0 L40, osaze s1 L40S, campaign L40S, shell
+A100-SXM4-80GB) but that does not explain a gap this large.
+
+### Recovered checkpoint evidence
+
+The three shell checkpoints were pulled off pod `ebmp9z3n12e2vk` before teardown
+and verified by SHA-256 against the pod. All three agree exactly:
+
+| Counter | s0 | s1 | s2 |
+|---|---:|---:|---:|
+| `step` | 50000 | 50000 | 50000 |
+| `first_learner_environment_step` | 5000 | 5000 | 5000 |
+| `first_ppo_environment_step` | 5000 | 5000 | 5000 |
+| `learner_update_calls` | 5626 | 5626 | 5626 |
+| `ppo_update_calls` | 5626 | 5626 | 5626 |
+| `world_only_update_calls` | 0 | 0 | 0 |
+
+The recorded per-episode metadata confirms the shell evaluation protocol
+directly: `worker_index` takes the values 100000, 100001, 100002 and 100003,
+that is four workers of 25 episodes at offset 100000. Seed 0 wins split across
+those workers as 8, 13, 8 and 7 out of 25. That spread is what independent seed
+streams produce by chance at this win rate, so the offset introduces variance
+but no systematic bias. A 36-versus-70 gap is roughly seven standard errors and
+cannot be attributed to it.
+
+`world_only_update_calls` is 0 and the learner and PPO both start at step 5000,
+so this configuration runs no world-model-only warmup. Whether Osaze's runs did
+is worth checking against his checkpoint counters.
+
+### Remaining suspects
+
+Configuration diffing found **zero** keys present in all three configs with
+differing values. 52 keys exist only in Osaze's config, dropped when the branch
+was reduced (`conhead.*`, `rewhead.*`, `marl.ctde.teammate_belief.*`,
+`mask_calibration.*`, `ppo.entropy_schedule.*`, `ppo.factual_value.*`,
+`agent.paired_rng`, `agent.collection_unimix`,
+`agent.simplification.local_outcomes`, `run.paired_dir`, `run.paired_phase`,
+and the matching `loss_scales.*`). 13 exist only in ours.
+
+Osaze invokes `--configs smac_vector ma_jepa` plus about 80 explicit CLI
+overrides; the reduced branch uses `--configs baseline`. Flags in his argv with
+no counterpart among our config keys are the leading suspects:
+`--run.isolate_report_rng True`, `--replay.world_uniform_mix 0.5`,
+`--jax.prealloc True`, `--run.replay_stream_mode snapshot_staggered`,
+`--run.replay_trace_batches 16`, `--replay.recency_decay 0.9998`,
+`--run.replay_startup_behavior_min_starts 4`,
+`--replay.behavior_recency_decay 0.9998`,
+`--replay.behavior_uniform_mix 0.5`, `--run.train_ratio 128`.
+
+`--run.isolate_report_rng` is the most interesting of these: it changes the
+training trajectory without changing semantics, which is exactly the signature
+of a run that matches at initialization and diverges once learning starts.
 
 ## Follow-up if the results differ
 
@@ -126,3 +214,35 @@ Both image CUDA 12.4 and pinned JAX computation passed on all three GPUs before
 launch. The unchanged shell scripts for seeds 0/1/2 were invoked at 11:00:30 UTC
 on 22 September, with online W&B group `jema-baseline-shell-20260922-r3`.
 Current operational state is in `artifacts/jema-baseline-shell-20260922-r3/launch.json`.
+
+## Recovered artifacts and pod teardown
+
+Pod `ebmp9z3n12e2vk` was stopped at 14:30 UTC on 22 September after every
+artifact was copied locally and verified, then terminated. `get-pod` now
+returns 404, so the pod and its 150 GB volume are gone and billing has ended.
+
+Copied and verified:
+
+- `artifacts/jema-offset0-20260922T141004Z/checkpoints/s{0,1,2}/` — the full
+  checkpoints in the layout `evaluate.sh` expects, each with `done` and a
+  670,018,778-byte `agent.pkl`. SHA-256 verified against the pod:
+  - s0 `b6ed7851c47b95a1d368fd99c6b2d54f1a0a664d7edb0f87392ed8c3358a6a7b`
+  - s1 `9cde2efc15596118004318a2493ac8bd33a102bca832923bb443fe01c26bbf9a`
+  - s2 `1115abaa334c6bed0e9604552a8016b33a13538bd1db58f098b6c4712237c6db`
+- `artifacts/jema-baseline-shell-20260922-r3/runs/s{0,1,2}/` — training
+  `config.yaml`, `metrics.jsonl`, `scores.jsonl`, `replay_snapshots.jsonl`, the
+  checkpoint counters, 50 replay shards per seed, and the complete `final100`
+  records including `evaluation_episodes.jsonl`.
+- `artifacts/jema-baseline-shell-20260922-r3/{seed0,seed1,seed2,setup}.log`.
+- `artifacts/jema-baseline-shell-20260922-r3/source.tar.gz`, SHA-256
+  `3d88618615482524d80b2d2f838f6c391d0059d3984091ec3617e03ed5a64d2c`, matching
+  the digest recorded at the top of this document.
+
+Only the 12 GB StarCraft II install under `assets/` and the extracted `source/`
+tree were left behind; both are reproducible from `source.tar.gz` and the
+pinned commit.
+
+Pod SSH access needs `~/.runpod/ssh/runpodctl-ssh-key`, not the keys in
+`~/.ssh/`. The pod's injected `PUBLIC_KEY` holds only RSA `runpodctl-ssh-key`
+entries, so the ed25519 keys in `~/.ssh/` are rejected, as is the
+`ssh.runpod.io` proxy.
