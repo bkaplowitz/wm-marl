@@ -28,17 +28,8 @@ defaults:
     enc:
       simple:
         act: silu
-        depth: 64
-        kernel: 5
         layers: 3
-        mults:
-          - 2
-          - 3
-          - 4
-          - 4
         norm: rms
-        outer: false
-        strided: false
         symlog: true
         units: 1024
         winit: trunc_normal_in
@@ -52,14 +43,8 @@ defaults:
       ctde_continuation: 1.0
       ctde_embedding: 2.0
       ctde_interface: 1.0
-      ctde_multistep_action_mask: 1.0
-      ctde_multistep_alive: 1.0
-      ctde_multistep_continuation: 1.0
-      ctde_multistep_embedding: 2.0
-      ctde_multistep_interface: 1.0
       ctde_multistep_jepa_action: 0.1
       ctde_multistep_jepa_cosine: 2.0
-      ctde_multistep_reward: 1.0
       ctde_posterior_alignment: 0.05
       ctde_reward: 1.0
       dyn: 1.0
@@ -67,10 +52,9 @@ defaults:
       posterior_jepa: 2.0
       rep: 0.1
       sigreg: 0.05
-      spatial_jepa: 1.0
     marl:
       ctde:
-        compare_mask_heads: true
+        factual_jepa_history_gradient: false
         critic:
           act: silu
           bins: 255
@@ -106,25 +90,20 @@ defaults:
           temporal_layers: 12
           width: 256
           winit: trunc_normal_in
-        multistep:
-          anchors: 0
         multistep_jepa:
           act: silu
           action_counterfactual_mode: all_legal_mean
           action_margin: 0.1
-          belief_context: false
           decay: 0.75
           enabled: true
           horizons:
-            - 1
-            - 2
-            - 4
-            - 8
+          - 1
+          - 2
+          - 4
+          - 8
           layers: 2
           max_horizon: 8
           norm: rms
-          plan_aggregation: mean
-          plan_units: 256
           units: 512
           width: 256
           winit: trunc_normal_in
@@ -139,18 +118,14 @@ defaults:
           schedule: const
           warmup: 0
           wd: 0.0
-        rollout_steps: 1
         self_fed:
           anchors: 8
           bptt_steps: 2
-          consumer_kl_scale: 0.0
           enabled: true
-          fresh_history: false
           horizons:
-            - 2
-            - 4
-            - 5
-          local_feedback_gradient: false
+          - 2
+          - 4
+          - 5
           scale: 0.1
           trajectory_kl_scale: 0.1
       execution: strict_decentralized
@@ -202,31 +177,16 @@ defaults:
       replay_value_lam: 0.95
       replay_value_scale: 0.3
     report: true
-    report_gradnorms: false
-    reward_grad: true
     sigreg:
       aggregation: per_agent
       knots: 17
       num_proj: 256
-    simplification: {joint_mask: true}
     slowvalue:
       every: 1
       rate: 1.0
-    spatial_jepa:
-      fill_value: 128
-      mask_ratio: 0.5
     target_encoder:
       every: 1
       rate: 0.01
-    value:
-      act: silu
-      bins: 255
-      layers: 3
-      norm: rms
-      output: symexp_twohot
-      outscale: 0.0
-      units: 512
-      winit: trunc_normal_in
   batch_length: 64
   batch_size: 16
   consec_report: 1
@@ -248,20 +208,19 @@ defaults:
     mock_devices: 0
     platform: cuda
     policy_devices:
-      - 0
+    - 0
     prealloc: true
     precompile: true
     profiler: false
     train_devices:
-      - 0
+    - 0
   logdir: ~/logdir/{timestamp}
   logger:
     filter: 
-      score|return|length|fps|ratio|sample_age|replay/behavior_|schedule/|counters/|replay_views/|train/loss/|train/opt/|train/ppo/|train/ctde/|report/ctde/|central_critic/|battle_won|win_rate|legacy_|corrected_|enemy_|ally_|timeout|action_|attack_target_|eval/|episode/|final_eval/|replay/world_uniform_|imagined_action/
+      score|return|length|fps|loss/|ppo/|win_rate|battle_won|eval/|wall_clock
     fps: 15
     outputs:
-      - jsonl
-      - scope
+    - jsonl
     timer: true
     user: ''
   random_agent: false
@@ -279,10 +238,6 @@ defaults:
   replicas: 1
   report_length: 32
   run:
-    actor_addr: localhost:{auto}
-    actor_batch: -1
-    actor_threads: 1
-    agent_process: false
     checkpoint_at_curve_eval: false
     curve_eval_eps: 32
     curve_eval_interval: 5000
@@ -297,16 +252,10 @@ defaults:
     eval_worker_offset: 0
     final_save: true
     from_checkpoint: ''
-    isolate_report_rng: true
     log_every: 120
-    logger_addr: localhost:{auto}
     ppo_start_step: 5000
-    remote_envs: false
-    remote_replay: false
-    replay_addr: localhost:{auto}
     replay_startup_behavior_min_starts: 4
     replay_stream_mode: snapshot_staggered
-    replay_trace_batches: 16
     report_batches: 1
     report_every: 300
     save_every: 5000
@@ -319,7 +268,13 @@ defaults:
       nvsmi: true
       psutil: true
     world_model_start_step: 5000
+    world_model_pretrain_updates: 0
   script: train
   seed: 0
   task: smac_3m
 baseline: {}
+history_gradient:
+  agent:
+    marl:
+      ctde:
+        factual_jepa_history_gradient: true

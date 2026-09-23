@@ -29,7 +29,6 @@ cuda12 = ["jax[cuda12]==0.4.36"]
 dev = [
   "jaxlib==0.4.36",
   "pre-commit>=4.6",
-  "pytest>=8",
   "ruff==0.15.18",
 ]
 smac = [
@@ -39,18 +38,13 @@ smac = [
 ]
 
 [project.scripts]
-majepa-train = "majepa.scripts.train:main"
-majepa-evaluate = "majepa.scripts.evaluate:main"
+majepa = "majepa.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
 "majepa" = ["LICENSE", "configs.yaml"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src", "external/dreamerv3"]
 
 [tool.basedpyright]
 exclude = [".venv"]

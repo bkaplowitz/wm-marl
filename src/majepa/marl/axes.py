@@ -6,7 +6,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-
 ENVIRONMENT_FIELDS = frozenset(
     {
         "is_first",

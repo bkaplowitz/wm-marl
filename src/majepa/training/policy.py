@@ -3,6 +3,7 @@
 import elements
 import jax
 import jax.numpy as jnp
+
 from ..models.heads import (
     apply_action_mask,
     apply_predicted_action_mask,
@@ -19,10 +20,6 @@ class PolicyMixin:
         dyn_carry, dyn_entry, feat, _ = self.observe_dynamics(
             dyn_carry, tokens, prevact, reset, obs, **kwargs
         )
-        if self.dec is not None:
-            dec_carry, dec_entry, _ = self.dec(dec_carry, feat, reset, **kwargs)
-        else:
-            dec_entry = {}
         tensor = self.feat2tensor(feat)
         policy = self.policy_distribution(
             tensor,
@@ -49,8 +46,6 @@ class PolicyMixin:
                 enc=enc_entry,
                 dyn=self.policy_dynamics_replay_entries(dyn_entry),
             )
-            if self.dec is not None:
-                entries["dec"] = dec_entry
             out.update(elements.tree.flatdict(entries))
         return carry, act, out
 
@@ -67,7 +62,3 @@ class PolicyMixin:
                 self.action_mask_key,
             )
         return apply_action_mask(policy, action_mask, self.action_mask_key)
-
-    def observe_dynamics(self, carry, tokens, action, reset, obs, training, single):
-        del obs
-        return self.dyn.observe(carry, tokens, action, reset, training, single=single)

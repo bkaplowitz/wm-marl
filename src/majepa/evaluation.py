@@ -12,7 +12,6 @@ import elements
 import embodied
 import numpy as np
 
-
 _SMAC_SUM_DIAGNOSTICS = {
     "log/legacy_reward": "legacy_return",
     "log/corrected_reward": "corrected_return",
@@ -283,6 +282,7 @@ def eval_only(make_agent, make_env, make_logger, args):
         """Elapsed evaluation time exposed as a plot-friendly metric."""
 
         return float(time.perf_counter() - wall_clock_start)
+
     logdir = elements.Path(args.logdir)
     logdir.mkdir()
     episodes = defaultdict(elements.Agg)
@@ -340,7 +340,10 @@ def eval_only(make_agent, make_env, make_logger, args):
     checkpoint = elements.Checkpoint()
     checkpoint.agent = agent
     checkpoint.load(args.from_checkpoint, keys=["agent"])
-    functions = [bind(make_env, index) for index in range(environments)]
+    functions = [
+        bind(make_env, int(args.eval_worker_offset) + index)
+        for index in range(environments)
+    ]
     driver = None
 
     def policy(*values):
@@ -371,9 +374,7 @@ def eval_only(make_agent, make_env, make_logger, args):
     # in evaluation_summary.json and the W&B run appears to contain the last
     # episode rather than the complete evaluation.
     final_scalars = {
-        key: value
-        for key, value in summary.items()
-        if isinstance(value, (int, float))
+        key: value for key, value in summary.items() if isinstance(value, (int, float))
     }
     logger.add(final_scalars, prefix="final_eval")
     logger.add({"wall_clock_seconds": wall_clock_seconds()})

@@ -1,83 +1,11 @@
 import os
-import pathlib
-import re
-from copy import deepcopy
 from functools import partial as bind
 
 import elements
 import embodied
 import portal
-import ruamel.yaml as yaml
 
-folder = pathlib.Path(__file__).parent
-
-
-def _merge_dicts(base, updates):
-    """Recursively add an optional configuration layer."""
-
-    result = deepcopy(base)
-    for key, value in updates.items():
-        if isinstance(value, dict) and isinstance(result.get(key), dict):
-            result[key] = _merge_dicts(result[key], value)
-        else:
-            result[key] = deepcopy(value)
-    return result
-
-
-def _split_pattern_updates(mapping):
-    """Separate structural values from Elements regex updates."""
-
-    structural = {}
-    patterns = {}
-    for key, value in mapping.items():
-        if re.search(r"[^A-Za-z0-9_.-]", key):
-            patterns[key] = deepcopy(value)
-        elif isinstance(value, dict):
-            child_structural, child_patterns = _split_pattern_updates(value)
-            if child_structural:
-                structural[key] = child_structural
-            if child_patterns:
-                patterns[key] = child_patterns
-        else:
-            structural[key] = deepcopy(value)
-    return structural, patterns
-
-
-def _resolve_config_profiles(configs, names):
-    """Resolve profiles before constructing Config so profiles may add schema."""
-
-    resolved = deepcopy(configs["defaults"])
-    pattern_layers = []
-    for name in names:
-        if name == "defaults":
-            continue
-        if name not in configs:
-            raise KeyError(f"Unknown config profile {name!r}.")
-        structural, patterns = _split_pattern_updates(configs[name])
-        resolved = _merge_dicts(resolved, structural)
-        if patterns:
-            pattern_layers.append(patterns)
-    config = elements.Config(resolved)
-    for patterns in pattern_layers:
-        config = config.update(patterns)
-    return config
-
-
-def _load_configs(extra_config_path=None):
-    configs = yaml.YAML(typ="safe").load(elements.Path(folder / "configs.yaml").read())
-    if extra_config_path:
-        extra = yaml.YAML(typ="safe").load(elements.Path(extra_config_path).read())
-        configs["defaults"] = _merge_dicts(
-            configs["defaults"], extra.pop("defaults", {})
-        )
-        configs.update(extra)
-    return configs
-
-
-def _worker_seed(seed: int, index: int) -> int:
-    """Match the pinned DreamerV3 environment-worker seed mapping."""
-
-    return hash((int(seed), int(index))) % (2**32 - 1)
+from .configuration import load_config
 
 
 def _validate_script(script: str, num_agents: int) -> None:
@@ -87,14 +15,13 @@ def _validate_script(script: str, num_agents: int) -> None:
         raise ValueError("MA-JEPA supports only train and eval_only")
 
 
-def main(argv=None, extra_config_path=None):
-    from .marl.core import MARLCore
+def main(argv=None):
+    from .marl.agent import MARLCore
 
     [elements.print(line) for line in MARLCore.banner]
 
-    configs = _load_configs(extra_config_path)
-    parsed, other = elements.Flags(configs=["baseline"]).parse_known(argv)
-    config = _resolve_config_profiles(configs, parsed.configs)
+    parsed, other = elements.Flags(configs=["baseline"], config="").parse_known(argv)
+    config = load_config(parsed.configs, parsed.config or None)
     config = elements.Flags(config).parse(other)
     config = config.update(
         logdir=(config.logdir.format(timestamp=elements.timestamp()))
@@ -163,7 +90,7 @@ def main(argv=None, extra_config_path=None):
 
 
 def make_agent(config):
-    from .marl.core import MARLCore as Algorithm
+    from .marl.agent import MARLCore as Algorithm
 
     env = make_env(config, 0)
     if env.num_agents != config.agent.num_agents:
@@ -216,21 +143,8 @@ def make_logger(config):
             )
         elif output == "tensorboard":
             outputs.append(elements.logger.TensorBoardOutput(logdir, config.logger.fps))
-        elif output == "expa":
-            exp = logdir.split("/")[-4]
-            run = "/".join(logdir.split("/")[-3:])
-            proj = "embodied" if logdir.startswith(("/cns/", "gs://")) else "debug"
-            outputs.append(
-                elements.logger.ExpaOutput(
-                    exp, run, proj, config.logger.user, config.flat
-                )
-            )
         elif output == "wandb":
             name = os.environ.get("WANDB_NAME") or "/".join(logdir.split("/")[-4:])
-            # W&B permanently reserves deleted run IDs; use a fresh ID for
-            # the previously failed corridor seed-2 retry.
-            if name.startswith("best20-corridor-s2-fixed4-"):
-                name += "-retry2"
             outputs.append(elements.logger.WandBOutput(name, config=config.flat))
         elif output == "scope":
             outputs.append(elements.logger.ScopeOutput(elements.Path(logdir)))
@@ -272,7 +186,6 @@ def make_replay(config, folder, mode="train"):
             optimized_length=int(consec * batlen),
             recency_decay=float(config.replay.recency_decay),
             seed=int(config.seed),
-            isolate_report_rng=bool(config.run.isolate_report_rng),
             world_uniform_mix=world_uniform_mix,
             behavior_recency_decay=float(config.replay.behavior_recency_decay),
             behavior_uniform_mix=float(config.replay.behavior_uniform_mix),
@@ -287,11 +200,7 @@ def make_env(config, index, **overrides):
     kwargs = config.env.get(suite, {})
     kwargs.update(overrides)
     if kwargs.pop("use_seed", False):
-        kwargs["seed"] = (
-            int(config.seed) + int(index)
-            if suite == "smac"
-            else _worker_seed(config.seed, index)
-        )
+        kwargs["seed"] = int(config.seed) + int(index)
     if suite == "smac":
         from .envs.smac import SMACEnv
 

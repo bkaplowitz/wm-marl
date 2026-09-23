@@ -119,39 +119,3 @@ def embedding_prediction_loss(prediction, target, *, distance, stop_target):
 def embedding_std(embeddings):
     values = embeddings.astype(jnp.float32).reshape((-1, embeddings.shape[-1]))
     return values.std(axis=0).mean()
-
-
-def spatial_patch_mask(key, leading_shape, grid_shape, ratio):
-    """Sample exactly the configured number of target patches."""
-
-    patch_count = grid_shape[0] * grid_shape[1]
-    target_count = min(max(round(ratio * patch_count), 1), patch_count - 1)
-    scores = jax.random.uniform(key, (*leading_shape, patch_count))
-    indices = jax.lax.top_k(scores, target_count)[1]
-    flattened = (
-        indices[..., :, None] == jnp.arange(patch_count, dtype=indices.dtype)
-    ).any(axis=-2)
-    return flattened.reshape((*leading_shape, *grid_shape))
-
-
-def mask_image_patches(image, mask, *, fill_value=128):
-    grid_height, grid_width = mask.shape[-2:]
-    image_height, image_width = image.shape[-3:-1]
-    expanded = jnp.repeat(mask, image_height // grid_height, axis=-2)
-    expanded = jnp.repeat(expanded, image_width // grid_width, axis=-1)
-    return jnp.where(
-        expanded[..., None], jnp.asarray(fill_value, dtype=image.dtype), image
-    )
-
-
-def masked_spatial_loss(prediction, target, mask):
-    prediction = prediction.astype(jnp.float32)
-    target = jax.lax.stop_gradient(target.astype(jnp.float32))
-    prediction /= jnp.maximum(jnp.linalg.norm(prediction, axis=-1, keepdims=True), 1e-6)
-    target /= jnp.maximum(jnp.linalg.norm(target, axis=-1, keepdims=True), 1e-6)
-    cosine = (prediction * target).sum(axis=-1)
-    flat_mask = mask.reshape(prediction.shape[:-1]).astype(jnp.float32)
-    target_count = jnp.maximum(flat_mask.sum(axis=-1), 1.0)
-    loss = ((1.0 - cosine) * flat_mask).sum(axis=-1) / target_count
-    mean_cosine = (cosine * flat_mask).sum() / jnp.maximum(flat_mask.sum(), 1.0)
-    return loss, mean_cosine, flat_mask.mean()

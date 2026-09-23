@@ -69,16 +69,3 @@ def add_agent_axis(space, team_size):
         else np.broadcast_to(np.asarray(space.high), (team_size, *space.shape))
     )
     return elements.Space(space.dtype, (team_size, *space.shape), low, high)
-
-
-def report_rows(folded_batch, team_size, max_rows=6):
-    """Choose a reporting batch without splitting a complete team."""
-
-    if folded_batch % team_size:
-        raise ValueError(
-            f"folded report batch {folded_batch} is not divisible by {team_size}"
-        )
-    return min(
-        folded_batch,
-        max(team_size, (max_rows // team_size) * team_size),
-    )

@@ -12,7 +12,7 @@ sg = jax.lax.stop_gradient
 
 
 def isolated_creation_call(function, salt, *args, **kwargs):
-    """Create treatment parameters without advancing the base RNG stream."""
+    """Create auxiliary parameters without advancing the base RNG stream."""
 
     if not nj.creating():
         return function(*args, **kwargs)
@@ -30,18 +30,12 @@ def isolated_creation_call(function, salt, *args, **kwargs):
         context.reserve = outer_reserve
 
 
-
-
 class ActionConditionedMultiStepJEPA(nj.Module):
-    """Predict EMA futures from joint roots, own actions, and teammate belief.
+    """Predict future EMA embeddings from a joint root and focal action tails.
 
-    The shared hidden already encodes the stopped factual local state, joint
-    root context, and synchronized action ``a_t``. Each head additionally sees
-    only its focal agent's future replay-action tail ``a_{t+1:t+h-1}`` and a
-    detached, own-observation-conditioned TBv2 context from the same factual
-    root. The belief path is an additive zero-initialized residual, so adding it
-    cannot perturb the standalone predictor at initialization and a uniform
-    teammate belief remains exactly inert after training.
+    The root has already consumed the current joint action. Horizon-specific
+    heads additionally receive the focal agent's recorded actions at 1..h-1.
+    These direct heads supervise representation learning, not PPO rollouts.
     """
 
     width: int = 256
@@ -82,66 +76,14 @@ class ActionConditionedMultiStepJEPA(nj.Module):
             raise ValueError("multi-step JEPA widths and layer count must be positive")
         del kwargs
 
-    def _belief_residual(self, root, action, belief_context, horizon):
-        """Return a zero-initialized per-head belief-conditioned correction."""
-
-        belief = self.sub(
-            f"h{horizon}_belief_projection",
-            nn.Linear,
-            self.width,
-            bias=False,
-            winit=self.winit,
-        )(nn.cast(sg(belief_context)))
-        belief = nn.act(self.act)(
-            self.sub(f"h{horizon}_belief_norm", nn.Norm, self.norm)(belief)
-        )
-        value = jnp.concatenate([belief, root * belief, action * belief], axis=-1)
-        for index in range(self.layers):
-            value = self.sub(
-                f"h{horizon}_belief_fusion{index}",
-                nn.Linear,
-                self.units,
-                bias=False,
-                winit=self.winit,
-            )(value)
-            value = nn.act(self.act)(
-                self.sub(f"h{horizon}_belief_fusion_norm{index}", nn.Norm, self.norm)(
-                    value
-                )
-            )
-        return self.sub(
-            f"h{horizon}_belief_prediction",
-            nn.Linear,
-            self.target_dim,
-            bias=False,
-            winit=self.winit,
-            outscale=0.0,
-        )(value)
-
-    def _aggregate_belief_plan(self, belief_plan):
-        """Mean-pool the stopped per-peer action plan."""
-
-        peer_plan = self.sub(
-            "belief_peer_projection",
-            nn.Linear,
-            self.width,
-            bias=False,
-            winit=self.winit,
-        )(nn.cast(sg(belief_plan)))
-        peer_plan = nn.act(self.act)(
-            self.sub("belief_peer_norm", nn.Norm, self.norm)(peer_plan)
-        )
-        return peer_plan.mean(axis=-2)
-
     def __call__(
         self,
         joint_hidden,
         action_windows,
-        belief_plan=None,
         *,
         selected_horizon=None,
     ):
-        """Apply direct heads to live roots, own tails, and stopped TBv2 context."""
+        """Apply each horizon head to the joint root and its focal action tail."""
 
         if joint_hidden.ndim != 4:
             raise ValueError(
@@ -153,18 +95,6 @@ class ActionConditionedMultiStepJEPA(nj.Module):
                 f"{action_windows.shape} for roots {joint_hidden.shape} and "
                 f"K={self.max_horizon}"
             )
-        if belief_plan is not None:
-            if (
-                belief_plan.ndim != 6
-                or belief_plan.shape[:3] != joint_hidden.shape[:3]
-                or belief_plan.shape[3] != self.max_horizon - 1
-                or belief_plan.shape[4] < 1
-                or belief_plan.shape[5] != self.action_count
-            ):
-                raise ValueError(
-                    "multi-step belief plan must be [B,R,A,K-1,P,C], got "
-                    f"{belief_plan.shape} for roots {joint_hidden.shape}"
-                )
         if selected_horizon is not None:
             selected_horizon = int(selected_horizon)
             if selected_horizon not in self.horizons:
@@ -183,15 +113,6 @@ class ActionConditionedMultiStepJEPA(nj.Module):
             dtype=f32,
         )
         onehot *= in_range[..., None].astype(f32)
-        pooled_plan = (
-            isolated_creation_call(
-                self._aggregate_belief_plan,
-                0x4D534250,
-                belief_plan,
-            )
-            if belief_plan is not None
-            else None
-        )
         predictions = {}
         for horizon in self.horizons:
             if selected_horizon is not None and horizon != selected_horizon:
@@ -226,23 +147,7 @@ class ActionConditionedMultiStepJEPA(nj.Module):
                 self.target_dim,
                 winit=self.winit,
             )(hidden)
-            if pooled_plan is None:
-                predictions[horizon] = prediction
-            else:
-                plan_positions = jnp.arange(self.max_horizon - 1) < horizon - 1
-                belief_context = (
-                    pooled_plan * plan_positions.astype(f32)[None, None, None, :, None]
-                )
-                belief_context = belief_context.reshape((*belief_context.shape[:3], -1))
-                belief_residual = isolated_creation_call(
-                    self._belief_residual,
-                    0x4D534250 + horizon,
-                    root,
-                    action,
-                    belief_context,
-                    horizon,
-                )
-                predictions[horizon] = prediction + belief_residual
+            predictions[horizon] = prediction
         return predictions
 
 

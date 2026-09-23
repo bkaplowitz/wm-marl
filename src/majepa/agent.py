@@ -7,31 +7,24 @@ import jax.numpy as jnp
 import numpy as np
 
 from .marl.axes import MODEL_EXCLUDED_FIELDS
+from .models.encoder import Encoder
 from .models.heads import MLPHead
 from .models.normalize import Normalize
-from .models.target import CriticTarget
 from .training.learner import LearnerMixin
 from .training.optimization import OptimizationMixin
 from .training.policy import PolicyMixin
 from .training.replay import ReplayMixin
-from .training.reporting import ReportingMixin
-from .world_model import world_model_backend
+from .world_model.transformer import ParallelTransformerDynamics, feature_tensor
 
 
 class Agent(
     PolicyMixin,
     LearnerMixin,
-    ReportingMixin,
     ReplayMixin,
     OptimizationMixin,
     embodied.jax.Agent,
 ):
-    banner = [
-        r"---  ___                           __   ______ ---",
-        r"--- |   \ _ _ ___ __ _ _ __  ___ _ \ \ / /__ / ---",
-        r"--- | |) | '_/ -_) _` | '  \/ -_) '/\ V / |_ \ ---",
-        r"--- |___/|_| \___\__,_|_|_|_\___|_|  \_/ |___/ ---",
-    ]
+    banner = ["MA-JEPA — centralized world-model learning, decentralized policies"]
 
     def __init__(self, obs_space, act_space, config):
         self.obs_space = obs_space
@@ -88,32 +81,20 @@ class Agent(
             raise ValueError(
                 "replay value learning requires at least two imagination roots"
             )
-        self.world_model = world_model_backend()
-        self.objective = "embedding"
-        self.embedding_target = "ema"
         self.embedding_loss = "cosine"
-        self.posterior_jepa = True
-        self.dynamics_jepa = True
-        self.sigreg = True
-        self.dec = None
 
         enc_space = {
             key: value
             for key, value in self.obs_space.items()
             if key not in MODEL_EXCLUDED_FIELDS
         }
-        self.enc = self.world_model.encoder("simple")(
-            enc_space, **config.enc.simple, name="enc"
-        )
-        self.spatial_jepa = bool(self.enc.imgkeys)
+        self.enc = Encoder(enc_space, **config.enc.simple, name="enc")
         self.enc_output_dim = self.enc.calculate_encoder_output_dim()
-        self.target_enc = self.world_model.encoder("simple")(
-            enc_space, **config.enc.simple, name="target_enc"
-        )
+        self.target_enc = Encoder(enc_space, **config.enc.simple, name="target_enc")
         self.slowenc = embodied.jax.SlowModel(
             self.target_enc, source=self.enc, **config.target_encoder
         )
-        self.dyn = self.world_model.dynamics_model("parallel_transformer")(
+        self.dyn = ParallelTransformerDynamics(
             self.act_space,
             self.enc_output_dim,
             **config.dyn.parallel_transformer,
@@ -128,7 +109,7 @@ class Agent(
                 f"context * layers ({required_burnin}), got "
                 f"{config.replay_context}"
             )
-        self.feat2tensor = self.world_model.feature_tensor
+        self.feat2tensor = feature_tensor
         scalar = elements.Space(np.float32, ())
         outputs = {
             key: config.policy_dist_disc if space.discrete else config.policy_dist_cont
@@ -251,28 +232,6 @@ class Agent(
 
     def init_report(self, batch_size):
         return self.init_policy(batch_size)
-
-    def report_rows(self, batch_size):
-        return min(batch_size, 6)
-
-    def _make_value_models(self, scalar, config):
-        """Construct the maintained fast and slow value models."""
-
-        value = embodied.jax.MLPHead(scalar, **config.value, name="val")
-        slowvalue = CriticTarget(
-            embodied.jax.MLPHead(scalar, **config.value, name="slowval"),
-            source=value,
-            **config.slowvalue,
-        )
-        return value, slowvalue
-
-    def critic(self, features, bdims, *, slow=False, context=None):
-        """Evaluate the maintained value model."""
-        value_head = self.slowval if slow else self.val
-        inputs = self.feat2tensor(features) if isinstance(features, dict) else features
-        if context is not None:
-            inputs = jnp.concatenate([inputs, context], axis=-1)
-        return value_head(inputs, bdims)
 
     def _action_mask_key(self):
         if "action_mask" not in self.obs_space:

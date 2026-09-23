@@ -1,77 +1,127 @@
-# MA-JEPA baseline
+# MA-JEPA
 
-This branch contains one maintained algorithm and one configuration: the
-fixed4 MA-JEPA baseline reproduced on September 21, 2026. It is a decoder-free,
-centralized-training/decentralized-execution world model for SMAC with imagined
-PPO.
+A predictive world model for multi-agent reinforcement learning in SMAC.
+Agents share an observation encoder, a causal history model, and a decentralized
+policy. During training, a joint JEPA predictor models interactions between agents
+and supplies imagined trajectories for PPO. There is no observation decoder.
 
-The executable actor receives only an agent's local observation and local
-history. Training additionally uses a joint JEPA predictor and centralized
-attention critic. The baseline uses:
+This branch contains the baseline and a history-gradient variant. The latter
+changes only whether factual joint JEPA prediction also trains local history
+features. Both profiles are in [configs.yaml](src/majepa/configs.yaml).
 
-- local action masks during imagination and Bernoulli availability sampling;
-- no local reward or continuation heads;
-- a 4096-dimensional deterministic state and a 32 x 64 categorical latent;
-- a 3 x 512 actor and width-256 centralized critic;
-- local and joint world-model learning rates of `1e-4`;
-- actor and critic learning rates of `3e-5`;
-- BPTT2, imagination horizon 5, PPO clip 0.2, and fixed entropy 0.003;
-- 50/50 recent/uniform sampling for independent world and behavior replay views;
-- fixed4 snapshot-staggered replay startup after a 5k prefill;
-- one collection environment and no paired-RNG intervention.
+## Installation
 
-The complete resolved configuration is [src/majepa/configs.yaml](src/majepa/configs.yaml).
-There are no sweep or treatment profiles in this branch.
-
-## Install
-
-Use Python 3.11 from the repository root:
+Use Python 3.11 and an NVIDIA GPU with a compatible CUDA 12 driver:
 
 ```bash
 git submodule update --init --recursive
-uv sync --locked --extra dev --extra smac --extra cuda12
+uv sync --locked --extra smac --extra cuda12
 export SC2PATH=/path/to/StarCraftII
 ```
 
-## Reproduce the baseline
+Install StarCraft II and the SMAC v1 maps separately, following the
+[SMAC installation instructions](https://github.com/oxwhirl/smac#installation).
+The environment uses difficulty `7`. Use the same StarCraft II build when
+comparing runs; the Python dependency lock does not install the game itself.
 
-The launcher trains the final checkpoint and then evaluates it over 100 held-out
-greedy episodes using a separate W&B run ID:
+The pinned `external/dreamerv3` submodule supplies Embodied's environment driver,
+replay storage, JAX execution wrapper, and neural-network primitives. The agent,
+JEPA objectives, PPO training, and SMAC adapter live in `src/majepa`.
+
+## Train and evaluate
+
+From the repository root:
 
 ```bash
-./scripts/run_baseline.sh
+PYTHON=.venv/bin/python ./scripts/run_baseline.sh
 ```
 
-Its default is `2s3z`, seed 0, 5 agents, and 50k environment records. Override
-only the map-specific fields when reproducing another run:
+This trains `2s3z`, seed `0`, for 50,000 environment steps, then evaluates the
+final checkpoint for 100 episodes. Each invocation creates a fresh output
+directory under `runs/`.
+
+Change the map, agent count, seed, or budget explicitly:
 
 ```bash
 TASK=smac_3s_vs_4z NUM_AGENTS=3 STEPS=100000 SEED=1 \
-RUN_NAME=jema-baseline-3s_vs_4z-s1 ./scripts/run_baseline.sh
+  PYTHON=.venv/bin/python ./scripts/run_baseline.sh
+
+TASK=smac_8m NUM_AGENTS=8 STEPS=50000 SEED=2 \
+  CONFIG=history_gradient PYTHON=.venv/bin/python ./scripts/run_baseline.sh
 ```
 
-The script refuses to reuse an existing run directory or W&B identity. It uses
-`WANDB_ENTITY=osaze-obahor`, `WANDB_PROJECT=majepa-ppo-treatments`, and
-`WANDB_RUN_GROUP=jema-baseline` unless overridden.
-
-The Python entry point provides the same locked configuration:
+Additional dotted configuration overrides go after the script name:
 
 ```bash
-uv run --no-sync majepa-train \
-  --task smac_2s3z --num-agents 5 --seed 0 \
-  --total-env-steps 50000 --experiment-dir ./runs/2s3z-s0
+PYTHON=.venv/bin/python ./scripts/run_baseline.sh \
+  --agent.ppo.entropy_coefficient 0.005
 ```
 
-## Layout
+The launcher saves the **resolved configuration** in `train/config.yaml` and
+reloads it for evaluation. To evaluate an existing training checkpoint:
 
-```text
-src/majepa/agent.py          local encoder, history model, actor, value models
-src/majepa/marl/core.py      joint JEPA predictor and centralized critic
-src/majepa/training/         JEPA objectives, BPTT2, and imagined PPO
-src/majepa/replay.py         independent 50/50 replay views
-src/majepa/train.py          fixed4 collection and learner scheduling
-src/majepa/evaluation.py     curve and final-checkpoint evaluation
-scripts/run_baseline.sh      exact train + final100 reproduction
+```bash
+PYTHON=.venv/bin/python ./scripts/evaluate.sh runs/RUN_NAME/train
 ```
 
-See [architecture](docs/architecture.md) and [provenance](docs/provenance.md).
+For direct CLI use, expose the pinned infrastructure package:
+
+```bash
+export PYTHONPATH="$PWD/src:$PWD/external/dreamerv3"
+.venv/bin/python -m majepa.main --help
+```
+
+`--configs baseline` and `--configs history_gradient` select profiles.
+`--config PATH` reloads a saved configuration; dotted CLI overrides are applied
+last. Fresh training requires a new log directory: resuming the exact pending
+replay batch and sampler state is not implemented.
+
+## Outputs
+
+JSONL logging is enabled by default. To also log to your W&B account:
+
+```bash
+export WANDB_PROJECT=my-project
+export WANDB_ENTITY=my-team     # optional
+export WANDB_RUN_GROUP=my-study # optional
+PYTHON=.venv/bin/python ./scripts/run_baseline.sh
+```
+
+Training and evaluation have separate run IDs and output directories. Outputs
+include resolved settings, metrics, win rates, elapsed wall-clock seconds, and
+the final checkpoint. Final evaluation also writes `evaluation_summary.json`.
+
+Curve evaluation uses 32 greedy episodes every 5,000 steps, across four workers
+with a worker offset of `50000`. Final evaluation uses 100 greedy episodes,
+25 per worker, with offset `100000`. Environment seeds are the training seed
+plus the worker offset plus the worker index. Evaluation preserves the training
+policy's random state.
+
+## Code layout
+
+| Location | Responsibility |
+| --- | --- |
+| `configuration.py`, `configs.yaml` | Profiles, settings, and saved-config loading |
+| `main.py` | Construct environments, replay, agent, and logging |
+| `train.py`, `evaluation.py` | Collection/update scheduling and evaluation |
+| `agent.py` | Local model and optimizer construction |
+| `marl/agent.py` | Team adapter, joint modules, centralized critic |
+| `marl/replay.py`, `marl/imagination.py` | Reconstruct histories and roll out the joint simulator |
+| `models/` | Encoder, joint attention, prediction heads, categorical distributions |
+| `world_model/` | Local Transformer dynamics and attention/cache mechanics |
+| `training/learner.py`, `training/behavior.py` | World-model update, frozen PPO batches, actor/critic updates |
+| `training/joint.py`, `training/direct_jepa.py`, `training/self_fed.py` | Factual, direct multi-step, and recurrent JEPA supervision |
+| `training/ppo.py`, `training/replay_value.py` | Policy and value objectives |
+| `replay.py`, `streams.py` | Independent replay views and deterministic sampling order |
+| `envs/smac.py` | SMAC observations, legal actions, rewards, and episode outcomes |
+| `scripts/` | Train-and-evaluate and checkpoint-evaluation launchers |
+
+See [the architecture guide](docs/architecture.md) for dimensions, gradient
+boundaries, and the order of a learner update.
+
+Replay reads use the fixed4 ordering, and parameter names and active model
+operations were retained during this cleanup. This is not a guarantee of
+identical results across GPU types, software stacks, or arbitrary refactors.
+Record the Git revision, resolved settings, hardware, driver, and game version
+when reporting results. Full-training equivalence of this cleaned branch has
+not yet been established.
