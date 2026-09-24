@@ -1,0 +1,54 @@
+{
+  "profiles": ["baseline"],
+  "wandb": {"entity": "osaze-obahor", "project": "majepa-ppo-treatments"},
+  "budget": 40,
+  "max_gpu_hourly_rate": 1.6,
+  "max_hours": 8,
+  "max_gpus": 3,
+  "gpus_per_pod": 3,
+  "allow_a100": true,
+  "gpu_types": ["NVIDIA A100 80GB PCIe"],
+  "placements": [
+    {"region": "EU-RO-1"},
+    {"region": "US-IL-1"},
+    {"region": "US-KS-2"},
+    {"region": "US-MD-1"},
+    {"region": "US-MO-1"},
+    {"region": "EU-NL-1"},
+    {"region": "EUR-IS-2"},
+    {"country": "US", "cloud": "COMMUNITY"},
+    {"country": "CA", "cloud": "COMMUNITY"},
+    {"country": "GB", "cloud": "COMMUNITY"},
+    {"country": "DE", "cloud": "COMMUNITY"},
+    {"country": "FR", "cloud": "COMMUNITY"},
+    {"country": "NO", "cloud": "COMMUNITY"}
+  ],
+  "storage": {
+    "quota_gb": 300,
+    "min_free_gb": 30,
+    "workspace_root": "/workspace/jema-joint-local-pcie-3gpu-20260923"
+  },
+  "maps": [{"name": "2s3z", "agents": 5, "steps": 50000}],
+  "seeds": [0, 1, 2],
+  "run_order": "treatment_first",
+  "overrides": {
+    "run.eval_eps": 1,
+    "run.eval_worker_offset": 0
+  },
+  "treatments": [
+    {
+      "name": "joint-local-1p0",
+      "overrides": {
+        "agent.world_model_gradients.joint_prediction": true,
+        "agent.world_model_gradients.joint_prediction_scale": 1.0
+      }
+    },
+    {
+      "name": "joint-local-0p1",
+      "overrides": {
+        "agent.world_model_gradients.joint_prediction": true,
+        "agent.world_model_gradients.joint_prediction_scale": 0.1
+      }
+    }
+  ]
+}
