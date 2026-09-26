@@ -96,9 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         envs=args.envs,
         eval_seed=args.eval_seed,
     )
-    environment_config_profile(
-        str(manifest["task"]), int(manifest["num_agents"])
-    )
+    environment_config_profile(str(manifest["task"]), int(manifest["num_agents"]))
     profiles = algorithm_config_profiles(algorithm)
     evaluation = experiment / "evaluation" / f"seed_{eval_seed}_{_timestamp()}"
     python = absolute_path(args.python or Path(str(manifest["python"])))

@@ -32,9 +32,7 @@ def imagined_action_mask(probability, alive, seed=None):
     the established empty-mask fallback and absorbing dead-agent no-op support.
     """
     mask = (
-        probability >= 0.5
-        if seed is None
-        else jax.random.bernoulli(seed, probability)
+        probability >= 0.5 if seed is None else jax.random.bernoulli(seed, probability)
     )
     noop = jnp.zeros_like(mask).at[..., 0].set(True)
     mask = jnp.where(mask.any(axis=-1, keepdims=True), mask, noop)

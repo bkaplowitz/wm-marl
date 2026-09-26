@@ -32,9 +32,7 @@ def test_launcher_sets_hash_seed_before_child_process(tmp_path, monkeypatch):
 
 
 def test_maintained_profile_uses_synchronous_snapshot_sampling():
-    config = _resolve_config_profiles(
-        _load_configs(), ("smac_vector", "ma_jepa")
-    )
+    config = _resolve_config_profiles(_load_configs(), ("smac_vector", "ma_jepa"))
     assert config.run.replay_stream_mode == "snapshot_staggered"
     assert config.run.replay_startup_behavior_min_starts == 4
     assert config.run.replay_trace_batches == 32

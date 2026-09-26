@@ -169,11 +169,16 @@ class LearnerMixin:
         separate series reuses the immutable batch, including its realized masks,
         before slow-target copying. The nested context disallows state mutation.
         """
+
         def evaluate(batch):
             return self._ppo_actor_loss(batch)[1], self._ppo_critic_loss(batch)[1]
 
         _, (actor, critic) = nj.pure(evaluate, nested=True)(
-            dict(nj.context()), batch, seed=719_243, create=False, modify=False,
+            dict(nj.context()),
+            batch,
+            seed=719_243,
+            create=False,
+            modify=False,
         )
         return {
             f"ppo/{group}/post_update_{key}": sg(value)
@@ -594,8 +599,6 @@ class LearnerMixin:
                 "valid": valid,
             }
         )
-
-
 
     def _ppo_actor_loss(self, batch):
         policy = self.policy_distribution(

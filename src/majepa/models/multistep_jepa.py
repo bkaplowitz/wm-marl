@@ -30,8 +30,6 @@ def isolated_creation_call(function, salt, *args, **kwargs):
         context.reserve = outer_reserve
 
 
-
-
 class ActionConditionedMultiStepJEPA(nj.Module):
     """Predict EMA futures from joint roots, own actions, and teammate belief.
 

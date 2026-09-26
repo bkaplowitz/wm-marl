@@ -33,11 +33,20 @@ class ReplaySnapshotStream:
     Replay.sample owns its returned arrays; device transfer can remain async.
     """
 
-    def __init__(self, agent, source, on_snapshot=None, *, behavior_source=None,
-                 startup_behavior_min_starts=1):
+    def __init__(
+        self,
+        agent,
+        source,
+        on_snapshot=None,
+        *,
+        behavior_source=None,
+        startup_behavior_min_starts=1,
+    ):
         self.agent = agent
         self.source = iter(source)
-        self.behavior_source = iter(behavior_source) if behavior_source is not None else None
+        self.behavior_source = (
+            iter(behavior_source) if behavior_source is not None else None
+        )
         self.startup_behavior_min_starts = int(startup_behavior_min_starts)
         if self.startup_behavior_min_starts < 1:
             raise ValueError("Startup behavior eligibility must be positive")
@@ -64,10 +73,12 @@ class ReplaySnapshotStream:
             data = next(self.source)
         if self.behavior_source is not None:
             other = next(self.behavior_source)
-            if data['is_first'].shape != other['is_first'].shape:
+            if data["is_first"].shape != other["is_first"].shape:
                 raise ValueError("Replay view shapes differ")
-            data = {**data, **{f'_behavior_replay/{key}': value
-                              for key, value in other.items()}}
+            data = {
+                **data,
+                **{f"_behavior_replay/{key}": value for key, value in other.items()},
+            }
         self.startup_complete = True
         index = int(self.agent.n_batches)
         if self.on_snapshot is not None:
@@ -101,7 +112,7 @@ def replay_batch_fingerprints(data):
         for name in sorted(data):
             if name.startswith("_behavior_replay/") != bool(prefix):
                 continue
-            key = name[len(prefix):]
+            key = name[len(prefix) :]
             if key in {"stepid", "seed"}:
                 continue
             value = np.ascontiguousarray(data[name])
@@ -110,8 +121,10 @@ def replay_batch_fingerprints(data):
             hasher.update(memoryview(value).cast("B"))
             count += 1
         if count:
-            result[view] = {"data_sha256": raw.hexdigest(),
-                            "history_sha256": history.hexdigest()}
+            result[view] = {
+                "data_sha256": raw.hexdigest(),
+                "history_sha256": history.hexdigest(),
+            }
     return result
 
 
@@ -125,8 +138,11 @@ class ReplaySnapshotTrace:
     def __call__(self, index, environment_step, data):
         if index >= self.limit:
             return
-        record = {"batch_index": index, "sampled_at": environment_step,
-                  "views": replay_batch_fingerprints(data)}
+        record = {
+            "batch_index": index,
+            "sampled_at": environment_step,
+            "views": replay_batch_fingerprints(data),
+        }
         # Hash before JAX transport: instrumentation does not consume RNG or
         # read device buffers while the learner owns/donates them.
         with self.path.open("a") as stream:
