@@ -10,36 +10,70 @@ from majepa.scripts.evaluate import main as evaluate_main
 from majepa.scripts.train import main as train_main
 
 
-@pytest.mark.parametrize("samples", [None, 1, 2])
-def test_training_setup_accepts_imagined_action_sample_count(tmp_path, samples):
-    arguments = [
-        "--task",
-        "smac_2s3z",
-        "--num-agents",
-        "5",
-        "--experiment-dir",
-        str(tmp_path),
-        "--dry-run",
-    ]
-    if samples is not None:
-        arguments.extend(["--imag-action-samples", str(samples)])
-    assert train_main(arguments) == 0
-    expected = 1 if samples is None else samples
+def test_training_setup_resolves_the_locked_baseline(tmp_path):
+    assert (
+        train_main(
+            [
+                "--task",
+                "smac_2s3z",
+                "--num-agents",
+                "5",
+                "--seed",
+                "7",
+                "--total-env-steps",
+                "1200",
+                "--experiment-dir",
+                str(tmp_path),
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
     manifest = json.loads((tmp_path / "launch.json").read_text())
     command = manifest["command"]
-    index = command.index("--agent.imag_action_samples")
+    assert manifest["configs"] == ["baseline"]
     config = _resolve_config_profiles(_load_configs(), manifest["configs"])
-    assert config.agent.imag_action_samples == 1
-    assert MAJEPARunSpec(tmp_path, "smac_2s3z", 5).imag_action_samples == 1
-    resolved = elements.Flags(config).parse(command[index : index + 2])
-    assert resolved.agent.imag_action_samples == expected
-    assert manifest["ctde"]["imag_action_samples"] == expected
+    resolved = elements.Flags(config).parse(command[command.index("--task") :])
+    assert resolved.task == "smac_2s3z"
+    assert resolved.agent.num_agents == 5
+    assert resolved.seed == 7
+    assert resolved.run.steps == 1200
+    assert resolved.replay.world_uniform_mix == 0.5
+    assert resolved.replay.behavior_uniform_mix == 0.5
 
 
-@pytest.mark.parametrize("samples", [0, 3, True, 1.0])
-def test_run_spec_rejects_invalid_imagination_sample_count(tmp_path, samples):
-    with pytest.raises(ValueError, match="imag_action_samples must be 1 or 2"):
-        MAJEPARunSpec(tmp_path, "smac_2s3z", 5, imag_action_samples=samples)
+@pytest.mark.parametrize("samples", [1, 2])
+def test_training_cli_rejects_unavailable_sweep_options(tmp_path, samples):
+    with pytest.raises(SystemExit) as error:
+        train_main(
+            [
+                "--task",
+                "smac_2s3z",
+                "--num-agents",
+                "5",
+                "--experiment-dir",
+                str(tmp_path),
+                "--imag-action-samples",
+                str(samples),
+                "--dry-run",
+            ]
+        )
+    assert error.value.code == 2
+    assert not (tmp_path / "launch.json").exists()
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"train_steps": 0},
+        {"curve_eval_interval": -1},
+        {"curve_eval_episodes": 0},
+        {"curve_eval_envs": 0},
+    ],
+)
+def test_run_spec_rejects_invalid_run_limits(tmp_path, options):
+    with pytest.raises(ValueError):
+        MAJEPARunSpec(tmp_path, "smac_2s3z", 5, **options)
 
 
 def test_evaluation_uses_manifest_protocol_and_complete_checkpoint(tmp_path):

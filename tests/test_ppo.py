@@ -16,82 +16,24 @@ from majepa.training.ppo import (
 )
 from majepa.marl.axes import TeamAxis
 from majepa.marl.core import MARLCore
-from majepa.training.ctde import sample_imagination_actions
+from majepa.training.ctde import imagined_action_mask
 
 
-def test_two_imagined_actions_are_distinct_legal_and_repeatable():
-    probability = jnp.asarray([[0.8, 0.2, 0.0], [0.8, 0.2, 0.0], [0.0, 0.0, 1.0]])
-    logits = jnp.broadcast_to(
-        jnp.where(probability > 0, jnp.log(probability), -1e30), (4096, 3, 3)
-    )
-    sample = jax.jit(sample_imagination_actions)
-    first, second, valid = sample(logits, jax.random.key(19))
-    assert bool((first[:, :2] != second[:, :2]).all())
-    assert bool((first[:, :2] < 2).all() & (second[:, :2] < 2).all())
-    np.testing.assert_array_equal(first[:, 2], 2)
-    np.testing.assert_array_equal(second[:, 2], 2)
-    assert valid.dtype == jnp.bool_
-    np.testing.assert_array_equal(valid[:, :2], True)
-    np.testing.assert_array_equal(valid[:, 2], False)
-    np.testing.assert_allclose((first[:, :2] == 0).mean(axis=0), 0.8, atol=0.025)
-    for actual, repeated in zip(
-        (first, second, valid), sample(logits, jax.random.key(19))
-    ):
-        np.testing.assert_array_equal(actual, repeated)
-
-    logits = jnp.broadcast_to(jnp.log(jnp.asarray([0.5, 0.3, 0.2])), (4096, 1, 3))
-    first, second, valid = sample(logits, jax.random.key(20))
-    assert bool((first != second).all())
-    assert bool(valid.all())
-    marginal = np.asarray([19 / 56, 3 / 8, 2 / 7])
-    np.testing.assert_allclose(
-        np.bincount(np.asarray(second).ravel(), minlength=3) / 4096,
-        marginal,
-        atol=0.025,
+def test_imagined_masks_keep_dead_agents_and_empty_support_on_noop():
+    probability = jnp.array([[0.0, 0.2, 0.1], [0.9, 0.8, 0.7], [0.2, 0.8, 0.1]])
+    mask = jax.jit(imagined_action_mask)(probability, jnp.array([True, False, True]))
+    np.testing.assert_array_equal(
+        mask, [[True, False, False], [True, False, False], [False, True, False]]
     )
 
 
-def test_rare_second_action_remains_valid_and_trains_actor_and_critic():
-    logits = jnp.broadcast_to(jnp.asarray([0.0, -20.0, -1e30]), (32, 5, 3))
-    first, second, second_valid = jax.jit(sample_imagination_actions)(
-        logits, jax.random.key(19)
-    )
-    np.testing.assert_array_equal(first, 0)
-    np.testing.assert_array_equal(second, 1)
-    np.testing.assert_array_equal(second_valid, True)
-    actions = jnp.stack([first, second])
-    valid = jnp.stack([jnp.ones_like(second_valid, bool), second_valid])
-    weight = jnp.ones_like(actions, jnp.float32)
-    targets = jnp.stack([jnp.zeros_like(weight[0]), jnp.ones_like(weight[0])])
-    old_logits = jnp.stack([logits, logits])
-
-    actor_gradient = jax.jit(
-        jax.grad(
-            lambda new_logits: clipped_policy_objective(
-                new_logits,
-                old_logits,
-                actions,
-                targets,
-                valid,
-                weight,
-                entropy_coefficient=0.0,
-            )[0]
-        )
-    )(old_logits)
-    critic_gradient = jax.jit(
-        jax.grad(
-            lambda prediction: value_objective(
-                _SquaredValueOutput(prediction),
-                targets,
-                valid,
-                weight,
-            )[0]
-        )
-    )(jnp.zeros_like(targets))
-    np.testing.assert_array_equal(actor_gradient[0], 0.0)
-    np.testing.assert_allclose(actor_gradient[1, ..., 1].sum(), -0.5, atol=1e-5)
-    np.testing.assert_array_equal(critic_gradient[0], 0.0)
-    np.testing.assert_allclose(critic_gradient[1].sum(), -1.0, atol=1e-5)
+def test_bernoulli_imagined_masks_are_seeded_and_match_availability():
+    probability = jnp.broadcast_to(jnp.array([1.0, 0.2, 0.8]), (4096, 3))
+    alive = jnp.ones((4096,), bool)
+    sample = jax.jit(imagined_action_mask)
+    mask = sample(probability, alive, jax.random.key(19))
+    np.testing.assert_array_equal(mask, sample(probability, alive, jax.random.key(19)))
+    np.testing.assert_allclose(mask.mean(axis=0), [1.0, 0.2, 0.8], atol=0.025)
 
 
 def test_gae_counts_last_transition_and_cuts_absent_state_bootstrap() -> None:

@@ -1253,11 +1253,7 @@ class MARLCore(TeamAxisAdapter, LocalAgent):
         horizons = self.ctde_multistep_jepa_horizons
         valid = {horizon: all_valid[horizon] for horizon in horizons}
         root_hidden = grouped_hidden[:, :roots]
-        root_state = grouped_source_state[:, :roots]
 
-        q0_logits = None
-        q0_context = None
-        plan_logits = None
         plan_context = None
         plan_loss = None
         plan_metrics = {}

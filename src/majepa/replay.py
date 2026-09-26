@@ -170,6 +170,76 @@ class DualViewReplay(embodied.replay.Replay):
         }
         self._view_stats_lock = threading.Lock()
 
+    def _sampling_selectors(self):
+        for name in (
+            "sampler",
+            "behavior_sampler",
+            "report_sampler",
+            "world_uniform_sampler",
+            "behavior_uniform_sampler",
+        ):
+            selector = getattr(self, name)
+            if selector is not None:
+                yield name, selector
+
+    def _sampling_rngs(self):
+        for name, selector in self._sampling_selectors():
+            yield name, selector.rng
+        for name in ("world_mixture_rng", "behavior_mixture_rng"):
+            yield name, getattr(self, name)
+
+    def save(self):
+        replay = super().save()
+        orders = {}
+        for name, selector in self._sampling_selectors():
+            itemids = (
+                selector.items.values()
+                if isinstance(selector, ExponentialRecency)
+                else selector.keys
+            )
+            orders[name] = [
+                (str(self.items[itemid][0]), self.items[itemid][1])
+                for itemid in itemids
+            ]
+        return {
+            "replay": replay,
+            "selector_items": orders,
+            "rng_states": {
+                name: rng.bit_generator.state for name, rng in self._sampling_rngs()
+            },
+        }
+
+    def load(self, data=None, directory=None, amount=None):
+        state = data if isinstance(data, dict) else {}
+        super().load(state.get("replay"), directory=directory, amount=amount)
+        orders = state.get("selector_items", {})
+        if orders:
+            loaded = {
+                (str(chunkid), index): itemid
+                for itemid, (chunkid, index) in self.items.items()
+            }
+            if any(set(roots) != set(loaded) for roots in orders.values()):
+                raise ValueError(
+                    "checkpoint retained replay items do not match loaded items"
+                )
+            for name, selector in tuple(self._sampling_selectors()):
+                if name not in orders:
+                    continue
+                restored = (
+                    ExponentialRecency(selector.decay, track_ages=selector.track_ages)
+                    if isinstance(selector, ExponentialRecency)
+                    else embodied.selectors.Uniform()
+                )
+                for root in orders[name]:
+                    restored[loaded[root]] = ()
+                setattr(self, name, restored)
+            self.fifo.clear()
+            self.fifo.extend(loaded[root] for root in orders["sampler"])
+        saved_rngs = state.get("rng_states", {})
+        for name, rng in self._sampling_rngs():
+            if name in saved_rngs:
+                rng.bit_generator.state = saved_rngs[name]
+
     def _insert(self, chunkid, index):
         """Insert one item into both selectors without duplicating storage."""
 

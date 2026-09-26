@@ -275,6 +275,10 @@ def eval_only(make_agent, make_env, make_logger, args):
             f"unsupported evaluation policy mode: {args.eval_policy_mode!r}"
         )
 
+    worker_offset = int(args.eval_worker_offset)
+    if worker_offset < 0:
+        raise ValueError("evaluation worker offset must be nonnegative")
+
     wall_clock_start = time.perf_counter()
     agent = make_agent()
     logger = make_logger()
@@ -292,6 +296,7 @@ def eval_only(make_agent, make_env, make_logger, args):
     agent_returns = []
     battle_wins = []
     outcomes = []
+    records = []
     environments = min(args.envs, args.eval_eps)
     quotas = np.full(environments, args.eval_eps // environments, np.int32)
     quotas[: args.eval_eps % environments] += 1
@@ -309,6 +314,7 @@ def eval_only(make_agent, make_env, make_logger, args):
         episode.add("length", 1, agg="sum")
         _add_outcome_diagnostics(episode, transition)
         if transition["is_last"]:
+            worker_episode = int(completed[worker])
             completed[worker] += 1
             result = episode.result()
             score = float(result["score"])
@@ -322,6 +328,26 @@ def eval_only(make_agent, make_env, make_logger, args):
             outcome = _episode_outcome(result, transition)
             if outcome:
                 outcomes.append(outcome)
+            records.append(
+                {
+                    "schema_version": 1,
+                    "episode": len(records),
+                    "return": score,
+                    "team_return": team_return,
+                    "per_agent_returns": per_agent.tolist(),
+                    "battle_won": (
+                        float(transition["log/battle_won"])
+                        if "log/battle_won" in transition
+                        else None
+                    ),
+                    "outcome": outcome,
+                    "metadata": {
+                        "worker": int(worker),
+                        "worker_index": worker_offset + int(worker),
+                        "worker_episode": worker_episode,
+                    },
+                }
+            )
             logger.add(
                 {
                     "score": score,
@@ -341,7 +367,7 @@ def eval_only(make_agent, make_env, make_logger, args):
     checkpoint = elements.Checkpoint()
     checkpoint.agent = agent
     checkpoint.load(args.from_checkpoint, keys=["agent"])
-    functions = [bind(make_env, index) for index in range(environments)]
+    functions = [bind(make_env, worker_offset + index) for index in range(environments)]
     driver = None
 
     def policy(*values):
@@ -366,6 +392,19 @@ def eval_only(make_agent, make_env, make_logger, args):
         args.eval_eps,
         policy_mode=args.eval_policy_mode,
     )
+    summary["evaluation_protocol"] = {
+        "episodes": int(args.eval_eps),
+        "envs": int(environments),
+        "worker_offset": worker_offset,
+        "worker_indices": [worker_offset + index for index in range(environments)],
+        "policy_mode": str(args.eval_policy_mode),
+    }
+    (logdir / "evaluation_episodes.jsonl").write(
+        "".join(json.dumps(record, sort_keys=True) + "\n" for record in records)
+    )
+    (logdir / "evaluation_summary.json").write(
+        json.dumps(summary, indent=2, sort_keys=True)
+    )
     # Keep the aggregate evaluation visible in W&B as scalar metrics.  The
     # per-episode values above are useful for diagnostics, but without this
     # explicit write the final100 aggregate (including win_rate) only exists
@@ -374,11 +413,8 @@ def eval_only(make_agent, make_env, make_logger, args):
     final_scalars = {
         key: value for key, value in summary.items() if isinstance(value, (int, float))
     }
-    logger.add(final_scalars, prefix="final_eval")
     logger.add({"wall_clock_seconds": wall_clock_seconds()})
+    logger.add(final_scalars, prefix="final_eval")
     logger.write()
     logger.close()
-    (logdir / "evaluation_summary.json").write(
-        json.dumps(summary, indent=2, sort_keys=True)
-    )
     print(json.dumps(summary, indent=2, sort_keys=True))
