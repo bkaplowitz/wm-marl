@@ -1,20 +1,52 @@
 """World-model and imagined PPO training orchestration."""
 
 import elements
+import jax
 import jax.numpy as jnp
 import ninjax as nj
+import numpy as np
 
 from ..models.heads import binary_vector_loss
-from .behavior import BehaviorLearning
-from .common import masked_mean, sg
+from .common import concat, f32, sample, sg
+from .ppo import (
+    clipped_policy_objective,
+    generalized_advantage_estimate,
+    masked_weighted_mean,
+    normalize_advantage,
+    value_objective,
+)
+from .replay_value import replay_lambda_return
 from .representation import (
     embedding_prediction_loss,
     embedding_std,
+    mask_image_patches,
+    masked_spatial_loss,
     sigreg_loss,
+    spatial_patch_mask,
 )
 
 
-class LearnerMixin(BehaviorLearning):
+def masked_mean(value, valid, *, alignment="tail"):
+    """Average a per-transition loss over valid local agent transitions."""
+
+    if alignment == "tail":
+        weight = valid[:, -value.shape[1] :]
+    elif alignment == "replay_value":
+        start = valid.shape[1] - value.shape[1] - 1
+        weight = valid[:, start : start + value.shape[1]]
+    elif alignment == "exact":
+        if valid.shape != value.shape:
+            raise ValueError(
+                f"validity {valid.shape} does not match loss {value.shape}"
+            )
+        weight = valid
+    else:
+        raise ValueError(f"unknown validity alignment: {alignment!r}")
+    weight = weight.astype(jnp.float32)
+    return (value * weight).mean() / jnp.maximum(weight.mean(), 1e-8)
+
+
+class LearnerMixin:
     def train(self, carry, data, behavior_data=None):
         if not self.two_branch_replay or behavior_data is None:
             raise ValueError(
@@ -26,7 +58,14 @@ class LearnerMixin(BehaviorLearning):
             raise ValueError("MA-JEPA PPO requires the separated CTDE optimizer")
 
         ppo_active = self._ppo_schedule(data)
+        fresh_history = bool(
+            getattr(self, "ctde_self_fed_enabled", False)
+            and self.config.marl.ctde.self_fed.get("fresh_history", False)
+        )
+        raw_world = data if fresh_history else None
         carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
+        if fresh_history:
+            obs = dict(obs, _self_fed_raw=raw_world)
         metrics, (carry, entries, outs, mets) = self.opt(
             self.loss,
             carry,
@@ -105,6 +144,8 @@ class LearnerMixin(BehaviorLearning):
                 enc=entries[0],
                 dyn=self.dynamics_replay_entries(entries[1]),
             )
+            if self.dec is not None:
+                replay_entries["dec"] = entries[2]
             updates = elements.tree.flatdict(replay_entries)
             outs["replay"] = updates
         carry = (*carry, {key: data[key][:, -1] for key in self.act_space})
@@ -128,16 +169,11 @@ class LearnerMixin(BehaviorLearning):
         separate series reuses the immutable batch, including its realized masks,
         before slow-target copying. The nested context disallows state mutation.
         """
-
         def evaluate(batch):
             return self._ppo_actor_loss(batch)[1], self._ppo_critic_loss(batch)[1]
 
         _, (actor, critic) = nj.pure(evaluate, nested=True)(
-            dict(nj.context()),
-            batch,
-            seed=719_243,
-            create=False,
-            modify=False,
+            dict(nj.context()), batch, seed=719_243, create=False, modify=False,
         )
         return {
             f"ppo/{group}/post_update_{key}": sg(value)
@@ -201,6 +237,454 @@ class LearnerMixin(BehaviorLearning):
             outs["target_tokens"] = target_tokens
         return loss, (carry, entries, outs, metrics)
 
+    def _apply_behavior_replay_context(self, data):
+        """Burn in an independent replay prefix with current world weights."""
+
+        context = int(self.config.replay_context)
+        batch, total_length = data["is_first"].shape
+        if context < 1 or total_length <= context:
+            raise ValueError(
+                "behavior replay must contain a non-empty prefix and suffix, got "
+                f"context={context}, length={total_length}"
+            )
+        enc_carry, dyn_carry, dec_carry, initial_prevact = self._local_initial(batch)
+        obs = self._replay_observations(data)
+
+        def prepend(initial, sequence):
+            return jnp.concatenate([initial[:, None], sequence[:, :-1]], axis=1)
+
+        prevact = {
+            key: prepend(initial_prevact[key], data[key]) for key in self.act_space
+        }
+        nested = elements.tree.nestdict(data)
+        stored_dyn = nested.get("dyn", {})
+        if "position" not in stored_dyn:
+            raise ValueError(
+                "behavior replay burn-in requires stored Transformer positions"
+            )
+        position = stored_dyn["position"][:, 0].astype(jnp.int32) - 1
+        position = jnp.where(obs["is_first"][:, 0], -jnp.ones_like(position), position)
+        dyn_carry = dict(dyn_carry, position=position)
+
+        prefix_obs = {key: value[:, :context] for key, value in obs.items()}
+        prefix_prevact = {key: value[:, :context] for key, value in prevact.items()}
+        reset = prefix_obs["is_first"]
+        enc_carry, _, tokens = self.enc(enc_carry, prefix_obs, reset, training=False)
+        dyn_carry, dyn_entries, prefix_features, _ = self.observe_dynamics(
+            dyn_carry,
+            tokens,
+            prefix_prevact,
+            reset,
+            prefix_obs,
+            training=False,
+            single=False,
+        )
+        if self.dec is not None:
+            dec_carry, _, _ = self.dec(
+                dec_carry,
+                prefix_features,
+                reset,
+                training=False,
+            )
+        carry = jax.tree.map(sg, (enc_carry, dyn_carry, dec_carry))
+        suffix_obs = {key: value[:, context:] for key, value in obs.items()}
+        suffix_obs = self.behavior_replay_burnin_observation(
+            suffix_obs,
+            jax.tree.map(sg, prefix_features),
+            jax.tree.map(sg, dyn_entries),
+            prefix_obs,
+            prefix_prevact,
+            {key: data[key][:, :context] for key in self.act_space},
+        )
+        suffix_prevact = {key: data[key][:, context - 1 : -1] for key in self.act_space}
+        suffix_stepid = data["stepid"][:, context:]
+        return carry, suffix_obs, suffix_prevact, suffix_stepid
+
+    def behavior_replay_burnin_observation(
+        self,
+        suffix_obs,
+        prefix_features,
+        prefix_dyn_entries,
+        prefix_obs,
+        prefix_prevact,
+        prefix_action,
+    ):
+        del (
+            prefix_features,
+            prefix_dyn_entries,
+            prefix_obs,
+            prefix_prevact,
+            prefix_action,
+        )
+        return suffix_obs
+
+    def _behavior_model_states(self, carry, obs, prevact):
+        """Infer mode-stable current-weight states without world losses.
+
+        The maintained local encoder and dynamics have no train/eval-only
+        stochastic layers. Evaluation mode therefore retains posterior sampling
+        while avoiding training-mode variation in the independent uniform-root
+        reconstruction.
+        """
+
+        enc_carry, dyn_carry, dec_carry = carry
+        reset = obs["is_first"]
+        enc_carry, enc_entries, tokens = self.enc(enc_carry, obs, reset, training=False)
+        dyn_carry, dyn_entries, repfeat, _ = self.observe_dynamics(
+            dyn_carry,
+            tokens,
+            prevact,
+            reset,
+            obs,
+            training=False,
+            single=False,
+        )
+        dyn_entries = self.behavior_dynamics_entries(dyn_entries, obs)
+        if self.dec is not None:
+            dec_carry, dec_entries, _ = self.dec(
+                dec_carry, repfeat, reset, training=False
+            )
+        else:
+            dec_entries = {}
+        return jax.tree.map(
+            sg,
+            (
+                (enc_carry, dyn_carry, dec_carry),
+                (enc_entries, dyn_entries, dec_entries),
+                repfeat,
+            ),
+        )
+
+    def behavior_dynamics_entries(self, entries, obs):
+        del obs
+        return entries
+
+    def _prepare_ppo_batch(self, behavior_data, entropy_coefficient):
+        """Create one immutable PPO batch after the JEPA model update."""
+
+        behavior_carry, obs, prevact, _ = self._apply_behavior_replay_context(
+            behavior_data
+        )
+        behavior_carry, behavior_entries, repfeat = self._behavior_model_states(
+            behavior_carry,
+            obs,
+            prevact,
+        )
+        _, dyn_carry, _ = behavior_carry
+        _, dyn_entries, _ = behavior_entries
+        _, length = obs["is_first"].shape
+        starts_count = min(self.config.imag_last or length, length)
+        horizon = int(self.config.imag_length)
+        starts, first, imagination_context = self.imagination_starts(
+            dyn_entries,
+            dyn_carry,
+            repfeat,
+            obs,
+            prevact,
+            starts_count,
+        )
+
+        def policyfn(features):
+            inputs = self.policy_features_tensor(features)
+            return sample(self.policy_distribution(inputs, 1))
+
+        _, imagined_features, actions, auxiliary = self.imagine_with_aux(
+            starts,
+            policyfn,
+            horizon,
+            False,
+            imagination_context,
+        )
+        first, imagined_features, actions, auxiliary = jax.tree.map(
+            sg, (first, imagined_features, actions, auxiliary)
+        )
+        features = concat([first, imagined_features], 1)
+        policy_features = self.imagination_policy_features(features)
+        policy_inputs = self.policy_features_tensor(policy_features)
+        local_inputs = self.feat2tensor(features)
+        critic_context, critic_metrics = self.imagination_critic_context(
+            features,
+            imagination_context,
+            auxiliary,
+        )
+        if critic_context is None:
+            raise ValueError("MA-JEPA PPO requires centralized critic context")
+
+        policy = self.imagination_policy_distribution(policy_inputs, auxiliary)
+        action_key = self.action_mask_key
+        if action_key is None or set(actions) != {action_key}:
+            raise ValueError("MA-JEPA PPO requires exactly one masked action")
+        old_logits = policy[action_key].logits[:, :-1]
+        action = actions[action_key].astype(jnp.int32)
+        if action.shape != old_logits.shape[:-1]:
+            raise ValueError(
+                "imagined actions and policy logits are misaligned: "
+                f"{action.shape} and {old_logits.shape}"
+            )
+
+        reward, continuation = self.imagination_reward_continuation(
+            local_inputs,
+            auxiliary,
+        )
+        decision_state_valid = self.imagination_state_validity(
+            imagination_context,
+            horizon,
+            auxiliary,
+        )
+        state_valid = self.imagination_bootstrap_validity(
+            imagination_context,
+            horizon,
+            auxiliary,
+        )
+        # Build the live critic first. SlowModel initializes itself by copying
+        # its source parameters and therefore requires the source to exist.
+        current_value = self.critic(
+            features,
+            2,
+            slow=False,
+            context=critic_context,
+        ).pred()
+        target_value = self.critic(
+            features,
+            2,
+            slow=True,
+            context=critic_context,
+        ).pred()
+        predicted_action_mask = self.imagination_action_mask(auxiliary)
+        if predicted_action_mask.shape != old_logits.shape:
+            raise ValueError(
+                "PPO action mask and logits are misaligned: "
+                f"{predicted_action_mask.shape} and {old_logits.shape}"
+            )
+        # The applied policy is the source of truth because action masking has
+        # a deterministic nonempty fallback. Freezing this effective support
+        # guarantees that every PPO epoch assigns finite probability to every
+        # action that could have been sampled by the behavior snapshot.
+        action_mask = old_logits > -1e20
+        sampled_legal = jnp.take_along_axis(
+            action_mask,
+            action[..., None],
+            axis=-1,
+        )[..., 0]
+        target_return, advantage, valid, trajectory_weight = (
+            generalized_advantage_estimate(
+                reward,
+                continuation,
+                target_value,
+                state_valid,
+                decision_state_valid=decision_state_valid,
+                lam=float(self.config.ppo.lam),
+            )
+        )
+        advantage_scale = jnp.asarray(1.0, jnp.float32)
+        if self.ppo_return_norm is None:
+            advantage = normalize_advantage(advantage, valid, trajectory_weight)
+        else:
+            _, advantage_scale = self.ppo_return_norm(target_return, True, valid)
+            advantage = jnp.where(valid, advantage / sg(advantage_scale), 0.0)
+
+        def decisions(tree):
+            return jax.tree.map(lambda value: value[:, :-1], tree)
+
+        batch = sg(
+            {
+                "policy_inputs": policy_inputs[:, :-1],
+                "critic_features": decisions(features),
+                "critic_context": decisions(critic_context),
+                "action": action,
+                "action_mask": action_mask,
+                "old_logits": old_logits,
+                "advantage": advantage,
+                "target_return": target_return,
+                "valid": valid,
+                "critic_valid": state_valid[:, :-1],
+                "trajectory_weight": trajectory_weight,
+                "entropy_coefficient": entropy_coefficient,
+            }
+        )
+        if float(self.config.ppo.replay_value_scale):
+            batch["replay_value"] = self._prepare_replay_value_batch(
+                repfeat, obs, target_return[:, 0], starts_count
+            )
+        metrics = {
+            "ppo/return_percentile_scale": advantage_scale,
+            **critic_metrics,
+            **self.imagination_interface_metrics(features, policy_features),
+            **self.imagination_behavior_metrics(actions, valid, auxiliary),
+            "replay_views/behavior_reward_mean": sg(
+                obs["reward"].astype(jnp.float32).mean()
+            ),
+            "replay_views/behavior_rows": jnp.asarray(
+                obs["is_first"].shape[0], jnp.float32
+            ),
+            "replay_views/behavior_length": jnp.asarray(length, jnp.float32),
+            "ppo/batch_reward": masked_weighted_mean(
+                reward[:, 1:], valid, trajectory_weight
+            ),
+            "ppo/batch_return": masked_weighted_mean(
+                target_return, valid, trajectory_weight
+            ),
+            "ppo/batch_target_value": masked_weighted_mean(
+                target_value[:, :-1], valid, trajectory_weight
+            ),
+            "ppo/batch_current_value": masked_weighted_mean(
+                current_value[:, :-1], valid, trajectory_weight
+            ),
+            "ppo/batch_valid_fraction": valid.astype(jnp.float32).mean(),
+            "ppo/batch_effective_weight": trajectory_weight.mean(),
+            "ppo/batch_illegal_action_fraction": (
+                valid.astype(jnp.float32) * (~sampled_legal).astype(jnp.float32)
+            ).sum()
+            / jnp.maximum(valid.astype(jnp.float32).sum(), 1.0),
+            "ppo/batch_support_fallback_fraction": (
+                action_mask != predicted_action_mask
+            )
+            .any(axis=-1)
+            .astype(jnp.float32)
+            .mean(),
+        }
+        return batch, metrics
+
+    def _prepare_replay_value_batch(self, features, obs, root_return, starts_count):
+        """Anchor the critic in real rewards with fresh imagined bootstraps.
+
+        Replay actions may be off policy. This is an auxiliary critic target,
+        never a PPO actor sample; its weight is configured independently. The
+        imagined root returns supply current-policy bootstraps, as in the
+        replay-value objective used before the PPO migration.
+        """
+
+        features = jax.tree.map(lambda value: value[:, -starts_count:], features)
+        selected = {
+            key: obs[key][:, -starts_count:]
+            for key in ("reward", "is_first", "is_last", "is_terminal", "agent_present")
+        }
+        # Imagination is ordered [team, start, agent]; replay is [team, agent,
+        # time]. A plain reshape silently assigns other agents' bootstraps.
+        bootstrap = self.team.ungroup_starts(
+            self.team.unfold_batch(root_return), starts_count
+        ).reshape(selected["reward"].shape)
+        context = {
+            "present": self.team.unfold_sequence(selected["agent_present"]),
+            "controllable_alive": self.team.unfold_sequence(
+                self._controllable(obs)[:, -starts_count:]
+            ),
+        }
+        # Imagination excludes all is_last roots. A nonterminal truncation
+        # must instead bootstrap from its real final observation and roster.
+        factual_value = self.critic(features, 2, slow=True, context=context).pred()
+        bootstrap = jnp.where(
+            selected["is_last"] & ~selected["is_terminal"], factual_value, bootstrap
+        )
+        targets, valid = replay_lambda_return(
+            selected["reward"],
+            selected["is_first"],
+            selected["is_last"],
+            selected["is_terminal"],
+            selected["agent_present"],
+            bootstrap,
+            discount=1.0 - 1.0 / float(self.config.horizon),
+            lam=float(self.config.ppo.replay_value_lam),
+        )
+        return sg(
+            {
+                "features": jax.tree.map(lambda value: value[:, :-1], features),
+                "context": jax.tree.map(lambda value: value[:, :-1], context),
+                "target_return": targets,
+                "valid": valid,
+            }
+        )
+
+
+
+    def _ppo_actor_loss(self, batch):
+        policy = self.policy_distribution(
+            batch["policy_inputs"],
+            2,
+            action_mask=batch["action_mask"],
+        )
+        new_logits = policy[self.action_mask_key].logits
+        return clipped_policy_objective(
+            new_logits,
+            batch["old_logits"],
+            batch["action"],
+            batch["advantage"],
+            batch["valid"],
+            batch["trajectory_weight"],
+            clip_epsilon=float(self.config.ppo.clip_epsilon),
+            entropy_coefficient=batch["entropy_coefficient"],
+            normalize_entropy=False,
+        )
+
+    def _ppo_critic_loss(self, batch):
+        value = self.critic(
+            batch["critic_features"],
+            2,
+            slow=False,
+            context=batch["critic_context"],
+        )
+        loss, metrics = value_objective(
+            value,
+            batch["target_return"],
+            batch["critic_valid"],
+            batch["trajectory_weight"],
+        )
+        slowreg = float(self.config.ppo.get("critic_slowreg", 0.0))
+        if slowreg:
+            slow_prediction = sg(
+                self.critic(
+                    batch["critic_features"],
+                    2,
+                    slow=True,
+                    context=batch["critic_context"],
+                ).pred()
+            )
+            anchor_loss, _ = value_objective(
+                value,
+                slow_prediction,
+                batch["critic_valid"],
+                batch["trajectory_weight"],
+            )
+            loss += slowreg * anchor_loss
+            metrics["slow_anchor_loss"] = anchor_loss
+        if "replay_value" in batch:
+            replay = batch["replay_value"]
+            replay_value = self.critic(
+                replay["features"], 2, slow=False, context=replay["context"]
+            )
+            replay_loss, replay_metrics = value_objective(
+                replay_value,
+                replay["target_return"],
+                replay["valid"],
+                jnp.ones_like(replay["target_return"]),
+            )
+            if slowreg:
+                slow_prediction = sg(
+                    self.critic(
+                        replay["features"],
+                        2,
+                        slow=True,
+                        context=replay["context"],
+                    ).pred()
+                )
+                anchor_loss, _ = value_objective(
+                    replay_value,
+                    slow_prediction,
+                    replay["valid"],
+                    jnp.ones_like(replay["target_return"]),
+                )
+                replay_loss += slowreg * anchor_loss
+                replay_metrics["slow_anchor_loss"] = anchor_loss
+            loss += float(self.config.ppo.replay_value_scale) * replay_loss
+            metrics.update(
+                {f"replay_{key}": value for key, value in replay_metrics.items()}
+            )
+            metrics.update(
+                {f"factual_{k}": v for k, v in replay.get("trace_metrics", {}).items()}
+            )
+        metrics["total_loss"] = loss
+        return loss, metrics
+
     def _update_slow_models(self, ppo_active):
         self._gated_slow_update(self.slowval, ppo_active)
 
@@ -216,11 +700,92 @@ class LearnerMixin(BehaviorLearning):
             model.model.write(key, jnp.where(active, new_value, old_values[key]))
         model.count.write(jnp.where(active, model.count.read(), old_count))
 
+    def additional_world_model_losses(
+        self,
+        tokens,
+        repfeat,
+        dyn_entries,
+        target_tokens,
+        obs,
+        prevact,
+        training,
+    ):
+        del tokens, repfeat, dyn_entries, target_tokens, obs, prevact, training
+        return {}, {}
+
     def representation_prediction_branches(self, repfeat, dynamics_aux):
         """Return predictive states that share the maintained JEPA targets."""
 
         del dynamics_aux
         return {"model": repfeat}
+
+    def dynamics_loss(self, carry, tokens, actions, reset, obs, training):
+        del obs
+        return self.dyn.loss(carry, tokens, actions, reset, training)
+
+    def imagination_starts(
+        self,
+        dyn_entries,
+        dyn_carry,
+        repfeat,
+        obs,
+        prevact,
+        starts_count,
+    ):
+        del obs, prevact
+        batch = dyn_entries["deter"].shape[0]
+        starts = self.dyn.starts(dyn_entries, dyn_carry, starts_count)
+        first = jax.tree.map(
+            lambda value: value[:, -starts_count:].reshape(
+                (batch * starts_count, 1, *value.shape[2:])
+            ),
+            repfeat,
+        )
+        return starts, first, None
+
+    def imagine(self, starts, policy, horizon, training, context=None):
+        del context
+        return self.dyn.imagine(starts, policy, horizon, training)
+
+    def imagine_with_aux(self, starts, policy, horizon, training, context=None):
+        carry, features, actions = self.imagine(
+            starts, policy, horizon, training, context
+        )
+        return carry, features, actions, None
+
+    def imagination_policy_distribution(self, policy_inputs, auxiliary):
+        del auxiliary
+        return self.policy_distribution(policy_inputs, 2)
+
+    def imagination_action_mask(self, auxiliary):
+        del auxiliary
+        raise ValueError("PPO imagination requires an exact categorical action mask")
+
+    def imagination_reward_continuation(self, local_inputs, auxiliary):
+        del auxiliary
+        return self.rew(local_inputs, 2).pred(), self.con(local_inputs, 2).prob(1)
+
+    def imagination_policy_features(self, features):
+        return features
+
+    def imagination_interface_metrics(self, model_features, policy_features):
+        del model_features, policy_features
+        return {}
+
+    def imagination_state_validity(self, context, horizon, auxiliary=None):
+        del context, horizon, auxiliary
+        raise ValueError("PPO imagination requires explicit state validity")
+
+    def imagination_bootstrap_validity(self, context, horizon, auxiliary=None):
+        return self.imagination_state_validity(context, horizon, auxiliary)
+
+    def imagination_behavior_metrics(self, actions, validity, auxiliary=None):
+        del actions, validity, auxiliary
+        return {}
+
+    def imagination_critic_context(self, features, context, auxiliary=None):
+        del features, context, auxiliary
+        return None, {}
 
     @staticmethod
     def validity(obs):
@@ -243,17 +808,18 @@ class LearnerMixin(BehaviorLearning):
         losses.update(dyn_losses)
         metrics.update(dyn_metrics)
         valid = self.validity(obs)
-        regularizer = sigreg_loss(
-            tokens,
-            nj.seed(),
-            knots=int(self.config.sigreg.knots),
-            num_proj=int(self.config.sigreg.num_proj),
-            aggregation=str(self.config.sigreg.aggregation),
-            team_size=int(self.config.num_agents),
-            valid=valid,
-        )
-        losses["sigreg"] = jnp.broadcast_to(regularizer, (batch, length))
-        metrics["sigreg/embedding_std"] = embedding_std(tokens)
+        if self.sigreg:
+            regularizer = sigreg_loss(
+                tokens,
+                nj.seed(),
+                knots=int(self.config.sigreg.knots),
+                num_proj=int(self.config.sigreg.num_proj),
+                aggregation=str(self.config.sigreg.aggregation),
+                team_size=int(self.config.num_agents),
+                valid=valid,
+            )
+            losses["sigreg"] = jnp.broadcast_to(regularizer, (batch, length))
+            metrics["sigreg/embedding_std"] = embedding_std(tokens)
         if getattr(self, "actmask", None) is not None:
             policy_input = self.feat2tensor(repfeat)
             losses["action_mask"] = binary_vector_loss(
@@ -262,54 +828,116 @@ class LearnerMixin(BehaviorLearning):
                 str(getattr(self.config, "action_mask_reduction", "sum")),
             )
         target_tokens = None
-        dec_entries = {}
-        if self.slowenc is not None:
-            _, _, target_tokens = self.slowenc(
-                self.target_enc.initial(batch),
-                obs,
-                reset,
-                training=False,
+        if self.dec is not None:
+            dec_carry, dec_entries, reconstructions = self.dec(
+                dec_carry, repfeat, reset, training
             )
         else:
-            target_tokens = tokens
-        stop_target = True
-
-        branches = self.representation_prediction_branches(repfeat, dynamics_aux)
-
-        def add_embedding_loss(key, feature_fn, predictor_name="pred"):
-            branch_losses = []
-            branch_cosines = []
-            branch_mses = []
-            branch_norms = []
-            for branch, features in branches.items():
-                raw_prediction = self.dyn.predictor(
-                    feature_fn(features), name=predictor_name
-                )
-                loss, cosine, mse = embedding_prediction_loss(
-                    raw_prediction,
-                    target_tokens,
-                    distance=self.embedding_loss,
-                    stop_target=stop_target,
-                )
-                branch_losses.append(loss)
-                branch_cosines.append(cosine.mean())
-                branch_mses.append(mse.mean())
-                branch_norms.append(jnp.linalg.norm(raw_prediction, axis=-1).mean())
-                if len(branches) > 1:
-                    metrics[f"{key}/{branch}_cosine"] = cosine.mean()
-                    metrics[f"{key}/{branch}_mse"] = mse.mean()
-            losses[key] = jnp.stack(branch_losses).mean(0)
-            metrics[f"{key}/cosine"] = jnp.stack(branch_cosines).mean()
-            metrics[f"{key}/mse"] = jnp.stack(branch_mses).mean()
-            metrics[f"{key}/pred_norm"] = jnp.stack(branch_norms).mean()
-            metrics[f"{key}/target_std"] = (
-                target_tokens.astype(jnp.float32).std(axis=(0, 1)).mean()
-            )
-
-        add_embedding_loss("posterior_jepa", self.feat2tensor)
-        add_embedding_loss(
-            "dynamics_jepa", lambda features: features["deter"], "dynpred"
+            dec_entries = {}
+            reconstructions = {}
+        has_embedding_objective = (
+            self.posterior_jepa or self.dynamics_jepa or self.spatial_jepa
         )
+        if has_embedding_objective:
+            if self.slowenc is not None:
+                _, _, target_tokens = self.slowenc(
+                    self.target_enc.initial(batch),
+                    obs,
+                    reset,
+                    training=False,
+                )
+            else:
+                target_tokens = tokens
+            stop_target = self.embedding_target == "ema"
+
+            branches = self.representation_prediction_branches(repfeat, dynamics_aux)
+
+            def add_embedding_loss(key, feature_fn, predictor_name="pred"):
+                branch_losses = []
+                branch_cosines = []
+                branch_mses = []
+                branch_norms = []
+                for branch, features in branches.items():
+                    raw_prediction = self.dyn.predictor(
+                        feature_fn(features), name=predictor_name
+                    )
+                    loss, cosine, mse = embedding_prediction_loss(
+                        raw_prediction,
+                        target_tokens,
+                        distance=self.embedding_loss,
+                        stop_target=stop_target,
+                    )
+                    branch_losses.append(loss)
+                    branch_cosines.append(cosine.mean())
+                    branch_mses.append(mse.mean())
+                    branch_norms.append(jnp.linalg.norm(raw_prediction, axis=-1).mean())
+                    if len(branches) > 1:
+                        metrics[f"{key}/{branch}_cosine"] = cosine.mean()
+                        metrics[f"{key}/{branch}_mse"] = mse.mean()
+                losses[key] = jnp.stack(branch_losses).mean(0)
+                metrics[f"{key}/cosine"] = jnp.stack(branch_cosines).mean()
+                metrics[f"{key}/mse"] = jnp.stack(branch_mses).mean()
+                metrics[f"{key}/pred_norm"] = jnp.stack(branch_norms).mean()
+                metrics[f"{key}/target_std"] = (
+                    target_tokens.astype(jnp.float32).std(axis=(0, 1)).mean()
+                )
+
+            if self.posterior_jepa:
+                add_embedding_loss("posterior_jepa", self.feat2tensor)
+            if self.dynamics_jepa:
+                add_embedding_loss(
+                    "dynamics_jepa", lambda features: features["deter"], "dynpred"
+                )
+            if self.spatial_jepa:
+                assert self.target_enc is not None
+                grid_height, grid_width, _ = self.enc.image_grid_shape()
+                spatial_target = self.target_enc.spatial_tokens(target_tokens)
+                mask = spatial_patch_mask(
+                    nj.seed(),
+                    reset.shape,
+                    (grid_height, grid_width),
+                    float(self.config.spatial_jepa.mask_ratio),
+                )
+                masked_obs = dict(obs)
+                for key in self.enc.imgkeys:
+                    masked_obs[key] = mask_image_patches(
+                        obs[key],
+                        mask,
+                        fill_value=int(self.config.spatial_jepa.fill_value),
+                    )
+                _, _, masked_tokens = self.enc(
+                    self.enc.initial(batch),
+                    masked_obs,
+                    reset,
+                    training,
+                )
+                context = jnp.concatenate([repfeat["deter"], masked_tokens], axis=-1)
+                raw_prediction = self.dyn.predictor(context, name="spatialpred")
+                prediction = self.enc.spatial_tokens(raw_prediction)
+                (
+                    losses["spatial_jepa"],
+                    spatial_cosine,
+                    mask_fraction,
+                ) = masked_spatial_loss(
+                    prediction,
+                    spatial_target,
+                    mask,
+                )
+                metrics["spatial_jepa/cosine"] = spatial_cosine
+                metrics["spatial_jepa/mask_fraction"] = mask_fraction
+                metrics["spatial_jepa/target_std"] = (
+                    target_tokens.astype(jnp.float32).std(axis=(0, 1)).mean()
+                )
+        if self.dec is not None:
+            for key, reconstruction in reconstructions.items():
+                space = self.obs_space[key]
+                value = obs[key]
+                target = (
+                    f32(value) / 255
+                    if space.dtype == np.uint8 and len(space.shape) == 3
+                    else value
+                )
+                losses[key] = reconstruction.loss(sg(target))
         return (
             (enc_carry, dyn_carry, dec_carry),
             (enc_entries, dyn_entries, dec_entries),
@@ -319,11 +947,3 @@ class LearnerMixin(BehaviorLearning):
             metrics,
             target_tokens,
         )
-
-    def report(self, carry, data):
-        if not self.config.report:
-            return carry, {}
-        carry, obs, prevact, _ = self._apply_replay_context(carry, data)
-        _, (new_carry, _, _, metrics) = self.loss(carry, obs, prevact, training=False)
-        carry = (*new_carry, {key: data[key][:, -1] for key in self.act_space})
-        return carry, metrics

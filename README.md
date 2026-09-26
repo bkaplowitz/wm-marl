@@ -1,127 +1,68 @@
-# MA-JEPA
+# JEMA — final paper code
 
-A predictive world model for multi-agent reinforcement learning in SMAC.
-Agents share an observation encoder, a causal history model, and a decentralized
-policy. During training, a joint JEPA predictor models interactions between agents
-and supplies imagined trajectories for PPO. There is no observation decoder.
-
-This branch contains the baseline and a history-gradient variant. The latter
-changes only whether factual joint JEPA prediction also trains local history
-features. Both profiles are in [configs.yaml](src/majepa/configs.yaml).
+This branch publishes the frozen source used for the September 25–26 final
+ordered-replay SMAC suite. `src/` is copied unchanged from the deployed suite,
+not replaced by the earlier `learning-wm` implementation. The deployed DreamerV3
+infrastructure is vendored under `external/dreamerv3`, with its license.
 
 ## Installation
 
-Use Python 3.11 and an NVIDIA GPU with a compatible CUDA 12 driver:
+Use Python 3.11, CUDA 12 and StarCraft II **4.10.0** with the SMAC v1 maps.
 
 ```bash
-git submodule update --init --recursive
 uv sync --locked --extra smac --extra cuda12
 export SC2PATH=/path/to/StarCraftII
+PYTHON=.venv/bin/python scripts/run_final.sh --map 2s3z --seed 1302 --arm jema
 ```
 
-Install StarCraft II and the SMAC v1 maps separately, following the
-[SMAC installation instructions](https://github.com/oxwhirl/smac#installation).
-The environment uses difficulty `7`. Use the same StarCraft II build when
-comparing runs; the Python dependency lock does not install the game itself.
+The launcher trains to the map budget and then runs a dedicated 100-episode
+greedy evaluation. Outputs go into a fresh directory under `runs/`.
+Set `WANDB_PROJECT`, optionally `WANDB_ENTITY` and `WANDB_RUN_GROUP`, to enable
+W&B. Training and evaluation get separate unique IDs. Assign a GPU using
+`CUDA_VISIBLE_DEVICES`; launch one process per GPU.
 
-The pinned `external/dreamerv3` submodule supplies Embodied's environment driver,
-replay storage, JAX execution wrapper, and neural-network primitives. The agent,
-JEPA objectives, PPO training, and SMAC adapter live in `src/majepa`.
+## Final suite
 
-## Train and evaluate
+Training seeds: **1302, 2771, 7636**.
 
-From the repository root:
-
-```bash
-PYTHON=.venv/bin/python ./scripts/run_baseline.sh
-```
-
-This trains `2s3z`, seed `0`, for 50,000 environment steps, then evaluates the
-final checkpoint for 100 episodes. Each invocation creates a fresh output
-directory under `runs/`.
-
-Change the map, agent count, seed, or budget explicitly:
-
-```bash
-TASK=smac_3s_vs_4z NUM_AGENTS=3 STEPS=100000 SEED=1 \
-  PYTHON=.venv/bin/python ./scripts/run_baseline.sh
-
-TASK=smac_8m NUM_AGENTS=8 STEPS=50000 SEED=2 \
-  CONFIG=history_gradient PYTHON=.venv/bin/python ./scripts/run_baseline.sh
-```
-
-Additional dotted configuration overrides go after the script name:
-
-```bash
-PYTHON=.venv/bin/python ./scripts/run_baseline.sh \
-  --agent.ppo.entropy_coefficient 0.005
-```
-
-The launcher saves the **resolved configuration** in `train/config.yaml` and
-reloads it for evaluation. To evaluate an existing training checkpoint:
-
-```bash
-PYTHON=.venv/bin/python ./scripts/evaluate.sh runs/RUN_NAME/train
-```
-
-For direct CLI use, expose the pinned infrastructure package:
-
-```bash
-export PYTHONPATH="$PWD/src:$PWD/external/dreamerv3"
-.venv/bin/python -m majepa.main --help
-```
-
-`--configs baseline` and `--configs history_gradient` select profiles.
-`--config PATH` reloads a saved configuration; dotted CLI overrides are applied
-last. Fresh training requires a new log directory: resuming the exact pending
-replay batch and sampler state is not implemented.
-
-## Outputs
-
-JSONL logging is enabled by default. To also log to your W&B account:
-
-```bash
-export WANDB_PROJECT=my-project
-export WANDB_ENTITY=my-team     # optional
-export WANDB_RUN_GROUP=my-study # optional
-PYTHON=.venv/bin/python ./scripts/run_baseline.sh
-```
-
-Training and evaluation have separate run IDs and output directories. Outputs
-include resolved settings, metrics, win rates, elapsed wall-clock seconds, and
-the final checkpoint. Final evaluation also writes `evaluation_summary.json`.
-
-Curve evaluation uses 32 greedy episodes every 5,000 steps, across four workers
-with a worker offset of `50000`. Final evaluation uses 100 greedy episodes,
-25 per worker, with offset `100000`. Environment seeds are the training seed
-plus the worker offset plus the worker index. Evaluation preserves the training
-policy's random state.
-
-## Code layout
-
-| Location | Responsibility |
+| Budget | Maps |
 | --- | --- |
-| `configuration.py`, `configs.yaml` | Profiles, settings, and saved-config loading |
-| `main.py` | Construct environments, replay, agent, and logging |
-| `train.py`, `evaluation.py` | Collection/update scheduling and evaluation |
-| `agent.py` | Local model and optimizer construction |
-| `marl/agent.py` | Team adapter, joint modules, centralized critic |
-| `marl/replay.py`, `marl/imagination.py` | Reconstruct histories and roll out the joint simulator |
-| `models/` | Encoder, joint attention, prediction heads, categorical distributions |
-| `world_model/` | Local Transformer dynamics and attention/cache mechanics |
-| `training/learner.py`, `training/behavior.py` | World-model update, frozen PPO batches, actor/critic updates |
-| `training/joint.py`, `training/direct_jepa.py`, `training/self_fed.py` | Factual, direct multi-step, and recurrent JEPA supervision |
-| `training/ppo.py`, `training/replay_value.py` | Policy and value objectives |
-| `replay.py`, `streams.py` | Independent replay views and deterministic sampling order |
-| `envs/smac.py` | SMAC observations, legal actions, rewards, and episode outcomes |
-| `scripts/` | Train-and-evaluate and checkpoint-evaluation launchers |
+| 100k | 2m_vs_1z, 2s_vs_1sc, 2s3z, 3m, 3s_vs_3z, 3s_vs_4z, 8m, MMM, so_many_baneling |
+| 200k | 3s_vs_5z, 2c_vs_64zg |
+| 400k | corridor |
 
-See [the architecture guide](docs/architecture.md) for dimensions, gradient
-boundaries, and the order of a learner update.
+| `--arm` | Outcome → local | Factual JEPA → local |
+| --- | ---: | ---: |
+| jema | 1.0 | 0.1 |
+| outcomes (O-JEMA) | 1.0 | 0.0 |
+| jepa_only (G-JEPA) | 0.0 | 0.1 |
+| detached | 0.0 | 0.0 |
 
-Replay reads use the fixed4 ordering, and parameter names and active model
-operations were retained during this cleanup. This is not a guarantee of
-identical results across GPU types, software stacks, or arbitrary refactors.
-Record the Git revision, resolved settings, hardware, driver, and game version
-when reporting results. Full-training equivalence of this cleaned branch has
-not yet been established.
+The primary ablation maps are 2s3z, 3s_vs_4z and 2c_vs_64zg. These switches
+control gradients into local features, not removal of the joint objectives.
+This documents the experiment protocol, not a claim that every run completed.
+
+## Protocol
+
+The launcher reproduces the final manifest's overrides in
+`scripts/train_args.json`: ordered replay at update boundaries, compact replay,
+train ratio 128, no pretraining burn-in, categorical policy readout, actor LR
+3e-5. All other settings come from the frozen `baseline` configuration in
+`src/majepa/configs.yaml`. Do not invoke that profile alone to reproduce JEMA;
+use the launcher so the suite overrides are applied.
+
+Final evaluation uses four workers, 100 episodes total and environment seeds
+`training_seed + 100000 + worker_index`. It evaluates the endpoint checkpoint,
+not the best periodic checkpoint. Periodic evaluation is separate.
+
+The suite ran on A100 PCIe GPUs. Identical source and settings do not guarantee
+bitwise equivalence across hardware/software stacks. No exact training-resume
+claim is made. The launcher is portable; cloud credentials, pod management,
+queue state, results and diagnostic scripts are intentionally excluded.
+
+## Source layout
+
+`src/majepa/main.py` constructs the experiment; `train.py` schedules collection
+and updates; `evaluation.py` handles evaluation; `marl/`, `training/`,
+`world_model/` and `models/` contain the agent and losses. `envs/` contains the
+environment adapters. No algorithm refactoring was performed for this release.

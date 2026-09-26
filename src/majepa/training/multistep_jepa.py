@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 import jax
 import jax.numpy as jnp
 
+
 f32 = jnp.float32
 sg = jax.lax.stop_gradient
 

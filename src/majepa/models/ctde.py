@@ -18,6 +18,7 @@ import ninjax as nj
 
 from ..world_model.transformer import CausalTransformer
 
+
 f32 = jnp.float32
 sg = jax.lax.stop_gradient
 
@@ -175,18 +176,8 @@ class JointObservationJEPA(nj.Module):
             )
         return dict(cache, position=previous_position.reshape(-1))
 
-    def sequence(
-        self,
-        cache,
-        states,
-        actions,
-        present,
-        alive,
-        reset,
-        training,
-        *,
-        stop_state_gradient=True,
-    ):
+    def sequence(self, cache, states, actions, present, alive, reset, training,
+                 *, stop_state_gradient=True):
         """Teacher-forced joint transitions for ``[B,T,A,...]`` replay."""
 
         if states.ndim != 4 or actions.shape != states.shape[:3]:
@@ -202,11 +193,7 @@ class JointObservationJEPA(nj.Module):
             raise ValueError("CTDE replay masks do not match state/action axes")
         agents = states.shape[2]
         mixed, action_condition = self._mix(
-            states,
-            actions,
-            present,
-            alive,
-            training,
+            states, actions, present, alive, training,
             stop_state_gradient=stop_state_gradient,
         )
         folded = _fold_agent_sequence(mixed)
@@ -229,16 +216,8 @@ class JointObservationJEPA(nj.Module):
         return cache, self._outputs(hidden), snapshots
 
     def step(
-        self,
-        cache,
-        states,
-        actions,
-        present,
-        alive,
-        reset,
-        training,
-        *,
-        stop_state_gradient=True,
+        self, cache, states, actions, present, alive, reset, training,
+        *, stop_state_gradient=True,
     ):
         """One synchronized imagined transition for ``[N,A,...]`` states."""
 
@@ -255,11 +234,7 @@ class JointObservationJEPA(nj.Module):
             raise ValueError("CTDE step masks do not match state/action axes")
         teams, agents = actions.shape
         mixed, action_condition = self._mix(
-            states,
-            actions,
-            present,
-            alive,
-            training,
+            states, actions, present, alive, training,
             stop_state_gradient=stop_state_gradient,
         )
         folded = mixed.reshape((teams * agents, self.width))
@@ -279,9 +254,7 @@ class JointObservationJEPA(nj.Module):
         hidden = hidden * present[..., None].astype(hidden.dtype)
         return cache, self._outputs(hidden)
 
-    def _mix(
-        self, states, actions, present, alive, training, *, stop_state_gradient=True
-    ):
+    def _mix(self, states, actions, present, alive, training, *, stop_state_gradient=True):
         present = present.astype(bool)
         probabilistic_alive = not jnp.issubdtype(alive.dtype, jnp.bool_)
         if probabilistic_alive:
@@ -352,6 +325,10 @@ class JointObservationJEPA(nj.Module):
             winit=self.winit,
             condition_mode=self.action_conditioning,
         )
+
+
+
+
 
 
 class CentralAttentionCritic(nj.Module):

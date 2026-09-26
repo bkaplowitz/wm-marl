@@ -5,8 +5,6 @@ import embodied.jax.nets as nn
 import jax
 import jax.numpy as jnp
 
-from ..world_model.transformer import replay_entries
-
 
 class ReplayMixin:
     def _replay_observations(self, data):
@@ -17,10 +15,10 @@ class ReplayMixin:
         return self.dyn.entry_space
 
     def policy_dynamics_replay_entries(self, entries):
-        return replay_entries(entries)
+        return self.world_model.replay_entries(entries)
 
     def dynamics_replay_entries(self, entries):
-        return replay_entries(entries)
+        return self.world_model.replay_entries(entries)
 
     def truncate_dynamics_replay(self, entries, carry):
         return self.dyn.truncate(entries, carry)
@@ -51,7 +49,11 @@ class ReplayMixin:
         replay_carry = (
             self.enc.truncate(lhs(entries[0]), enc_carry),
             self.truncate_dynamics_replay(lhs(entries[1]), dyn_carry),
-            ({}),
+            (
+                self.dec.truncate(lhs(entries[2]), dec_carry)
+                if self.dec is not None
+                else {}
+            ),
         )
         replay_obs = rhs(self._replay_observations(data))
         replay_prevact = {key: data[key][:, context - 1 : -1] for key in self.act_space}

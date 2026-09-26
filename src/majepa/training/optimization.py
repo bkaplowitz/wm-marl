@@ -4,11 +4,12 @@ import math
 import re
 
 import embodied.jax
+from embodied.jax import internal, nets
 import jax
 import jax.numpy as jnp
 import ninjax as nj
 import optax
-from embodied.jax import internal, nets
+
 
 f32 = jnp.float32
 i32 = jnp.int32

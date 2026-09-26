@@ -68,9 +68,9 @@ class ExponentialRecency:
 class DualViewReplay(embodied.replay.Replay):
     """One replay store exposed through separate world and behavior views.
 
-    Both world-model and behavior views mix uniform and exponential-recency
-    sequence starts, with independent random streams. The report sampler is
-    also independent. Keeping the selectors here, next
+    The world-model view samples recent sequence starts using exponential
+    recency weighting. The behavior view samples the same physical items
+    uniformly with an independent selector. Keeping the selectors here, next
     to the single item table, makes it impossible for the two views to drift
     onto different replay contents.
     """
@@ -85,34 +85,29 @@ class DualViewReplay(embodied.replay.Replay):
         optimized_length=None,
         recency_decay=0.9998,
         seed=0,
+        isolate_report_rng=False,
         world_uniform_mix=0.0,
         behavior_recency_decay=0.0,
         behavior_uniform_mix=0.0,
+        compact_replay=False,
         **kwargs,
     ):
+        self.compact_replay = bool(compact_replay)
         decay = float(recency_decay)
         if not 0.0 < decay <= 1.0:
             raise ValueError("recency_decay must be in (0, 1]")
         self.world_uniform_mix = float(world_uniform_mix)
-        if (
-            not np.isfinite(self.world_uniform_mix)
-            or not 0.0 <= self.world_uniform_mix <= 1.0
-        ):
+        if not np.isfinite(self.world_uniform_mix) or not 0.0 <= self.world_uniform_mix <= 1.0:
             raise ValueError("world_uniform_mix must be finite and in [0, 1]")
         behavior_decay = float(behavior_recency_decay)
         if not np.isfinite(behavior_decay) or not 0.0 <= behavior_decay <= 1.0:
             raise ValueError("behavior_recency_decay must be finite and in [0, 1]")
         self.behavior_recency_decay = behavior_decay
         self.behavior_uniform_mix = float(behavior_uniform_mix)
-        if (
-            not np.isfinite(self.behavior_uniform_mix)
-            or not 0.0 <= self.behavior_uniform_mix <= 1.0
-        ):
+        if not np.isfinite(self.behavior_uniform_mix) or not 0.0 <= self.behavior_uniform_mix <= 1.0:
             raise ValueError("behavior_uniform_mix must be finite and in [0, 1]")
         if self.behavior_uniform_mix and not behavior_decay:
-            raise ValueError(
-                "behavior_uniform_mix requires a positive behavior_recency_decay"
-            )
+            raise ValueError("behavior_uniform_mix requires a positive behavior_recency_decay")
         if kwargs.pop("online", False):
             raise ValueError("dual-view replay requires replay.online=False")
         replay_length = int(kwargs["length"])
@@ -134,25 +129,28 @@ class DualViewReplay(embodied.replay.Replay):
         # decay creates an independent recent-root view without consuming the
         # world sampler RNG stream.
         self.behavior_sampler = (
-            ExponentialRecency(behavior_decay, seed=int(seed) + 1, track_ages=False)
+            ExponentialRecency(
+                behavior_decay, seed=int(seed) + 1, track_ages=False
+            )
             if behavior_decay
             else embodied.selectors.Uniform(seed=int(seed) + 1)
         )
         self.behavior_uniform_sampler = (
             embodied.selectors.Uniform(seed=int(seed) + 5)
-            if self.behavior_uniform_mix
-            else None
+            if self.behavior_uniform_mix else None
         )
         self.behavior_mixture_rng = np.random.default_rng(int(seed) + 6)
         self.behavior_mixture_lock = threading.Lock()
-        self.report_sampler = embodied.selectors.Uniform(seed=int(seed) + 2)
-
+        self.report_sampler = (
+            embodied.selectors.Uniform(seed=int(seed) + 2)
+            if isolate_report_rng
+            else None
+        )
         # Independent selectors ensure broader world coverage does not consume
         # behavior/report randomness. At mix=0 the existing draws are untouched.
         self.world_uniform_sampler = (
             embodied.selectors.Uniform(seed=int(seed) + 3)
-            if self.world_uniform_mix
-            else None
+            if self.world_uniform_mix else None
         )
         self.world_mixture_rng = np.random.default_rng(int(seed) + 4)
         self.world_mixture_lock = threading.Lock()
@@ -160,7 +158,7 @@ class DualViewReplay(embodied.replay.Replay):
             "world_samples": 0,
             "world_uniform_samples": 0,
             "behavior_samples": 0,
-            "behavior_uniform_samples": 0,
+                "behavior_uniform_samples": 0,
             "world_ages": [],
             "behavior_ages": [],
         }
@@ -204,9 +202,7 @@ class DualViewReplay(embodied.replay.Replay):
         uniform_behavior = False
         if not is_world and is_training and self.behavior_uniform_sampler is not None:
             with self.behavior_mixture_lock:
-                uniform_behavior = (
-                    self.behavior_mixture_rng.random() < self.behavior_uniform_mix
-                )
+                uniform_behavior = self.behavior_mixture_rng.random() < self.behavior_uniform_mix
             if uniform_behavior:
                 selector = self.behavior_uniform_sampler
         uniform_world = False
@@ -228,6 +224,9 @@ class DualViewReplay(embodied.replay.Replay):
                     itemid = selector()
                 chunkid, index = self.items[itemid]
                 sequence = self._getseq(chunkid, index, concat=False)
+                if self.compact_replay and mode == "train_behavior":
+                    from .replay_codec import slim_behavior
+                    sequence = slim_behavior(sequence)
                 if is_training:
                     age = self.itemid - 1 - int(itemid)
                     view = "world" if is_world else "behavior"
@@ -261,15 +260,13 @@ class DualViewReplay(embodied.replay.Replay):
         result["world_uniform_samples"] = values["world_uniform_samples"]
         result["world_uniform_fraction"] = (
             values["world_uniform_samples"] / values["world_samples"]
-            if values["world_samples"]
-            else 0.0
+            if values["world_samples"] else 0.0
         )
         result["behavior_samples"] = values["behavior_samples"]
         result["behavior_uniform_samples"] = values["behavior_uniform_samples"]
         result["behavior_uniform_fraction"] = (
             values["behavior_uniform_samples"] / values["behavior_samples"]
-            if values["behavior_samples"]
-            else 0.0
+            if values["behavior_samples"] else 0.0
         )
         inserts = result["inserts"]
         for view in ("world", "behavior"):

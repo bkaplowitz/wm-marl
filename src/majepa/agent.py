@@ -7,29 +7,65 @@ import jax.numpy as jnp
 import numpy as np
 
 from .marl.axes import MODEL_EXCLUDED_FIELDS
-from .models.encoder import Encoder
 from .models.heads import MLPHead
 from .models.normalize import Normalize
+from .models.target import CriticTarget
 from .training.learner import LearnerMixin
 from .training.optimization import OptimizationMixin
 from .training.policy import PolicyMixin
 from .training.replay import ReplayMixin
-from .world_model.transformer import ParallelTransformerDynamics, feature_tensor
+from .training.reporting import ReportingMixin
+from .world_model import world_model_backend
 
 
 class Agent(
     PolicyMixin,
     LearnerMixin,
+    ReportingMixin,
     ReplayMixin,
     OptimizationMixin,
     embodied.jax.Agent,
 ):
-    banner = ["MA-JEPA — centralized world-model learning, decentralized policies"]
+    banner = [
+        r"---  ___                           __   ______ ---",
+        r"--- |   \ _ _ ___ __ _ _ __  ___ _ \ \ / /__ / ---",
+        r"--- | |) | '_/ -_) _` | '  \/ -_) '/\ V / |_ \ ---",
+        r"--- |___/|_| \___\__,_|_|_|_\___|_|  \_/ |___/ ---",
+    ]
 
     def __init__(self, obs_space, act_space, config):
         self.obs_space = obs_space
         self.act_space = act_space
         self.config = config
+        gradients = config.world_model_gradients
+        self.joint_prediction_gradient = bool(gradients.joint_prediction)
+        self.joint_prediction_scale = float(gradients.joint_prediction_scale)
+        self.joint_prediction_mode = str(gradients.joint_prediction_mode)
+        if self.joint_prediction_mode not in {"full", "factual", "outcomes"}:
+            raise ValueError("Unknown joint prediction gradient mode")
+        self.joint_factual_gradient = self.joint_prediction_gradient and (
+            self.joint_prediction_mode in {"full", "factual"})
+        self.joint_predicted_gradient = self.joint_prediction_gradient and (
+            self.joint_prediction_mode == "full")
+        self.joint_outcome_gradient = self.joint_prediction_gradient and (
+            self.joint_prediction_mode == "outcomes")
+        self.outcome_input_scale = float(gradients.outcome_input_scale)
+        if self.outcome_input_scale not in (0.0, 1.0):
+            raise ValueError("Outcome input scale must be 0 or 1 for this factorial")
+        self.outcome_jepa_scale = float(gradients.outcome_jepa_scale)
+        if not np.isfinite(self.outcome_jepa_scale) or self.outcome_jepa_scale < 0:
+            raise ValueError("outcome_jepa_scale must be finite and nonnegative")
+        if self.outcome_jepa_scale and not self.joint_outcome_gradient:
+            raise ValueError("outcome_jepa_scale requires outcomes-only gradient routing")
+        self.policy_latent_readout = str(config.policy_latent_readout)
+        if self.policy_latent_readout not in {"sample", "probabilities"}:
+            raise ValueError("Unknown actor latent readout")
+        if self.policy_latent_readout == "probabilities" and getattr(self, "ctde_mask_calibration", False):
+            raise ValueError("Probability actor readout requires the standard CTDE imagination path")
+        if not np.isfinite(self.joint_prediction_scale) or self.joint_prediction_scale < 0:
+            raise ValueError("joint_prediction_scale must be finite and nonnegative")
+        if self.joint_prediction_gradient and config.marl.ctde.get("factual_jepa_history_gradient", False):
+            raise ValueError("Joint gradients and factual-history-only gradients are separate treatments")
         self.replay_sampling = str(getattr(config, "replay_sampling", "uniform"))
         self.two_branch_replay = self.replay_sampling == "recent_world_uniform_behavior"
         self.ppo_start_step = int(getattr(config, "ppo_start_step", 0))
@@ -81,20 +117,32 @@ class Agent(
             raise ValueError(
                 "replay value learning requires at least two imagination roots"
             )
+        self.world_model = world_model_backend()
+        self.objective = "embedding"
+        self.embedding_target = "ema"
         self.embedding_loss = "cosine"
+        self.posterior_jepa = True
+        self.dynamics_jepa = True
+        self.sigreg = True
+        self.dec = None
 
         enc_space = {
             key: value
             for key, value in self.obs_space.items()
             if key not in MODEL_EXCLUDED_FIELDS
         }
-        self.enc = Encoder(enc_space, **config.enc.simple, name="enc")
+        self.enc = self.world_model.encoder("simple")(
+            enc_space, **config.enc.simple, name="enc"
+        )
+        self.spatial_jepa = bool(self.enc.imgkeys)
         self.enc_output_dim = self.enc.calculate_encoder_output_dim()
-        self.target_enc = Encoder(enc_space, **config.enc.simple, name="target_enc")
+        self.target_enc = self.world_model.encoder("simple")(
+            enc_space, **config.enc.simple, name="target_enc"
+        )
         self.slowenc = embodied.jax.SlowModel(
             self.target_enc, source=self.enc, **config.target_encoder
         )
-        self.dyn = ParallelTransformerDynamics(
+        self.dyn = self.world_model.dynamics_model("parallel_transformer")(
             self.act_space,
             self.enc_output_dim,
             **config.dyn.parallel_transformer,
@@ -109,7 +157,7 @@ class Agent(
                 f"context * layers ({required_burnin}), got "
                 f"{config.replay_context}"
             )
-        self.feat2tensor = feature_tensor
+        self.feat2tensor = self.world_model.feature_tensor
         scalar = elements.Space(np.float32, ())
         outputs = {
             key: config.policy_dist_disc if space.discrete else config.policy_dist_cont
@@ -232,6 +280,28 @@ class Agent(
 
     def init_report(self, batch_size):
         return self.init_policy(batch_size)
+
+    def report_rows(self, batch_size):
+        return min(batch_size, 6)
+
+    def _make_value_models(self, scalar, config):
+        """Construct the maintained fast and slow value models."""
+
+        value = embodied.jax.MLPHead(scalar, **config.value, name="val")
+        slowvalue = CriticTarget(
+            embodied.jax.MLPHead(scalar, **config.value, name="slowval"),
+            source=value,
+            **config.slowvalue,
+        )
+        return value, slowvalue
+
+    def critic(self, features, bdims, *, slow=False, context=None):
+        """Evaluate the maintained value model."""
+        value_head = self.slowval if slow else self.val
+        inputs = self.feat2tensor(features) if isinstance(features, dict) else features
+        if context is not None:
+            inputs = jnp.concatenate([inputs, context], axis=-1)
+        return value_head(inputs, bdims)
 
     def _action_mask_key(self):
         if "action_mask" not in self.obs_space:
