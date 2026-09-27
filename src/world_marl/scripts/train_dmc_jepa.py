@@ -27,6 +27,7 @@ from tqdm.auto import tqdm
 from world_marl.checkpointing import load_params, save_checkpoint
 from world_marl.envs.brax_adapter import BraxVectorAdapter, brax_env_name
 from world_marl.envs.dmc_adapter import DMCVectorAdapter, dmc_env_name
+from world_marl.envs.dmc_pixel_adapter import DMCPixelAdapter, dmc_pixel_env_name
 from world_marl.envs.gymnax_adapter import GymnaxVectorAdapter, gymnax_env_name
 from world_marl.jepa.decoder import (
     DecoderConfig,
@@ -104,6 +105,15 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional Brax physics backend to pass through to brax.envs.create.",
     )
+    parser.add_argument("--pixel-size", type=int, default=64)
+    parser.add_argument("--frame-stack", type=int, default=1)
+    parser.add_argument("--action-repeat", type=int, default=1)
+    parser.add_argument("--camera-id", type=int, default=0)
+    parser.add_argument(
+        "--replay-observation-storage",
+        choices=("auto", "float32", "uint8"),
+        default="auto",
+    )
     parser.add_argument("--collect-steps", type=int, default=2048)
     parser.add_argument("--validation-steps", type=int, default=512)
     parser.add_argument("--replay-capacity", type=int, default=100_000)
@@ -139,6 +149,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=4,
         help="Held-out trajectories shown in the decoder diagnostic figures.",
+    )
+    parser.add_argument(
+        "--decoder-arch",
+        choices=("mlp", "conv"),
+        default="mlp",
+        help="Diagnostic decoder architecture; conv requires a dmc-pixels env.",
+    )
+    parser.add_argument(
+        "--video-horizon",
+        type=int,
+        default=128,
+        help="Open-loop horizon (macro-steps) for the policy rollout capture.",
     )
     parser.add_argument(
         "--context-window",
@@ -707,13 +729,24 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--final-policy-eval-num-envs must be >= 1")
     if not (
         args.env.startswith("dmc:")
+        or args.env.startswith("dmc-pixels:")
         or args.env.startswith("brax:")
         or args.env.startswith("gymnax:")
     ):
         parser.error(
-            "--env must be formatted as dmc:<domain>/<task>, brax:<env>, "
-            "or gymnax:<env_id>"
+            "--env must be formatted as dmc:<domain>/<task>, "
+            "dmc-pixels:<domain>/<task>, brax:<env>, or gymnax:<env_id>"
         )
+    if args.frame_stack < 1:
+        parser.error("--frame-stack must be >= 1")
+    if args.action_repeat < 1:
+        parser.error("--action-repeat must be >= 1")
+    if args.pixel_size < 16:
+        parser.error("--pixel-size must be >= 16")
+    if args.decoder_arch == "conv" and not args.env.startswith("dmc-pixels:"):
+        parser.error("--decoder-arch conv requires a dmc-pixels:<domain>/<task> env")
+    if args.video_horizon < 1:
+        parser.error("--video-horizon must be >= 1")
     min_steps = min_sequence_steps
     if args.collect_steps < min_steps:
         parser.error(
@@ -764,6 +797,8 @@ def _skip_world_model_fit(control: ControlMode) -> bool:
 
 
 def _env_backend(env: str) -> str:
+    if env.startswith("dmc-pixels:"):
+        return "dmc_pixels"
     if env.startswith("dmc:"):
         return "dmc"
     if env.startswith("brax:"):
@@ -771,6 +806,12 @@ def _env_backend(env: str) -> str:
     if env.startswith("gymnax:"):
         return "gymnax"
     raise ValueError(f"unsupported env: {env!r}")
+
+
+def _replay_observation_storage(args: argparse.Namespace) -> str:
+    if args.replay_observation_storage != "auto":
+        return args.replay_observation_storage
+    return "uint8" if args.env.startswith("dmc-pixels:") else "float32"
 
 
 def _action_mode(env: str) -> str:
@@ -788,6 +829,19 @@ def _make_vector_adapter(
     num_envs: int | None = None,
 ):
     adapter_num_envs = args.num_envs if num_envs is None else num_envs
+    if args.env.startswith("dmc-pixels:"):
+        return DMCPixelAdapter(
+            dmc_pixel_env_name(args.env),
+            num_envs=adapter_num_envs,
+            max_cycles=args.max_cycles,
+            seed=seed,
+            image_size=args.pixel_size,
+            camera_id=args.camera_id,
+            frame_stack=args.frame_stack,
+            action_repeat=args.action_repeat,
+            flatten=True,
+            num_workers=min(args.env_workers, adapter_num_envs),
+        )
     if args.env.startswith("dmc:"):
         return DMCVectorAdapter(
             dmc_env_name(args.env),
@@ -893,6 +947,14 @@ def run_one(
                 "seed": seed,
                 "control": control,
                 "observation_shape": adapter.observation_shape,
+                "raw_observation_shape": tuple(
+                    getattr(adapter, "raw_observation_shape", adapter.observation_shape)
+                ),
+                "pixel_size": args.pixel_size,
+                "frame_stack": args.frame_stack,
+                "action_repeat": args.action_repeat,
+                "camera_id": args.camera_id,
+                "replay_observation_storage": _replay_observation_storage(args),
                 "action_mode": action_mode,
                 "action_shape": adapter.action_shape,
                 "action_low": adapter.action_low,
@@ -921,6 +983,7 @@ def run_one(
             observation_shape=(config.observation_dim,),
             action_shape=replay_action_shape,
             action_dtype=replay_action_dtype,
+            observation_storage=_replay_observation_storage(args),
         )
         anchor_replay = SequenceReplayBuffer(
             capacity=max(2, args.collect_steps),
@@ -928,6 +991,7 @@ def run_one(
             observation_shape=(config.observation_dim,),
             action_shape=replay_action_shape,
             action_dtype=replay_action_dtype,
+            observation_storage=_replay_observation_storage(args),
         )
 
         observations = adapter.reset()
@@ -1066,6 +1130,7 @@ def run_one(
                 observation_dim=config.observation_dim,
                 action_shape=replay_action_shape,
                 action_dtype=replay_action_dtype,
+                observation_storage=_replay_observation_storage(args),
             )
             observations, added_env_steps, collect_metrics = _collect_policy_steps(
                 adapter,
@@ -1121,6 +1186,7 @@ def run_one(
                     observation_dim=config.observation_dim,
                     action_shape=replay_action_shape,
                     action_dtype=replay_action_dtype,
+                    observation_storage=_replay_observation_storage(args),
                 )
                 observations, validation_env_steps, recent_validation_payload = (
                     _collect_policy_steps(
@@ -1399,6 +1465,11 @@ def run_one(
                 "control": control,
                 "policy_trained": args.policy_train_steps > 0,
                 "jepa_config": dataclasses.asdict(config),
+                "raw_observation_shape": tuple(
+                    getattr(adapter, "raw_observation_shape", adapter.observation_shape)
+                ),
+                "frame_stack": args.frame_stack,
+                "action_repeat": args.action_repeat,
                 "seed": seed,
             },
         )
@@ -1659,6 +1730,7 @@ def _collect_validation_replay(
             observation_shape=(config.observation_dim,),
             action_shape=action_shape,
             action_dtype=action_dtype,
+            observation_storage=_replay_observation_storage(args),
         )
         observations = adapter.reset()
         _collect_random_steps(
@@ -1691,6 +1763,7 @@ def _new_replay_buffer(
     observation_dim: int,
     action_shape: tuple[int, ...],
     action_dtype: np.dtype | type,
+    observation_storage: str,
 ) -> SequenceReplayBuffer:
     return SequenceReplayBuffer(
         capacity=max(2, capacity),
@@ -1698,6 +1771,7 @@ def _new_replay_buffer(
         observation_shape=(observation_dim,),
         action_shape=action_shape,
         action_dtype=action_dtype,
+        observation_storage=observation_storage,
     )
 
 

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+from argparse import Namespace
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -50,6 +53,7 @@ from world_marl.jepa.validation import (
     sample_online_candidate_batch,
     summarize as summarize_dmc_jepa,
 )
+from world_marl.scripts import train_dmc_jepa as tdj
 from world_marl.scripts.compare_single_wm import _flag_tokens
 from world_marl.scripts.write_dmc_vector_launcher import (
     COMMON_PARAMS,
@@ -2137,3 +2141,32 @@ def test_replay_rejects_unknown_storage():
             observation_shape=(2,),
             observation_storage="float16",
         )
+
+
+def test_env_backend_recognizes_dmc_pixels():
+    assert tdj._env_backend("dmc-pixels:cartpole/swingup") == "dmc_pixels"
+    assert tdj._experiment_prefix("dmc-pixels:cartpole/swingup") == "dmc_pixels_jepa"
+    assert tdj._action_mode("dmc-pixels:cartpole/swingup") == "continuous"
+
+
+def test_replay_observation_storage_auto():
+    args = Namespace(
+        replay_observation_storage="auto", env="dmc-pixels:cartpole/swingup"
+    )
+    assert tdj._replay_observation_storage(args) == "uint8"
+    args = Namespace(replay_observation_storage="auto", env="dmc:cartpole/swingup")
+    assert tdj._replay_observation_storage(args) == "float32"
+    args = Namespace(
+        replay_observation_storage="float32", env="dmc-pixels:cartpole/swingup"
+    )
+    assert tdj._replay_observation_storage(args) == "float32"
+
+
+def test_parse_args_rejects_conv_decoder_on_state_envs(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["train_dmc_jepa", "--env", "dmc:cartpole/swingup", "--decoder-arch", "conv"],
+    )
+    with pytest.raises(SystemExit):
+        tdj.parse_args()
