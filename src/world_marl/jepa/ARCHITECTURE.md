@@ -99,11 +99,7 @@ z_target = stop_gradient(encoder(o_future)).
 ```
 
 There is no separately parameterized or EMA target encoder. The online encoder
-learns through 101,376 training transitions and is then frozen. The action
-encoder, transformer, latent predictor, reward head, and continuation head keep
-learning for the rest of the run. Freezing only the observation encoder fixes
-the latent coordinate system seen by the actor and critic after the early
-representation-learning stage.
+continues learning during every world-model update.
 
 ### 3.2 Action-Conditioned Temporal Model
 
@@ -304,9 +300,7 @@ constants are:
 | Discount `gamma` | `1 - 1/333 = 0.996996996997` |
 | Lambda | `0.95` |
 | Imagined horizon | 15 |
-| Return clip through 150,528 steps | `[-100, 100]` |
-| Return clip from 150,528 to 250,880 steps | Linear `100 -> 333` |
-| Return clip after 250,880 steps | `[-333, 333]` |
+| Return clip | `[-100, 100]` |
 
 Each time step is weighted by predicted discounted survival:
 
@@ -315,12 +309,10 @@ w_0 = 1
 w_t = product_{i < t}(gamma * c_hat_i).
 ```
 
-The actor advantage is the scheduled-clipped lambda return minus the stopped
-EMA-critic value. Its scale is divided by an EMA of the batch's
-95th-to-5th-percentile return range. The EMA decay is `0.99`, and the divisor is
-never smaller than one. The increasing clip preserves the stable early update
-scale while allowing high-value states to become distinguishable once the
-critic is calibrated.
+The actor advantage is the clipped lambda return minus the stopped EMA-critic
+value. Its scale is divided by an EMA of the batch's 95th-to-5th percentile
+return range. The EMA decay is `0.99`, and the divisor is never smaller than
+one.
 
 The actor is also constrained against a stopped reference copy of its complete
 pre-squash diagonal Gaussian. A fresh reference is captured at the start of
@@ -334,7 +326,7 @@ The minimized actor loss is, schematically,
 ```text
 L_actor = -weighted_mean(
               log pi(a_t | z_t)
-              * stop_gradient((clip_C(G_t^lambda) - V_bar(z_t)) / S),
+              * stop_gradient((clip(G_t^lambda) - V_bar(z_t)) / S),
               w_t,
           )
           - 0.003 * tanh_normal_entropy
@@ -369,8 +361,7 @@ There is no separate critic warmup stage.
 
 The encoder is owned by the world model. Actor and critic optimization never
 updates the encoder or transformer. Conversely, world-model optimization never
-updates the actor or critic. Once the run reaches 101,376 training transitions,
-world-model optimization also stops updating the observation encoder.
+updates the actor or critic.
 
 | Optimizer | Trainable parameters | Frozen parameters |
 | --- | --- | --- |
@@ -381,8 +372,7 @@ world-model optimization also stops updating the observation encoder.
 The coupling is nevertheless continuous:
 
 1. the current policy collects real transitions;
-2. the world model adapts its latent space and dynamics to replay early, then
-   adapts only its dynamics and prediction heads after the encoder freeze;
+2. the world model adapts its latent space and dynamics to replay;
 3. actor and critic consume the updated latent representation;
 4. imagined rollouts improve the policy without additional environment calls;
 5. the improved stochastic policy collects the next real-data block.
@@ -433,39 +423,23 @@ The run then executes 483 online phases. Every phase performs:
 ```text
 collect 64 transitions per environment = 1,024 real transitions
 perform 1,024 world-model updates
-perform   512 critic updates
-perform   512 actor updates before 50k transitions, then 256 actor updates.
+perform   512 critic updates and 256 actor updates.
 ```
 
 This tight interleaving updates the model and policy after every 1,024 new real
-transitions rather than collecting a large offline block first. During the
-first 44 phases, actor and critic are both updated at every policy-training
-step. Afterwards, the critic remains at 512 updates per phase while the actor
-is updated every second step. The later 2:1 critic-to-actor cadence lets values
-track the changing model without allowing late policy updates to become noisy.
+transitions rather than collecting a large offline block first. The critic is
+updated at every policy-training step; the actor is updated every second step.
+This gives value fitting two optimization steps per policy step without adding
+real environment interactions.
 
-### 6.4 Replay Schedule and Reset-Aligned Starts
+### 6.4 Uniform Full Replay
 
 The replay capacity is 1,000,000 transitions, so the complete 500k training
-history remains available. Most batches are sampled uniformly from valid
-contiguous sequences in this full replay.
-
-Two reward-agnostic corrections are used:
-
-1. Before 50,000 training transitions, half of each world-model batch comes
-   from the most recent 320 transitions per environment. After 50,000 steps,
-   world-model sampling becomes fully uniform. This gives the rapidly changing
-   early policy prompt model adaptation without sacrificing long-run coverage.
-2. Actor imagination starts are fully uniform through 201,727 training
-   transitions, preserving fast early policy learning. From 201,728
-   transitions onward, 10% of contexts are sampled from the first 64
-   observations after real episode starts and the remaining 90% are uniform
-   valid replay contexts. The late mixture keeps reset geometries represented
-   once a competent policy exists, without using rewards, failure labels, task
-   coordinates, or additional environment interactions.
-
-The real replay-critic loss remains uniformly sampled. There is no
-failure-conditioned, reward-conditioned, or task-specific replay rule.
+history remains available. World-model batches, actor imagination starts, and
+real replay-critic sequences are all sampled uniformly from valid contiguous
+sequences in this full replay. There is no recency-biased replay mixture and no
+special bootstrap-, reset-, failure-, or reward-conditioned actor-start
+sampler in the maintained configuration.
 
 ### 6.5 Exact Training Budget
 
@@ -477,7 +451,7 @@ failure-conditioned, reward-conditioned, or task-specific replay rule.
 | **Total training transitions** | **499,712** |
 | Held-out validation transitions | 1,280 |
 | World-model updates | 495,872 |
-| Actor updates | 136,192 |
+| Actor updates | 124,928 |
 | Critic updates | 248,576 |
 
 The phase size leaves the run 288 transitions below the nominal 500k training
@@ -516,18 +490,15 @@ The complete stabilization stack is:
 | Tanh-Normal entropy | Regularizes the actual bounded action distribution. |
 | Lambda returns | Combines short model rewards with critic bootstrap. |
 | EMA percentile return normalization | Stabilizes policy-gradient scale as returns improve. |
-| Scheduled return clipping | Uses a conservative bound of 100 early and expands it to 333 as values become calibrated. |
+| Return clipping | Bounds extreme imagined targets at magnitude 100. |
 | EMA target critic | Stabilizes actor baselines, return bootstrap, and critic targets. |
 | Slow-value regularization | Limits rapid drift of the online critic. |
 | Real replay-critic loss | Grounds values in observed rewards and terminal flags. |
 | Squash-corrected REINFORCE | Avoids backpropagating actor gradients through potentially exploitable model derivatives. |
 | Full-distribution KL budget | Limits abrupt changes in both actor means and standard deviations. |
-| Early 1:1, later 2:1 critic-to-actor cadence | Learns control quickly, then slows policy movement once returns are high. |
+| Two critic steps per actor step | Lets values track the changing model before the policy moves again. |
 | Reset-rich bootstrap | Covers multiple initial-state regions with a small random dataset. |
-| Early recent world-model replay | Adapts dynamics quickly during the first 50k transitions. |
-| Delayed reset-aligned actor starts | Preserves fast early learning, then keeps initial-state regions in the mature actor objective. |
-| Encoder freeze after 101,376 steps | Prevents late latent-coordinate drift at the actor-critic interface. |
-| Uniform long-run replay | Preserves broad dynamics coverage after the early adaptation stage. |
+| Uniform full replay | Preserves broad dynamics coverage as the online policy changes. |
 | Optimizer warmup and adaptive clipping | Reduces early and parameter-relative gradient shocks. |
 
 ## 8. Parameter Count

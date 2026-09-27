@@ -30,24 +30,28 @@ NUMPY_STREAM_IDS = {
 
 @dataclass
 class JaxRngStreams:
-    """Own independent JAX keys by subsystem."""
+    """Own JAX keys by subsystem, with an opt-in legacy shared mode."""
 
     seed: int
+    isolated: bool
     _keys: dict[str, jax.Array]
 
     @classmethod
-    def create(cls, seed: int) -> "JaxRngStreams":
+    def create(cls, seed: int, *, isolated: bool) -> "JaxRngStreams":
         root = jax.random.PRNGKey(seed)
-        keys = {
-            name: jax.random.fold_in(root, stream_id)
-            for name, stream_id in JAX_STREAM_IDS.items()
-        }
-        return cls(seed=int(seed), _keys=keys)
+        if isolated:
+            keys = {
+                name: jax.random.fold_in(root, stream_id)
+                for name, stream_id in JAX_STREAM_IDS.items()
+            }
+        else:
+            keys = {"shared": root}
+        return cls(seed=int(seed), isolated=bool(isolated), _keys=keys)
 
     def _slot(self, name: str) -> str:
         if name not in JAX_STREAM_IDS:
             raise KeyError(f"unknown JAX RNG stream: {name}")
-        return name
+        return name if self.isolated else "shared"
 
     def take(self, name: str) -> jax.Array:
         """Advance a stream and return one subkey."""
@@ -68,9 +72,9 @@ class JaxRngStreams:
 
     def manifest(self) -> dict[str, Any]:
         return {
-            "mode": "isolated",
+            "mode": "isolated" if self.isolated else "legacy-shared",
             "base_seed": self.seed,
-            "jax_stream_ids": dict(JAX_STREAM_IDS),
+            "jax_stream_ids": dict(JAX_STREAM_IDS) if self.isolated else {},
         }
 
     def state_dict(self) -> dict[str, Any]:
@@ -78,8 +82,7 @@ class JaxRngStreams:
 
         return {
             "seed": self.seed,
-            # Kept in snapshots so current release checkpoints remain readable.
-            "isolated": True,
+            "isolated": self.isolated,
             "keys": {
                 name: np.asarray(jax.device_get(key), dtype=np.uint32).tolist()
                 for name, key in self._keys.items()
@@ -89,7 +92,7 @@ class JaxRngStreams:
     def restore_state_dict(self, state: Mapping[str, Any]) -> None:
         """Restore stream keys from :meth:`state_dict`."""
 
-        if int(state["seed"]) != self.seed or not bool(state.get("isolated", True)):
+        if int(state["seed"]) != self.seed or bool(state["isolated"]) != self.isolated:
             raise ValueError("JAX RNG snapshot does not match the configured streams")
         expected_slots = set(self._keys)
         restored_slots = set(state["keys"])
@@ -109,32 +112,40 @@ class NumpyRngStreams:
     """Own deterministic NumPy generators by data-producing subsystem."""
 
     seed: int
+    isolated: bool
     _generators: dict[str, np.random.Generator]
 
     @classmethod
-    def create(cls, seed: int) -> "NumpyRngStreams":
-        generators = {
-            name: np.random.default_rng(np.random.SeedSequence([int(seed), stream_id]))
-            for name, stream_id in NUMPY_STREAM_IDS.items()
-        }
-        return cls(seed=int(seed), _generators=generators)
+    def create(cls, seed: int, *, isolated: bool) -> "NumpyRngStreams":
+        if isolated:
+            generators = {
+                name: np.random.default_rng(
+                    np.random.SeedSequence([int(seed), stream_id])
+                )
+                for name, stream_id in NUMPY_STREAM_IDS.items()
+            }
+        else:
+            generators = {"shared": np.random.default_rng(seed)}
+        return cls(seed=int(seed), isolated=bool(isolated), _generators=generators)
 
     def get(self, name: str) -> np.random.Generator:
         if name not in NUMPY_STREAM_IDS:
             raise KeyError(f"unknown NumPy RNG stream: {name}")
-        return self._generators[name]
+        return self._generators[name if self.isolated else "shared"]
 
     def manifest(self) -> dict[str, Any]:
-        derived_seeds = {
-            name: np.random.SeedSequence([self.seed, stream_id])
-            .generate_state(2)
-            .tolist()
-            for name, stream_id in NUMPY_STREAM_IDS.items()
-        }
+        derived_seeds = {}
+        if self.isolated:
+            derived_seeds = {
+                name: np.random.SeedSequence([self.seed, stream_id])
+                .generate_state(2)
+                .tolist()
+                for name, stream_id in NUMPY_STREAM_IDS.items()
+            }
         return {
-            "mode": "isolated",
+            "mode": "isolated" if self.isolated else "legacy-shared",
             "base_seed": self.seed,
-            "numpy_stream_ids": dict(NUMPY_STREAM_IDS),
+            "numpy_stream_ids": dict(NUMPY_STREAM_IDS) if self.isolated else {},
             "numpy_derived_seeds": derived_seeds,
         }
 
@@ -143,8 +154,7 @@ class NumpyRngStreams:
 
         return {
             "seed": self.seed,
-            # Kept in snapshots so current release checkpoints remain readable.
-            "isolated": True,
+            "isolated": self.isolated,
             "bit_generators": {
                 name: _json_compatible(generator.bit_generator.state)
                 for name, generator in self._generators.items()
@@ -154,7 +164,7 @@ class NumpyRngStreams:
     def restore_state_dict(self, state: Mapping[str, Any]) -> None:
         """Restore generator states from :meth:`state_dict`."""
 
-        if int(state["seed"]) != self.seed or not bool(state.get("isolated", True)):
+        if int(state["seed"]) != self.seed or bool(state["isolated"]) != self.isolated:
             raise ValueError("NumPy RNG snapshot does not match the configured streams")
         expected_slots = set(self._generators)
         restored_slots = set(state["bit_generators"])

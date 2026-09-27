@@ -186,16 +186,6 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     policy.add_argument(
-        "--policy-reset-start-fraction-start-env-steps",
-        type=int,
-        default=0,
-        help=(
-            "Training-transition threshold at which reset-aligned actor "
-            "starts become active. Before this threshold their effective "
-            "fraction is zero."
-        ),
-    )
-    policy.add_argument(
         "--policy-reset-start-max-age",
         type=int,
         default=63,
@@ -578,13 +568,10 @@ def parse_args() -> argparse.Namespace:
     reproducibility = parser.add_argument_group("reproducibility and output")
     reproducibility.add_argument("--num-runs", type=int, default=1)
     reproducibility.add_argument("--seed", type=int, default=0)
-    # Retain this positive spelling for existing resolved launch manifests.
-    # Independent subsystem streams are now mandatory.
     reproducibility.add_argument(
         "--isolated-rng-streams",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=True,
-        help=argparse.SUPPRESS,
     )
     reproducibility.add_argument(
         "--deterministic-compute",
@@ -786,10 +773,6 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--policy-bootstrap-start-fraction must be in [0, 1]")
     if not 0.0 <= args.policy_reset_start_fraction <= 1.0:
         parser.error("--policy-reset-start-fraction must be in [0, 1]")
-    if args.policy_reset_start_fraction_start_env_steps < 0:
-        parser.error(
-            "--policy-reset-start-fraction-start-env-steps must be >= 0"
-        )
     if args.policy_reset_start_max_age < 0:
         parser.error("--policy-reset-start-max-age must be >= 0")
     if (
@@ -1176,16 +1159,6 @@ def _scheduled_recent_fractions(
     if until is not None and train_env_steps >= until:
         fractions["world_model"] = 0.0
     return fractions
-
-
-def _scheduled_policy_reset_start_fraction(
-    args: argparse.Namespace,
-    *,
-    train_env_steps: int,
-) -> float:
-    if train_env_steps < args.policy_reset_start_fraction_start_env_steps:
-        return 0.0
-    return float(args.policy_reset_start_fraction)
 
 
 def _protocol_name(args: argparse.Namespace) -> str:
@@ -1676,17 +1649,17 @@ def run_one(
         logger.update_config(resolved_config)
         logger.write_json("versions.json", dependency_versions())
 
-        jax_rngs = JaxRngStreams.create(seed)
-        numpy_rngs = NumpyRngStreams.create(seed)
+        jax_rngs = JaxRngStreams.create(seed, isolated=args.isolated_rng_streams)
+        numpy_rngs = NumpyRngStreams.create(seed, isolated=args.isolated_rng_streams)
         validation_jax_rngs = (
             jax_rngs
             if args.validation_seed is None
-            else JaxRngStreams.create(validation_seed)
+            else JaxRngStreams.create(validation_seed, isolated=True)
         )
         validation_numpy_rngs = (
             numpy_rngs
             if args.validation_seed is None
-            else NumpyRngStreams.create(validation_seed)
+            else NumpyRngStreams.create(validation_seed, isolated=True)
         )
         validation_sampling_rng = validation_numpy_rngs.get("validation_replay")
         logger.write_json(
@@ -1989,10 +1962,7 @@ def run_one(
                 critic_recent_fraction=effective_recent_fractions["critic"],
                 bootstrap_start_replay=bootstrap_start_replay,
                 bootstrap_start_fraction=args.policy_bootstrap_start_fraction,
-                reset_start_fraction=_scheduled_policy_reset_start_fraction(
-                    args,
-                    train_env_steps=train_env_steps,
-                ),
+                reset_start_fraction=args.policy_reset_start_fraction,
                 reset_start_max_age=args.policy_reset_start_max_age,
             )
             if (

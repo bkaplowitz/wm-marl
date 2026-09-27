@@ -20,8 +20,8 @@ DEFAULT_TASKS = (
 )
 
 # This is the publication-clean configuration exercised by the July 2026
-# reset-rich, interleaved runs. Keep algorithmic changes explicit and covered
-# by test_dmc_vector_launcher.py; launcher-only settings belong in CLI
+# uniform-replay, critic-paced runs. Keep algorithmic changes explicit and
+# covered by test_dmc_vector_launcher.py; launcher-only settings belong in CLI
 # overrides.
 _JEPA_BASE: dict[str, Any] = {
     "num_runs": 1,
@@ -55,22 +55,21 @@ _JEPA_BASE: dict[str, Any] = {
     "online_train_steps": 1_024,
     "online_policy_train_steps": 512,
     "online_policy_actor_update_interval": 2,
-    "online_policy_actor_update_interval_start_env_steps": 50_000,
-    "online_freeze_encoder_after_env_steps": 101_376,
+    "online_policy_actor_update_interval_start_env_steps": 0,
+    "online_freeze_encoder_after_env_steps": None,
     "online_encoder_update_scale": 1.0,
     "online_encoder_update_scale_start_env_steps": 0,
     "online_checkpoint_interval": 16,
     "online_recent_replay_steps": 320,
-    "online_recent_replay_fraction": 0.5,
-    "online_recent_world_model_fraction": 0.5,
-    "online_recent_world_model_until_env_steps": 50_000,
+    "online_recent_replay_fraction": 0.0,
+    "online_recent_world_model_fraction": 0.0,
+    "online_recent_world_model_until_env_steps": None,
     "online_recent_policy_start_fraction": 0.0,
     "online_recent_critic_fraction": 0.0,
     "online_recent_replay_max_oversample": 10.0,
     "policy_batch_size": 1_024,
     "policy_bootstrap_start_fraction": 0.0,
-    "policy_reset_start_fraction": 0.1,
-    "policy_reset_start_fraction_start_env_steps": 201_728,
+    "policy_reset_start_fraction": 0.0,
     "policy_reset_start_max_age": 63,
     "imag_horizon": 15,
     "critic_warmup_steps": 0,
@@ -80,9 +79,6 @@ _JEPA_BASE: dict[str, Any] = {
     "policy_return_normalization": "ema-percentile",
     "policy_return_ema_decay": 0.99,
     "value_clip": 100.0,
-    "value_clip_final": 333.0,
-    "value_clip_schedule_start_env_steps": 150_528,
-    "value_clip_schedule_end_env_steps": 250_880,
     "policy_normalized_advantage_clip": 0.0,
     "policy_actor_kl_coef": 1.0,
     "policy_actor_kl_target_per_dim": 0.1,
@@ -138,10 +134,6 @@ _JEPA_BASE: dict[str, Any] = {
     "lambda_return": 0.95,
     "final_policy_eval_episodes": 100,
     "final_policy_eval_seed": 9_000_000,
-    "curve_eval_interval_env_steps": 50_000,
-    "curve_eval_episodes": 20,
-    "curve_eval_num_envs": 16,
-    "curve_eval_seed": 9_000_000,
     "failure_return_threshold": 100.0,
     "success_return_threshold": 900.0,
     "training_snapshot_env_steps": None,
@@ -234,7 +226,6 @@ OVERRIDABLE_PARAMS = (
     "policy_bundle_eval_online_action_fraction",
     "policy_bootstrap_start_fraction",
     "policy_reset_start_fraction",
-    "policy_reset_start_fraction_start_env_steps",
     "policy_reset_start_max_age",
     "online_recent_replay_fraction",
     "online_recent_world_model_fraction",
@@ -514,7 +505,6 @@ def parse_args() -> argparse.Namespace:
         "online_checkpoint_interval",
         "policy_actor_kl_reference_interval",
         "policy_bundle_ema_start_env_steps",
-        "policy_reset_start_fraction_start_env_steps",
         "policy_reset_start_max_age",
         "online_recent_replay_steps",
         "online_recent_world_model_until_env_steps",
