@@ -16,3 +16,5 @@ logs/
 *.ckpt
 *.npz
 *.npy
+.serena/
+.specstory/

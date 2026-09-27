@@ -1,0 +1,4 @@
+{
+    "python.analysis.extraPaths": ["./external/dreamerv3"],
+    "specstory.cloudSync.enabled": "always"
+}
